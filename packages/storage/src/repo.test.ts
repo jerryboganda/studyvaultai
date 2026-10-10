@@ -21,8 +21,18 @@ import {
 } from './repo';
 import { anchor, cap } from './test-fixtures';
 
+/** The data epoch is an opaque unique token (not a counter): null until the first mutation. */
 const epoch = async () =>
-  ((await fakeBrowser.storage.local.get('dataEpoch')).dataEpoch as number | undefined) ?? 0;
+  ((await fakeBrowser.storage.local.get('dataEpoch')).dataEpoch as string | undefined) ?? null;
+
+/** Records every token written, so tests can count bumps without assuming a numeric value. */
+function trackEpochs(): unknown[] {
+  const seen: unknown[] = [];
+  fakeBrowser.storage.onChanged.addListener((changes) => {
+    if (changes.dataEpoch) seen.push(changes.dataEpoch.newValue);
+  });
+  return seen;
+}
 
 async function counts() {
   const db = getDb();
@@ -307,7 +317,7 @@ describe('transaction atomicity and error mapping', () => {
       db.highlights.hook('creating').unsubscribe(boom);
     }
     expect(await counts()).toEqual({ banks: 0, sources: 0, highlights: 0, memberships: 0 });
-    expect(await epoch()).toBe(0);
+    expect(await epoch()).toBeNull();
 
     // The database is still usable afterwards.
     expect((await saveCapture(cap())).status).toBe('created');
@@ -566,7 +576,7 @@ describe('reportResolutions', () => {
     expect(await epoch()).toBe(afterChange);
 
     await reportResolutions([{ id: saved.highlight.id, status: 'ambiguous', confidence: 0.4 }]);
-    expect(await epoch()).toBe(afterChange + 1);
+    expect(await epoch()).not.toBe(afterChange);
   });
 });
 
@@ -607,7 +617,7 @@ describe('banks', () => {
       { bank: expect.objectContaining({ id: INBOX_BANK_ID }), count: 0 },
     ]);
     expect(await counts()).toEqual({ banks: 0, sources: 0, highlights: 0, memberships: 0 });
-    expect(await epoch()).toBe(0);
+    expect(await epoch()).toBeNull();
   });
 
   it('creates ordered banks with trimmed names, the Inbox first', async () => {
@@ -711,32 +721,37 @@ describe('corrupt rows', () => {
 
 describe('data epoch', () => {
   it('is bumped once per successful mutation and never by reads', async () => {
-    expect(await epoch()).toBe(0);
+    const seen = trackEpochs();
+    expect(await epoch()).toBeNull();
 
     const saved = await saveCapture(cap());
-    expect(await epoch()).toBe(1);
+    expect(seen).toHaveLength(1);
 
     await getPageHighlights('https://example.com/notes/pharm', null);
     await listRecentHighlights(5);
     await listBanks();
     await listBanksWithCounts();
-    expect(await epoch()).toBe(1);
+    expect(seen).toHaveLength(1);
 
     await updateHighlight(saved.highlight.id, { color: 'green' });
-    expect(await epoch()).toBe(2);
+    expect(seen).toHaveLength(2);
     await softDeleteHighlight(saved.highlight.id);
-    expect(await epoch()).toBe(3);
+    expect(seen).toHaveLength(3);
     await restoreHighlight(saved.highlight.id);
-    expect(await epoch()).toBe(4);
+    expect(seen).toHaveLength(4);
     await createBank('Another');
-    expect(await epoch()).toBe(5);
+    expect(seen).toHaveLength(5);
+    // storage.onChanged does not fire for an unchanged value, so every bump must be unique.
+    expect(new Set(seen).size).toBe(5);
   });
 
   it('yields distinct values for concurrent mutations', async () => {
+    const seen = trackEpochs();
     await Promise.all(
       Array.from({ length: 5 }, (_, i) => saveCapture(cap(`Epoch quote number ${i}`, i * 300))),
     );
-    expect(await epoch()).toBe(5);
+    expect(seen).toHaveLength(5);
+    expect(new Set(seen).size).toBe(5);
   });
 
   it('never fails a committed write when the notification fails', async () => {

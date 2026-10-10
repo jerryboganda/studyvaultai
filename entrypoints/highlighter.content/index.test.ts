@@ -47,10 +47,11 @@ async function definition() {
 }
 
 describe('content script entry', () => {
-  it('is a runtime-registered, ui-mode script for http(s) pages', async () => {
+  it('is a runtime-registered script for http(s) pages with inlined (manual) CSS', async () => {
     const def = await definition();
     expect(def.registration).toBe('runtime');
-    expect(def.cssInjectionMode).toBe('ui');
+    // 'manual' keeps WXT from emitting a web_accessible_resources entry; ui/index.tsx inlines the CSS.
+    expect(def.cssInjectionMode).toBe('manual');
     expect(def.matches).toEqual(['https://*/*', 'http://*/*']);
   });
 

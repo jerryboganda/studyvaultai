@@ -34,8 +34,10 @@ local-only script.
 - A scoped check on the files you touched: `pnpm exec vitest run <one file or dir>`,
   `pnpm exec eslint <files>`, `pnpm exec prettier --write <files>`.
 - Debugging a CI failure: re-running **one** failing Playwright spec with one worker
-  (`pnpm exec playwright test <file> --workers=1 -g "<name>"`) against an already-built `.output`.
-  Prefer downloading the CI trace/screenshots instead (`gh run download`).
+  (`pnpm exec playwright test <file> --workers=1 -g "<name>"`). If your fix changed product code, the
+  e2e bundle must be rebuilt first with `pnpm build:e2e` (about 2 s) - that single build is allowed for
+  this purpose only. Prefer downloading the CI trace/screenshots instead (`gh run download`).
+  Never loop the full suite locally.
 - Interactive, exploratory verification in a real browser that Actions cannot give you.
 
 ### The loop
