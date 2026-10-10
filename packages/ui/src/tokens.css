@@ -1,0 +1,116 @@
+/*
+ * StudyVault design tokens (UX_DESIGN.md): precise, dense, editorial; neutral surfaces, one blue accent.
+ * Used by extension pages (:root) and the in-page Shadow DOM UI (:host). Tokens only; no resets.
+ * Dark mode follows the system unless data-theme="light"|"dark" is set on the root/host element.
+ */
+:root,
+:host {
+  color-scheme: light;
+
+  --sv-font: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --sv-font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, monospace;
+  --sv-text-xs: 0.75rem;
+  --sv-text-sm: 0.8125rem;
+  --sv-text-md: 0.9375rem;
+  --sv-text-lg: 1.0625rem;
+  --sv-leading: 1.45;
+
+  --sv-space-1: 4px;
+  --sv-space-2: 8px;
+  --sv-space-3: 12px;
+  --sv-space-4: 16px;
+  --sv-space-5: 24px;
+  --sv-space-6: 32px;
+
+  --sv-radius-sm: 8px;
+  --sv-radius-md: 12px;
+
+  --sv-bg: #ffffff;
+  --sv-surface: #f6f7f9;
+  --sv-surface-raised: #ffffff;
+  --sv-border: #d9dde3;
+  --sv-text: #14171c;
+  --sv-text-muted: #4b5563;
+  --sv-accent: #2563eb;
+  --sv-accent-hover: #1d4ed8;
+  --sv-accent-text: #ffffff;
+  --sv-danger: #b91c1c;
+  --sv-success: #15803d;
+  --sv-focus: #1d4ed8;
+  --sv-shadow: 0 6px 24px rgba(15, 23, 42, 0.18), 0 1px 3px rgba(15, 23, 42, 0.12);
+
+  /* Highlight palette: translucent fills for text, solid for chips (mirrors COLOR_SWATCH in @shared). */
+  --sv-hl-amber: rgba(251, 191, 36, 0.45);
+  --sv-hl-blue: rgba(96, 165, 250, 0.4);
+  --sv-hl-red: rgba(248, 113, 113, 0.4);
+  --sv-hl-purple: rgba(167, 139, 250, 0.4);
+  --sv-hl-orange: rgba(251, 146, 60, 0.42);
+  --sv-hl-green: rgba(74, 222, 128, 0.4);
+  --sv-hl-teal: rgba(45, 212, 191, 0.4);
+  --sv-solid-amber: #f59e0b;
+  --sv-solid-blue: #3b82f6;
+  --sv-solid-red: #ef4444;
+  --sv-solid-purple: #8b5cf6;
+  --sv-solid-orange: #f97316;
+  --sv-solid-green: #22c55e;
+  --sv-solid-teal: #14b8a6;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']),
+  :host(:not([data-theme='light'])) {
+    color-scheme: dark;
+    --sv-bg: #101318;
+    --sv-surface: #181c23;
+    --sv-surface-raised: #1f242d;
+    --sv-border: #343b47;
+    --sv-text: #eceff4;
+    --sv-text-muted: #aab2bf;
+    --sv-accent: #6ea0ff;
+    --sv-accent-hover: #8fb4ff;
+    --sv-accent-text: #0b1220;
+    --sv-danger: #f87171;
+    --sv-success: #4ade80;
+    --sv-focus: #8fb4ff;
+    --sv-shadow: 0 6px 24px rgba(0, 0, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.4);
+  }
+}
+
+:root[data-theme='dark'],
+:host([data-theme='dark']) {
+  color-scheme: dark;
+  --sv-bg: #101318;
+  --sv-surface: #181c23;
+  --sv-surface-raised: #1f242d;
+  --sv-border: #343b47;
+  --sv-text: #eceff4;
+  --sv-text-muted: #aab2bf;
+  --sv-accent: #6ea0ff;
+  --sv-accent-hover: #8fb4ff;
+  --sv-accent-text: #0b1220;
+  --sv-danger: #f87171;
+  --sv-success: #4ade80;
+  --sv-focus: #8fb4ff;
+  --sv-shadow: 0 6px 24px rgba(0, 0, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.4);
+}
+
+@media (prefers-contrast: more) {
+  :root,
+  :host {
+    --sv-border: currentColor;
+    --sv-text-muted: var(--sv-text);
+  }
+}
+
+:root,
+:host {
+  --sv-motion: 120ms;
+}
+
+/* Must come after the default above: equal specificity, so source order decides. */
+@media (prefers-reduced-motion: reduce) {
+  :root,
+  :host {
+    --sv-motion: 0ms;
+  }
+}

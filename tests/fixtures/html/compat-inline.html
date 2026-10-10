@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Compat inline fixture</title>
+    <style>
+      body { font: 18px/1.7 Georgia, serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }
+      code { font-family: ui-monospace, Consolas, monospace; }
+      #focus-region { border: 1px solid #888; padding: 0.5rem 1rem; }
+      .filler { height: 1200px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Inline markup fixture</h1>
+      <h2 id="glyco">Glycolysis</h2>
+
+      <!-- Inline <a>/<strong>/<em>/<code>/<sub>/<sup> inside a single block. -->
+      <p id="inline">The enzyme <a href="/dark.html" id="inline-link">phospho<strong>fructo</strong>kinase</a> is <em>rate-limiting</em> for glycolysis and its activity follows <code>v = Vmax[S] / (Km + [S])</code> where K<sub>m</sub> is the Michaelis constant and x<sup>2</sup> marks a squared term.<sup><a href="#glyco" id="fn-link">[1]</a></sup> Afterwards the pathway continues towards pyruvate.</p>
+
+      <p id="math">Energy and mass are related by <span class="math">E = mc<sup>2</sup></span> while the variance is <span class="math">&sigma;<sup>2</sup> = <em>E</em>[(X &minus; &mu;)<sup>2</sup>]</span> for any random variable.</p>
+
+      <!-- A keyboard-focusable region: mouse selection inside it leaves it as document.activeElement. -->
+      <div id="focus-region" tabindex="0" aria-label="Focusable study notes">
+        <p id="focus-p">Hexokinase phosphorylates glucose to glucose six phosphate inside the cell.</p>
+      </div>
+
+      <p id="nav-p">Read <a id="nav-link" href="/dark.html">the dark article</a> for a contrasting theme.</p>
+      <p id="plain-after">A plain closing paragraph about pyruvate kinase and substrate level phosphorylation.</p>
+      <div class="filler" aria-hidden="true"></div>
+      <p id="far-down">This paragraph sits far below the first viewport so scrolling is required to reach it.</p>
+    </main>
+
+    <script>
+      // Event log kept on window (never in the DOM) so the page itself stays mutation-free.
+      window.__log = { copy: [], keydown: [], selectionchange: 0, click: [] };
+      document.addEventListener('copy', function () {
+        window.__log.copy.push(String(window.getSelection()));
+      });
+      document.addEventListener('selectionchange', function () {
+        window.__log.selectionchange += 1;
+      });
+      // Bubble phase: defaultPrevented tells whether an earlier (capture) listener swallowed the key.
+      document.addEventListener('keydown', function (e) {
+        window.__log.keydown.push({
+          key: e.key,
+          code: e.code,
+          alt: e.altKey,
+          shift: e.shiftKey,
+          defaultPrevented: e.defaultPrevented,
+        });
+      });
+      document.addEventListener('click', function (e) {
+        window.__log.click.push({ defaultPrevented: e.defaultPrevented, target: e.target && e.target.id });
+      });
+    </script>
+  </body>
+</html>

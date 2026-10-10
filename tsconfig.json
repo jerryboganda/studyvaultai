@@ -1,0 +1,16 @@
+{
+  "extends": "./.wxt/tsconfig.json",
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "verbatimModuleSyntax": true,
+    "jsx": "react-jsx",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["chrome", "node"],
+    "skipLibCheck": true,
+    "noEmit": true
+  },
+  "include": [".wxt/wxt.d.ts", "entrypoints", "packages", "tests", "*.ts"]
+}

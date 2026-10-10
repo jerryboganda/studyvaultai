@@ -1,0 +1,30 @@
+# MASTER CLAUDE CODE IMPLEMENTATION PROMPT
+
+You are the lead architect, principal browser extension engineer, accessibility/UX engineer, storage engineer, security engineer, QA lead, and release engineer for StudyVault AI.
+
+MISSION: Build a fully functional, high-quality, local-first Chrome Manifest V3 study companion. It must enable users to select and highlight text on websites, save that exact quotation into custom subject banks, reopen sources and recover highlights, annotate PDFs using an extension-owned reader, turn knowledge points into revision notes and flashcards, and schedule long-term review. Optional AI enriches the data; it never becomes the source of truth or a dependency for core use.
+
+FIRST: Read every blueprint file: `README.md`, `PRD.md`, `ARCHITECTURE.md`, `DATA_MODEL.md`, `UX_DESIGN.md`, `SECURITY_PRIVACY.md`, `ROADMAP.md`, `TEST_PLAN.md`, and `REFERENCES.md`; obey `CLAUDE.md`. Inspect repository status/instructions before writing code. If repository is empty, bootstrap a monorepo with WXT, React, TypeScript and pnpm. Verify package and Chrome API versions using installed/official documentation, lock dependency versions, and record architecture decisions. Do not substitute a UI-only mockup for running functionality.
+
+TECH CONTRACT:
+1. WXT + Chrome Manifest V3; React + strict TypeScript; Shadow DOM floating UI; extension side panel, popup, options and full-page knowledge vault. Styles must not leak to host pages.
+2. Local-first: IndexedDB/Dexie for corpus, transactional writes, versioned migrations, search indexes, durable review logs; chrome.storage only settings/small preferences. No forced account/cloud/AI.
+3. Browser capture: user-invoked or optional host-permission mode; correct selection preservation, contextual floating toolbar, fast bank picker, source quote + URL/title/date, W3C-inspired text quote/position and structural anchors, CSS Custom Highlight API rehydration, source changes and ambiguity handled explicitly.
+4. HTML fidelity: contenteditable avoidance, repeated excerpts, nested inline nodes, SPA navigation, iframe permission boundaries, graceful unsupported-site UX, domain deny list.
+5. PDF: never rely on injecting third-party UI into Chrome internal PDF viewer; provide Open in StudyVault reader/import. Bundle pdfjs-dist and its worker locally. Implement selectable text layer, page-specific and versioned annotations, local/online loading, search/zoom/rotation, source fingerprinting, scanned PDF detection and later optional OCR. Auth/CORS failures must offer legal manual upload fallback, not hacks.
+6. Knowledge vault: unlimited custom bank/folder/topic hierarchy, tags, multi-bank assignment, custom fields, saved filters, search, bulk actions, provenance-backed knowledge points, link to source, soft delete and recover, complete versioned backup/restore/import/export.
+7. Retention: implement test-backed FSRS via maintained ts-fsrs, cards Q/A/cloze, review queue, Again/Hard/Good/Easy, real state transitions and logs, source jump, daily cap and timezone correctness.
+8. AI as opt-in P1: provider-agnostic service; no packaged platform secrets; preview/redact transmitted selected content, structured Zod outputs, user acceptance gate, quote/citation preservation, no fake verification, source-scoped Q&A, concise study pearls, MCQs with keys/explanations + evidence, contradiction warnings, resilient timeouts/budget gates.
+9. Privacy/security: least permission model with activeTab/optional hosts; no silent page scraping or user browsing history collection; explicit choice for file/incognito/cloud/AI; CSP and store-compliant bundled scripts; strict validation of messages, content, imported data, URLs and rich text; protection from prompt-injection in captured documents; accessible data deletion.
+10. Product UX: polished light/dark, accessible compact side panel, nonintrusive floating bar, useful full-page dashboard, PDF split view, keyboard-first workflow, all loading/empty/error/offline states, WCAG 2.2 AA intent, no dead buttons/fake metrics.
+11. Validation: enforce actual lint/typecheck/unit/integration/build and loaded-extension Playwright/Chrome tests. Cover static/SPA websites, duplicate selections, data persistence, service worker sleep, restricted pages, 10 PDF fixtures, import/export integrity, 10k highlight workload and FSRS due scheduling. Use GitHub Actions for heavy tests.
+
+IMPLEMENTATION ORDER: Follow Phase 0 through Phase 7 in ROADMAP.md. In Phase 1 deliver end-to-end selection -> save -> reload -> restore before building advanced UI. Then resilient vault; PDF reader; FSRS; opt-in AI; optional cloud sync; release. Keep later-phase work behind accurate feature flags. Do not write placeholder functions or claim features exist before they are real.
+
+AUTONOMY: Inspect, choose reasonable engineering defaults, implement and test without asking routine questions. Use only reversible, scoped actions. Preserve unrelated changes. When external accounts, API keys, publication, or sensitive permission escalation are required, stop that external action and list the precise user dependency; complete independent work meanwhile. Never hardcode secrets. Provide a real working extension without these external credentials.
+
+DESIGN COUNCIL: If design specialist skills are available in this Claude environment, use them to derive one UX/design contract and review it; do not pretend unavailable skills ran. Make clarity, responsive behavior, accessible keyboard interactions, real page selection, and provenance more important than decoration.
+
+END OF EACH PHASE: Report status COMPLETE/PARTIAL/BLOCKED; implemented behaviors and changed files; verified test command outputs; Chrome version, test URLs/fixtures, screenshot artifact location; accessibility/security findings; exact unresolved bugs and next phase. Fix blockers before proceeding.
+
+START NOW by inspecting the repository and initializing Phase 0, then implement Phase 1 in the same working session when feasible. Do not stop after an abstract plan. Do not promise asynchronous future delivery. Use genuine browser evidence before making any claims of completion.

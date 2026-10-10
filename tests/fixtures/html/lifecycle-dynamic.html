@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Lifecycle dynamic</title>
+    <style>
+      body { font: 18px/1.6 Georgia, serif; max-width: 42rem; margin: 2rem auto; padding: 0 1rem; }
+    </style>
+  </head>
+  <body>
+    <h1>Lifecycle dynamic</h1>
+    <p id="stable">Stable paragraph about the Frank-Starling law stays untouched by the page scripts.</p>
+    <section id="section"></section>
+    <section id="lazy"></section>
+    <p id="ticker" aria-hidden="true"></p>
+    <button id="btn-rerender" type="button">Re-render</button>
+    <script>
+      // Behaviour is configured through utm_campaign (tracking parameters are ignored by source
+      // identity, so every configuration is the SAME page for StudyVault):
+      //   lateNNNN -> a paragraph is added NNNN ms after load
+      //   tick     -> a text node somewhere else is rewritten every 100 ms (a busy page)
+      const params = (new URLSearchParams(location.search).get('utm_campaign') || '').split('-');
+
+      const section = document.getElementById('section');
+      const RERENDER =
+        'This paragraph is re-created by the framework on every render but always says the same thing.';
+      function render() {
+        // A framework-style re-render: the old element is thrown away, a new one takes its place.
+        section.innerHTML = '<p id="rerender"></p>';
+        section.firstChild.textContent = RERENDER;
+      }
+      render();
+      document.getElementById('btn-rerender').addEventListener('click', render);
+
+      const LATE = 'A late arriving paragraph explains countercurrent multiplication in the loop of Henle.';
+      const late = params.find((p) => /^late\d+$/.test(p));
+      if (late) {
+        setTimeout(() => {
+          const p = document.createElement('p');
+          p.id = 'late';
+          p.textContent = LATE;
+          document.getElementById('lazy').append(p);
+        }, Number(late.slice(4)));
+      }
+      if (params.includes('tick')) {
+        let n = 0;
+        setInterval(() => {
+          document.getElementById('ticker').textContent = 'tick ' + n++;
+        }, 100);
+      }
+    </script>
+  </body>
+</html>

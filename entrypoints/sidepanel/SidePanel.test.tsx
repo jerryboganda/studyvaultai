@@ -1,0 +1,420 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { browser } from 'wxt/browser';
+import { fakeBrowser } from 'wxt/testing/fake-browser';
+import { StudyVaultError, defaultSettings, type PageStatus, type Settings } from '@shared';
+import { INBOX, BIOLOGY, makeChromeFakes, makeItem, rpc, store } from '@ui/testing/fakes';
+import { SidePanel } from './SidePanel';
+
+vi.mock('@storage', async () => (await import('@ui/testing/fakes')).store.module);
+vi.mock('@runtime', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  const { rpc: fake } = await import('@ui/testing/fakes');
+  return { ...actual, callBackground: fake.callBackground, callTab: fake.callTab } as never;
+});
+
+interface FakeTab {
+  id: number;
+  url: string | undefined;
+  title: string;
+}
+let current: FakeTab;
+
+function status(over: Partial<PageStatus> = {}): PageStatus {
+  return {
+    url: 'https://example.com/notes',
+    canonicalUrl: null,
+    title: 'Cell biology notes',
+    counts: { total: 0, resolved: 0, changed: 0, ambiguous: 0, orphaned: 0, pending: 0 },
+    paintingSupported: true,
+    hasSelection: false,
+    blocked: null,
+    ...over,
+  };
+}
+
+async function open(settings: Partial<Settings> = {}, tab: Partial<FakeTab> = {}) {
+  current = { id: 11, url: 'https://example.com/notes', title: 'Cell biology notes', ...tab };
+  await browser.storage.local.set({ settings: { ...defaultSettings(), ...settings } });
+  vi.spyOn(browser.tabs, 'query').mockImplementation(
+    async () => [{ ...current, windowId: 1, active: true, index: 0 }] as never,
+  );
+  return render(<SidePanel />);
+}
+
+const live = () => {
+  rpc.tab['content.pageStatus'] = () => status();
+  rpc.tab['content.refresh'] = () => ({ ok: true });
+};
+
+beforeEach(() => {
+  fakeBrowser.reset();
+  store.reset();
+  rpc.reset();
+  Object.assign(browser, makeChromeFakes());
+  Object.assign(browser.runtime, { openOptionsPage: vi.fn(async () => undefined) });
+});
+afterEach(cleanup);
+
+describe('This page', () => {
+  it('lists highlights with kind, state, banks and quote as text', async () => {
+    live();
+    store.reset([
+      makeItem({
+        highlight: { exactQuote: 'Mitochondria make ATP.', kind: 'formula', color: 'blue' },
+        banks: [INBOX, BIOLOGY],
+      }),
+    ]);
+    await open();
+
+    expect(await screen.findByText('Mitochondria make ATP.')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Cell biology notes' })).toBeTruthy();
+    expect(screen.getByText('1 highlight')).toBeTruthy();
+    const card = screen.getByRole('article');
+    expect(within(card).getByText('Formula')).toBeTruthy();
+    expect(within(card).getByText('Resolved')).toBeTruthy();
+    expect(within(card).getByText('Inbox')).toBeTruthy();
+    expect(within(card).getByText('Biology')).toBeTruthy();
+    expect(rpc.called('content.pageStatus')[0]?.tabId).toBe(11);
+  });
+
+  it('groups ambiguous and orphaned highlights first with an explanation', async () => {
+    live();
+    store.reset([
+      makeItem({ start: 5, highlight: { exactQuote: 'Fine quote.', resolveStatus: 'resolved' } }),
+      makeItem({ start: 40, highlight: { exactQuote: 'Lost quote.', resolveStatus: 'orphaned' } }),
+      makeItem({
+        start: 20,
+        highlight: { exactQuote: 'Twice quote.', resolveStatus: 'ambiguous' },
+      }),
+      makeItem({ start: 10, highlight: { exactQuote: 'Edited quote.', resolveStatus: 'changed' } }),
+    ]);
+    await open();
+
+    const heading = await screen.findByRole('heading', { name: 'Needs attention (2)' });
+    expect(screen.getByText(/could not be placed on the page/)).toBeTruthy();
+    const attention = heading.closest('section')!;
+    expect(within(attention).getAllByRole('article')).toHaveLength(2);
+    expect(within(attention).getByText('Ambiguous · not painted')).toBeTruthy();
+    expect(within(attention).getByText('Orphaned · not found on page')).toBeTruthy();
+
+    const all = screen.getAllByRole('article').map((a) => a.textContent ?? '');
+    expect(all[0]).toContain('Twice quote.');
+    expect(all[1]).toContain('Lost quote.');
+    expect(all[2]).toContain('Fine quote.'); // reading order: offset 5 before offset 10
+    expect(all[3]).toContain('Edited quote.');
+    expect(screen.getByText('4 highlights')).toBeTruthy();
+    expect(screen.getByText(/2 need attention/)).toBeTruthy();
+    expect(screen.getByText('Source changed')).toBeTruthy();
+  });
+
+  it('shows the empty state when the page has no highlights', async () => {
+    live();
+    await open();
+    expect(await screen.findByText('No highlights on this page yet')).toBeTruthy();
+  });
+
+  it('collapses long quotes and expands them on request', async () => {
+    live();
+    const long = `${'word '.repeat(120)}END`;
+    store.reset([makeItem({ highlight: { exactQuote: long } })]);
+    await open();
+
+    const toggle = await screen.findByRole('button', { name: 'Show full quote' });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.queryByText(/END$/)).toBeNull();
+    await userEvent.click(toggle);
+    expect(screen.getByRole('button', { name: 'Show less' }).getAttribute('aria-expanded')).toBe(
+      'true',
+    );
+    expect(screen.getByText(/END$/)).toBeTruthy();
+  });
+
+  it('autosaves the note after typing and reports saved', async () => {
+    live();
+    store.reset([makeItem()]);
+    await open();
+    const note = await screen.findByLabelText('Your note');
+
+    await userEvent.type(note, 'Remember this');
+
+    await waitFor(
+      () =>
+        expect(store.calls.filter((c) => c.fn === 'updateHighlight').map((c) => c.args[1])).toEqual(
+          [{ userComment: 'Remember this' }],
+        ),
+      { timeout: 3000 },
+    );
+    expect(await screen.findByText('Saved')).toBeTruthy();
+    expect(rpc.called('content.refresh').length).toBeGreaterThan(0);
+  });
+
+  it('flushes the note immediately on blur', async () => {
+    live();
+    store.reset([makeItem()]);
+    await open();
+    const note = await screen.findByLabelText('Your note');
+
+    await userEvent.type(note, 'Quick');
+    await userEvent.tab();
+
+    await waitFor(() => expect(store.calls.some((c) => c.fn === 'updateHighlight')).toBe(true));
+    expect(store.items[0]!.highlight.userComment).toBe('Quick');
+  });
+
+  it('shows a failed save with the real error and retries', async () => {
+    live();
+    store.reset([makeItem()]);
+    store.failNext.updateHighlight = new StudyVaultError('storage_unavailable', 'Disk is full');
+    await open();
+    const note = await screen.findByLabelText('Your note');
+
+    await userEvent.type(note, 'Oops');
+    await userEvent.tab();
+
+    expect(await screen.findByText(/Not saved: Disk is full/)).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Saved')).toBeTruthy();
+    expect(store.items[0]!.highlight.userComment).toBe('Oops');
+  });
+
+  it('changes kind (and the colour that goes with it) and priority', async () => {
+    live();
+    store.reset([makeItem()]);
+    await open({ palette: { ...defaultSettings().palette, formula: 'teal' } });
+
+    await userEvent.selectOptions(await screen.findByLabelText('Kind'), 'formula');
+    await waitFor(() =>
+      expect(store.calls.find((c) => c.fn === 'updateHighlight')?.args[1]).toEqual({
+        kind: 'formula',
+        color: 'teal',
+      }),
+    );
+    await userEvent.selectOptions(screen.getByLabelText('Priority'), '5');
+    await waitFor(() =>
+      expect(store.calls.filter((c) => c.fn === 'updateHighlight').at(-1)?.args[1]).toEqual({
+        priority: 5,
+      }),
+    );
+  });
+
+  it('deletes with an Undo toast that restores the highlight', async () => {
+    live();
+    store.reset([makeItem({ highlight: { exactQuote: 'Delete me.' } })]);
+    const id = store.items[0]!.highlight.id;
+    await open();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => expect(screen.queryByText('Delete me.')).toBeNull());
+    expect(store.calls.some((c) => c.fn === 'softDeleteHighlight' && c.args[0] === id)).toBe(true);
+    expect(rpc.called('content.refresh').length).toBeGreaterThan(0);
+    expect(await screen.findByText('Highlight deleted.')).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Undo' }));
+
+    expect(await screen.findByText('Delete me.')).toBeTruthy();
+    expect(store.calls.some((c) => c.fn === 'restoreHighlight' && c.args[0] === id)).toBe(true);
+    expect(await screen.findByText('Highlight restored.')).toBeTruthy();
+  });
+
+  it('shows on page, and says so when the highlight cannot be found', async () => {
+    live();
+    store.reset([makeItem()]);
+    const id = store.items[0]!.highlight.id;
+    let found = false;
+    rpc.tab['content.reveal'] = () => ({ found });
+    await open();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Show on page' }));
+    expect(await screen.findByText(/could not find this highlight on the page/)).toBeTruthy();
+    expect(rpc.called('content.reveal')[0]?.payload).toEqual({ id });
+
+    found = true;
+    await userEvent.click(screen.getByRole('button', { name: 'Show on page' }));
+    expect(await screen.findByText('Showing this highlight on the page.')).toBeTruthy();
+  });
+
+  it('without a content script: explains, still lists saved highlights, then activates', async () => {
+    store.reset([makeItem({ highlight: { exactQuote: 'Saved earlier.' } })]);
+    let active = false;
+    rpc.tab['content.pageStatus'] = () => {
+      if (!active) throw new StudyVaultError('unsupported_page', 'No receiver');
+      return status();
+    };
+    rpc.background['tab.activate'] = () => {
+      active = true;
+      return { ok: true };
+    };
+    await open();
+
+    expect(await screen.findByText('StudyVault is not running on this tab')).toBeTruthy();
+    expect(await screen.findByText('Saved earlier.')).toBeTruthy();
+    const reveal = screen.getByRole('button', { name: 'Show on page' });
+    expect(reveal.getAttribute('aria-disabled')).toBe('true');
+    expect(reveal.getAttribute('title')).toMatch(/not running in the current tab/);
+    expect(store.calls.find((c) => c.fn === 'listPageHighlights')?.args).toEqual([
+      'https://example.com/notes',
+      null,
+    ]);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Activate on this tab' }));
+
+    await waitFor(() =>
+      expect(screen.queryByText('StudyVault is not running on this tab')).toBeNull(),
+    );
+    expect(rpc.called('tab.activate')[0]?.payload).toEqual({ tabId: 11 });
+    expect(
+      screen.getByRole('button', { name: 'Show on page' }).getAttribute('aria-disabled'),
+    ).toBeNull();
+  });
+
+  it('activation failure shows the real error text', async () => {
+    rpc.background['tab.activate'] = () => {
+      throw new StudyVaultError('forbidden', 'StudyVault has not been given access to this tab.');
+    };
+    await open();
+    await userEvent.click(await screen.findByRole('button', { name: 'Activate on this tab' }));
+    expect(
+      await screen.findByText('StudyVault has not been given access to this tab.'),
+    ).toBeTruthy();
+  });
+
+  it('explains unsupported pages instead of showing an empty list', async () => {
+    await open({}, { url: 'chrome://extensions', title: 'Extensions' });
+    expect(await screen.findByText('StudyVault cannot run on this page')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Activate on this tab' })).toBeNull();
+  });
+
+  it('follows the active tab', async () => {
+    live();
+    store.reset([makeItem()]);
+    await open();
+    await screen.findByText('Cell biology notes', { selector: 'h2' });
+    expect(rpc.called('content.pageStatus').map((c) => c.tabId)).toEqual([11]);
+
+    rpc.tab['content.pageStatus'] = () =>
+      status({ url: 'https://other.org/b', title: 'Other page' });
+    current = { id: 12, url: 'https://other.org/b', title: 'Other page' };
+    await act(async () => {
+      await fakeBrowser.tabs.onActivated.trigger({ tabId: 12, windowId: 1 });
+    });
+
+    expect(await screen.findByRole('heading', { name: 'Other page' })).toBeTruthy();
+    expect(rpc.called('content.pageStatus').at(-1)?.tabId).toBe(12);
+  });
+
+  it('surfaces a storage error with Retry', async () => {
+    live();
+    store.reset([makeItem({ highlight: { exactQuote: 'Back again.' } })]);
+    store.failNext.listPageHighlights = new StudyVaultError(
+      'storage_unavailable',
+      'IndexedDB is unavailable',
+    );
+    await open();
+    expect(await screen.findByText('IndexedDB is unavailable')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Back again.')).toBeTruthy();
+  });
+});
+
+describe('Recent', () => {
+  it('lists saves across pages; reveal is disabled off the active page with the reason', async () => {
+    live();
+    const here = makeItem({ highlight: { exactQuote: 'On this page.' } });
+    const elsewhere = makeItem({
+      highlight: { exactQuote: 'From another site.' },
+      source: {
+        id: 'src-other001',
+        title: 'Other site',
+        host: 'other.org',
+        originalUrl: 'https://other.org/x',
+      },
+    });
+    store.reset([here, elsewhere], [here.highlight.id]);
+    await open();
+    await userEvent.click(await screen.findByRole('tab', { name: 'Recent' }));
+
+    expect(await screen.findByText('From another site.')).toBeTruthy();
+    const card = screen.getByText('From another site.').closest('article')!;
+    expect(within(card).getByText(/Other site · other.org/)).toBeTruthy();
+    const link = within(card).getByRole('link', { name: 'Open page' });
+    expect(link.getAttribute('href')).toBe('https://other.org/x');
+    expect(link.getAttribute('rel')).toContain('noopener');
+    expect(
+      within(card).getByRole('button', { name: 'Show on page' }).getAttribute('aria-disabled'),
+    ).toBe('true');
+    expect(within(card).getAllByText(/from another page/).length).toBeGreaterThan(0);
+
+    const mine = screen.getByText('On this page.').closest('article')!;
+    expect(
+      within(mine).getByRole('button', { name: 'Show on page' }).getAttribute('aria-disabled'),
+    ).toBeNull();
+  });
+
+  it('shows an empty state', async () => {
+    live();
+    await open();
+    await userEvent.click(await screen.findByRole('tab', { name: 'Recent' }));
+    expect(await screen.findByText('Nothing saved yet')).toBeTruthy();
+  });
+
+  it('refuses javascript: links from stored data', async () => {
+    live();
+    store.reset(
+      [
+        makeItem({
+          highlight: { exactQuote: 'Sneaky.' },
+          source: { originalUrl: 'javascript:alert(1)' as never },
+        }),
+      ],
+      [],
+    );
+    await open();
+    await userEvent.click(await screen.findByRole('tab', { name: 'Recent' }));
+    await screen.findByText('Sneaky.');
+    expect(screen.queryByRole('link', { name: 'Open page' })).toBeNull();
+  });
+});
+
+describe('Tabs and safety', () => {
+  it('uses roving tabindex and arrow keys', async () => {
+    live();
+    await open();
+    const pageTab = await screen.findByRole('tab', { name: /This page/ });
+    const recentTab = screen.getByRole('tab', { name: 'Recent' });
+    expect(pageTab.getAttribute('tabindex')).toBe('0');
+    expect(recentTab.getAttribute('tabindex')).toBe('-1');
+
+    pageTab.focus();
+    await userEvent.keyboard('{ArrowRight}');
+    expect(recentTab.getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(recentTab);
+    await userEvent.keyboard('{Home}');
+    expect(pageTab.getAttribute('aria-selected')).toBe('true');
+    await userEvent.keyboard('{End}');
+    expect(recentTab.getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('renders every page-derived string as text', async () => {
+    live();
+    rpc.tab['content.pageStatus'] = () => status({ title: '<img src=x onerror=1>Page' });
+    store.reset([
+      makeItem({
+        highlight: {
+          exactQuote: '<script>window.__x=1</script><b>q</b>',
+          userComment: '<i>note</i>',
+          headingContext: '<u>Heading</u>',
+        },
+        banks: [{ id: 'bank-evil0001', name: '<svg onload=1>', color: 'red', isInbox: false }],
+      }),
+    ]);
+    const { container } = await open();
+
+    expect(await screen.findByText('<script>window.__x=1</script><b>q</b>')).toBeTruthy();
+    expect(screen.getByText('<svg onload=1>')).toBeTruthy();
+    expect((screen.getByLabelText('Your note') as HTMLTextAreaElement).value).toBe('<i>note</i>');
+    expect(container.querySelector('script, img, b, i, u, svg')).toBeNull();
+  });
+});

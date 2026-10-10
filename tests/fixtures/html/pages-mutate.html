@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Mutating page</title>
+  </head>
+  <body>
+    <main id="root"></main>
+    <script>
+      // The variant is read from the URL fragment (#v=...). The product drops fragments from page
+      // identity, so every variant is the SAME page to StudyVault; only the text differs.
+      // The finding is its own block so a triple-click selects exactly that sentence.
+      (function () {
+        var m = /v=([a-z]+)/.exec(location.hash);
+        var variant = m ? m[1] : 'original';
+        var TARGET =
+          'The glomerular filtration rate falls when afferent arteriolar resistance rises sharply.';
+        var html = '<h1>Mutating page</h1>';
+        if (variant === 'removed') {
+          html +=
+            '<p id="before">Opening sentence that gives some context for the finding below.</p>' +
+            '<p id="after">The publisher rewrote this section and the old finding is gone.</p>';
+        } else if (variant === 'ambiguous') {
+          html +=
+            '<p id="a-before">Zebra yellow xylophone walrus vulture quartz pencil orange nectar marble lantern.</p>' +
+            '<p id="finding-a">' + TARGET + '</p>' +
+            '<p id="a-after">Hammer garden falcon eagle drum kettle jigsaw igloo velvet.</p>' +
+            '<p id="b-before">Different words entirely: umbrella thistle compass anchor biscuit.</p>' +
+            '<p id="finding-b">' + TARGET + '</p>' +
+            '<p id="b-after">Yet another unrelated closing: harbour ginger saddle pillar cedar.</p>';
+        } else {
+          html +=
+            '<p id="before">Opening sentence that gives some context for the finding below.</p>' +
+            '<p id="finding">' + TARGET + '</p>' +
+            '<p id="after">A closing remark follows the finding and is unrelated to it.</p>';
+        }
+        document.getElementById('root').innerHTML = html;
+      })();
+    </script>
+  </body>
+</html>

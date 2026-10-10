@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8" /><title>Iframe host</title></head>
+  <body>
+    <h1>Iframe host page</h1>
+    <p id="outer">Top-level paragraph that is capturable.</p>
+    <!-- Same host, different origin string (localhost vs 127.0.0.1): cross-origin frame. -->
+    <iframe id="cross" title="cross-origin article" width="600" height="300" src=""></iframe>
+    <iframe id="same" title="same-origin article" width="600" height="300" src="/article.html"></iframe>
+    <script>
+      const alt = new URL(location.href);
+      alt.hostname = 'localhost';
+      alt.pathname = '/article.html';
+      document.getElementById('cross').src = alt.toString();
+    </script>
+  </body>
+</html>

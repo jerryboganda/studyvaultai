@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Lifecycle hash router</title>
+    <style>
+      body { font: 17px/1.6 system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; }
+      nav a { margin-right: 1rem; }
+    </style>
+  </head>
+  <body>
+    <nav>
+      <a href="#/alpha" id="go-alpha">Alpha</a>
+      <a href="#/beta" id="go-beta">Beta</a>
+    </nav>
+    <main id="view" aria-live="polite"></main>
+    <script>
+      // A hash-routed app (#/route). The content is rendered 350 ms after each route change.
+      const pages = {
+        '/alpha': 'Alpha route explains how the Frank-Starling curve shifts with contractility.',
+        '/beta': 'Beta route explains how afterload reduces the velocity of fibre shortening.',
+      };
+      const view = document.getElementById('view');
+      let timer;
+      function render() {
+        const route = location.hash.slice(1) || '/alpha';
+        clearTimeout(timer);
+        view.textContent = '';
+        timer = setTimeout(() => {
+          const h = document.createElement('h1');
+          h.textContent = route === '/alpha' ? 'Alpha' : 'Beta';
+          const p = document.createElement('p');
+          p.textContent = pages[route] || 'Unknown route';
+          view.append(h, p);
+        }, 350);
+      }
+      window.addEventListener('hashchange', render);
+      render();
+    </script>
+  </body>
+</html>

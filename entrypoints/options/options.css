@@ -1,0 +1,114 @@
+/* Options page: one readable column, opened in a tab. */
+.opt {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: var(--sv-space-5) var(--sv-space-4) var(--sv-space-6);
+}
+.opt__head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+  padding-bottom: var(--sv-space-3);
+  border-bottom: 1px solid var(--sv-border);
+}
+.opt__head h1 {
+  font-size: 1.375rem;
+}
+.opt__nav {
+  gap: var(--sv-space-4);
+}
+.opt__main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-6);
+  padding-top: var(--sv-space-5);
+  font-size: var(--sv-text-md);
+}
+.opt__main h2 {
+  font-size: 1.125rem;
+}
+.opt__main > div {
+  scroll-margin-top: var(--sv-space-4);
+}
+.opt-card {
+  padding: var(--sv-space-4);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface-raised);
+}
+.opt-modes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+  margin: 0;
+}
+.opt-modes dt {
+  font-weight: 700;
+}
+.opt-modes dd {
+  margin: 0;
+  color: var(--sv-text-muted);
+}
+.opt-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+}
+.opt-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sv-space-2);
+  padding: var(--sv-space-2) 0;
+  border-bottom: 1px solid var(--sv-border);
+}
+.opt-input {
+  flex: 1 1 200px;
+  width: auto;
+}
+.opt-error {
+  color: var(--sv-danger);
+  font-weight: 600;
+}
+.opt-fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.opt-fieldset legend {
+  padding: 0;
+  margin-bottom: var(--sv-space-2);
+  font-weight: 700;
+}
+.opt-narrow {
+  max-width: 320px;
+}
+.opt-block {
+  display: block;
+}
+.opt-bullets {
+  padding-left: var(--sv-space-5);
+  list-style: disc;
+}
+.opt-bullets li + li {
+  margin-top: var(--sv-space-1);
+}
+.opt-palette {
+  gap: var(--sv-space-3);
+}
+.opt-palette__kind {
+  flex: 1 1 180px;
+}
+.opt-palette__select {
+  flex: 0 0 120px;
+  width: 120px;
+}
+.opt-sample {
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+code {
+  font-family: var(--sv-font-mono);
+  font-size: 0.9em;
+}

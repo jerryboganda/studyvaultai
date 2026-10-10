@@ -1,0 +1,12 @@
+node_modules/
+.output/
+.wxt/
+.pnpm-store/
+playwright-report/
+test-results/
+*.log
+.env
+.env.*
+*.zip
+.DS_Store
+Thumbs.db

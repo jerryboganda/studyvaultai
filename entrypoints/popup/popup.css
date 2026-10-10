@@ -1,0 +1,46 @@
+/* Popup: fixed 360px column; the document scrolls vertically if the content is taller. */
+html,
+body {
+  width: 360px;
+  max-width: 100%;
+}
+.popup {
+  display: flex;
+  flex-direction: column;
+  min-height: 160px;
+  max-height: 580px;
+}
+.popup__head {
+  padding: var(--sv-space-3) var(--sv-space-4) var(--sv-space-2);
+  border-bottom: 1px solid var(--sv-border);
+}
+.popup__main {
+  flex: 1 1 auto;
+  padding: var(--sv-space-3) var(--sv-space-4);
+  overflow-y: auto;
+}
+.popup__foot {
+  padding: var(--sv-space-2) var(--sv-space-3);
+  border-top: 1px solid var(--sv-border);
+}
+.popup__recent {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-3);
+}
+.popup__item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sv-space-1);
+  min-width: 0;
+}
+.popup__quote {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: var(--sv-text-sm);
+  white-space: normal;
+}

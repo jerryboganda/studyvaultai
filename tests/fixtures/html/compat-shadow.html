@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Web component fixture</title>
+    <style>
+      body { font: 18px/1.6 Georgia, serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; }
+      x-open, x-closed, x-card { display: block; margin: 1rem 0; padding: 0.5rem; border: 1px dashed #999; }
+    </style>
+  </head>
+  <body>
+    <h1>Web component fixture</h1>
+    <p id="light">A light DOM paragraph that is capturable beside the third-party components.</p>
+
+    <!-- Text inside an OPEN shadow root: not part of the text stream in v1 (ADR-004 limitation). -->
+    <x-open id="open-host"></x-open>
+    <!-- Text inside a CLOSED shadow root: unreachable for page scripts and for the extension. -->
+    <x-closed id="closed-host"></x-closed>
+    <!-- Slotted content stays in the light DOM, so it is ordinary page text. -->
+    <x-card id="card"><span id="slotted">Slotted light DOM text rendered inside a component slot.</span></x-card>
+
+    <script>
+      class XOpen extends HTMLElement {
+        connectedCallback() {
+          const root = this.attachShadow({ mode: 'open' });
+          root.innerHTML = '<p id="inner">Text living inside an open shadow root of a third party component.</p>';
+        }
+      }
+      class XClosed extends HTMLElement {
+        connectedCallback() {
+          const root = this.attachShadow({ mode: 'closed' });
+          root.innerHTML = '<p>Text living inside a closed shadow root of another component.</p>';
+        }
+      }
+      class XCard extends HTMLElement {
+        connectedCallback() {
+          const root = this.attachShadow({ mode: 'open' });
+          root.innerHTML = '<div><strong>Card:</strong> <slot></slot></div>';
+        }
+      }
+      customElements.define('x-open', XOpen);
+      customElements.define('x-closed', XClosed);
+      customElements.define('x-card', XCard);
+    </script>
+  </body>
+</html>

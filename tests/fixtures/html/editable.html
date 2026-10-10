@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="utf-8" /><title>Editable surfaces</title></head>
+  <body>
+    <h1>Editable surfaces</h1>
+    <p id="plain">This ordinary paragraph is capturable body text for contrast.</p>
+    <label>Search <input id="text-input" type="text" value="selectable value inside an input" /></label>
+    <label>Password <input id="password" type="password" value="hunter2-secret" /></label>
+    <label>Notes <textarea id="textarea" rows="3">text inside a textarea that must not be captured</textarea></label>
+    <div id="rich" contenteditable="true">Rich text editor content that must not show the toolbar.</div>
+    <div id="textbox" role="textbox" tabindex="0">An ARIA textbox surface that must not show the toolbar.</div>
+  </body>
+</html>

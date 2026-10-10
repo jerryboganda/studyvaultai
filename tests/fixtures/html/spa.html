@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>SPA fixture</title>
+    <style>
+      body { font: 17px/1.6 system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; }
+      nav a { margin-right: 1rem; }
+      #view { min-height: 10rem; }
+    </style>
+  </head>
+  <body>
+    <nav>
+      <a href="/spa/one" data-route="/spa/one" id="nav-one">One</a>
+      <a href="/spa/two" data-route="/spa/two" id="nav-two">Two</a>
+    </nav>
+    <main id="view" aria-live="polite"></main>
+    <script>
+      // Client-side routing with history.pushState and deliberately lazy content (350 ms),
+      // so rehydration must retry until the text exists.
+      const pages = {
+        '/spa/one': [
+          'Route one explains how the baroreceptor reflex buffers short-term changes in arterial pressure.',
+          'The reflex is mediated by the carotid sinus and the aortic arch.',
+        ],
+        '/spa/two': [
+          'Route two explains how the renin angiotensin system defends blood pressure over hours to days.',
+          'Angiotensin II constricts efferent arterioles and stimulates aldosterone release.',
+        ],
+      };
+      const view = document.getElementById('view');
+      function render(path) {
+        view.textContent = '';
+        setTimeout(() => {
+          const h = document.createElement('h1');
+          h.textContent = path === '/spa/one' ? 'Route One' : 'Route Two';
+          view.append(h);
+          for (const text of pages[path] ?? ['Unknown route']) {
+            const p = document.createElement('p');
+            p.textContent = text;
+            view.append(p);
+          }
+        }, 350);
+      }
+      document.addEventListener('click', (e) => {
+        const a = e.target.closest('a[data-route]');
+        if (!a) return;
+        e.preventDefault();
+        history.pushState({}, '', a.dataset.route);
+        render(a.dataset.route);
+      });
+      window.addEventListener('popstate', () => render(location.pathname));
+      render(location.pathname);
+    </script>
+  </body>
+</html>

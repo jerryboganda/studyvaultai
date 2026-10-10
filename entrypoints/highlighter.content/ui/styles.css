@@ -1,0 +1,388 @@
+/*
+ * StudyVault in-page overlay. Injected into the shadow root by WXT (cssInjectionMode "ui"), which
+ * rewrites :root to :host. Sizes are px on purpose: host pages change rem/em at will.
+ */
+@import '../../../packages/ui/src/tokens.css';
+
+/* The host is a zero-size fixed anchor: it takes no layout space and sits above page content. */
+:host {
+  all: initial !important;
+  display: block !important;
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  width: 0 !important;
+  height: 0 !important;
+  overflow: visible !important;
+  z-index: 2147483647 !important;
+}
+
+.sv-root {
+  /* `all: initial` on the host resets color-scheme, so native controls need it set again. */
+  color-scheme: light dark;
+  font: 13px/1.45 var(--sv-font);
+  color: var(--sv-text);
+  text-align: left;
+  user-select: none;
+  -webkit-user-select: none;
+}
+:host([data-theme='light']) .sv-root {
+  color-scheme: light;
+}
+:host([data-theme='dark']) .sv-root {
+  color-scheme: dark;
+}
+
+.sv-root *,
+.sv-root *::before,
+.sv-root *::after {
+  box-sizing: border-box;
+}
+
+.sv-root p {
+  margin: 0;
+}
+
+.sv-root :focus-visible,
+.sv-root .sv-control:focus {
+  outline: 2px solid var(--sv-focus);
+  outline-offset: 1px;
+}
+.sv-popover:focus {
+  outline: none;
+}
+
+.sv-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Floating surfaces ------------------------------------------------------------------------ */
+.sv-float {
+  position: fixed;
+  top: 0;
+  left: 0;
+  will-change: transform;
+  animation: sv-in var(--sv-motion) ease-out;
+}
+@keyframes sv-in {
+  from {
+    opacity: 0;
+    translate: 0 4px;
+  }
+  to {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+
+.sv-unit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  max-width: calc(100vw - 16px);
+}
+
+.sv-toolbar,
+.sv-panel,
+.sv-popover,
+.sv-toast {
+  background: var(--sv-surface-raised);
+  border: 1px solid var(--sv-border);
+  box-shadow: var(--sv-shadow);
+}
+
+.sv-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  padding: var(--sv-space-1);
+  border-radius: var(--sv-radius-md);
+  max-width: 100%;
+}
+.sv-toolbar-item {
+  display: inline-flex;
+  align-items: center;
+}
+.sv-group-start {
+  margin-left: var(--sv-space-2);
+}
+
+.sv-panel,
+.sv-popover {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+  width: 300px;
+  max-width: calc(100vw - 16px);
+  padding: var(--sv-space-3);
+  border-radius: var(--sv-radius-md);
+}
+
+/* Controls -------------------------------------------------------------------------------- */
+.sv-btn {
+  appearance: none;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sv-space-1);
+  min-width: 32px;
+  min-height: 32px;
+  margin: 0;
+  padding: 0 var(--sv-space-2);
+  font: inherit;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--sv-text);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--sv-radius-sm);
+  cursor: pointer;
+}
+.sv-btn:hover {
+  background: var(--sv-surface);
+}
+.sv-btn[aria-disabled='true'] {
+  opacity: 0.55;
+  cursor: progress;
+}
+
+.sv-kind {
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px 6px 3px;
+  font-size: 15px;
+}
+.sv-swatch {
+  display: block;
+  width: 16px;
+  height: 4px;
+  border-radius: 2px;
+}
+
+.sv-btn-primary {
+  color: var(--sv-accent-text);
+  background: var(--sv-accent);
+}
+.sv-btn-primary:hover {
+  background: var(--sv-accent-hover);
+}
+.sv-btn-text,
+.sv-btn-link {
+  color: var(--sv-accent);
+}
+.sv-btn-danger {
+  color: var(--sv-danger);
+  border-color: var(--sv-danger);
+}
+.sv-icon-btn {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  font-size: 18px;
+  color: var(--sv-text-muted);
+}
+
+.sv-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-1);
+  min-width: 0;
+}
+.sv-field > label,
+.sv-new-bank > label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--sv-text-muted);
+}
+.sv-new-bank {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-1);
+}
+
+.sv-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sv-space-2);
+}
+.sv-row-split {
+  align-items: flex-start;
+}
+.sv-row-split > .sv-field {
+  flex: 1;
+}
+
+.sv-control {
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  margin: 0;
+  padding: 4px var(--sv-space-2);
+  font: inherit;
+  color: var(--sv-text);
+  background: var(--sv-bg);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+  user-select: text;
+  -webkit-user-select: text;
+}
+.sv-control[aria-invalid='true'] {
+  border-color: var(--sv-danger);
+}
+.sv-textarea {
+  min-height: 64px;
+  resize: vertical;
+}
+
+.sv-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sv-space-2);
+}
+
+.sv-root[data-density='compact'] .sv-btn,
+.sv-root[data-density='compact'] .sv-control {
+  min-height: 28px;
+}
+.sv-root[data-density='compact'] .sv-btn {
+  min-width: 28px;
+}
+
+/* Content --------------------------------------------------------------------------------- */
+.sv-quote {
+  padding: 6px var(--sv-space-2);
+  font-size: 12px;
+  color: var(--sv-text-muted);
+  background: var(--sv-surface);
+  border-left: 3px solid var(--sv-accent);
+  border-radius: 2px;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+}
+.sv-quote-block {
+  -webkit-line-clamp: 5;
+  line-clamp: 5;
+}
+.sv-muted {
+  font-size: 12px;
+  color: var(--sv-text-muted);
+}
+.sv-status {
+  min-height: 18px;
+  font-size: 12px;
+  color: var(--sv-text-muted);
+}
+.sv-inline-error {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sv-space-1);
+  font-size: 12px;
+  color: var(--sv-danger);
+}
+
+.sv-popover-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sv-space-2);
+}
+.sv-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px 2px 8px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--sv-surface);
+  border: 1px solid var(--sv-border);
+  border-radius: 999px;
+}
+.sv-swatch-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+/* Toasts ---------------------------------------------------------------------------------- */
+.sv-toasts {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--sv-space-2);
+  max-width: calc(100vw - 32px);
+  pointer-events: none;
+}
+.sv-toast-list {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--sv-space-2);
+}
+.sv-toast {
+  display: flex;
+  align-items: center;
+  gap: var(--sv-space-2);
+  max-width: 100%;
+  padding: 6px 6px 6px var(--sv-space-3);
+  border-left: 4px solid var(--sv-accent);
+  border-radius: var(--sv-radius-sm);
+  pointer-events: auto;
+  animation: sv-in var(--sv-motion) ease-out;
+}
+.sv-toast-success {
+  border-left-color: var(--sv-success);
+}
+.sv-toast-error {
+  border-left-color: var(--sv-danger);
+}
+.sv-toast-icon {
+  font-weight: 700;
+}
+.sv-toast-success .sv-toast-icon {
+  color: var(--sv-success);
+}
+.sv-toast-error .sv-toast-icon {
+  color: var(--sv-danger);
+}
+.sv-toast-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sv-root *,
+  .sv-root *::before,
+  .sv-root *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+@media (forced-colors: active) {
+  .sv-toolbar,
+  .sv-panel,
+  .sv-popover,
+  .sv-toast {
+    border: 1px solid CanvasText;
+  }
+  .sv-swatch,
+  .sv-swatch-dot {
+    forced-color-adjust: none;
+  }
+}

@@ -1,0 +1,52 @@
+/* Side panel: fluid width (works from ~160px at 200% zoom up), single scrolling column. */
+html,
+body {
+  height: 100%;
+}
+.panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+.panel__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sv-space-2);
+  padding: var(--sv-space-2) var(--sv-space-3);
+  border-bottom: 1px solid var(--sv-border);
+}
+.panel__main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.panel__body {
+  padding: var(--sv-space-3);
+  min-width: 0;
+}
+.panel__title {
+  font-size: var(--sv-text-lg);
+  font-weight: 700;
+  line-height: 1.3;
+}
+.hl-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-3);
+}
+.hl-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+  padding: var(--sv-space-3);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface-raised);
+  min-width: 0;
+}
+.hl-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: var(--sv-space-2);
+}

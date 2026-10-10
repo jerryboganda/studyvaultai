@@ -1,0 +1,156 @@
+name: CI
+
+# Every compute-intensive task for this repository runs here (AGENTS.md Rule 1).
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: 24
+
+jobs:
+  static:
+    name: static (${{ matrix.task }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        task: [lint, typecheck, format]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm ${{ matrix.task }}
+
+  unit:
+    name: unit (vitest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+
+  build:
+    name: build (prod + e2e + zip)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: pnpm build:e2e
+      - run: pnpm zip
+      - name: Bundle size report
+        run: |
+          {
+            echo '### Bundle sizes (production build)'
+            echo '```'
+            find .output/chrome-mv3 -type f -printf '%s\t%p\n' | sort -rn | head -15
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Assert shipped manifest is least-privilege
+        run: |
+          node -e "
+            const m = require('./.output/chrome-mv3/manifest.json');
+            const fail = (msg) => { console.error('MANIFEST CHECK FAILED: ' + msg); process.exit(1); };
+            if (m.manifest_version !== 3) fail('not MV3');
+            if (m.host_permissions && m.host_permissions.length) fail('host_permissions present: ' + m.host_permissions);
+            if (m.content_scripts && m.content_scripts.length) fail('static content_scripts present');
+            if (m.web_accessible_resources && m.web_accessible_resources.length) fail('web_accessible_resources present');
+            const perms = [...(m.permissions || [])].sort().join(',');
+            const want = 'activeTab,contextMenus,scripting,sidePanel,storage';
+            if (perms !== want) fail('permissions ' + perms + ' != ' + want);
+            console.log('manifest ok:', perms, '| optional hosts:', m.optional_host_permissions);
+          "
+      - uses: actions/upload-artifact@v7
+        with:
+          name: extension-builds
+          path: .output
+          include-hidden-files: true
+          if-no-files-found: error
+
+  e2e:
+    name: e2e (${{ matrix.os }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - uses: actions/download-artifact@v7
+        with:
+          name: extension-builds
+          path: .output
+      - name: Playwright (real Chromium, loaded MV3 extension)
+        run: pnpm exec playwright test
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: e2e-report-${{ matrix.os }}
+          path: |
+            playwright-report
+            test-results
+          if-no-files-found: ignore
+
+  audit:
+    name: audit (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --prod --audit-level=high
+
+  ci-ok:
+    name: ci-ok (required checks)
+    if: always()
+    needs: [static, unit, build, e2e]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless every required job succeeded
+        run: |
+          echo '${{ toJSON(needs) }}'
+          test "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" = "false"

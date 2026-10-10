@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Lifecycle SPA</title>
+    <style>
+      body { font: 17px/1.6 system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; }
+      nav a { margin-right: 1rem; }
+      #view { min-height: 8rem; }
+    </style>
+  </head>
+  <body>
+    <nav>
+      <a href="?r=a" data-r="a" id="go-a">A</a>
+      <a href="?r=b" data-r="b" id="go-b">B</a>
+      <a href="?r=c" data-r="c" id="go-c">C</a>
+    </nav>
+    <main id="view" aria-live="polite"></main>
+    <script>
+      // Like spa.html (content appears 350 ms after the route changes) but a newer navigation
+      // cancels an older pending render, so rapid navigation always ends on one consistent view.
+      const text = {
+        a: 'Route A covers the Frank-Starling mechanism relating end-diastolic volume to stroke volume.',
+        b: 'Route B covers the Bainbridge reflex that raises heart rate when atrial stretch increases.',
+        c: 'Route C covers the Bezold-Jarisch reflex producing bradycardia and hypotension on ventricular stretch.',
+      };
+      const view = document.getElementById('view');
+      let timer;
+      function render(route) {
+        clearTimeout(timer);
+        view.textContent = '';
+        timer = setTimeout(() => {
+          const h = document.createElement('h1');
+          h.textContent = 'Route ' + route.toUpperCase();
+          const p = document.createElement('p');
+          p.textContent = text[route] || 'Unknown route';
+          view.append(h, p);
+        }, 350);
+      }
+      const current = () => new URLSearchParams(location.search).get('r') || 'a';
+      document.addEventListener('click', (e) => {
+        const a = e.target.closest('a[data-r]');
+        if (!a) return;
+        e.preventDefault();
+        history.pushState({}, '', '?r=' + a.dataset.r);
+        render(a.dataset.r);
+      });
+      window.addEventListener('popstate', () => render(current()));
+      render(current());
+    </script>
+  </body>
+</html>
