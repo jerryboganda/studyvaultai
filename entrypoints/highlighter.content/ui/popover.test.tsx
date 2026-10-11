@@ -1,4 +1,4 @@
-import { act, fireEvent } from '@testing-library/react';
+import { act, createEvent, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defaultSettings } from '@shared';
@@ -60,6 +60,58 @@ describe('highlight popover', () => {
     fireEvent.keyDown(dialog, { key: 'Escape' });
     expect(m.q.queryByRole('dialog')).toBeNull();
     expect(document.activeElement).toBe(page);
+  });
+
+  it('focuses the dialog only once it is visible: a hidden element cannot take focus', () => {
+    // jsdom does not refuse to focus a visibility:hidden element, so record what Chrome would see.
+    const real = HTMLElement.prototype.focus;
+    const seen: string[] = [];
+    vi.spyOn(HTMLElement.prototype, 'focus').mockImplementation(function (
+      this: HTMLElement,
+      options?: FocusOptions,
+    ) {
+      if (this.getAttribute('role') === 'dialog') seen.push(this.style.visibility || 'visible');
+      real.call(this, options);
+    });
+    const m = mountUi();
+    const { dialog } = open(m);
+    expect(dialog.style.visibility).not.toBe('hidden');
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen).not.toContain('hidden');
+    expect(m.shadow.activeElement).toBe(dialog);
+  });
+
+  it('Escape leaves focus on the page body when the element it came from is gone', () => {
+    const page = document.createElement('button');
+    page.textContent = 'page button';
+    document.body.append(page);
+    page.focus();
+    const m = mountUi();
+    const { dialog } = open(m);
+    expect(m.shadow.activeElement).toBe(dialog);
+
+    page.remove();
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(m.q.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it('does not trap Tab: it is a non-modal dialog, so Tab and Shift+Tab are left alone', () => {
+    const m = mountUi();
+    const { dialog } = open(m);
+    const close = within(dialog).getByRole('button', { name: 'Close' });
+    for (const [target, shiftKey] of [
+      [close, false],
+      [dialog, true],
+    ] as const) {
+      const event = createEvent.keyDown(target, { key: 'Tab', shiftKey });
+      fireEvent(target, event);
+      expect(event.defaultPrevented, `Tab on ${target.getAttribute('aria-label') ?? 'close'}`).toBe(
+        false,
+      );
+    }
+    // Still open: only Escape, the buttons or a press outside close it.
+    expect(m.q.queryByRole('dialog')).toBeTruthy();
   });
 
   it('closes on Close, and on a press anywhere on the page, but not on a press inside', () => {

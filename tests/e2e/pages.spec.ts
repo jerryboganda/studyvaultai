@@ -3,6 +3,7 @@ import {
   activate,
   activeTexts,
   bgData,
+  captureSelectionVia,
   closedPort,
   errorsOf,
   expect,
@@ -17,11 +18,13 @@ import {
   patchSettings,
   saveBlock,
   saveBlockToBank,
+  selectBlockProgrammatically,
   storedSettings,
   tabIdOf,
   targetIds,
   test,
   toolbarOf,
+  tripleClickBlock,
   viewing,
   RawTarget,
   OVERLAY_HOST,
@@ -97,7 +100,7 @@ test.describe('popup: state matrix', () => {
     await popup.getByRole('button', { name: 'Activate on this tab' }).click();
     await expect(popup.getByText('0 highlights')).toBeVisible();
     await expect(page.locator(OVERLAY_HOST)).toHaveCount(1);
-    await page.locator('#p-intro').click({ clickCount: 3 });
+    await tripleClickBlock(page, '#p-intro');
     await expect(toolbarOf(page)).toBeVisible();
   });
 
@@ -134,7 +137,7 @@ test.describe('popup: state matrix', () => {
     const page = await openFixture(env, '/article.html', { activate: false });
 
     // Before: nothing of StudyVault is in the page and a selection produces no toolbar.
-    await page.locator('#p-intro').click({ clickCount: 3 });
+    await tripleClickBlock(page, '#p-intro');
     await page.waitForTimeout(400); // 6x the controller's documented 60 ms selection debounce
     await expect(page.locator(OVERLAY_HOST)).toHaveCount(0);
     await expect(toolbarOf(page)).toHaveCount(0);
@@ -190,8 +193,13 @@ test.describe('popup: Open side panel', () => {
   }) => {
     const ext = await openExt(env, 'options');
     const page = await openFixture(env, '/article.html', { activate: false });
-    await tabIdOf(ext, page); // bring the fixture page to the front
+    const tabId = await tabIdOf(ext, page); // the fixture page is the window's active tab
 
+    // From here on NOTHING may activate another window or tab: Chrome closes an action popup as
+    // soon as it loses activation (observed on the Linux runner, where the old flow brought the
+    // page to the front and clicked in it, and the popup was gone before "Open side panel"). So
+    // the page work below uses the DOM Selection API plus the shortcut/context-menu RPC instead
+    // of pointer input; the toolbar's own save path is covered by every saveBlock() test.
     const popup = await openRealPopup(env);
     await popup.waitForText(/StudyVault is not running on this tab/);
     expect(await popup.text()).toContain('127.0.0.1');
@@ -199,7 +207,14 @@ test.describe('popup: Open side panel', () => {
     await popup.waitForText(/0 highlights on this page/);
     await expect(page.locator(OVERLAY_HOST)).toHaveCount(1);
 
-    await saveBlock(ext, page, '#p-intro');
+    await selectBlockProgrammatically(page, '#p-intro');
+    const saved = await captureSelectionVia(ext, tabId);
+    expect(saved).toMatchObject({ ok: true, data: { status: 'created' } });
+    await expect.poll(async () => (await highlightsOf(ext, page.url())).length).toBe(1);
+    expect(popup.closed, 'the popup must still be open after the page saved a highlight').toBe(
+      false,
+    );
+
     await popup.clickButton('Open side panel');
     await expect.poll(() => targetIdsAsync(env, '/popup.html')).toHaveLength(0);
     let panelId = '';
@@ -593,7 +608,7 @@ test.describe('options: theme', () => {
     // The in-page overlay: attribute on the shadow host and the toolbar's computed background.
     await page.bringToFront();
     await expect(page.locator(OVERLAY_HOST)).toHaveAttribute('data-theme', 'dark');
-    await page.locator('#p-intro').click({ clickCount: 3 });
+    await tripleClickBlock(page, '#p-intro');
     const bar = toolbarOf(page);
     await expect(bar).toBeVisible();
     const toolbarSurface = page.locator(`${OVERLAY_HOST} .sv-toolbar`);
@@ -704,7 +719,7 @@ test.describe('options: deny list', () => {
     const options = await openExt(env, 'options');
 
     await page.bringToFront();
-    await page.locator('#p-intro').click({ clickCount: 3 });
+    await tripleClickBlock(page, '#p-intro');
     await expect(toolbarOf(page)).toBeVisible(); // positive control: it works before the entry
 
     await options.bringToFront();
@@ -721,7 +736,7 @@ test.describe('options: deny list', () => {
     await options.getByRole('button', { name: 'Remove localhost from the deny list' }).click();
     await expect(page.locator(OVERLAY_HOST)).toHaveCount(1);
     await page.bringToFront();
-    await page.locator('#p-intro').click({ clickCount: 3 });
+    await tripleClickBlock(page, '#p-intro');
     await expect(toolbarOf(page)).toBeVisible();
   });
 
@@ -750,7 +765,7 @@ test.describe('options: floating toolbar toggle', () => {
     const page = await openFixture(env, '/article.html');
 
     // Positive control with the toggle on.
-    await page.locator('#p-intro').click({ clickCount: 3 });
+    await tripleClickBlock(page, '#p-intro');
     await expect(toolbarOf(page)).toBeVisible();
 
     const checkbox = ext.getByRole('checkbox', { name: /Show the floating toolbar/ });
@@ -765,7 +780,7 @@ test.describe('options: floating toolbar toggle', () => {
     // The toolbar goes away and a new selection does not bring it back.
     await page.bringToFront();
     await expect(toolbarOf(page)).toHaveCount(0);
-    await page.locator('#p-multiline').click({ clickCount: 3 });
+    await tripleClickBlock(page, '#p-multiline');
     await page.waitForTimeout(400); // 6x the documented 60 ms selection debounce
     await expect(toolbarOf(page)).toHaveCount(0);
     expect(await page.evaluate(() => getSelection()?.toString().length ?? 0)).toBeGreaterThan(20);
@@ -796,7 +811,7 @@ test.describe('options: floating toolbar toggle', () => {
     await checkbox.click();
     await expect(checkbox).toBeChecked();
     await page.bringToFront();
-    await page.locator('#p-intro').click({ clickCount: 3 });
+    await tripleClickBlock(page, '#p-intro');
     await expect(toolbarOf(page)).toBeVisible();
   });
 });

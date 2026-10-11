@@ -211,10 +211,14 @@ export function useActiveTab() {
 
   useEffect(() => {
     let live = true;
+    // Only the most recently started read may publish: tab events fire in bursts and an older
+    // query must never overwrite the answer to a newer one.
+    let latestRead = 0;
     const read = async () => {
+      const mine = ++latestRead;
       try {
         const [found] = await browser.tabs.query({ active: true, currentWindow: true });
-        if (!live) return;
+        if (!live || mine !== latestRead) return;
         const tab: ActiveTab | null =
           found?.id === undefined
             ? null
@@ -231,7 +235,7 @@ export function useActiveTab() {
             : { loading: false, tab, error: null },
         );
       } catch (err) {
-        if (live) {
+        if (live && mine === latestRead) {
           setState({ loading: false, tab: null, error: errorMessage(err, 'Could not read tabs.') });
         }
       }

@@ -128,7 +128,14 @@ test.describe('capture shapes in real Chromium (matrix 1, 2)', () => {
   });
 
   test('mouse drag across wrapped lines (3+ rendered lines)', async ({ env }) => {
-    const page = await openFixture(env, '/article.html');
+    // The shared fixture's 640px column puts this quote on 3 lines with Windows' Georgia but on only
+    // 2 with the serif Linux falls back to. In a 22rem (352px) column the 163 characters would fit
+    // on 2 lines only with an average glyph under 4px at 18px, which no real font has, so the
+    // property under test -- a selection that really spans several rendered lines -- no longer
+    // depends on the OS fonts.
+    const page = await openFixture(env, '/article.html', {
+      style: '#p-multiline { max-width: 22rem; }',
+    });
     const text =
       'spreads from the sinoatrial node across the atria, pauses at the atrioventricular node, and then travels rapidly through the bundle of His and the Purkinje fibres.';
     const lines = await dragSelect(page, { selector: '#p-multiline', text });

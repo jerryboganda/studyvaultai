@@ -15,7 +15,14 @@ import { HOST_ATTRIBUTE, HighlightPainter, buildTextStream, captureAnchor } from
 import type { Handlers, callBackground } from '@runtime';
 import type { ContentScriptContext } from 'wxt/utils/content-script-context';
 import type { CaptureHost, CaptureUi, CreateCaptureUi, SaveRequest } from './contract';
-import { inspectSelection, isInsideHost, rectAt, rectOf, sameRange } from './eligibility';
+import {
+  inspectSelection,
+  isInsideHost,
+  rectAt,
+  rectOf,
+  sameRange,
+  withoutEditableContext,
+} from './eligibility';
 import { canonicalHref, fitUrl, readPageInfo } from './page';
 import { Rehydrator, type PageRef, type PainterLike } from './rehydrator';
 import { affectsPageText } from './mutations';
@@ -48,8 +55,11 @@ export interface Controller {
 const SELECTION_DEBOUNCE_MS = 60;
 const REFRESH_DEBOUNCE_MS = 250;
 const MUTATION_DEBOUNCE_MS = 400;
-/** A page that never stops mutating must still get a pass now and then. */
-const MUTATION_MAX_WAIT_MS = 2000;
+/**
+ * A page that never stops mutating (a ticker every 100 ms) must still be looked at about once a
+ * second, or text that arrives late would stay unpainted for as long as the page stays busy.
+ */
+const MUTATION_MAX_WAIT_MS = 1000;
 const REVEAL_FLASH_MS = 2000;
 const DEFAULT_PRIORITY = 3;
 
@@ -144,6 +154,8 @@ export function startController(deps: ControllerDeps): Controller {
   let session: Session | null = null;
 
   let stored: StoredSelection | null = null;
+  /** The selection a toolbar save has just completed for; read by the dismissSelection() after it. */
+  let saved: StoredSelection | null = null;
   let toolbarVisible = false;
   /** A pointer gesture that started outside our UI is still in progress (drag selection). */
   let pointerActive = false;
@@ -179,7 +191,7 @@ export function startController(deps: ControllerDeps): Controller {
     const result = await call('capture.save', {
       page,
       exactQuote: anchored.exactQuote,
-      anchorSet: anchored.anchorSet,
+      anchorSet: withoutEditableContext(anchored.anchorSet, stream),
       headingContext: anchored.headingContext,
       ...opts,
     });
@@ -240,7 +252,19 @@ export function startController(deps: ControllerDeps): Controller {
   }
 
   function dismissSelection(): void {
+    const done = saved;
+    saved = null;
     const current = stored;
+    if (done && current && !sameRange(done.range, current.range)) {
+      // The save that just finished was for an older selection; the user has selected something
+      // else since. That selection is not being dismissed. The overlay closes its toolbar right
+      // after this call, so the newer selection's toolbar is shown again once that has happened.
+      queueMicrotask(() => {
+        if (stored !== current || !toolbarVisible) return;
+        session?.ui?.showToolbar({ text: current.text, rect: rectOf(current.range) });
+      });
+      return;
+    }
     stored = null;
     toolbarVisible = false;
     // Only the selection we captured is cleared, never a different one the user made since.
@@ -267,7 +291,7 @@ export function startController(deps: ControllerDeps): Controller {
         session?.ui?.toast({ text: problem.message, tone: 'error' });
         throw problem;
       }
-      return saveReportingFailure(sel, {
+      const result = await saveReportingFailure(sel, {
         kind: req.kind,
         color: req.color,
         bankId: req.bankId,
@@ -275,6 +299,13 @@ export function startController(deps: ControllerDeps): Controller {
         priority: req.priority,
         captureMethod: 'toolbar',
       });
+      // The overlay's continuation runs next and calls dismissSelection(): say which selection it
+      // belongs to, so a newer selection made while this save was in flight is left alone.
+      saved = sel;
+      setTimeout(() => {
+        if (saved === sel) saved = null;
+      }, 0);
+      return result;
     },
 
     listBanks: () => call('banks.list', {}),
@@ -491,6 +522,7 @@ export function startController(deps: ControllerDeps): Controller {
     const s = session;
     session = null;
     stored = null;
+    saved = null;
     toolbarVisible = false;
     pointerActive = false;
     uiPointer = false;
@@ -611,7 +643,8 @@ export function startController(deps: ControllerDeps): Controller {
       if (live && live.rangeCount === 1 && sameRange(live.getRangeAt(0), verdict.range)) {
         live.removeAllRanges();
       }
-      hideSelection();
+      // The save was awaited: only close the toolbar if it still belongs to the selection saved.
+      if (stored && sameRange(stored.range, verdict.range)) hideSelection();
       return result;
     },
 

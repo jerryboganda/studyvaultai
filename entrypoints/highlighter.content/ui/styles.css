@@ -43,13 +43,34 @@
   margin: 0;
 }
 
-.sv-root :focus-visible,
-.sv-root .sv-control:focus {
+/*
+ * Focus indicator (WCAG 2.4.7, 1.4.11). It keys on :focus, not :focus-visible: Alt+Shift+T and the
+ * focus-return paths move focus by script, and after a mouse selection Chrome withholds
+ * :focus-visible from script-focused elements, which left the toolbar and the Undo button with
+ * outline-style: none. A pointer press never focuses an overlay button (Overlay cancels mousedown),
+ * so :focus on a control is always a keyboard or script move. Text fields show it on click, as
+ * browsers do.
+ * Two tones, so it reads on a control fill, on the surface and on any page behind the overlay:
+ * the 2px outline is the ring (offset 2px), the 2px box-shadow paints the halo in the gap.
+ */
+.sv-root :focus {
   outline: 2px solid var(--sv-focus);
-  outline-offset: 1px;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--sv-focus-halo);
 }
+/*
+ * The dialog container takes focus only so a screen reader announces it and Tab continues inside.
+ * A plain :focus (pointer opened) shows no frame around the whole popover; a keyboard-driven one
+ * (:focus-visible) draws an inset ring. Both restore the popover's own drop shadow.
+ */
 .sv-popover:focus {
   outline: none;
+  box-shadow: var(--sv-shadow);
+}
+.sv-popover:focus-visible {
+  outline: 2px solid var(--sv-focus);
+  outline-offset: -4px;
+  box-shadow: var(--sv-shadow);
 }
 
 .sv-sr {
@@ -80,12 +101,19 @@
   }
 }
 
+/*
+ * Reflow (WCAG 1.4.10): a floating surface is never larger than the visible viewport. The vw/vh
+ * values are the fallback until useFloating has measured; it then sets px limits from the layout
+ * viewport (100vw/100vh include scrollbars). What does not fit scrolls inside the panel, with the
+ * action row pinned.
+ */
 .sv-unit {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 6px;
   max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
 }
 
 .sv-toolbar,
@@ -99,6 +127,7 @@
 
 .sv-toolbar {
   display: flex;
+  flex: none;
   flex-wrap: wrap;
   align-items: center;
   gap: 2px;
@@ -120,9 +149,20 @@
   flex-direction: column;
   gap: var(--sv-space-2);
   width: 300px;
-  max-width: calc(100vw - 16px);
-  padding: var(--sv-space-3);
+  /* No bottom padding: the pinned action row carries it. */
+  padding: var(--sv-space-3) var(--sv-space-3) 0;
   border-radius: var(--sv-radius-md);
+  min-height: 0;
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+}
+.sv-panel {
+  /* The unit already holds the 8px viewport margin. */
+  max-width: 100%;
+}
+.sv-popover {
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
 }
 
 /* Controls -------------------------------------------------------------------------------- */
@@ -165,6 +205,11 @@
   width: 16px;
   height: 4px;
   border-radius: 2px;
+}
+/* The palette colours (amber on white is 2.2:1) cannot all reach 3:1, so the shape gets an edge that does. */
+.sv-swatch,
+.sv-swatch-dot {
+  box-shadow: 0 0 0 1px var(--sv-border-strong);
 }
 
 .sv-btn-primary {
@@ -229,10 +274,15 @@
   font: inherit;
   color: var(--sv-text);
   background: var(--sv-bg);
-  border: 1px solid var(--sv-border);
+  border: 1px solid var(--sv-border-strong);
   border-radius: var(--sv-radius-sm);
   user-select: text;
   -webkit-user-select: text;
+}
+/* The UA default (#757575) is 4.04:1 on the dark field. Firefox also dims placeholders; opacity 1 keeps the ratio. */
+.sv-control::placeholder {
+  color: var(--sv-text-muted);
+  opacity: 1;
 }
 .sv-control[aria-invalid='true'] {
   border-color: var(--sv-danger);
@@ -242,10 +292,20 @@
   resize: vertical;
 }
 
+/*
+ * Pinned to the bottom of the scrolling panel, so Save/Delete stay reachable when the content does
+ * not fit. The 4px top padding is cancelled by the negative margin (the gap is unchanged) and gives
+ * the focus ring of the buttons room before scrolled content.
+ */
 .sv-actions {
+  position: sticky;
+  bottom: 0;
   display: flex;
   align-items: center;
   gap: var(--sv-space-2);
+  margin-top: -4px;
+  padding: 4px 0 var(--sv-space-3);
+  background: var(--sv-surface-raised);
 }
 
 .sv-root[data-density='compact'] .sv-btn,
@@ -365,6 +425,67 @@
   overflow-wrap: anywhere;
 }
 
+/*
+ * Short viewports (a 1280x720 window at 150% zoom and up, a laptop at 200%). The composer and the
+ * popover tighten up first; only then does the content scroll inside the panel.
+ */
+@media (max-height: 520px) {
+  .sv-panel,
+  .sv-popover {
+    gap: 6px;
+    padding: var(--sv-space-2) var(--sv-space-2) 0;
+  }
+  .sv-actions {
+    margin-top: -2px;
+    padding: 2px 0 var(--sv-space-2);
+  }
+  .sv-quote,
+  .sv-quote-block {
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+  }
+  /* rows="3" would win over min-height, so the height is set outright. */
+  .sv-textarea {
+    height: 48px;
+    min-height: 48px;
+  }
+}
+/* ...and when there is also width to spare, "More options" goes two columns instead of five rows. */
+@media (max-height: 520px) and (min-width: 480px) {
+  .sv-panel[data-mode='advanced'] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas:
+      'quote quote'
+      'bank note'
+      'kind note'
+      'actions actions';
+    align-items: start;
+    column-gap: var(--sv-space-3);
+    width: 560px;
+  }
+  .sv-panel[data-mode='advanced'] > .sv-quote {
+    grid-area: quote;
+  }
+  .sv-panel[data-mode='advanced'] > .sv-area-bank {
+    grid-area: bank;
+  }
+  .sv-panel[data-mode='advanced'] > .sv-area-kind {
+    grid-area: kind;
+  }
+  .sv-panel[data-mode='advanced'] > .sv-area-note {
+    grid-area: note;
+    align-self: stretch;
+  }
+  .sv-panel[data-mode='advanced'] > .sv-area-note > .sv-textarea {
+    flex: 1 1 auto;
+    resize: none;
+  }
+  .sv-panel[data-mode='advanced'] > .sv-actions {
+    grid-area: actions;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .sv-root *,
   .sv-root *::before,
@@ -380,6 +501,15 @@
   .sv-popover,
   .sv-toast {
     border: 1px solid CanvasText;
+  }
+  /* The halo is a box-shadow, which forced colours drop; the outline alone carries the indicator. */
+  .sv-root :focus,
+  .sv-popover:focus-visible {
+    outline-color: Highlight;
+    box-shadow: none;
+  }
+  .sv-btn-primary {
+    border-color: ButtonText;
   }
   .sv-swatch,
   .sv-swatch-dot {

@@ -78,6 +78,7 @@ export class Rehydrator {
   private chain: Promise<void> = Promise.resolve();
   private queued: Promise<void> | null = null;
   private settleTimer: ReturnType<typeof setTimeout> | undefined;
+  private deferTimer: ReturnType<typeof setTimeout> | undefined;
   private destroyed = false;
   private readonly tracker = new ReportTracker();
   private readonly retry: RetryBudget;
@@ -225,13 +226,15 @@ export class Rehydrator {
     this.stream = null;
     this.deps.painter.clear();
     this.disarmSettle();
+    this.disarmDeferred();
     this.retry.reset();
     return this.refresh();
   }
 
   /**
    * After a (debounced) burst of DOM mutations. Re-resolves only what can have changed:
-   *  - highlights that are not painted (lazy content may have arrived), within the retry budget;
+   *  - highlights that are not painted (lazy content may have arrived), at the rate the retry
+   *    budget allows; a pass it refuses is deferred to when it is due, never dropped;
    *  - painted highlights whose range was detached, collapsed or edited under them.
    * Everything else keeps its live Range; nothing is re-scanned.
    */
@@ -246,9 +249,16 @@ export class Rehydrator {
       else if (isStale(e)) stale.push(id);
     }
     const targets = stale;
-    if (missing.length > 0 && this.retry.tryConsume()) targets.push(...missing);
+    const retrying = missing.length > 0 && this.retry.begin();
+    if (retrying) targets.push(...missing);
+    else if (missing.length > 0) this.deferPass();
     if (targets.length === 0) return;
-    this.resolve(targets, this.getStream());
+    try {
+      this.resolve(targets, this.getStream());
+    } finally {
+      // Only a pass that really built a stream and resolved is charged to the budget.
+      if (retrying) this.retry.end();
+    }
     this.repaint();
     this.flush();
   }
@@ -256,6 +266,7 @@ export class Rehydrator {
   destroy(): void {
     this.destroyed = true;
     this.disarmSettle();
+    this.disarmDeferred();
     this.entries = new Map();
     this.touched.clear();
     this.stream = null;
@@ -341,6 +352,20 @@ export class Rehydrator {
   private disarmSettle(): void {
     if (this.settleTimer !== undefined) clearTimeout(this.settleTimer);
     this.settleTimer = undefined;
+  }
+
+  /** The text may have arrived in the last mutation burst: look again as soon as the budget allows. */
+  private deferPass(): void {
+    if (this.deferTimer !== undefined) return;
+    this.deferTimer = setTimeout(() => {
+      this.deferTimer = undefined;
+      this.retryPass();
+    }, this.retry.waitMs + 1);
+  }
+
+  private disarmDeferred(): void {
+    if (this.deferTimer !== undefined) clearTimeout(this.deferTimer);
+    this.deferTimer = undefined;
   }
 }
 

@@ -5,6 +5,7 @@ import { browser } from 'wxt/browser';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { resetDbForTests } from '@storage';
 import background from './index';
+import { ACTIVATE_TIMEOUT_MS } from './siteAccess';
 
 /**
  * Wiring smoke test. fakeBrowser does not implement commands/contextMenus/permissions/scripting/
@@ -207,5 +208,29 @@ describe('background wiring', () => {
       target: { tabId: 8 },
       files: ['/content-scripts/highlighter.js'],
     });
+  });
+
+  it('tab.activate is answered even when scripting.executeScript never settles (view-source: tab)', async () => {
+    vi.useFakeTimers();
+    try {
+      const fakes = installFakes();
+      fakes.scripting.executeScript.mockImplementation(() => new Promise(() => undefined));
+      vi.spyOn(browser.tabs, 'get').mockResolvedValue({ id: 6 } as never); // address hidden
+      vi.spyOn(browser.tabs, 'sendMessage').mockRejectedValue(
+        new Error('Could not establish connection. Receiving end does not exist.'),
+      );
+      background.main();
+
+      const replies: unknown[] = [];
+      await fakeBrowser.runtime.onMessage.trigger(
+        { v: 1, type: 'tab.activate', payload: { tabId: 6 } },
+        { id: browser.runtime.id },
+        (r: unknown) => replies.push(r),
+      );
+      await vi.advanceTimersByTimeAsync(ACTIVATE_TIMEOUT_MS);
+      expect(replies).toMatchObject([{ ok: false, error: { code: 'unsupported_page' } }]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

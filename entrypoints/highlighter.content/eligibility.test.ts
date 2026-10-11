@@ -1,6 +1,13 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MAX_QUOTE_CHARS } from '@shared';
-import { inspectSelection, isEditableElement, isInsideHost, sameRange } from './eligibility';
+import { buildTextStream, captureAnchor } from '@highlights';
+import {
+  inspectSelection,
+  isEditableElement,
+  isInsideHost,
+  sameRange,
+  withoutEditableContext,
+} from './eligibility';
 import { clearSelection, rangeOver, select, setBody } from './testUtils';
 
 beforeEach(() => {
@@ -70,6 +77,117 @@ describe('inspectSelection', () => {
     expect(inspectSelection(document)).toEqual({ ok: false, reason: 'editable' });
     select('Plain words');
     expect(inspectSelection(document).ok).toBe(true);
+  });
+
+  describe('a selection made INSIDE a focused field (Chromium reports the document selection as collapsed)', () => {
+    it.each([
+      ['text input', '<input id="f" type="text" value="selectable value inside an input">'],
+      ['password input', '<input id="f" type="password" value="hunter2-secret">'],
+      ['textarea', '<textarea id="f">text inside a textarea that must not be captured</textarea>'],
+    ])('is "editable" for a %s, and a bare caret is "no-selection"', (_name, html) => {
+      setBody(`<p>Visible paragraph text</p>${html}`);
+      const field = document.getElementById('f') as HTMLInputElement | HTMLTextAreaElement;
+      field.focus();
+      clearSelection(); // what Chromium's getSelection() reports for a field's own selection
+      field.setSelectionRange(2, 9);
+      expect(inspectSelection(document)).toEqual({ ok: false, reason: 'editable' });
+      field.setSelectionRange(4, 4);
+      expect(inspectSelection(document)).toEqual({ ok: false, reason: 'no-selection' });
+    });
+
+    it('never reads the field value to decide', () => {
+      setBody('<input id="f" type="text" value="hunter2-secret">');
+      const field = document.getElementById('f') as HTMLInputElement;
+      field.focus();
+      field.setSelectionRange(0, 6);
+      const read = vi.spyOn(HTMLInputElement.prototype, 'value', 'get');
+      expect(inspectSelection(document)).toEqual({ ok: false, reason: 'editable' });
+      expect(read).not.toHaveBeenCalled();
+    });
+
+    it('sees a field inside an open shadow root through the host', () => {
+      setBody('<p>Visible paragraph text</p><div id="comp"></div>');
+      const shadow = document.getElementById('comp')!.attachShadow({ mode: 'open' });
+      shadow.innerHTML = '<input id="inner" type="text" value="shadow field value">';
+      const inner = shadow.getElementById('inner') as HTMLInputElement;
+      inner.focus();
+      inner.setSelectionRange(0, 6);
+      expect(document.activeElement?.id).toBe('comp'); // retargeted to the host
+      expect(inspectSelection(document)).toEqual({ ok: false, reason: 'editable' });
+    });
+  });
+
+  describe('a selection that passes THROUGH a field or editor is refused whole', () => {
+    const PAGE = (middle: string): string =>
+      `<p id="a">Public text before the editor.</p>${middle}<p id="b">Public text after the editor.</p>`;
+
+    function selectAcross(): Range {
+      const range = document.createRange();
+      range.setStart(document.getElementById('a')!.firstChild!, 0);
+      range.setEnd(document.getElementById('b')!.firstChild!, 11);
+      const sel = document.getSelection()!;
+      sel.removeAllRanges();
+      sel.addRange(range);
+      return range;
+    }
+
+    it.each([
+      ['contenteditable', '<div contenteditable="true">PRIVATE-DRAFT typed words</div>'],
+      [
+        'plaintext-only editor',
+        '<div contenteditable="plaintext-only">PRIVATE-DRAFT typed words</div>',
+      ],
+      ['bare contenteditable attribute', '<div contenteditable>PRIVATE-DRAFT typed words</div>'],
+      [
+        'nested element of an editor',
+        '<div contenteditable="true"><ul><li>PRIVATE-DRAFT typed</li></ul></div>',
+      ],
+      ['role=textbox', '<div role="textbox" tabindex="0">PRIVATE-DRAFT typed words</div>'],
+      ['textarea', '<textarea>PRIVATE-DRAFT typed words</textarea>'],
+      ['text input', '<input type="text" value="PRIVATE-DRAFT typed words">'],
+      ['password input', '<input type="password" value="PRIVATE-DRAFT typed words">'],
+      ['select', '<select><option>PRIVATE-DRAFT typed words</option></select>'],
+    ])('refuses a drag from plain text across a %s', (_name, middle) => {
+      setBody(PAGE(middle));
+      const range = selectAcross();
+      if (middle.includes('PRIVATE-DRAFT typed') && !/<(input|textarea|select)/.test(middle)) {
+        // The engine really does put the editor's text into the selection string.
+        expect(range.toString()).toContain('PRIVATE-DRAFT');
+      }
+      expect(inspectSelection(document)).toEqual({ ok: false, reason: 'editable' });
+    });
+
+    it('refuses Select All on a page with an editor in the middle', () => {
+      setBody(
+        `<h1>Title</h1>${PAGE('<div contenteditable="true">PRIVATE-DRAFT typed words</div>')}`,
+      );
+      document.getSelection()!.selectAllChildren(document.body);
+      expect(inspectSelection(document)).toEqual({ ok: false, reason: 'editable' });
+    });
+
+    it('refuses everything while designMode is on, even a range between two plain paragraphs', () => {
+      setBody(PAGE(''));
+      selectAcross();
+      document.designMode = 'on';
+      expect(inspectSelection(document)).toEqual({ ok: false, reason: 'editable' });
+    });
+
+    it('accepts a selection that ends where the editor begins (it holds none of its text)', () => {
+      setBody(PAGE('<div contenteditable="true">PRIVATE-DRAFT typed words</div>'));
+      const range = document.createRange();
+      range.setStart(document.getElementById('a')!.firstChild!, 0);
+      range.setEnd(document.body, 1); // after <p id="a">, before the editor
+      document.getSelection()!.addRange(range);
+      const verdict = inspectSelection(document);
+      expect(verdict.ok).toBe(true);
+      if (verdict.ok) expect(verdict.text).toBe('Public text before the editor.');
+    });
+
+    it('is not tripped by a hidden input (a CSRF token) inside the selection', () => {
+      setBody(PAGE('<form><input type="hidden" name="csrf" value="t0ken"></form>'));
+      selectAcross();
+      expect(inspectSelection(document).ok).toBe(true);
+    });
   });
 
   it('treats contenteditable="false" islands as ordinary content', () => {
@@ -151,5 +269,46 @@ describe('helpers', () => {
     setBody('<p>abcdef</p>');
     expect(sameRange(rangeOver('bcd'), rangeOver('bcd'))).toBe(true);
     expect(sameRange(rangeOver('bcd'), rangeOver('bcde'))).toBe(false);
+  });
+});
+
+describe('withoutEditableContext', () => {
+  function anchorFor(needle: string) {
+    const stream = buildTextStream();
+    const range = rangeOver(needle);
+    const captured = captureAnchor(range, range.toString(), stream);
+    if ('error' in captured) throw new Error(captured.error);
+    return { stream, anchor: captured.anchorSet };
+  }
+
+  it('drops the start of an editor draft from the suffix and keeps the rest', () => {
+    setBody(
+      '<p>Public text before the editor.</p><div contenteditable="true">PRIVATE-DRAFT: still typing</div>',
+    );
+    const { stream, anchor } = anchorFor('Public text before the editor.');
+    expect(anchor.textQuote.suffix).toContain('PRIVATE'); // what capture alone would store
+    const clean = withoutEditableContext(anchor, stream);
+    expect(clean.textQuote.suffix).toBe('');
+    expect(clean.textQuote.prefix).toBe(anchor.textQuote.prefix);
+    expect(clean.textQuote.exact).toBe(anchor.textQuote.exact);
+    expect(clean.textPosition).toEqual(anchor.textPosition);
+  });
+
+  it('keeps the plain text between the quote and the editor, and the prefix after one', () => {
+    setBody(
+      '<div contenteditable="true">PRIVATE-DRAFT: still typing</div><p>Start here. Quoted words in the middle. Then more.</p>' +
+        '<div role="textbox">ANOTHER-DRAFT words</div>',
+    );
+    const { stream, anchor } = anchorFor('Quoted words in the middle.');
+    const clean = withoutEditableContext(anchor, stream);
+    expect(clean.textQuote.prefix).toBe('Start here. ');
+    expect(clean.textQuote.suffix).toBe(' Then more.');
+    expect(JSON.stringify(clean)).not.toMatch(/PRIVATE|ANOTHER/);
+  });
+
+  it('returns the anchor itself when no editor is near', () => {
+    setBody('<p>Alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi.</p>');
+    const { stream, anchor } = anchorFor('epsilon zeta eta');
+    expect(withoutEditableContext(anchor, stream)).toBe(anchor);
   });
 });

@@ -256,41 +256,115 @@ describe('dynamic pages', () => {
     expect(r.painter.ids).toEqual([h.id]);
   });
 
-  it('stops re-resolving after 8 attempts until the route changes', async () => {
+  it('spaces passes for unpainted highlights: a burst of calls costs one stream, not one each', async () => {
     setBody('<p>Lazy loaded section about enzymes and catalysis.</p>');
     const h = storedHighlight('section about enzymes and catalysis');
     setBody('<p>Nothing here.</p>');
 
-    const r = rig([h], { retry: new RetryBudget(8, 30_000) });
+    const r = rig([h], { retry: new RetryBudget(1_000, 20) });
     await r.rehydrator.refresh();
     const base = r.streams.built;
 
     for (let i = 0; i < 20; i++) r.rehydrator.retryPass();
-    expect(r.streams.built - base).toBe(8);
-
-    // The content arrives too late for this navigation...
-    setBody('<p>Lazy loaded section about enzymes and catalysis.</p>');
-    r.rehydrator.retryPass();
-    expect(r.painter.ids).toEqual([]);
-
-    // ...but a route change starts a fresh budget (and a fresh fetch).
-    await r.rehydrator.onRouteChange();
-    expect(r.painter.ids).toEqual([h.id]);
+    expect(r.streams.built - base).toBe(1);
   });
 
-  it('stops re-resolving once 30 s have passed', async () => {
+  it('a refused pass is deferred to when it is due, so text that arrives right after a pass is not lost', async () => {
     setBody('<p>Lazy loaded section about enzymes and catalysis.</p>');
     const h = storedHighlight('section about enzymes and catalysis');
     setBody('<p>Nothing here.</p>');
-    const r = rig([h]);
+    const r = rig([h], { retry: new RetryBudget(1_000, 20) });
+    await r.rehydrator.refresh();
+
+    r.rehydrator.retryPass(); // a pass finds nothing and starts the spacing
+    setBody('<p>Lazy loaded section about enzymes and catalysis.</p>');
+    await vi.advanceTimersByTimeAsync(300);
+    r.rehydrator.retryPass(); // the mutation burst's debounce fires: too soon, refused
+    expect(r.painter.ids).toEqual([]);
+
+    // No further mutation ever comes. The deferred pass still runs, once, when it is due.
+    const built = r.streams.built;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(r.painter.ids).toEqual([h.id]);
+    expect(r.streams.built).toBe(built + 1);
+  });
+
+  it('keeps looking for late text for as long as the page lives, at a bounded rate', async () => {
+    setBody('<p>Lazy loaded section about enzymes and catalysis.</p>');
+    const h = storedHighlight('section about enzymes and catalysis');
+    setBody('<p>Nothing here.</p>');
+    const r = rig([h], { retry: new RetryBudget(1_000, 20) });
     await r.rehydrator.refresh();
     const base = r.streams.built;
 
-    await vi.advanceTimersByTimeAsync(31_000);
+    // 10 minutes of a page that mutates constantly: a pass is attempted on every mutation burst.
+    for (let s = 0; s < 600; s++) {
+      r.rehydrator.retryPass();
+      r.rehydrator.retryPass();
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    expect(r.streams.built - base).toBeLessThanOrEqual(601); // <= 1 per second, however often asked
+    expect(r.streams.built - base).toBeGreaterThan(500);
+
     setBody('<p>Lazy loaded section about enzymes and catalysis.</p>');
     r.rehydrator.retryPass();
-    expect(r.streams.built).toBe(base);
-    expect(r.painter.ids).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(r.painter.ids).toEqual([h.id]);
+  });
+
+  it('charges the budget for what a pass really cost (a heavy page is retried less often)', async () => {
+    setBody('<p>Lazy loaded section about enzymes and catalysis.</p>');
+    const h = storedHighlight('section about enzymes and catalysis');
+    setBody('<p>Nothing here.</p>');
+    let clock = 0;
+    const r = rig([h], {
+      retry: new RetryBudget(1_000, 20, () => clock),
+      buildStream: (): TextStream => {
+        clock += 100; // building and searching this page costs 100 ms
+        return buildTextStream();
+      },
+    });
+    await r.rehydrator.refresh();
+    const base = clock;
+    r.rehydrator.retryPass();
+    expect(clock - base).toBe(100);
+
+    clock += 1_999; // 1 s would do for a cheap page; this one asked for 2 s (20 x 100 ms)
+    r.rehydrator.retryPass();
+    expect(clock - base).toBe(100 + 1_999);
+    clock += 1;
+    r.rehydrator.retryPass();
+    expect(clock - base).toBe(100 + 2_000 + 100);
+  });
+
+  it('a route change starts over: the next pass is due at once and a deferred one is dropped', async () => {
+    setBody('<p>Lazy loaded section about enzymes and catalysis.</p>');
+    const h = storedHighlight('section about enzymes and catalysis');
+    setBody('<p>Nothing here.</p>');
+    const r = rig([h], { retry: new RetryBudget(1_000, 20) });
+    await r.rehydrator.refresh();
+    r.rehydrator.retryPass();
+    r.rehydrator.retryPass(); // refused: arms the deferred pass
+
+    r.rows = [];
+    await r.rehydrator.onRouteChange();
+    const built = r.streams.built;
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(r.streams.built).toBe(built);
+  });
+
+  it('destroy cancels a deferred pass', async () => {
+    setBody('<p>Lazy loaded section about enzymes and catalysis.</p>');
+    const h = storedHighlight('section about enzymes and catalysis');
+    setBody('<p>Nothing here.</p>');
+    const r = rig([h], { retry: new RetryBudget(1_000, 20) });
+    await r.rehydrator.refresh();
+    r.rehydrator.retryPass();
+    r.rehydrator.retryPass();
+    r.rehydrator.destroy();
+    const built = r.streams.built;
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(r.streams.built).toBe(built);
   });
 
   it('does no work for a mutation when everything is painted and attached', async () => {

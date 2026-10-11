@@ -152,6 +152,7 @@ export function Composer({ mode, quote, busy, onSave, onCancel }: ComposerProps)
   return (
     <div
       className="sv-panel"
+      data-mode={mode}
       role="dialog"
       aria-label={advanced ? 'Save with details' : 'Add a note'}
       onKeyDown={(e) => {
@@ -167,7 +168,7 @@ export function Composer({ mode, quote, busy, onSave, onCancel }: ComposerProps)
       </p>
 
       {advanced ? (
-        <div className="sv-field">
+        <div className="sv-field sv-area-bank">
           <label htmlFor={ids.bank}>Bank</label>
           {bankState.status === 'loading' ? (
             <p className="sv-muted" role="status">
@@ -243,7 +244,7 @@ export function Composer({ mode, quote, busy, onSave, onCancel }: ComposerProps)
       ) : null}
 
       {advanced ? (
-        <div className="sv-row sv-row-split">
+        <div className="sv-row sv-row-split sv-area-kind">
           <div className="sv-field">
             <label htmlFor={ids.kind}>Type</label>
             <select
@@ -277,7 +278,7 @@ export function Composer({ mode, quote, busy, onSave, onCancel }: ComposerProps)
         </div>
       ) : null}
 
-      <div className="sv-field">
+      <div className="sv-field sv-area-note">
         <label htmlFor={ids.comment}>Note</label>
         <textarea
           id={ids.comment}

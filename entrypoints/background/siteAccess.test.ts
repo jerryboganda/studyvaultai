@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { StudyVaultError, defaultSettings, type Settings } from '@shared';
 import {
+  ACTIVATE_TIMEOUT_MS,
   CONTENT_SCRIPT_FILE,
   PERSISTENT_SCRIPT_ID,
   createSiteAccess,
@@ -45,7 +46,7 @@ function setup(
       state.active = true;
     }),
     isActive: vi.fn(async () => state.active),
-    sleep: vi.fn(async () => undefined),
+    sleep: vi.fn(async (_ms: number) => undefined),
   } satisfies SiteAccessDeps;
   return { deps, state, calls, site: createSiteAccess(deps), granted };
 }
@@ -332,9 +333,101 @@ describe('tab.activate', () => {
   });
 });
 
+describe('tab.activate never waits forever', () => {
+  afterEach(() => vi.useRealTimers());
+  const never = () => new Promise<never>(() => undefined);
+
+  /** Starts the activation, lets the clock run out, and returns the error it settled with. */
+  async function afterDeadline(promise: Promise<unknown>): Promise<StudyVaultError> {
+    const outcome = failure(promise);
+    await vi.advanceTimersByTimeAsync(ACTIVATE_TIMEOUT_MS);
+    return outcome;
+  }
+
+  it('a view-source: tab (address hidden, executeScript never settles) is unsupported_page', async () => {
+    vi.useFakeTimers();
+    const t = setup({}, { url: undefined });
+    t.deps.inject.mockImplementation(never);
+    const err = await afterDeadline(t.site.activate(5));
+    expect(err.code).toBe('unsupported_page');
+    expect(err.message).toMatch(/view-source/);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('answers at the deadline, not before', async () => {
+    vi.useFakeTimers();
+    const t = setup({}, { url: undefined });
+    t.deps.inject.mockImplementation(never);
+    let settled = false;
+    const outcome = failure(t.site.activate(5)).finally(() => (settled = true));
+    await vi.advanceTimersByTimeAsync(ACTIVATE_TIMEOUT_MS - 1);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect((await outcome).code).toBe('unsupported_page');
+  });
+
+  it('a hung injection into a normal http page is no_receiver, not a restricted-page claim', async () => {
+    vi.useFakeTimers();
+    const t = setup();
+    t.deps.inject.mockImplementation(never);
+    const err = await afterDeadline(t.site.activate(5));
+    expect(err.code).toBe('no_receiver');
+    expect(err.message).toMatch(/Reload it and try again/);
+  });
+
+  it('a tab lookup that never answers is no_receiver', async () => {
+    vi.useFakeTimers();
+    const t = setup();
+    t.deps.tabUrl.mockImplementation(never);
+    const err = await afterDeadline(t.site.activate(5));
+    expect(err.code).toBe('no_receiver');
+    expect(t.deps.inject).not.toHaveBeenCalled();
+  });
+
+  it('a script that was injected but whose ping never settles is internal "did not start"', async () => {
+    vi.useFakeTimers();
+    const t = setup();
+    t.deps.isActive.mockResolvedValueOnce(false).mockImplementation(never);
+    const err = await afterDeadline(t.site.activate(5));
+    expect(err.code).toBe('internal');
+    expect(err.message).toMatch(/did not start/);
+  });
+
+  it('stops polling once it has given up', async () => {
+    vi.useFakeTimers();
+    const t = setup();
+    t.deps.isActive.mockResolvedValue(false);
+    t.deps.sleep.mockImplementation(
+      (ms: number) => new Promise<undefined>((r) => setTimeout(() => r(undefined), ms * 10)),
+    );
+    const err = await afterDeadline(t.site.activate(5));
+    expect(err.code).toBe('internal');
+    const callsAtDeadline = t.deps.isActive.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(t.deps.isActive.mock.calls.length).toBeLessThanOrEqual(callsAtDeadline + 1);
+  });
+
+  it('leaves no timer behind after a normal activation or an ordinary refusal', async () => {
+    vi.useFakeTimers();
+    await setup().site.activate(5);
+    expect(vi.getTimerCount()).toBe(0);
+    await failure(setup({}, { url: 'chrome://extensions' }).site.activate(5));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
 describe('mapInjectionError', () => {
   it('stringifies non-Error values', () => {
     expect(mapInjectionError('boom', 'https://example.com/').code).toBe('unsupported_page');
+  });
+
+  it('treats view-source: and devtools pages as restricted, not as a missing grant', () => {
+    for (const text of [
+      'Cannot access contents of url "view-source:http://example.com/". Extension manifest must request permission to access this host.',
+      'Cannot access contents of url "devtools://devtools/bundled/inspector.html".',
+    ]) {
+      expect(mapInjectionError(new Error(text), undefined).code, text).toBe('unsupported_page');
+    }
   });
 });
 

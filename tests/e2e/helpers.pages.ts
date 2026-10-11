@@ -217,6 +217,11 @@ export async function dataEpoch(ext: Page): Promise<string | undefined> {
  * Send `message` from the extension's ISOLATED world inside `tabId`: the same kind of sender a
  * content script has (sender.tab set, sender.url = the page, not chrome-extension://). Uses only
  * the public scripting.executeScript API, so no production code is touched or mocked.
+ *
+ * The message travels as a JSON STRING. Chrome's extension-API argument conversion drops every
+ * `null` property of an object argument, so `{ canonicalUrl: null }` would arrive as `{}` and the
+ * worker (correctly) answer `invalid_request` before any sender policy ran. A string is delivered
+ * verbatim, which makes the message the worker sees exactly the one the test wrote.
  */
 export async function sendFromContentWorld(
   ext: Page,
@@ -224,14 +229,14 @@ export async function sendFromContentWorld(
   message: unknown,
 ): Promise<Envelope | { thrown: string } | undefined> {
   return ext.evaluate(
-    async ({ tabId, message }) => {
+    async ({ tabId, json }) => {
       const out = await chrome.scripting.executeScript({
         target: { tabId },
         world: 'ISOLATED',
-        args: [message],
-        func: async (m: unknown) => {
+        args: [json],
+        func: async (wire: string) => {
           try {
-            return (await chrome.runtime.sendMessage(m)) as unknown;
+            return (await chrome.runtime.sendMessage(JSON.parse(wire))) as unknown;
           } catch (err) {
             return { thrown: String((err as Error)?.message ?? err) };
           }
@@ -239,7 +244,7 @@ export async function sendFromContentWorld(
       });
       return out[0]?.result as Envelope | { thrown: string } | undefined;
     },
-    { tabId, message },
+    { tabId, json: JSON.stringify(message) },
   );
 }
 
@@ -269,6 +274,60 @@ export async function show(target: Page): Promise<void> {
 // ---------------------------------------------------------------------------------------------
 
 /**
+ * Select the whole block at `selector` with a real triple-click and wait until the page selection
+ * really is that block.
+ *
+ * Why not `locator.click({ clickCount: 3 })`: Playwright aims at the centre of the element's box.
+ * For a paragraph that wraps to two lines the centre is the seam between the lines, a few pixels
+ * ABOVE the glyphs of line 2. The second click of the gesture selects the word under that point and
+ * the toolbar appears directly above the word, covering the seam, so on a platform whose font wraps
+ * the block that way the third click lands on the toolbar and the selection stays one word.
+ * Measured with a Times New Roman / Liberation Serif layout and `#p-gfr`: pointerdown #3 targets a
+ * <div> inside <studyvault-overlay>, and the saved quote is "millilitres" (as on the Linux runner).
+ * The point used here is the middle of the block's first word: on a glyph, and never under a
+ * toolbar that is placed above or below that word.
+ */
+export async function tripleClickBlock(page: Page, selector: string): Promise<void> {
+  const block = page.locator(selector);
+  await block.scrollIntoViewIfNeeded();
+  const position = await block.evaluate((el) => {
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      const text = n as Text;
+      // A click on a link or control would follow / press it instead of selecting.
+      if (text.parentElement?.closest('a, button, input, textarea, select, summary')) continue;
+      const word = /\S+/.exec(text.data);
+      if (!word) continue;
+      const range = document.createRange();
+      range.setStart(text, word.index);
+      range.setEnd(text, word.index + word[0].length);
+      const rect = range.getClientRects()[0];
+      if (!rect || rect.width === 0) continue;
+      const box = el.getBoundingClientRect();
+      return {
+        x: rect.left + rect.width / 2 - box.left - el.clientLeft,
+        y: rect.top + rect.height / 2 - box.top - el.clientTop,
+      };
+    }
+    return null;
+  });
+  if (!position) throw new Error(`${selector} has no rendered text to triple-click`);
+  await block.click({ clickCount: 3, position });
+  // The toolbar already shows after the second click (for the word), so wait for the third click's
+  // effect explicitly; otherwise a Save click could race the selection it is meant to save.
+  await expect
+    .poll(
+      () =>
+        block.evaluate((el) => {
+          const squash = (s: string) => s.replace(/\s+/g, ' ').trim();
+          return squash(getSelection()?.toString() ?? '') === squash(el.textContent ?? '');
+        }),
+      { message: `triple-click should select all of ${selector}` },
+    )
+    .toBe(true);
+}
+
+/**
  * Select the block at `selector` with a real triple-click, click the toolbar button called
  * `button`, and wait until the highlight is in storage (observed through the RPC from `ext`).
  */
@@ -280,7 +339,7 @@ export async function saveBlock(
 ): Promise<void> {
   const before = (await highlightsOf(ext, page.url())).length;
   await page.bringToFront();
-  await page.locator(selector).click({ clickCount: 3 });
+  await tripleClickBlock(page, selector);
   await expect(toolbarOf(page)).toBeVisible();
   await page.getByRole('button', { name: button, exact: true }).click();
   await expect.poll(async () => (await highlightsOf(ext, page.url())).length).toBe(before + 1);
@@ -295,13 +354,46 @@ export async function saveBlockToBank(
 ): Promise<void> {
   const before = (await highlightsOf(ext, page.url())).length;
   await page.bringToFront();
-  await page.locator(selector).click({ clickCount: 3 });
+  await tripleClickBlock(page, selector);
   await expect(toolbarOf(page)).toBeVisible();
   await page.getByRole('button', { name: 'More options', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Save with details' });
   await dialog.getByRole('combobox', { name: 'Bank' }).selectOption({ label: bankName });
   await dialog.getByRole('button', { name: 'Save', exact: true }).click();
   await expect.poll(async () => (await highlightsOf(ext, page.url())).length).toBe(before + 1);
+}
+
+/**
+ * Select the whole block at `selector` through the DOM Selection API: no pointer input, no
+ * focus change, no `bringToFront`. For flows that must leave a browser-owned popup alone, because
+ * Chrome closes an action popup the moment its window is activated by anything else.
+ */
+export async function selectBlockProgrammatically(page: Page, selector: string): Promise<void> {
+  await page.evaluate((sel) => {
+    const el = document.querySelector(sel);
+    if (!el) throw new Error(`no element for ${sel}`);
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const selection = getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }, selector);
+}
+
+/**
+ * Save the live selection of tab `tabId` through the content script's `content.captureSelection`
+ * RPC, the path the keyboard shortcut and the context menu take. Sent from the extension page
+ * `ext`, so it needs no input on the page.
+ */
+export async function captureSelectionVia(ext: Page, tabId: number): Promise<Envelope> {
+  return ext.evaluate(async (id) => {
+    const reply: unknown = await chrome.tabs.sendMessage(id, {
+      v: 1,
+      type: 'content.captureSelection',
+      payload: { method: 'shortcut', bankId: null },
+    });
+    return reply as Envelope;
+  }, tabId);
 }
 
 /** Painted texts per colour registry (`sv-hl-<color>`), excluding the active one. */
@@ -465,11 +557,24 @@ type CdpReply = {
  * A browser-owned extension target that Playwright does not attach to (chrome.action.openPopup
  * popups and the side panel). Commands go through the non-flattened Target.sendMessageToTarget
  * channel of a browser-level CDP session, so Runtime.evaluate and trusted Input events work.
+ *
+ * (The flattened mode would need a `sessionId` on every message, which Playwright's CDPSession.send
+ * cannot express for a browser-level session.)
+ *
+ * Lifecycle: Chrome closes an action popup as soon as its window loses activation, and a target
+ * that is gone invalidates the session. Both used to surface as an unhandled "No session with given
+ * id" rejection plus a command that never settled. The session is now tracked: when the browser
+ * detaches it, every pending and later command rejects at once with a message that says the target
+ * closed, and `closed` tells a test whether that happened.
  */
 export class RawTarget {
-  private readonly waiters = new Map<number, (reply: CdpReply) => void>();
+  private readonly waiters = new Map<
+    number,
+    { resolve(reply: CdpReply): void; reject(err: Error): void }
+  >();
   private nextId = 1;
   private sessionId = '';
+  private gone: string | null = null;
 
   private constructor(
     private readonly cdp: CDPSession,
@@ -484,24 +589,57 @@ export class RawTarget {
     cdp.on('Target.receivedMessageFromTarget', (event) => {
       if (event.sessionId !== raw.sessionId) return;
       const reply = JSON.parse(event.message) as CdpReply;
-      if (reply.id !== undefined) raw.waiters.get(reply.id)?.(reply);
+      if (reply.id !== undefined) raw.waiters.get(reply.id)?.resolve(reply);
+    });
+    cdp.on('Target.detachedFromTarget', (event) => {
+      if (event.sessionId === raw.sessionId) raw.markGone('the browser detached the session');
+    });
+    cdp.on('Target.targetDestroyed', (event) => {
+      if (event.targetId === targetId) raw.markGone('the target was destroyed');
     });
     const attached = await cdp.send('Target.attachToTarget', { targetId, flatten: false });
     raw.sessionId = attached.sessionId;
     return raw;
   }
 
+  /** True once the browser has closed this target (a popup closes itself on blur and on window.close()). */
+  get closed(): boolean {
+    return this.gone !== null;
+  }
+
+  private markGone(why: string): void {
+    if (this.gone !== null) return;
+    this.gone = why;
+    for (const waiter of this.waiters.values()) {
+      waiter.reject(new Error(`target ${this.targetId} closed: ${why}`));
+    }
+    this.waiters.clear();
+  }
+
   private send(method: string, params: object = {}): Promise<CdpReply> {
-    return new Promise((resolve) => {
+    if (this.gone !== null) {
+      return Promise.reject(new Error(`target ${this.targetId} closed: ${this.gone}`));
+    }
+    return new Promise((resolve, reject) => {
       const id = this.nextId++;
-      this.waiters.set(id, (reply) => {
-        this.waiters.delete(id);
-        resolve(reply);
+      this.waiters.set(id, {
+        resolve: (reply) => {
+          this.waiters.delete(id);
+          resolve(reply);
+        },
+        reject,
       });
-      void this.cdp.send('Target.sendMessageToTarget', {
-        sessionId: this.sessionId,
-        message: JSON.stringify({ id, method, params }),
-      });
+      this.cdp
+        .send('Target.sendMessageToTarget', {
+          sessionId: this.sessionId,
+          message: JSON.stringify({ id, method, params }),
+        })
+        .catch((err: unknown) => {
+          // "No session with given id": the target went away between our last reply and now.
+          this.waiters.delete(id);
+          this.markGone(String((err as Error)?.message ?? err));
+          reject(new Error(`target ${this.targetId} closed: ${this.gone}`));
+        });
     });
   }
 
@@ -511,6 +649,7 @@ export class RawTarget {
       returnByValue: true,
       awaitPromise: true,
     });
+    if (reply.error) throw new Error(`Runtime.evaluate failed: ${reply.error.message}`);
     const details = reply.result?.exceptionDetails;
     if (details)
       throw new Error(details.exception?.description ?? details.text ?? 'evaluate failed');
@@ -521,17 +660,34 @@ export class RawTarget {
     return this.eval<string>('document.body ? document.body.innerText : ""');
   }
 
+  /** Poll until `check` is true; fails at once, with the reason, when the target has closed. */
+  private async until(check: () => Promise<boolean>, what: string, timeoutMs: number) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if (this.gone !== null) throw new Error(`${what}: target closed (${this.gone})`);
+      let ok = false;
+      try {
+        ok = await check();
+      } catch {
+        if (this.gone !== null) throw new Error(`${what}: target closed (${this.gone})`);
+        // anything else (page still loading, execution context replaced) is retried until the deadline
+      }
+      if (ok) return;
+      if (Date.now() > deadline) throw new Error(`${what}: not satisfied within ${timeoutMs} ms`);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+
   async waitForText(re: RegExp, timeoutMs = 10_000): Promise<string> {
     let last = '';
-    await expect
-      .poll(
-        async () => {
-          last = await this.text().catch(() => '');
-          return re.test(last);
-        },
-        { timeout: timeoutMs, message: `popup text should match ${re}` },
-      )
-      .toBe(true);
+    await this.until(
+      async () => {
+        last = await this.text();
+        return re.test(last);
+      },
+      `popup text should match ${re}`,
+      timeoutMs,
+    );
     return last;
   }
 
@@ -549,11 +705,13 @@ export class RawTarget {
     return (await this.buttonCentre(label)) !== null;
   }
 
-  /** Trusted left click (Input.dispatchMouseEvent) on the button with exactly this text. */
+  /**
+   * Trusted left click (Input.dispatchMouseEvent) on the button with exactly this text. A click
+   * that makes the target close itself (popup "Open side panel" calls window.close()) is a success:
+   * the browser may detach the session before the release is acknowledged.
+   */
   async clickButton(label: string): Promise<void> {
-    await expect
-      .poll(async () => this.hasButton(label), { message: `button "${label}" in popup` })
-      .toBe(true);
+    await this.until(() => this.hasButton(label), `button "${label}" in popup`, 10_000);
     const c = await this.buttonCentre(label);
     if (!c) throw new Error(`button "${label}" disappeared`);
     await this.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: c.x, y: c.y });
@@ -564,13 +722,17 @@ export class RawTarget {
       button: 'left',
       clickCount: 1,
     });
-    await this.send('Input.dispatchMouseEvent', {
-      type: 'mouseReleased',
-      x: c.x,
-      y: c.y,
-      button: 'left',
-      clickCount: 1,
-    });
+    try {
+      await this.send('Input.dispatchMouseEvent', {
+        type: 'mouseReleased',
+        x: c.x,
+        y: c.y,
+        button: 'left',
+        clickCount: 1,
+      });
+    } catch (err) {
+      if (!this.closed) throw err;
+    }
   }
 
   async close(): Promise<void> {

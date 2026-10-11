@@ -10,7 +10,7 @@ import {
 } from '@shared';
 import { errorMessage, truncate, useUi } from './context';
 import { pushToast } from './store';
-import { useFloating } from './useFloating';
+import { floatingStyle, useFloating } from './useFloating';
 
 const COMMENT_DEBOUNCE_MS = 600;
 const QUOTE_PREVIEW_CHARS = 400;
@@ -21,6 +21,12 @@ type Status =
   | { state: 'saved' }
   | { state: 'error'; message: string; retryable: boolean };
 
+/**
+ * Non-modal dialog (WAI-ARIA APG): focus moves to the dialog when it opens and Escape closes it and
+ * returns focus to the page element that had it. Nothing traps Tab: it walks the popover controls in
+ * reading order and then leaves for the rest of the page, which the user can keep working in; the
+ * popover closes on a press outside, Escape or its own buttons, not on focus loss.
+ */
 export function HighlightPopover({
   highlight,
   anchor,
@@ -46,6 +52,7 @@ export function HighlightPopover({
   /** Writes are serialised so a slow earlier response can never overwrite a newer one. */
   const queue = useRef<Promise<void>>(Promise.resolve());
   const placement = useFloating(dialogRef, anchor);
+  const placed = placement !== null;
 
   const commit = useCallback(
     (patch: HighlightPatch): Promise<void> => {
@@ -80,13 +87,18 @@ export function HighlightPopover({
   useEffect(() => {
     alive.current = true;
     ui.rememberFocus();
-    dialogRef.current?.focus({ preventScroll: true });
     return () => {
       alive.current = false;
       // Closing must not lose a note the user just typed.
       void flushComment();
     };
   }, [ui, flushComment]);
+
+  // The dialog is visibility:hidden until useFloating has measured it, and a hidden element cannot
+  // take focus: focusing at mount was a silent no-op in a real browser (jsdom does not check).
+  useEffect(() => {
+    if (placed) dialogRef.current?.focus({ preventScroll: true });
+  }, [placed]);
 
   const onDelete = async (): Promise<void> => {
     if (deleting) return;
@@ -129,9 +141,6 @@ export function HighlightPopover({
 
   const kindMeta = KIND_LABELS[view.kind];
   const swatch = COLOR_SWATCH[view.color].solid;
-  const style = placement
-    ? { transform: `translate(${placement.x}px, ${placement.y}px)` }
-    : { visibility: 'hidden' as const };
 
   return (
     <div
@@ -141,7 +150,7 @@ export function HighlightPopover({
       aria-label="Highlight details"
       tabIndex={-1}
       data-placement={placement?.placement}
-      style={style}
+      style={floatingStyle(placement)}
       onKeyDown={(e) => {
         if (e.key !== 'Escape') return;
         e.stopPropagation();

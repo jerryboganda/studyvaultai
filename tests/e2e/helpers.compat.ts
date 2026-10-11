@@ -38,11 +38,17 @@ export function pageErrors(page: Page): string[] {
   return ERRORS.get(page) ?? [];
 }
 
-/** Open a fixture page in a new tab and (by default) activate the content script through the real RPC. */
+/**
+ * Open a fixture page in a new tab and (by default) activate the content script through the real RPC.
+ *
+ * `style` is CSS appended to the document on every load of this tab, including reloads. Use it to
+ * pin geometry that would otherwise depend on the OS font fallback (the fixtures name Georgia, which
+ * Linux runners do not have), e.g. a column narrow enough that a quote wraps on every platform.
+ */
 export async function openFixture(
   env: Env,
   pathAndQuery: string,
-  opts: { activate?: boolean } = {},
+  opts: { activate?: boolean; style?: string } = {},
 ): Promise<Page> {
   const page = await env.context.newPage();
   const errors: string[] = [];
@@ -54,6 +60,15 @@ export async function openFixture(
     if (msg.location().url.endsWith('/favicon.ico')) return;
     errors.push(`console.error: ${msg.text()}`);
   });
+  if (opts.style) {
+    await page.addInitScript((css) => {
+      document.addEventListener('DOMContentLoaded', () => {
+        const el = document.createElement('style');
+        el.textContent = css;
+        document.head.append(el);
+      });
+    }, opts.style);
+  }
   await page.goto(`${env.origin}${pathAndQuery}`);
   if (opts.activate !== false) await activate(env, page);
   return page;

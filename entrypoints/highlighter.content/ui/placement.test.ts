@@ -17,12 +17,12 @@ const place = (selection: Rect, over: Partial<Parameters<typeof placeToolbar>[0]
 describe('placeToolbar', () => {
   it('prefers the space above the selection, centred on it', () => {
     // centre x = 400 + 100 = 500 -> 500 - 150 = 350; above = 300 - 8 - 40 = 252
-    expect(place(rect(400, 300, 200, 20))).toEqual({ x: 350, y: 252, placement: 'above' });
+    expect(place(rect(400, 300, 200, 20))).toMatchObject({ x: 350, y: 252, placement: 'above' });
   });
 
   it('flips below when the selection touches the top edge', () => {
     // above = 5 - 8 - 40 < margin; below = 5 + 20 + 8 = 33
-    expect(place(rect(400, 5, 200, 20))).toEqual({ x: 350, y: 33, placement: 'below' });
+    expect(place(rect(400, 5, 200, 20))).toMatchObject({ x: 350, y: 33, placement: 'below' });
   });
 
   it('flips below when the selection is partly scrolled above the viewport', () => {
@@ -33,7 +33,7 @@ describe('placeToolbar', () => {
 
   it('keeps above at the bottom edge, where below has no room', () => {
     const r = place(rect(400, 760, 200, 20));
-    expect(r).toEqual({ x: 350, y: 712, placement: 'above' });
+    expect(r).toMatchObject({ x: 350, y: 712, placement: 'above' });
   });
 
   it('places a tall selection that starts in view above its first line', () => {
@@ -44,7 +44,7 @@ describe('placeToolbar', () => {
 
   it('covers a selection that fills the viewport, on the nearest edge (top)', () => {
     const r = place(rect(100, -500, 700, 3000));
-    expect(r).toEqual({ x: 300, y: 8, placement: 'edge' });
+    expect(r).toMatchObject({ x: 300, y: 8, placement: 'edge' });
   });
 
   it('uses the bottom edge when the visible part of a tall selection is in the lower half', () => {
@@ -55,11 +55,11 @@ describe('placeToolbar', () => {
   });
 
   it('pins to the bottom edge when the selection is entirely below the viewport', () => {
-    expect(place(rect(400, 1500, 200, 20))).toEqual({ x: 350, y: 752, placement: 'edge' });
+    expect(place(rect(400, 1500, 200, 20))).toMatchObject({ x: 350, y: 752, placement: 'edge' });
   });
 
   it('pins to the top edge when the selection is entirely above the viewport', () => {
-    expect(place(rect(400, -300, 200, 20))).toEqual({ x: 350, y: 8, placement: 'edge' });
+    expect(place(rect(400, -300, 200, 20))).toMatchObject({ x: 350, y: 8, placement: 'edge' });
   });
 
   it('clamps to the left margin', () => {
@@ -85,7 +85,65 @@ describe('placeToolbar', () => {
 
   it('takes the top edge when the toolbar is taller than the viewport', () => {
     const r = place(rect(400, 300, 200, 20), { toolbar: { w: 300, h: 900 } });
-    expect(r).toEqual({ x: 350, y: 8, placement: 'edge' });
+    expect(r).toMatchObject({ x: 350, y: 8, placement: 'edge' });
+  });
+
+  it('reports the largest size that still fits inside the margins', () => {
+    const r = place(rect(400, 300, 200, 20));
+    expect(r.maxWidth).toBe(1000 - 16);
+    expect(r.maxHeight).toBe(800 - 16);
+    const custom = place(rect(400, 300, 200, 20), { margin: 20, viewport: { w: 640, h: 360 } });
+    expect(custom).toMatchObject({ maxWidth: 600, maxHeight: 320 });
+  });
+
+  it('places an oversized element as the largest one that fits: on the margins, never off screen', () => {
+    // 388px tall in a 360px viewport (200% zoom of 1280x720): capped to 344px, so top = margin.
+    const r = place(rect(200, 150, 160, 20), {
+      toolbar: { w: 424, h: 388 },
+      viewport: { w: 640, h: 360 },
+    });
+    expect(r).toMatchObject({ y: 8, placement: 'edge', maxHeight: 344 });
+    expect(r.y + Math.min(388, r.maxHeight)).toBeLessThanOrEqual(360 - 8);
+    const wide = place(rect(200, 150, 160, 20), {
+      toolbar: { w: 900, h: 40 },
+      viewport: { w: 640, h: 360 },
+    });
+    expect(wide.x).toBe(8);
+    expect(wide.maxWidth).toBe(624);
+    expect(wide.x + Math.min(900, wide.maxWidth)).toBeLessThanOrEqual(640 - 8);
+  });
+
+  it('never reports a negative limit for a viewport smaller than the margins', () => {
+    const r = place(rect(0, 0, 10, 10), { viewport: { w: 10, h: 10 } });
+    expect(r.maxWidth).toBe(0);
+    expect(r.maxHeight).toBe(0);
+  });
+
+  it('stays inside a 320x256 viewport for any selection and any element size', () => {
+    const viewport = { w: 320, h: 256 };
+    for (const size of [
+      { w: 100, h: 40 },
+      { w: 424, h: 80 },
+      { w: 300, h: 388 },
+      { w: 560, h: 260 },
+    ]) {
+      for (let top = -300; top <= 500; top += 50) {
+        for (const left of [-50, 0, 150, 300, 400]) {
+          const r = placeToolbar({
+            selection: rect(left, top, 80, 20),
+            toolbar: size,
+            viewport,
+          });
+          const w = Math.min(size.w, r.maxWidth);
+          const h = Math.min(size.h, r.maxHeight);
+          const where = `size=${size.w}x${size.h} top=${top} left=${left}`;
+          expect(r.x, where).toBeGreaterThanOrEqual(8);
+          expect(r.x + w, where).toBeLessThanOrEqual(viewport.w - 8);
+          expect(r.y, where).toBeGreaterThanOrEqual(8);
+          expect(r.y + h, where).toBeLessThanOrEqual(viewport.h - 8);
+        }
+      }
+    }
   });
 
   it('rounds to whole pixels', () => {

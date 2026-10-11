@@ -93,6 +93,16 @@ function clickDriver(listenerSpy: { mock: { calls: unknown[][] } }) {
   return { click, options, spies };
 }
 
+/** Same boundary points: the page selection is still the range the test made. */
+function sameRangeText(a: Range, b: Range): boolean {
+  return (
+    a.startContainer === b.startContainer &&
+    a.startOffset === b.startOffset &&
+    a.endContainer === b.endContainer &&
+    a.endOffset === b.endOffset
+  );
+}
+
 const saveRequest = {
   kind: 'essential',
   color: 'amber',
@@ -302,6 +312,29 @@ describe('selection watcher', () => {
     expect(h.ui.toolbar).toHaveLength(0);
   });
 
+  it('never shows the toolbar for a selection that passes through an editor', async () => {
+    const h = await boot();
+    setBody(
+      '<p id="a">Public text before the editor.</p>' +
+        '<div contenteditable="true">PRIVATE-DRAFT: text the user is still typing.</div>' +
+        '<p id="b">Public text after the editor.</p>',
+    );
+    const range = document.createRange();
+    range.setStart(document.getElementById('a')!.firstChild!, 0);
+    range.setEnd(document.getElementById('b')!.firstChild!, 11);
+    document.getSelection()!.addRange(range);
+    document.dispatchEvent(new Event('selectionchange'));
+    await vi.advanceTimersByTimeAsync(80);
+    expect(h.ui.toolbar).toHaveLength(0);
+
+    document.getSelection()!.selectAllChildren(document.body); // Select All
+    document.dispatchEvent(new Event('selectionchange'));
+    await vi.advanceTimersByTimeAsync(80);
+    expect(h.ui.toolbar).toHaveLength(0);
+    await expect(h.host.save(saveRequest)).rejects.toThrow(); // nothing stored to save
+    expect(h.background.callsOf('capture.save')).toHaveLength(0);
+  });
+
   it('ignores a selection that is inside the StudyVault overlay', async () => {
     const h = await boot();
     setBody(ARTICLE + '<div data-studyvault><p>Overlay words are never captured</p></div>');
@@ -385,6 +418,25 @@ describe('save pipeline', () => {
     expect(h.painter.painted[0]!.color).toBe('blue');
     // Reported as resolved so the side panel shows it as anchored.
     expect(h.background.callsOf('highlight.reportResolution')).toHaveLength(1);
+  });
+
+  it('does not store the start of a draft editor that sits right after the quote', async () => {
+    const h = await boot();
+    setBody(
+      '<h2>Comments</h2><p>Public text before the draft editor.</p>' +
+        '<div contenteditable="true">PRIVATE-DRAFT: text the user is still typing.</div>',
+    );
+    await selectText('Public text before the draft editor.');
+    const result = await h.host.save(saveRequest);
+    expect(result.status).toBe('created');
+    const payload = h.background.callsOf('capture.save')[0]!.payload as {
+      exactQuote: string;
+      anchorSet: { textQuote: { prefix: string; suffix: string } };
+    };
+    expect(payload.exactQuote).toBe('Public text before the draft editor.');
+    expect(JSON.stringify(payload)).not.toContain('PRIVATE-DRAFT');
+    expect(payload.anchorSet.textQuote.suffix).toBe('');
+    expect(h.painter.texts).toEqual(['Public text before the draft editor.']); // still resolves
   });
 
   it('the selection survives interaction with the overlay (range cloned before focus moves)', async () => {
@@ -509,6 +561,80 @@ describe('save pipeline', () => {
     release();
     await saving;
     expect(h.painter.ids).toEqual([]);
+  });
+
+  describe('a selection made while an earlier save is still in flight', () => {
+    async function inFlight(h: Harness) {
+      await toolbarShown(h, MITO);
+      const release = h.background.hold('capture.save');
+      const saving = h.host.save(saveRequest);
+      await flushPromises();
+      const second = await selectText(RIBO); // the reader moves on (toolbar for the new text)
+      expect(h.ui.toolbar.at(-1)?.text).toBe(RIBO);
+      return { release, saving, second };
+    }
+
+    it('is neither cleared nor un-toolbarred when the earlier save completes', async () => {
+      const h = await boot();
+      const { release, saving, second } = await inFlight(h);
+      const shown = h.ui.toolbar.length;
+
+      release();
+      await saving;
+      h.host.dismissSelection(); // what the overlay does once the save has resolved
+      await flushPromises();
+
+      expect(document.getSelection()!.toString()).toBe(RIBO);
+      expect(sameRangeText(document.getSelection()!.getRangeAt(0), second)).toBe(true);
+      // The overlay closes its toolbar right after dismissSelection(): the newer one is shown again.
+      expect(h.ui.toolbar.length).toBeGreaterThan(shown);
+      expect(h.ui.toolbar.at(-1)?.text).toBe(RIBO);
+      expect(h.ui.hidden).toBe(0);
+
+      // ...and it is still saveable, as itself.
+      const again = await h.host.save(saveRequest);
+      expect(again.highlight.exactQuote).toBe(RIBO);
+      expect(h.painter.texts.sort()).toEqual([MITO, RIBO].sort());
+    });
+
+    it('a dismissSelection after the save has settled dismisses whatever is selected then', async () => {
+      const h = await boot();
+      const { release, saving } = await inFlight(h);
+      release();
+      await saving;
+      await vi.advanceTimersByTimeAsync(10); // the completion window is over
+      h.host.dismissSelection(); // e.g. Escape on the new toolbar
+      expect(document.getSelection()!.rangeCount).toBe(0);
+      await expect(h.host.save(saveRequest)).rejects.toThrow();
+    });
+
+    it('the selection that WAS saved is still cleared and dismissed', async () => {
+      const h = await boot();
+      await toolbarShown(h, MITO);
+      await h.host.save(saveRequest);
+      h.host.dismissSelection();
+      expect(document.getSelection()!.rangeCount).toBe(0);
+      expect(h.ui.toolbar).toHaveLength(1); // nothing re-shown
+    });
+
+    it('quick-save completing does not close the toolbar of a newer selection', async () => {
+      const h = await boot();
+      select(MITO);
+      const release = h.background.hold('capture.save');
+      const quick = h.handlers['content.captureSelection']!(
+        { method: 'shortcut', bankId: null },
+        {} as never,
+      );
+      await flushPromises();
+      await selectText(RIBO);
+      expect(h.ui.toolbar.at(-1)?.text).toBe(RIBO);
+
+      release();
+      await quick;
+      expect(document.getSelection()!.toString()).toBe(RIBO);
+      expect(h.ui.hidden).toBe(0);
+      expect((await h.host.save(saveRequest)).highlight.exactQuote).toBe(RIBO);
+    });
   });
 
   it('dismissSelection clears our stored selection and the page selection', async () => {
@@ -734,25 +860,53 @@ describe('mutations', () => {
     expect(h.painter.paintCalls - before).toBe(1);
   });
 
-  it('retries at most 8 times per navigation, then stops until the route changes', async () => {
-    const { h, lazy, background } = await withLazyHighlight();
+  it('retries at a bounded rate however often the page mutates', async () => {
+    const { h } = await withLazyHighlight();
     const base = h.painter.paintCalls;
 
-    for (let i = 0; i < 14; i++) {
-      document.body.appendChild(document.createElement('b'));
-      await vi.advanceTimersByTimeAsync(450);
+    // A text node is rewritten every 100 ms for 30 s while the highlight stays unresolved.
+    const ticker = document.body.appendChild(document.createElement('b'));
+    for (let i = 0; i < 300; i++) {
+      ticker.textContent = `tick ${i}`;
+      await vi.advanceTimersByTimeAsync(100);
     }
-    expect(h.painter.paintCalls - base).toBe(8);
+    const passes = h.painter.paintCalls - base;
+    // About once a second (never starved by the 100 ms mutations), never once per mutation.
+    expect(passes).toBeGreaterThanOrEqual(20);
+    expect(passes).toBeLessThanOrEqual(31);
+  });
 
-    addLazy(); // too late for this navigation
-    await vi.advanceTimersByTimeAsync(450);
+  it('paints text that arrives 20 s into a page that mutates every 100 ms, within about 2 s', async () => {
+    const { h, lazy } = await withLazyHighlight();
+    const ticker = document.body.appendChild(document.createElement('b'));
+    const base = h.painter.paintCalls;
+
+    let arrivedAt = -1;
+    let paintedAt = -1;
+    for (let ms = 0; ms < 25_000; ms += 100) {
+      ticker.textContent = `tick ${ms / 100}`;
+      if (ms === 20_000) {
+        addLazy();
+        arrivedAt = ms;
+      }
+      await vi.advanceTimersByTimeAsync(100);
+      if (paintedAt < 0 && h.painter.ids.includes(lazy.id)) paintedAt = ms + 100;
+    }
+    expect(arrivedAt).toBe(20_000);
+    expect(paintedAt).toBeGreaterThan(20_000);
+    expect(paintedAt - arrivedAt).toBeLessThanOrEqual(2_000);
+    // CPU stays bounded: roughly one pass per second over the 25 s, not one per mutation (250).
+    expect(h.painter.paintCalls - base).toBeLessThanOrEqual(27);
+  });
+
+  it('a pass refused for spacing still runs later when no further mutation comes', async () => {
+    const { h, lazy } = await withLazyHighlight();
+    document.body.appendChild(document.createElement('b')).textContent = 'first';
+    await vi.advanceTimersByTimeAsync(450); // a pass finds nothing and starts the spacing
+    addLazy(); // the text arrives right after it, and the page then goes quiet
+    await vi.advanceTimersByTimeAsync(450); // debounce fires: refused as too soon
     expect(h.painter.ids).toEqual([]);
-
-    history.pushState({}, '', '/next-route');
-    document.body.appendChild(document.createElement('b'));
-    await vi.advanceTimersByTimeAsync(100);
-    await flushPromises();
-    expect(background.callsOf('page.highlights').at(-1)).toBeDefined();
+    await vi.advanceTimersByTimeAsync(1_000);
     expect(h.painter.ids).toEqual([lazy.id]);
   });
 
@@ -771,7 +925,7 @@ describe('mutations', () => {
     expect(h.painter.paintCalls).toBe(base);
   });
 
-  it('script, style and head mutations do not spend the retry budget', async () => {
+  it('script, style and head mutations never cause a pass', async () => {
     const { h } = await withLazyHighlight();
     const base = h.painter.paintCalls;
     for (let i = 0; i < 20; i++) {
@@ -781,7 +935,7 @@ describe('mutations', () => {
     }
     expect(h.painter.paintCalls).toBe(base);
 
-    addLazy(); // all 8 attempts are still available
+    addLazy(); // the first real pass is still due at once
     await vi.advanceTimersByTimeAsync(500);
     expect(h.painter.ids).toHaveLength(1);
   });
@@ -969,6 +1123,82 @@ describe('tab RPC', () => {
     );
     expect(blocked).toMatchObject({ status: 'blocked' });
     expect(h.background.callsOf('capture.save')).toHaveLength(0);
+  });
+
+  describe('text selected inside a form field (Chromium reports the document selection as collapsed)', () => {
+    it.each([
+      ['text input', '<input id="f" type="text" value="selectable value inside an input">'],
+      ['password input', '<input id="f" type="password" value="hunter2-secret">'],
+      ['textarea', '<textarea id="f">text inside a textarea that must not be captured</textarea>'],
+    ])(
+      'captureSelection from a %s is blocked with an explanation, never "no selection"',
+      async (_n, field) => {
+        const h = await boot();
+        setBody(ARTICLE + field);
+        const f = document.getElementById('f') as HTMLInputElement;
+        f.focus();
+        clearSelection();
+        f.setSelectionRange(0, 6);
+        const valueRead = vi.spyOn(HTMLInputElement.prototype, 'value', 'get');
+        const textRead = vi.spyOn(HTMLTextAreaElement.prototype, 'value', 'get');
+
+        const res = await h.handlers['content.captureSelection']!(
+          { method: 'shortcut', bankId: null },
+          sender,
+        );
+        expect(res).toMatchObject({
+          status: 'blocked',
+          reason: expect.stringMatching(/form fields or editors/),
+        });
+        expect(h.background.callsOf('capture.save')).toHaveLength(0);
+        expect(valueRead).not.toHaveBeenCalled(); // a field value is never read
+        expect(textRead).not.toHaveBeenCalled();
+        expect(JSON.stringify([h.background.calls, h.ui.toasts])).not.toMatch(
+          /hunter2|selectable value|text inside a textarea/,
+        );
+      },
+    );
+
+    it('a caret in a field with nothing selected is still "no-selection"', async () => {
+      const h = await boot();
+      setBody(ARTICLE + '<input id="f" type="text" value="abc def">');
+      const f = document.getElementById('f') as HTMLInputElement;
+      f.focus();
+      f.setSelectionRange(3, 3);
+      expect(
+        await h.handlers['content.captureSelection']!({ method: 'shortcut', bankId: null }, sender),
+      ).toEqual({ status: 'no-selection' });
+    });
+  });
+
+  it('captureSelection refuses a selection that spans an editor, whole, and stores nothing', async () => {
+    const h = await boot();
+    setBody(
+      '<h1 id="h">Mixed page</h1><p id="a">Public text before the draft editor.</p>' +
+        '<div id="draft" contenteditable="true">PRIVATE-DRAFT: text the user is still typing in an editor.</div>' +
+        '<p id="b">Public text after the draft editor.</p>',
+    );
+    const drag = document.createRange();
+    drag.setStart(document.getElementById('a')!.firstChild!, 0);
+    drag.setEnd(document.getElementById('b')!.firstChild!, 11);
+    for (const make of [
+      () => document.getSelection()!.addRange(drag),
+      () => document.getSelection()!.selectAllChildren(document.body),
+    ]) {
+      clearSelection();
+      make();
+      expect(document.getSelection()!.toString()).toContain('PRIVATE-DRAFT'); // engine includes it
+      const res = await h.handlers['content.captureSelection']!(
+        { method: 'context-menu', bankId: null },
+        sender,
+      );
+      expect(res).toMatchObject({
+        status: 'blocked',
+        reason: expect.stringMatching(/form fields or editors/),
+      });
+    }
+    expect(h.background.callsOf('capture.save')).toHaveLength(0);
+    expect(h.painter.painted).toEqual([]);
   });
 
   it('captureSelection explains text it cannot read instead of reporting an empty selection', async () => {

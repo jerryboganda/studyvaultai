@@ -10,7 +10,7 @@ import type { SaveRequest, SelectionInfo } from '../contract';
 import { Composer } from './Composer';
 import { errorMessage, useUi } from './context';
 import { pushToast, useStore } from './store';
-import { useFloating } from './useFloating';
+import { floatingStyle, useFloating } from './useFloating';
 
 const DEFAULT_PRIORITY = 3;
 
@@ -187,16 +187,12 @@ export function ToolbarUnit({ selection }: { selection: SelectionInfo }) {
     buttons[next]?.focus({ preventScroll: true });
   };
 
-  const style = placement
-    ? { transform: `translate(${placement.x}px, ${placement.y}px)` }
-    : { visibility: 'hidden' as const };
-
   return (
     <div
       ref={unitRef}
       className="sv-float sv-unit"
       data-placement={placement?.placement}
-      style={style}
+      style={floatingStyle(placement)}
       onKeyDown={(e) => {
         if (e.key !== 'Escape') return;
         e.stopPropagation();

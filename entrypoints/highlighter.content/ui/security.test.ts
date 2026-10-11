@@ -6,7 +6,7 @@ const DIR = __dirname;
 
 const sources = fs
   .readdirSync(DIR)
-  .filter((f) => /\.(ts|tsx)$/.test(f) && !/\.test\.|^testHarness/.test(f))
+  .filter((f) => /\.(ts|tsx)$/.test(f) && !/\.test\.|^test[A-Z]/.test(f))
   .map((f) => ({ file: f, text: fs.readFileSync(path.join(DIR, f), 'utf8') }));
 
 describe('overlay source hygiene (page data is untrusted)', () => {

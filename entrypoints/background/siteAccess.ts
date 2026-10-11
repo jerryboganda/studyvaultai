@@ -12,6 +12,11 @@ import {
 export const PERSISTENT_SCRIPT_ID = 'sv-persistent';
 export const CONTENT_SCRIPT_FILE = 'content-scripts/highlighter.js';
 export const PING_TIMEOUT_MS = 800;
+/**
+ * Upper bound for one activation. Chrome calls here can hang forever: scripting.executeScript
+ * never settles on a view-source: tab, for example. Whatever hangs, the caller gets an answer.
+ */
+export const ACTIVATE_TIMEOUT_MS = 5000;
 
 const READY_ATTEMPTS = 10;
 const READY_DELAY_MS = 100;
@@ -105,7 +110,7 @@ export function mapInjectionError(err: unknown, tabUrl: string | undefined): Stu
     return new StudyVaultError('not_found', 'That tab is no longer open.');
   }
   if (
-    /chrome:\/\/|chrome-extension:\/\/|edge:\/\/|about:|extensions gallery|web store|file:|policy/i.test(
+    /chrome:\/\/|chrome-extension:\/\/|edge:\/\/|about:|view-source:|devtools:|extensions gallery|web store|file:|policy/i.test(
       text,
     )
   ) {
@@ -126,17 +131,82 @@ export function mapInjectionError(err: unknown, tabUrl: string | undefined): Stu
   );
 }
 
+type ActivateStage = 'inspect' | 'inject' | 'start';
+
+const scriptDidNotStart = () =>
+  new StudyVaultError(
+    'internal',
+    'StudyVault was injected but did not start on this page. Reload the tab and try again.',
+  );
+
+/** The answer for an activation that ran out of time, by how far it got. Never a bare "timed out". */
+export function activationTimeout(
+  stage: ActivateStage,
+  tabUrl: string | undefined,
+): StudyVaultError {
+  if (stage === 'start') return scriptDidNotStart();
+  if (stage === 'inject' && (tabUrl === undefined || parseHttpUrl(tabUrl) === null)) {
+    return new StudyVaultError(
+      'unsupported_page',
+      'StudyVault cannot run on this page. Chrome gave no answer when StudyVault tried to start here, which is how it treats view-source: pages, browser pages, the Chrome Web Store and other pages it protects. Open the page itself and try again.',
+    );
+  }
+  return new StudyVaultError(
+    'no_receiver',
+    'Chrome did not answer when StudyVault tried to start on this tab. The tab may still be loading or may have stopped responding. Reload it and try again.',
+  );
+}
+
 export function createSiteAccess(deps: SiteAccessDeps): SiteAccess {
   // One sync at a time across the worker and extension pages (same origin => shared Web Locks).
   const exclusive = <T>(run: () => Promise<T>): Promise<T> =>
     globalThis.navigator?.locks ? navigator.locks.request('studyvault-site-sync', run) : run();
 
-  async function waitUntilActive(tabId: number): Promise<boolean> {
-    for (let i = 0; i < READY_ATTEMPTS; i++) {
+  async function waitUntilActive(tabId: number, expired: () => boolean): Promise<boolean> {
+    for (let i = 0; i < READY_ATTEMPTS && !expired(); i++) {
       if (await deps.isActive(tabId)) return true;
       await deps.sleep(READY_DELAY_MS);
     }
     return false;
+  }
+
+  /** `run` is what the deadline needs to know: how far activation got and whether it gave up. */
+  async function activateTab(
+    tabId: number,
+    run: { stage: ActivateStage; url: string | undefined; expired: boolean },
+  ): Promise<void> {
+    try {
+      run.url = await deps.tabUrl(tabId);
+    } catch {
+      throw new StudyVaultError('not_found', 'That tab is no longer open.');
+    }
+    const url = run.url;
+    if (url !== undefined) {
+      const page = parseHttpUrl(url);
+      if (!page) {
+        throw new StudyVaultError(
+          'unsupported_page',
+          'StudyVault cannot run on this page. Chrome blocks extensions on browser pages, the Chrome Web Store and local files.',
+        );
+      }
+      const settings = await deps.getSettings();
+      if (isHostDenied(page.hostname, settings.denyList)) {
+        throw new StudyVaultError(
+          'forbidden',
+          `StudyVault is turned off on ${page.hostname}. Remove it from the deny list in Settings to use it here.`,
+        );
+      }
+    }
+    // Already running (persistent registration or an earlier activation): never inject twice.
+    if (await deps.isActive(tabId)) return;
+    run.stage = 'inject';
+    try {
+      await deps.inject(tabId);
+    } catch (err) {
+      throw mapInjectionError(err, url);
+    }
+    run.stage = 'start';
+    if (!(await waitUntilActive(tabId, () => run.expired))) throw scriptDidNotStart();
   }
 
   return {
@@ -192,40 +262,22 @@ export function createSiteAccess(deps: SiteAccessDeps): SiteAccess {
     },
 
     async activate(tabId) {
-      let url: string | undefined;
+      const run = {
+        stage: 'inspect' as ActivateStage,
+        url: undefined as string | undefined,
+        expired: false,
+      };
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const deadline = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          run.expired = true;
+          reject(activationTimeout(run.stage, run.url));
+        }, ACTIVATE_TIMEOUT_MS);
+      });
       try {
-        url = await deps.tabUrl(tabId);
-      } catch {
-        throw new StudyVaultError('not_found', 'That tab is no longer open.');
-      }
-      if (url !== undefined) {
-        const page = parseHttpUrl(url);
-        if (!page) {
-          throw new StudyVaultError(
-            'unsupported_page',
-            'StudyVault cannot run on this page. Chrome blocks extensions on browser pages, the Chrome Web Store and local files.',
-          );
-        }
-        const settings = await deps.getSettings();
-        if (isHostDenied(page.hostname, settings.denyList)) {
-          throw new StudyVaultError(
-            'forbidden',
-            `StudyVault is turned off on ${page.hostname}. Remove it from the deny list in Settings to use it here.`,
-          );
-        }
-      }
-      // Already running (persistent registration or an earlier activation): never inject twice.
-      if (await deps.isActive(tabId)) return;
-      try {
-        await deps.inject(tabId);
-      } catch (err) {
-        throw mapInjectionError(err, url);
-      }
-      if (!(await waitUntilActive(tabId))) {
-        throw new StudyVaultError(
-          'internal',
-          'StudyVault was injected but did not start on this page. Reload the tab and try again.',
-        );
+        await Promise.race([activateTab(tabId, run), deadline]);
+      } finally {
+        clearTimeout(timer);
       }
     },
   };
