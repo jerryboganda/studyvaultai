@@ -1,4 +1,5 @@
 import AxeBuilder from '@axe-core/playwright';
+import { settleAnimations } from './axeSettle';
 import type { Locator, Page } from '@playwright/test';
 import {
   BankRecord as BankRecordSchema,
@@ -914,6 +915,7 @@ interface Violation {
 }
 
 export async function axeViolations(page: Page, include?: string): Promise<string> {
+  await settleAnimations(page);
   let builder = new AxeBuilder({ page }).withTags(WCAG_TAGS);
   if (include) builder = builder.include(include);
   const results = await builder.analyze();

@@ -1,4 +1,5 @@
 import AxeBuilder from '@axe-core/playwright';
+import { settleAnimations } from './axeSettle';
 import type { Locator, Page } from '@playwright/test';
 import { DEFAULT_PALETTE, INBOX_BANK_ID } from '@shared';
 import { bgData, errorsOf, expect, openExt, test as pagesTest, type Env } from './helpers.pages';
@@ -293,6 +294,7 @@ export async function serverText(sync: SyncHarness): Promise<string> {
 const WCAG_TAGS = ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'];
 
 async function axeReport(page: Page, include: string): Promise<string> {
+  await settleAnimations(page);
   const { violations, passes } = await new AxeBuilder({ page })
     .withTags(WCAG_TAGS)
     .include(include)

@@ -1,4 +1,5 @@
 import AxeBuilder from '@axe-core/playwright';
+import { settleAnimations } from './axeSettle';
 import {
   expect as baseExpect,
   type BrowserContext,
@@ -1001,6 +1002,7 @@ export async function tableRows(table: Locator): Promise<string[][]> {
 const WCAG_TAGS = ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'];
 
 export async function axeReport(page: Page): Promise<string> {
+  await settleAnimations(page);
   const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
   return results.violations
     .map((v) => {

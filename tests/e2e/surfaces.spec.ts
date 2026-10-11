@@ -1,4 +1,5 @@
 import AxeBuilder from '@axe-core/playwright';
+import { settleAnimations } from './axeSettle';
 import type { Page } from '@playwright/test';
 import { SETTINGS_SECTIONS } from '@ui/shell/paths';
 import { describeCommand } from '@ui/shortcuts';
@@ -50,6 +51,7 @@ async function extPage(env: Env, file: string): Promise<Page> {
 }
 
 async function violationsOf(page: Page, include?: string): Promise<string> {
+  await settleAnimations(page);
   let builder = new AxeBuilder({ page }).withTags(WCAG_TAGS);
   if (include) builder = builder.include(include);
   const { violations } = await builder.analyze();
@@ -363,6 +365,7 @@ test.describe('options: accessibility and reflow', () => {
       }
       // One scan of the whole page (every section is on it). Axe is slow on this much markup, so
       // a failure is attributed to its section afterwards instead of scanning section by section.
+      await settleAnimations(page);
       const { violations } = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
       const report: string[] = [];
       for (const v of violations) {

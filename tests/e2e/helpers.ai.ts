@@ -1,4 +1,5 @@
 import AxeBuilder from '@axe-core/playwright';
+import { settleAnimations } from './axeSettle';
 import type { Locator, Page } from '@playwright/test';
 import { startFakeProvider, type ChatMessage, type FakeProvider } from './aiServer';
 import {
@@ -310,6 +311,7 @@ const WCAG_TAGS = ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'];
  * gives up is cross-origin iframes, and these pages have none.
  */
 export async function axeReport(page: Page, include?: string): Promise<string> {
+  await settleAnimations(page);
   let builder = new AxeBuilder({ page }).withTags(WCAG_TAGS).setLegacyMode(true);
   if (include) builder = builder.include(include);
   const { violations } = await builder.analyze();

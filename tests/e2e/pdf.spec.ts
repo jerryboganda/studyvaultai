@@ -1,4 +1,5 @@
 import AxeBuilder from '@axe-core/playwright';
+import { settleAnimations } from './axeSettle';
 import type { Page } from '@playwright/test';
 import { pdfReaderPath } from '@pdf/readerUrl';
 import {
@@ -1221,6 +1222,7 @@ test.describe('private windows', () => {
 
 test.describe('accessibility', () => {
   async function violations(page: Page): Promise<string> {
+    await settleAnimations(page);
     const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
     return results.violations
       .map(

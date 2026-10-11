@@ -1,4 +1,5 @@
 import AxeBuilder from '@axe-core/playwright';
+import { settleAnimations } from './axeSettle';
 import type { Page } from '@playwright/test';
 import { HIGHLIGHT_KINDS, KIND_LABELS } from '@shared';
 import {
@@ -42,6 +43,7 @@ interface Violation {
 }
 
 async function axeViolations(page: Page, include?: string): Promise<Violation[]> {
+  await settleAnimations(page);
   let builder = new AxeBuilder({ page }).withTags(WCAG_TAGS);
   if (include) builder = builder.include(include);
   const results = await builder.analyze();
