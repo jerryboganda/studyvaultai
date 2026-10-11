@@ -13,6 +13,10 @@ export default defineContentScript({
   registration: 'runtime',
   // CSS is inlined by ui/index.tsx; 'manual' keeps WXT from adding a web_accessible_resources entry.
   cssInjectionMode: 'manual',
+  // Without this WXT also window.postMessage()s '<extension id>:highlighter:wxt:content-script-started'
+  // to the page on every start: any page script would learn the extension id (a stable fingerprint).
+  // The supersede handshake itself runs on a document CustomEvent and is unaffected.
+  noScriptStartedPostMessage: true,
   main(ctx) {
     // Isolated worlds persist across executions, so the guard lives on globalThis (boot.ts).
     bootOnce(globalThis, ctx, () =>

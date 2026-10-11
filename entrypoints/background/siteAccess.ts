@@ -10,7 +10,15 @@ import {
   type SiteStatus,
 } from '@shared';
 
-/** Site access (ADR-003): the persistent dynamic content script and on-demand injection. */
+/**
+ * Site access (ADR-003): the persistent dynamic content script and on-demand injection.
+ *
+ * Chrome's granted host permissions are the source of truth for what is registered:
+ * `permissions.getAll().origins`, because grants also change outside the extension's own UI
+ * (chrome://extensions, policy). `settings.persistentOrigins` is a hint: patterns the UI asked for
+ * are kept literally in the registration while Chrome still covers them (so "one site" stays
+ * visible under an all-sites grant), and the hint is brought back in line with the grants.
+ */
 
 export const PERSISTENT_SCRIPT_ID = 'sv-persistent';
 export const CONTENT_SCRIPT_FILE = 'content-scripts/highlighter.js';
@@ -39,6 +47,10 @@ export interface SiteAccessDeps {
   getSettings(): Promise<Settings>;
   /** True when `origin` (a match pattern) is covered by granted host permissions. */
   hasPermission(origin: string): Promise<boolean>;
+  /** `permissions.getAll().origins`: what Chrome grants right now. null when it cannot be read. */
+  grantedOrigins(): Promise<string[] | null>;
+  /** Replace settings.persistentOrigins (the hint) with what Chrome grants. */
+  rememberOrigins(origins: string[]): Promise<void>;
   /** `matches` of the registered persistent script, or null when it is not registered. */
   registeredMatches(): Promise<string[] | null>;
   register(script: PersistentScript): Promise<void>;
@@ -79,6 +91,19 @@ export function patternCovers(pattern: string, url: URL): boolean {
   }
   return url.hostname === h;
 }
+
+/** A pattern that matches every host (any scheme, or one web scheme). */
+const ALL_SITES = /^(\*|https?):\/\/\*\/\*$/;
+/** Chrome may report an all-sites grant as "<all_urls>"; the registrable equivalent is both web schemes. */
+const ALL_URLS = ['https://*/*', 'http://*/*'];
+
+const expandAllUrls = (patterns: readonly string[]) =>
+  patterns.flatMap((p) => (p === '<all_urls>' ? ALL_URLS : [p]));
+const unique = <T>(values: readonly T[]) => [...new Set(values)];
+const sameSet = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && a.every((x) => b.includes(x));
+/** Settings schema limit; a longer hint would be dropped as invalid on the next read. */
+const MAX_HINTS = 500;
 
 export async function pingWithTimeout(ping: () => Promise<unknown>, ms: number): Promise<boolean> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -210,30 +235,65 @@ export function createSiteAccess(deps: SiteAccessDeps): SiteAccess {
   return {
     async status({ tabId, url }) {
       const page = parseHttpUrl(url);
-      if (!page)
-        return { supported: false, denied: false, pattern: null, access: 'none', active: false };
+      if (!page) {
+        return {
+          supported: false,
+          denied: false,
+          pattern: null,
+          access: 'none',
+          active: false,
+          allSites: false,
+        };
+      }
       const settings = await deps.getSettings();
       const denied = isHostDenied(page.hostname, settings.denyList);
       const pattern = originPattern(url);
-      const [registered, active] = await Promise.all([
+      const [registered, active, granted] = await Promise.all([
         deps.registeredMatches(),
         deps.isActive(tabId),
+        deps.grantedOrigins(),
       ]);
       // "persistent" is only true when a registered script really covers this page and Chrome
       // still grants the origin; a denied host is excluded from the registration.
       const covered = !denied && !!registered?.some((m) => patternCovers(m, page));
       const access = covered && pattern !== null && (await deps.hasPermission(pattern));
-      return { supported: true, denied, pattern, access: access ? 'persistent' : 'none', active };
+      // "All sites" is what Chrome grants and the registration really covers, never a stored flag.
+      const coversPage = (patterns: readonly string[] | null) =>
+        expandAllUrls(patterns ?? []).some((m) => ALL_SITES.test(m) && patternCovers(m, page));
+      const allSites = !denied && coversPage(granted) && coversPage(registered);
+      return {
+        supported: true,
+        denied,
+        pattern,
+        access: access ? 'persistent' : 'none',
+        active,
+        allSites,
+      };
     },
 
     sync() {
       return exclusive(async () => {
         const settings = await deps.getSettings();
-        const candidates = [...new Set(settings.persistentOrigins)].filter((p) =>
-          MATCH_PATTERN.test(p),
-        );
-        const granted = await Promise.all(candidates.map((p) => deps.hasPermission(p)));
-        const matches = candidates.filter((_, i) => granted[i]);
+        const registrable = (p: string) => MATCH_PATTERN.test(p);
+        const granted = await deps.grantedOrigins();
+        // The hint, verified: kept literally while Chrome still covers it.
+        const hints = unique(settings.persistentOrigins).filter(registrable);
+        const covered = await Promise.all(hints.map((p) => deps.hasPermission(p)));
+        const matches = unique([
+          ...hints.filter((_, i) => covered[i]),
+          ...expandAllUrls(granted ?? []).filter(registrable),
+        ]);
+        // Bring the hint in line with the grants so what the options page lists is what runs.
+        // Only when Chrome answered: a failed read must not erase the user's choices.
+        if (
+          granted !== null &&
+          matches.length <= MAX_HINTS &&
+          !sameSet(matches, settings.persistentOrigins)
+        ) {
+          await deps
+            .rememberOrigins(matches)
+            .catch((err: unknown) => console.warn('[StudyVault] could not store site access', err));
+        }
         const registered = await deps.registeredMatches();
         if (matches.length === 0) {
           if (registered !== null) await deps.unregister();

@@ -1,5 +1,6 @@
 import type { Browser } from 'wxt/browser';
 import {
+  INCOGNITO_CAPTURE_REFUSAL,
   PENDING_FOCUS_KEY,
   StudyVaultError,
   isHostDenied,
@@ -11,7 +12,6 @@ import {
 } from '@shared';
 import type { Handlers } from '@runtime';
 import type { RepoApi } from '@storage';
-import type { DeleteLedger, SessionArea } from './deleteLedger';
 import type { SiteAccess } from './siteAccess';
 
 /**
@@ -30,20 +30,28 @@ import type { SiteAccess } from './siteAccess';
  * Identity rules for page callers (payload URLs are never trusted):
  *  - capture.save / page.highlights: payload `url` must have the same ORIGIN as `sender.url`
  *    (path may differ: SPAs change it with pushState). `canonicalUrl` is kept only when
- *    `trustedCanonical` accepts it for that page (same scheme, port and host, ignoring "www.").
- *  - capture.save is also refused when the sender's host is on the deny list.
+ *    `trustedCanonical` accepts it for that page (it must be the page itself: same site, and the
+ *    same path and query once tracking parameters, "www." and a trailing slash are ignored).
+ *  - capture.save is also refused when the sender's host is on the deny list, and when the sender
+ *    is a private (incognito) tab unless settings.allowIncognitoCapture is on (the database is
+ *    shared with normal windows). A null bankId means the last-used bank while it still exists.
  *  - highlight.*: the highlight's Source (`getHighlightSource`) must be on the sender's SITE:
  *    both `urlKey` and `visitedKey` must have the sender's ORIGIN (`sameSite`: same scheme, same
  *    port, same host ignoring a leading "www."). Host alone is not a site: http vs https and
- *    :8443 vs :443 are different servers. An exact-URL compare is deliberately NOT used: a
- *    source's `urlKey` is the page-declared canonical (it may differ from the visited URL by
- *    query or path), and SPA route changes leave previous-route highlights painted. The page can
- *    already declare any same-site canonical and read any same-origin page's highlights through
+ *    :8443 vs :443 are different servers. An exact-URL compare is deliberately NOT used: SPA route
+ *    changes leave previous-route highlights painted, and a source can hold address variants of
+ *    one page. The page can already read any same-origin page's highlights through
  *    page.highlights, so a same-site rule grants nothing new while keeping Undo/edit working.
- *    Foreign sources -> forbidden; unknown or deleted ids -> not_found.
+ *    Foreign sources -> forbidden; unknown ids -> not_found; deleted ids -> not_found except for
+ *    delete (idempotent) and restore, which look the source up with `includeDeleted`: a deleted
+ *    highlight still belongs to its page, so Undo needs no memory of its own.
  */
 
 type Sender = Browser.runtime.MessageSender;
+/** chrome.storage.session: the only part of it the handlers use. */
+export interface SessionArea {
+  set(items: Record<string, unknown>): Promise<void>;
+}
 type PageCaller = { kind: 'page'; tabId: number; url: URL };
 type Caller = { kind: 'extension' } | PageCaller;
 type SourceKeys = { urlKey: string; visitedKey: string };
@@ -53,7 +61,6 @@ export interface HandlerDeps {
   getSettings(): Promise<Settings>;
   updateSettings(mutate: (current: Settings) => Settings): Promise<Settings>;
   site: SiteAccess;
-  ledger: DeleteLedger;
   /** `chrome-extension://<id>/` */
   extensionBaseUrl: string;
   /**
@@ -62,7 +69,7 @@ export interface HandlerDeps {
    */
   openSidePanel(tabId: number): Promise<void>;
   /** chrome.storage.session: hands the highlight to focus over to the side panel. */
-  session: Pick<SessionArea, 'set'>;
+  session: SessionArea;
 }
 
 const forbidden = (message: string) => new StudyVaultError('forbidden', message);
@@ -102,11 +109,14 @@ export function createHandlers(deps: HandlerDeps): Handlers<BackgroundRpc> {
     if (!ownsSource(caller, keys)) throw forbidden('That highlight belongs to a different site.');
   };
 
-  /** Page callers: the live highlight must exist and belong to the sender's site. */
-  const authorizeLive = async (sender: Sender, id: string) => {
+  /**
+   * Page callers: the highlight must exist and belong to the sender's site. Deleted highlights
+   * count only when `includeDeleted` (delete is idempotent, restore is Undo).
+   */
+  const authorize = async (sender: Sender, id: string, includeDeleted = false) => {
     const caller = callerOf(sender);
     if (caller.kind === 'extension') return;
-    const source = await deps.repo.getHighlightSource(id);
+    const source = await deps.repo.getHighlightSource(id, { includeDeleted });
     if (!source) throw new StudyVaultError('not_found', 'Highlight not found');
     assertOwns(caller, source);
   };
@@ -118,11 +128,21 @@ export function createHandlers(deps: HandlerDeps): Handlers<BackgroundRpc> {
       if (caller.kind === 'page' && isHostDenied(caller.url.hostname, settings.denyList)) {
         throw forbidden(`StudyVault is turned off on ${caller.url.hostname}.`);
       }
+      if (sender.tab?.incognito === true && !settings.allowIncognitoCapture) {
+        throw forbidden(INCOGNITO_CAPTURE_REFUSAL);
+      }
       const page = {
         ...input.page,
         ...ownLocation(caller, input.page.url, input.page.canonicalUrl),
       };
-      const result = await deps.repo.saveCapture({ ...input, page });
+      // Shortcut and context-menu captures carry no bank: file them where the last save went, while
+      // that bank still exists (the repo falls back to the Inbox for a deleted one anyway).
+      let bankId = input.bankId;
+      if (bankId === null && settings.lastBankId !== null) {
+        const banks = await deps.repo.listBanks();
+        if (banks.some((b) => b.id === settings.lastBankId)) bankId = settings.lastBankId;
+      }
+      const result = await deps.repo.saveCapture({ ...input, bankId, page });
       if (settings.lastBankId !== result.bank.id) {
         // The highlight is already saved; a failed convenience write must not turn it into an error.
         await deps
@@ -138,40 +158,19 @@ export function createHandlers(deps: HandlerDeps): Handlers<BackgroundRpc> {
     },
 
     'highlight.update': async ({ id, patch }, sender) => {
-      await authorizeLive(sender, id);
+      await authorize(sender, id);
       return deps.repo.updateHighlight(id, patch);
     },
 
     'highlight.delete': async ({ id }, sender) => {
-      const caller = callerOf(sender);
-      if (caller.kind === 'extension') {
-        await deps.repo.softDeleteHighlight(id);
-        return { id };
-      }
-      const source = await deps.repo.getHighlightSource(id);
-      if (!source) {
-        // Idempotent: a second delete of what this tab already deleted succeeds.
-        const earlier = await deps.ledger.find(caller.tabId, id);
-        if (earlier && ownsSource(caller, earlier)) return { id };
-        throw new StudyVaultError('not_found', 'Highlight not found');
-      }
-      assertOwns(caller, source);
+      // Deleted rows are included so a repeated delete is idempotent (the repo no-ops on it).
+      await authorize(sender, id, true);
       await deps.repo.softDeleteHighlight(id);
-      await deps.ledger
-        .add({ tabId: caller.tabId, id, urlKey: source.urlKey, visitedKey: source.visitedKey })
-        .catch((err: unknown) => console.warn('[StudyVault] could not record deletion', err));
       return { id };
     },
 
     'highlight.restore': async ({ id }, sender) => {
-      const caller = callerOf(sender);
-      if (caller.kind === 'page') {
-        // A live highlight is checked through the repo; a deleted one only via this tab's ledger.
-        const known =
-          (await deps.repo.getHighlightSource(id)) ?? (await deps.ledger.find(caller.tabId, id));
-        if (!known) throw forbidden('Only highlights removed from this page can be restored here.');
-        assertOwns(caller, known);
-      }
+      await authorize(sender, id, true);
       return deps.repo.restoreHighlight(id);
     },
 

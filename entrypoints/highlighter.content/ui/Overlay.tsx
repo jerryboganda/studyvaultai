@@ -2,7 +2,7 @@ import { Component, type ReactNode, type SyntheticEvent } from 'react';
 import { useUi } from './context';
 import { HighlightPopover } from './Popover';
 import { useStore } from './store';
-import { Toasts } from './Toasts';
+import { Announcer, Toasts } from './Toasts';
 import { ToolbarUnit } from './Toolbar';
 
 /**
@@ -47,6 +47,8 @@ export function Overlay() {
     <Boundary resetKey={toolbar?.selection.text ?? popover?.highlight.id ?? null}>
       <div
         className="sv-root"
+        // Theme and density live here, inside the shadow root: the host element is page-visible.
+        data-theme={settings.theme}
         data-density={settings.density}
         onPointerDown={keepPageState}
         onMouseDown={keepPageState}
@@ -62,6 +64,7 @@ export function Overlay() {
           />
         ) : null}
         <Toasts />
+        <Announcer />
       </div>
     </Boundary>
   );

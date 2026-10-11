@@ -19,6 +19,7 @@ import {
   storedHighlights,
   tabRpc,
   test,
+  textPoints,
   toolbarOf,
   toolbarSightings,
   tripleClick,
@@ -844,18 +845,13 @@ async function overlayContrast(
         .map((n) => (n.nodeValue ?? '').trim())
         .join(' ')
         .trim();
-      const placeholder = el instanceof HTMLTextAreaElement && el.placeholder ? el.placeholder : '';
-      if (!own && !placeholder) continue;
+      if (!own) continue;
       const rect = (el as HTMLElement).getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) continue;
       if (el.closest('.sv-sr, [hidden]')) continue;
       const style = getComputedStyle(el);
-      let fg = style.color;
-      let text = own;
-      if (!own && placeholder) {
-        fg = getComputedStyle(el, '::placeholder').color;
-        text = `placeholder: ${placeholder}`;
-      }
+      const fg = style.color;
+      const text = own;
       let bg = '';
       for (let n: Element | null = el; n; n = n.parentElement) {
         const c = getComputedStyle(n).backgroundColor;
@@ -902,18 +898,25 @@ test.describe('themes and contrast (matrix 7)', () => {
       };
 
       await audit('toolbar');
+      // The caption row under the toolbar names the hovered button.
+      await page.getByRole('button', { name: 'Save as Formula' }).hover();
+      await expect(page.locator(`${OVERLAY_HOST} .sv-caption`)).toHaveText('Save as Formula');
+      await audit('toolbar caption');
       await page.getByRole('button', { name: 'More options' }).click();
       await expect(page.getByRole('dialog', { name: 'Save with details' })).toBeVisible();
       await expect(page.getByRole('combobox', { name: 'Bank' })).toBeVisible();
-      await audit('more panel');
-      await page.getByRole('button', { name: 'Cancel' }).click();
-      await page.getByRole('button', { name: 'Add a note' }).click();
-      await expect(page.getByRole('dialog', { name: 'Add a note' })).toBeVisible();
-      await audit('note composer');
+      await audit('more panel (pickers only)');
       await page.getByRole('button', { name: 'Cancel' }).click();
 
       await clickSave(page);
-      await audit('toast');
+      await audit('toast (with its keyboard hint line)');
+
+      // The highlight popover: read-only note text + "Edit note in side panel".
+      await page.getByRole('button', { name: 'Dismiss notification' }).click();
+      await page.evaluate(() => window.getSelection()?.removeAllRanges());
+      await page.locator(c.selector).click({ position: { x: 24, y: 8 } });
+      await expect(page.getByRole('dialog', { name: 'Highlight details' })).toBeVisible();
+      await audit('highlight popover');
       expect(failures, failures.join('\n')).toEqual([]);
     });
   }
@@ -999,10 +1002,17 @@ test.describe('browser page zoom (matrix 7)', () => {
       }
     });
 
-    test(`Add a note panel is fully reachable at ${cfg.name}`, async ({ env }) => {
+    test(`highlight popover is fully reachable at ${cfg.name}`, async ({ env }) => {
       const { page, view } = await zoomedSelection(env, cfg);
-      await page.getByRole('button', { name: 'Add a note' }).click();
-      const panel = page.getByRole('dialog', { name: 'Add a note' });
+      await clickSave(page);
+      await page.getByRole('button', { name: 'Dismiss notification' }).click();
+      await page.evaluate(() => window.getSelection()?.removeAllRanges());
+      const p = await textPoints(page, {
+        selector: '#p-multiline',
+        text: 'pauses at the atrioventricular node, and then travels rapidly',
+      });
+      await page.mouse.click(p.start.x + 12, p.start.y);
+      const panel = page.getByRole('dialog', { name: 'Highlight details' });
       await expect(panel).toBeVisible();
       expect(await clippedControls(panel, view), 'controls outside the viewport').toEqual([]);
     });
@@ -1118,19 +1128,9 @@ test.describe('non-interference', () => {
     await expect(page.getByRole('button', { name: 'Save selection' })).not.toBeFocused();
 
     // The toolbar tracks the CURRENT selection, not the one it first appeared for.
-    await page.getByRole('button', { name: 'Add a note' }).click();
-    await expect(page.getByLabel('Selected text', { exact: true })).toHaveText(
-      'intervening paragraph',
-    );
-    await page.getByRole('textbox', { name: 'Note' }).fill('extended with the keyboard');
-    await page
-      .getByRole('dialog', { name: 'Add a note' })
-      .getByRole('button', { name: 'Save', exact: true })
-      .click();
-    await expect(page.getByText('Saved to Inbox')).toBeVisible();
+    await clickSave(page);
     const [h] = await storedHighlights(env, page);
     expect(h!.exactQuote).toBe('intervening paragraph');
-    expect(h!.userComment).toBe('extended with the keyboard');
   });
 
   test('page DOM is untouched apart from the single overlay host', async ({ env }) => {
@@ -1169,17 +1169,15 @@ test.describe('non-interference', () => {
     });
 
     await activate(env, page);
-    // A realistic session: select, open the details panel, save with a note, undo, save again, edit via popover.
+    // A realistic session: select, open the details panel, save with a chosen type, undo, save again.
     await dragSelect(page, {
       selector: '#plain-after',
       text: 'pyruvate kinase and substrate level phosphorylation',
     });
-    await page.getByRole('button', { name: 'Add a note' }).click();
-    await page.getByRole('textbox', { name: 'Note' }).fill('keep');
-    await page
-      .getByRole('dialog', { name: 'Add a note' })
-      .getByRole('button', { name: 'Save', exact: true })
-      .click();
+    await page.getByRole('button', { name: 'More options' }).click();
+    const details = page.getByRole('dialog', { name: 'Save with details' });
+    await details.getByRole('combobox', { name: 'Type' }).selectOption({ label: 'ƒ Formula' });
+    await details.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(page.getByText('Saved to Inbox')).toBeVisible();
     await page.getByRole('button', { name: 'Undo' }).click();
     await expect(page.getByText('Save undone')).toBeVisible();
@@ -1242,23 +1240,37 @@ test.describe('non-interference', () => {
     expect(foreign, 'no mutation outside the overlay host').toEqual([]);
   });
 
-  test('Alt+Shift+T is left to the page when there is no toolbar or toast to focus', async ({
-    env,
-  }) => {
+  // The in-page Alt+Shift+T is gone (it collided with Chrome's own accelerator). The remappable
+  // manifest command "focus-toolbar" replaces it, so the overlay must never swallow that key.
+  test('Alt+Shift+T is left to the page, with and without a toolbar on screen', async ({ env }) => {
     const page = await openFixture(env, '/compat-inline.html');
+    const pressed = async (): Promise<Array<{ code: string; defaultPrevented: boolean }>> => {
+      await page.keyboard.press('Alt+Shift+KeyT');
+      const log = await page.evaluate(
+        () =>
+          (
+            window as unknown as {
+              __log: { keydown: Array<{ code: string; defaultPrevented: boolean }> };
+            }
+          ).__log.keydown,
+      );
+      return log.filter((k) => k.code === 'KeyT');
+    };
+
     await page.locator('#plain-after').click({ position: { x: 5, y: 5 } });
-    await page.keyboard.press('Alt+Shift+KeyT');
-    const log = await page.evaluate(
-      () =>
-        (
-          window as unknown as {
-            __log: { keydown: Array<{ code: string; defaultPrevented: boolean }> };
-          }
-        ).__log.keydown,
-    );
-    const t = log.filter((k) => k.code === 'KeyT');
-    expect(t).toHaveLength(1);
-    expect(t[0]!.defaultPrevented, 'no toolbar -> the page keeps its shortcut').toBe(false);
+    const bare = await pressed();
+    expect(bare).toHaveLength(1);
+    expect(bare[0]!.defaultPrevented, 'no toolbar -> the page keeps its shortcut').toBe(false);
+
+    await dragSelect(page, { selector: '#plain-after', text: 'pyruvate kinase' });
+    await expect(toolbarOf(page)).toBeVisible();
+    const withToolbar = await pressed();
+    expect(withToolbar).toHaveLength(2);
+    expect(
+      withToolbar[1]!.defaultPrevented,
+      'a toolbar on screen does not take the key either: the focus-toolbar command does that',
+    ).toBe(false);
+    await expect(page.getByRole('button', { name: 'Save selection' })).not.toBeFocused();
   });
 
   test('the native context menu event on a selection is not cancelled', async ({ env }) => {
@@ -1312,14 +1324,16 @@ test.describe('URL identity (canonical, tracking parameters)', () => {
     };
   }
 
-  test('canonical.html: utm_*, ref=, fragment and bare URL are the same source', async ({
+  // A page-declared canonical is trusted as identity only when it equals the visited URL once
+  // tracking parameters, "www.", a fragment and a trailing slash are folded. Anything else (an
+  // unknown query parameter, another path) is a different page that merely claims that canonical.
+  test('canonical.html: tracking parameters, fragment and bare URL fold into one source; an unknown parameter does not', async ({
     env,
   }) => {
     const { page, text } = await saveOn(env, '/canonical.html?utm_source=x', '#c');
     expect(text).toContain('glomerular filtration rate');
 
     for (const path of [
-      '/canonical.html?ref=y',
       '/canonical.html',
       '/canonical.html#section-2',
       '/canonical.html?utm_source=a&utm_medium=b&fbclid=zzz',
@@ -1330,6 +1344,38 @@ test.describe('URL identity (canonical, tracking parameters)', () => {
         .poll(() => paintedNormalised(page), { message: path, timeout: 15_000 })
         .toEqual([text]);
     }
+
+    // ref=y is not a tracking parameter: the declared canonical no longer reaches over it.
+    const other = await visit(env, page, '/canonical.html?ref=y');
+    expect(
+      other,
+      'an unknown query parameter is a new source even with a same-host canonical',
+    ).toEqual({ stored: 0, painted: [] });
+    // ...and the page it was derived from is untouched.
+    await page.goto(`${env.origin}/canonical.html`);
+    await activate(env, page);
+    await expect.poll(() => paintedNormalised(page), { timeout: 15_000 }).toEqual([text]);
+  });
+
+  test('two routes that declare the same canonical ("/") stay two sources', async ({ env }) => {
+    const { page, text } = await saveOn(env, '/compat-canon-root.html?page=1', '#shared');
+    expect(text).toContain('renal corpuscle');
+
+    // Same text, same declared canonical, another route: nothing of page 1 may appear here.
+    const second = await visit(env, page, '/compat-canon-root.html?page=2');
+    expect(second, 'a shared canonical must not merge two routes').toEqual({
+      stored: 0,
+      painted: [],
+    });
+
+    // A highlight made on route 2 does not leak back to route 1 either.
+    await tripleClick(page, '#shared');
+    await expect(toolbarOf(page)).toBeVisible();
+    await clickSave(page);
+    expect(await storedHighlights(env, page)).toHaveLength(1);
+    const first = await visit(env, page, '/compat-canon-root.html?page=1&utm_source=x');
+    expect(first.stored, 'route 1 (a tracking parameter folds) still has exactly its own').toBe(1);
+    await expect.poll(() => paintedNormalised(page), { timeout: 15_000 }).toEqual([text]);
   });
 
   test('without a canonical: tracking params and query order are ignored, other params are not', async ({

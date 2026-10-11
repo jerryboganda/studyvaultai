@@ -1,7 +1,9 @@
 /*
  * StudyVault design tokens (UX_DESIGN.md): precise, dense, editorial; neutral surfaces, one blue accent.
- * Used by extension pages (:root) and the in-page Shadow DOM UI (:host). Tokens only; no resets.
- * Dark mode follows the system unless data-theme="light"|"dark" is set on the root/host element.
+ * Used by extension pages (:root) and the in-page Shadow DOM UI (:host defaults, .sv-root overrides).
+ * Tokens only; no resets. Dark mode follows the system unless data-theme="light"|"dark" is set on
+ * <html> (extension pages) or on .sv-root, the container inside the overlay's shadow root. The
+ * overlay's host element is page-visible, so it never carries the theme.
  */
 :root,
 :host {
@@ -62,7 +64,7 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']),
-  :host(:not([data-theme='light'])) {
+  .sv-root:not([data-theme='light']) {
     color-scheme: dark;
     --sv-bg: #101318;
     --sv-surface: #181c23;
@@ -83,7 +85,7 @@
 }
 
 :root[data-theme='dark'],
-:host([data-theme='dark']) {
+.sv-root[data-theme='dark'] {
   color-scheme: dark;
   --sv-bg: #101318;
   --sv-surface: #181c23;
@@ -112,8 +114,8 @@
   :root:not([data-theme='light']),
   :root[data-theme='dark'],
   :host,
-  :host(:not([data-theme='light'])),
-  :host([data-theme='dark']) {
+  .sv-root:not([data-theme='light']),
+  .sv-root[data-theme='dark'] {
     --sv-border: currentColor;
     --sv-border-strong: currentColor;
     --sv-text-muted: var(--sv-text);

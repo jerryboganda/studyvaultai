@@ -30,3 +30,14 @@ by the page:
 - Selection *text* is still visible to the page (it is the page's own text). The saved quote is not.
 - The one-click quote/kind/colour choice made on the overlay is observable through the highlight
   registry; see SECURITY_PRIVACY.md "Exposures to page scripts".
+
+## Implementation notes (2026-10-11)
+- The side panel gained a **Banks** tab (labelled "New bank" input) so bank names are typed in the
+  extension origin; the overlay's More panel only offers a bank `<select>` and a "New bank..." button
+  that opens the panel.
+- `sidepanel.open` calls `chrome.sidePanel.open` before any `await` (user-gesture requirement). A
+  quick-save followed by "Note" relies on the click's transient activation (about 5 s in Chromium); a
+  slower save reports failure rather than losing the highlight.
+- Verified in a real Chromium build: a trusted click yields `opened:true`; without a gesture
+  `opened:false`. Not verified: focus landing in the panel for assistive-technology users in branded
+  Chrome (manual checklist item).

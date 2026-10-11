@@ -2,7 +2,7 @@ import { act, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 import { STYLES_CSS, declsFor, parseCss, readCss } from './testCss';
-import { cleanupUi, makeHighlight, mountUi, pressFocusShortcut, rect } from './testHarness';
+import { cleanupUi, focusToolbar, makeHighlight, mountUi, rect } from './testHarness';
 
 const FOCUSABLE = 'button, input, select, textarea, a[href], [tabindex]';
 
@@ -44,12 +44,27 @@ describe('every focusable control of the overlay is under the focus-ring rule', 
     expect(outside.map((el) => el.outerHTML.slice(0, 60))).toEqual([]);
   });
 
-  it('Alt+Shift+T lands on a button that the ring rule covers', () => {
+  it('focusToolbar lands on a button that the ring rule covers', () => {
     const m = mountUi();
     act(() => m.ui.showToolbar({ text: 'abc', rect: rect(100, 200, 50, 20) }));
-    pressFocusShortcut();
+    expect(focusToolbar(m.ui)).toBe(true);
     const focused = m.shadow.activeElement as HTMLElement;
     expect(focused.getAttribute('aria-label')).toBe('Save selection');
+    expect(focused.closest(RING_SCOPE)).not.toBeNull();
+  });
+
+  it('focusToolbar onto a toast action lands on a button that the ring rule covers', () => {
+    const m = mountUi();
+    act(() =>
+      m.ui.toast({
+        text: 'Saved',
+        tone: 'success',
+        action: { label: 'Undo', run: () => undefined },
+      }),
+    );
+    expect(focusToolbar(m.ui)).toBe(true);
+    const focused = m.shadow.activeElement as HTMLElement;
+    expect(focused.textContent).toBe('Undo');
     expect(focused.closest(RING_SCOPE)).not.toBeNull();
   });
 });

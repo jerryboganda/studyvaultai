@@ -6,7 +6,7 @@ import {
   freshPendingFocus,
   type PendingFocus,
 } from '@shared';
-import { useLatest } from '@ui';
+import { truncate, useLatest, useToast } from '@ui';
 
 /**
  * The hand-over the service worker writes when the page overlay asks for a note
@@ -20,9 +20,11 @@ import { useLatest } from '@ui';
 
 const remove = () => void browser.storage.session.remove(PENDING_FOCUS_KEY).catch(() => undefined);
 
-function findNote(highlightId: string): HTMLTextAreaElement | null {
+function findNote(highlightId: string): { note: HTMLTextAreaElement; quote: string } | null {
   for (const card of document.querySelectorAll<HTMLElement>('[data-highlight-id]')) {
-    if (card.dataset.highlightId === highlightId) return card.querySelector('textarea');
+    if (card.dataset.highlightId !== highlightId) continue;
+    const note = card.querySelector('textarea');
+    if (note) return { note, quote: card.querySelector('blockquote')?.textContent ?? '' };
   }
   return null;
 }
@@ -32,6 +34,7 @@ export function usePendingFocus(onRequest: () => void): void {
   const [pending, setPending] = useState<PendingFocus | null>(null);
   const handled = useRef<string | null>(null);
   const request = useLatest(onRequest);
+  const { announce } = useToast();
 
   useEffect(() => {
     let live = true;
@@ -72,12 +75,15 @@ export function usePendingFocus(onRequest: () => void): void {
     if (pending === null) return;
     const stamp = `${pending.at}:${pending.highlightId}`;
     if (handled.current === stamp) return;
-    const note = findNote(pending.highlightId);
-    if (note === null) return;
+    const found = findNote(pending.highlightId);
+    if (found === null) return;
+    const { note, quote } = found;
     handled.current = stamp;
     note.scrollIntoView?.({ block: 'center' });
     note.focus();
     note.setSelectionRange(note.value.length, note.value.length);
+    // Focus moved because the page overlay asked for it: say where it went.
+    announce(`Editing note for "${truncate(quote, 60)}"`);
     remove();
   });
 }

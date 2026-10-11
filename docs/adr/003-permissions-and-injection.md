@@ -30,3 +30,22 @@ injection call; the UI maps that to an explicit "not supported on this page" sta
 
 ## Consequences
 First use on a site needs one click. That is the price of not requesting broad access at install.
+
+## Amendments after review (2026-10-11)
+- **Same-site rule.** A page may read, paint and mutate only highlights of its own *site*: same scheme,
+  same port, same host with a leading `www.` folded. A page-declared canonical URL is trusted for source
+  identity only when it passes that rule **and** equals the visited URL after normalisation; otherwise
+  the visited URL is the identity (a `<link rel=canonical href="/">` on every route must not merge pages).
+- **Credentials never persist.** `redactUrl` removes userinfo, credential-like query parameters
+  (`token`, `access_token`, `sig`, `X-Amz-*`, ...) and non-route fragments before a URL is stored or
+  used as a key, so a rotating presigned/magic-link token neither leaks into backups nor forks a source.
+- **Content-script RPC policy** now includes `sidepanel.open` (opens the side panel for the sender's own
+  tab and hands a highlight id over through `chrome.storage.session`; foreign ids are ignored).
+- **Deny list.** Hosts are normalised (case, trailing dot) once in `@shared`; the default list is a
+  *starter* list and is documented as such. Capture is refused in the worker as well as in the page.
+- **Private windows.** Capture from incognito tabs is refused unless the user turns on
+  `allowIncognitoCapture`, because the database is shared with normal windows.
+- **Shortcuts.** Manifest commands: `open-side-panel` (Alt+Shift+S), `quick-save` (Alt+Shift+H),
+  `focus-toolbar` (Alt+Shift+Y), `next-highlight` (Alt+Shift+Period), `previous-highlight` (unassigned;
+  Chrome allows four suggested keys). `[`/`]` are not valid manifest keys, so Alt+Shift+] / [ remain as
+  additional in-page keys. In-page Alt+Shift+T was removed: it collided with Chrome's own accelerator.

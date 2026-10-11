@@ -1079,3 +1079,42 @@ test.describe('dynamic pages', () => {
     console.log(`BUSY-PAGE late text arrived after ${arrivedAfterMs} ms and was painted`);
   });
 });
+
+// -----------------------------------------------------------------------------------------------
+// Provenance
+// -----------------------------------------------------------------------------------------------
+
+test.describe('capture provenance', () => {
+  test('a highlight records the address and title it was saved on, with credentials removed, and nothing secret reaches the database', async ({
+    context,
+    extensionId,
+    fixtureServer,
+  }) => {
+    test.setTimeout(90_000);
+    const origin = fixtureServer.origin;
+    const ext = await openExtensionPage(context, extensionId);
+    const page = await context.newPage();
+    // A tracking parameter (kept as visited), a credential parameter and a non-route fragment.
+    await page.goto(`${origin}/article.html?utm_source=news&access_token=SECRETTOKEN123#intro`);
+    await activate(ext, page);
+    await page.bringToFront();
+    await selectAndSave(page, { triple: '#quote' }, QUOTE);
+
+    const db = await readDb(ext);
+    const [h] = liveHighlights(db);
+    expect(h, 'one highlight was saved').toBeDefined();
+    expect(h!.capturedTitle).toBe('Cardiac Physiology Primer');
+    const captured = new URL(h!.capturedUrl ?? 'about:blank');
+    expect(captured.origin).toBe(origin);
+    expect(captured.pathname).toBe('/article.html');
+    expect(captured.searchParams.get('utm_source'), 'a tracking parameter is not a secret').toBe(
+      'news',
+    );
+    expect(captured.searchParams.has('access_token'), 'the credential parameter is removed').toBe(
+      false,
+    );
+    expect(captured.hash, '"#intro" is not a route').toBe('');
+    // Nowhere in the database: not on the highlight, the source, or any key.
+    expect(JSON.stringify(db)).not.toContain('SECRETTOKEN123');
+  });
+});

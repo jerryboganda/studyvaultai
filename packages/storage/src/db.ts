@@ -6,6 +6,7 @@ import {
   type HighlightBank,
   type Source,
 } from '@shared';
+import { isNewerRow } from './rows';
 
 export const DB_NAME = 'studyvault';
 
@@ -82,14 +83,73 @@ export async function withDb<T>(fn: (db: StudyVaultDb) => Promise<T>): Promise<T
   }
 }
 
+/** Set once this connection has seen that no row was written by a newer build. */
+let verifiedCurrent = false;
+
+export const NEWER_DATA_MESSAGE =
+  'This data was saved by a newer version of StudyVault. Update the extension before changing it; nothing was written.';
+
+/**
+ * Writes are refused while any row carries a schemaVersion this build does not know: this build
+ * cannot know what such a row requires of its neighbours, and an older build rewriting them is how
+ * data gets lost. Reads are unaffected. The scan runs once per connection (this build only ever
+ * writes SCHEMA_VERSION, so a clean result stays clean); a positive result is re-checked each time
+ * so that wiping the data, or replacing it, lifts the refusal.
+ */
+async function assertNoNewerRows(db: StudyVaultDb): Promise<void> {
+  if (verifiedCurrent) return;
+  for (const table of [db.banks, db.sources, db.highlights] as const) {
+    if ((await table.filter(isNewerRow).first()) !== undefined) {
+      throw new StudyVaultError('storage_unavailable', NEWER_DATA_MESSAGE);
+    }
+  }
+  verifiedCurrent = true;
+}
+
+/** `withDb` for functions that write: refuses with storage_unavailable on data from a newer build. */
+export function withWritableDb<T>(fn: (db: StudyVaultDb) => Promise<T>): Promise<T> {
+  return withDb(async (db) => {
+    await assertNoNewerRows(db);
+    return fn(db);
+  });
+}
+
 /** Close the connection and forget the singleton; the next call reopens (simulates a restart). */
 export function closeDb(): void {
   instance?.close();
   instance = null;
+  verifiedCurrent = false;
+}
+
+const DELETE_TIMEOUT_MS = 10_000;
+
+/**
+ * Close this context's connection and delete the whole database. Other contexts' Dexie
+ * connections close themselves on the versionchange event and reopen lazily (empty) on next use.
+ */
+export async function deleteDatabase(): Promise<void> {
+  closeDb();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const blocked = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          new StudyVaultError(
+            'storage_unavailable',
+            'Another StudyVault window is still using the database. Close other StudyVault tabs and try again.',
+          ),
+        ),
+      DELETE_TIMEOUT_MS,
+    );
+  });
+  try {
+    await Promise.race([Dexie.delete(DB_NAME), blocked]);
+  } catch (err) {
+    throw toStorageError(err);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Test helper: close the connection and delete the whole database. */
-export async function resetDbForTests(): Promise<void> {
-  closeDb();
-  await Dexie.delete(DB_NAME);
-}
+export const resetDbForTests = deleteDatabase;

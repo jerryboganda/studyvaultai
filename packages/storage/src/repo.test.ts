@@ -25,11 +25,15 @@ import { anchor, cap } from './test-fixtures';
 const epoch = async () =>
   ((await fakeBrowser.storage.local.get('dataEpoch')).dataEpoch as string | undefined) ?? null;
 
+const resolutionEpoch = async () =>
+  ((await fakeBrowser.storage.local.get('resolutionEpoch')).resolutionEpoch as
+    string | undefined) ?? null;
+
 /** Records every token written, so tests can count bumps without assuming a numeric value. */
-function trackEpochs(): unknown[] {
+function trackEpochs(key: 'dataEpoch' | 'resolutionEpoch' = 'dataEpoch'): unknown[] {
   const seen: unknown[] = [];
   fakeBrowser.storage.onChanged.addListener((changes) => {
-    if (changes.dataEpoch) seen.push(changes.dataEpoch.newValue);
+    if (changes[key]) seen.push(changes[key].newValue);
   });
   return seen;
 }
@@ -439,9 +443,18 @@ describe('page lookup by urlKey and visitedKey', () => {
     expect(found.highlights).toHaveLength(1);
   });
 
-  it('finds it from another URL that declares the same canonical', async () => {
-    const found = await getPageHighlights('https://example.com/post?a=1&b=2&ref=home', canonical);
+  it('finds it from another spelling of the page that declares the same canonical', async () => {
+    const found = await getPageHighlights(
+      'https://example.com/post/?utm_source=x&b=2&a=1',
+      canonical,
+    );
     expect(found.highlights).toHaveLength(1);
+  });
+
+  it('does not merge an address that differs by a real parameter, even when it declares the canonical', async () => {
+    // "?page=2" and "?ref=home" look the same to us; keying by the visited URL is the safe side.
+    const other = await getPageHighlights('https://example.com/post?a=1&b=2&ref=home', canonical);
+    expect(other).toEqual({ sourceId: null, highlights: [] });
   });
 
   it('finds it by visiting the canonical URL directly', async () => {
@@ -644,18 +657,24 @@ describe('reportResolutions', () => {
     ).rejects.toMatchObject({ code: 'invalid_request' });
   });
 
-  it('only notifies other contexts when an outcome actually changed', async () => {
+  it('only notifies when an outcome actually changed, and never on the data channel', async () => {
     const saved = await saveCapture(cap());
+    const dataBefore = await epoch();
+    expect(await resolutionEpoch()).toBeNull();
+
     await reportResolutions([{ id: saved.highlight.id, status: 'resolved', confidence: 1 }]);
-    const afterChange = await epoch();
+    const afterChange = await resolutionEpoch();
+    expect(afterChange).not.toBeNull();
 
     expect(
       await reportResolutions([{ id: saved.highlight.id, status: 'resolved', confidence: 1 }]),
     ).toBe(1);
-    expect(await epoch()).toBe(afterChange);
+    expect(await resolutionEpoch()).toBe(afterChange);
 
     await reportResolutions([{ id: saved.highlight.id, status: 'ambiguous', confidence: 0.4 }]);
-    expect(await epoch()).not.toBe(afterChange);
+    expect(await resolutionEpoch()).not.toBe(afterChange);
+    // Content scripts watch only the data channel: a resolver outcome must not wake them.
+    expect(await epoch()).toBe(dataBefore);
   });
 });
 
@@ -682,6 +701,13 @@ describe('visibility of soft-deleted rows', () => {
       visitedKey: 'https://example.com/notes/pharm',
     });
     expect(await getHighlightSource('unknown-id-123')).toBeNull();
+    // A deleted highlight still belongs to its page; Undo is authorised through that.
+    expect(await getHighlightSource(drop.highlight.id, { includeDeleted: true })).toEqual({
+      sourceId: drop.highlight.sourceId,
+      urlKey: 'https://example.com/notes/pharm',
+      visitedKey: 'https://example.com/notes/pharm',
+    });
+    expect(await getHighlightSource('unknown-id-123', { includeDeleted: true })).toBeNull();
     const inbox = (await listBanksWithCounts()).find((b) => b.bank.id === INBOX_BANK_ID)!;
     expect(inbox.count).toBe(1);
   });
@@ -822,6 +848,22 @@ describe('data epoch', () => {
     expect(seen).toHaveLength(5);
     // storage.onChanged does not fire for an unchanged value, so every bump must be unique.
     expect(new Set(seen).size).toBe(5);
+  });
+
+  it('keeps resolver outcomes on their own channel', async () => {
+    const data = trackEpochs('dataEpoch');
+    const resolution = trackEpochs('resolutionEpoch');
+    const saved = await saveCapture(cap());
+    expect([data.length, resolution.length]).toEqual([1, 0]);
+
+    await reportResolutions([{ id: saved.highlight.id, status: 'resolved', confidence: 1 }]);
+    expect([data.length, resolution.length]).toEqual([1, 1]);
+
+    await updateHighlight(saved.highlight.id, { color: 'green' });
+    await softDeleteHighlight(saved.highlight.id);
+    await restoreHighlight(saved.highlight.id);
+    await createBank('Another');
+    expect([data.length, resolution.length]).toEqual([5, 1]);
   });
 
   it('yields distinct values for concurrent mutations', async () => {

@@ -27,6 +27,18 @@
 .opt__main h2 {
   font-size: 1.125rem;
 }
+.opt__main h4 {
+  margin: 0;
+  font-size: var(--sv-text-md);
+}
+/* Headings that take focus after an action: a quiet ring, never a stray outline on mouse use. */
+.opt__main h3:focus {
+  outline: none;
+}
+.opt__main h3:focus-visible {
+  outline: 2px solid var(--sv-focus);
+  outline-offset: 2px;
+}
 .opt__main > div {
   scroll-margin-top: var(--sv-space-4);
 }
@@ -107,6 +119,17 @@
 .opt-sample {
   padding: 1px 6px;
   border-radius: 4px;
+}
+.opt-legend {
+  gap: var(--sv-space-3);
+}
+.opt-legend__kind {
+  flex: 1 1 180px;
+}
+.opt-underline {
+  padding: 1px 6px;
+  border-radius: 4px;
+  text-underline-offset: 3px;
 }
 code {
   font-family: var(--sv-font-mono);

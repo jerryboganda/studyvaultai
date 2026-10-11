@@ -23,10 +23,18 @@ const created = (over: Record<string, unknown> = {}) =>
     ...over,
   }) as CaptureSelectionResult;
 
-function setup(result: CaptureSelectionResult | Error = created()) {
+function setup(
+  result: CaptureSelectionResult | Error = created(),
+  options: { allowIncognito?: boolean } = {},
+) {
   const shown: Array<{ tabId: number; badge: Badge }> = [];
   const deps = {
     activate: vi.fn(async (_tabId: number) => undefined),
+    allowIncognitoCapture: vi.fn(async () => options.allowIncognito ?? false),
+    focusToolbar: vi.fn(async (_tabId: number) => ({ focused: true })),
+    stepHighlight: vi.fn(async (_tabId: number, _direction: 'next' | 'previous') => ({
+      found: true,
+    })),
     captureSelection: vi.fn(async (_tabId: number, _method: string) => {
       if (result instanceof Error) throw result;
       return result;
@@ -142,6 +150,109 @@ describe('quick-save command and context menu', () => {
     const t = setup(created());
     t.deps.showBadge.mockRejectedValueOnce(new Error('No tab with id: 1'));
     await expect(t.commands.onCommand('quick-save', { id: 1 })).resolves.toBeUndefined();
+  });
+});
+
+describe('private windows', () => {
+  it('refuses the shortcut and the menu before injecting anything', async () => {
+    const t = setup(created());
+    await t.commands.onCommand('quick-save', { id: 4, incognito: true });
+    await t.commands.onMenuClick(MENU_ID, { id: 4, incognito: true });
+    expect(t.deps.activate).not.toHaveBeenCalled();
+    expect(t.deps.captureSelection).not.toHaveBeenCalled();
+    expect(t.shown).toHaveLength(2);
+    for (const { tabId, badge } of t.shown) {
+      expect(tabId).toBe(4);
+      expect(badge).toMatchObject({ text: '!', tone: 'error' });
+      expect(badge.title).toMatch(/private \(incognito\) windows/);
+    }
+  });
+
+  it('captures there once the user allowed it, and never asks for normal tabs', async () => {
+    const allowed = setup(created(), { allowIncognito: true });
+    await allowed.commands.onCommand('quick-save', { id: 4, incognito: true });
+    expect(allowed.deps.captureSelection).toHaveBeenCalledWith(4, 'shortcut');
+
+    const normal = setup(created());
+    await normal.commands.onCommand('quick-save', { id: 5, incognito: false });
+    await normal.commands.onCommand('quick-save', { id: 5 });
+    expect(normal.deps.captureSelection).toHaveBeenCalledTimes(2);
+    expect(normal.deps.allowIncognitoCapture).not.toHaveBeenCalled();
+  });
+
+  it('reports a settings read failure instead of capturing', async () => {
+    const t = setup(created());
+    t.deps.allowIncognitoCapture.mockRejectedValueOnce(new Error('storage down'));
+    await t.commands.onCommand('quick-save', { id: 4, incognito: true });
+    expect(t.deps.captureSelection).not.toHaveBeenCalled();
+    expect(t.shown[0]!.badge.title).toContain('storage down');
+  });
+});
+
+describe('focus-toolbar, next-highlight and previous-highlight commands', () => {
+  it('focus-toolbar starts the script, then focuses, and is silent on success', async () => {
+    const t = setup();
+    await t.commands.onCommand('focus-toolbar', { id: 6, windowId: 1 });
+    expect(t.deps.activate).toHaveBeenCalledWith(6);
+    expect(t.deps.focusToolbar).toHaveBeenCalledWith(6);
+    expect(t.deps.activate.mock.invocationCallOrder[0]!).toBeLessThan(
+      t.deps.focusToolbar.mock.invocationCallOrder[0]!,
+    );
+    expect(t.shown).toEqual([]);
+  });
+
+  it('focus-toolbar says so on the badge when there is nothing to focus', async () => {
+    const t = setup();
+    t.deps.focusToolbar.mockResolvedValueOnce({ focused: false });
+    await t.commands.onCommand('focus-toolbar', { id: 6 });
+    expect(t.shown).toHaveLength(1);
+    expect(t.shown[0]!.badge).toMatchObject({ text: '!', tone: 'error' });
+    expect(t.shown[0]!.badge.title).toMatch(/select some text/);
+  });
+
+  it.each([
+    ['next-highlight', 'next'],
+    ['previous-highlight', 'previous'],
+  ] as const)('%s starts the script and steps %s', async (command, direction) => {
+    const t = setup();
+    await t.commands.onCommand(command, { id: 8 });
+    expect(t.deps.activate).toHaveBeenCalledWith(8);
+    expect(t.deps.stepHighlight).toHaveBeenCalledWith(8, direction);
+    expect(t.shown).toEqual([]);
+  });
+
+  it('stepping reports found:false on the badge', async () => {
+    const t = setup();
+    t.deps.stepHighlight.mockResolvedValueOnce({ found: false });
+    await t.commands.onCommand('next-highlight', { id: 8 });
+    expect(t.shown[0]!.badge).toMatchObject({ text: '!', tone: 'error' });
+    expect(t.shown[0]!.badge.title).toMatch(/no highlights/);
+  });
+
+  it('reports activation and transport failures like quick-save does', async () => {
+    const t = setup();
+    t.deps.activate.mockRejectedValueOnce(
+      new StudyVaultError('unsupported_page', 'StudyVault cannot run on this page.'),
+    );
+    await t.commands.onCommand('next-highlight', { id: 8 });
+    expect(t.deps.stepHighlight).not.toHaveBeenCalled();
+    expect(t.shown[0]!.badge.title).toContain('cannot run on this page');
+
+    t.deps.focusToolbar.mockRejectedValueOnce(
+      new StudyVaultError('no_receiver', 'Could not establish connection.'),
+    );
+    await t.commands.onCommand('focus-toolbar', { id: 8 });
+    expect(t.shown[1]!.badge).toMatchObject({ text: '!', tone: 'error' });
+  });
+
+  it('does nothing without a tab, and ignores look-alike command names', async () => {
+    const t = setup();
+    await t.commands.onCommand('focus-toolbar', undefined);
+    await t.commands.onCommand('next-highlight', {});
+    await t.commands.onCommand('constructor', { id: 1 });
+    await t.commands.onCommand('toString', { id: 1 });
+    expect(t.deps.activate).not.toHaveBeenCalled();
+    expect(t.shown).toEqual([]);
   });
 });
 

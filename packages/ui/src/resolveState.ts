@@ -22,7 +22,7 @@ const DESCRIPTORS: Record<ResolveStatus, ResolveDescriptor> = {
   },
   resolved: {
     status: 'resolved',
-    label: 'Resolved',
+    label: 'Found on page',
     glyph: '✓',
     tone: 'success',
     attention: false,

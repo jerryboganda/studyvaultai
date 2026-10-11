@@ -3,8 +3,10 @@ import type { Page } from '@playwright/test';
 import {
   OVERLAY_HOST,
   activate,
+  backgroundRpc,
   dragSelect,
   expect,
+  focusToolbar,
   openFixture,
   paintedNormalised,
   selectionSnapshot,
@@ -19,6 +21,9 @@ import {
 /** WCAG 2.2 AA (axe tags). Best-practice rules are deliberately not part of the acceptance gate. */
 const WCAG_TAGS = ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'];
 
+/** The note button saves with the default kind and hands the note over to the side panel (ADR-005). */
+const NOTE_BUTTON = 'Save and add a note in the side panel';
+
 const KIND_ORDER = [
   'Save selection',
   'Save as Essential fact',
@@ -28,7 +33,7 @@ const KIND_ORDER = [
   'Save as Weak area',
   'Save as Verified correction',
   'Save as Question',
-  'Add a note',
+  NOTE_BUTTON,
   'More options',
 ];
 
@@ -75,8 +80,17 @@ async function overlayFocusedLabel(page: Page): Promise<string> {
   }, OVERLAY_HOST);
 }
 
-const focusShortcut = (page: Page) => page.keyboard.press('Alt+Shift+KeyT');
 const bar = (page: Page) => toolbarOf(page);
+
+/**
+ * The manifest command "focus-toolbar" (the in-page Alt+Shift+T is gone: it collided with Chrome's own
+ * accelerator and a page-level key handler swallowed it). Chrome delivers the command to the worker,
+ * which sends TabRpc content.focusToolbar; Playwright cannot press manifest shortcuts, so the same
+ * message is sent from an extension page.
+ */
+async function pressFocusToolbar(env: Env, page: Page): Promise<void> {
+  expect(await focusToolbar(env, page), 'content.focusToolbar found something to focus').toBe(true);
+}
 
 async function selectInFocusRegion(page: Page, text = 'phosphorylates glucose'): Promise<void> {
   await dragSelect(page, { selector: '#focus-p', text });
@@ -91,6 +105,34 @@ async function pageActiveId(page: Page): Promise<string> {
 // In-page overlay: axe + structure
 // ---------------------------------------------------------------------------------------------
 
+/** Replace the note of a stored highlight through the same RPC the side panel uses. */
+async function setNoteFromExtension(env: Env, id: string, userComment: string): Promise<void> {
+  const res = await backgroundRpc(env, 'highlight.update', { id, patch: { userComment } });
+  if (!res.ok) throw new Error(`highlight.update failed: ${JSON.stringify(res)}`);
+}
+
+async function softDeleteFromExtension(env: Env, id: string): Promise<void> {
+  const res = await backgroundRpc(env, 'highlight.delete', { id });
+  if (!res.ok) throw new Error(`highlight.delete failed: ${JSON.stringify(res)}`);
+}
+
+/** Free-text controls inside the overlay's shadow root (there must be none: ADR-005). */
+async function overlayTextControls(page: Page): Promise<string[]> {
+  return page.evaluate((host) => {
+    const root = document.querySelector(host)?.shadowRoot;
+    if (!root) throw new Error('overlay shadow root is not reachable');
+    return Array.from(root.querySelectorAll<HTMLElement>('*'))
+      .filter(
+        (el) =>
+          el.localName === 'input' ||
+          el.localName === 'textarea' ||
+          el.isContentEditable ||
+          ['textbox', 'searchbox'].includes(el.getAttribute('role') ?? ''),
+      )
+      .map((el) => `${el.localName}[role=${el.getAttribute('role') ?? ''}]`);
+  }, OVERLAY_HOST);
+}
+
 test.describe('overlay: axe WCAG 2.2 AA', () => {
   for (const scheme of ['light', 'dark'] as const) {
     test.describe(`prefers-color-scheme: ${scheme}`, () => {
@@ -102,32 +144,41 @@ test.describe('overlay: axe WCAG 2.2 AA', () => {
         await expectNoViolations(page, OVERLAY_HOST);
       });
 
-      test(`Add a note composer (${scheme})`, async ({ env }) => {
+      test(`toolbar with a button caption shown (${scheme})`, async ({ env }) => {
         const page = await openFixture(env, '/article.html');
         await page.emulateMedia({ colorScheme: scheme });
         await tripleClick(page, '#p-intro');
-        await page.getByRole('button', { name: 'Add a note' }).click();
-        await expect(page.getByRole('dialog', { name: 'Add a note' })).toBeVisible();
+        await page.getByRole('button', { name: 'Save as Formula' }).hover();
+        await expect(page.locator(`${OVERLAY_HOST} .sv-caption`)).toHaveText('Save as Formula');
         await expectNoViolations(page, OVERLAY_HOST);
       });
 
-      test(`More options panel and new-bank form (${scheme})`, async ({ env }) => {
+      test(`note hand-over notice after "${NOTE_BUTTON}" (${scheme})`, async ({ env }) => {
+        const page = await openFixture(env, '/article.html');
+        await page.emulateMedia({ colorScheme: scheme });
+        await tripleClick(page, '#p-intro');
+        await page.getByRole('button', { name: NOTE_BUTTON }).click();
+        // Saved first (default kind), then the side panel is asked to open on the new highlight.
+        await expect(page.getByText(/^Saved/).first()).toBeVisible();
+        await expect.poll(async () => (await storedHighlights(env, page)).length).toBe(1);
+        await expectNoViolations(page, OVERLAY_HOST);
+      });
+
+      test(`More options panel (${scheme})`, async ({ env }) => {
         const page = await openFixture(env, '/article.html');
         await page.emulateMedia({ colorScheme: scheme });
         await tripleClick(page, '#p-intro');
         await page.getByRole('button', { name: 'More options' }).click();
-        await expect(page.getByRole('combobox', { name: 'Bank' })).toBeVisible();
-        await expectNoViolations(page, OVERLAY_HOST);
-        await page.getByRole('button', { name: 'New bank' }).click();
-        await expect(page.getByRole('textbox', { name: 'Bank name' })).toBeVisible();
-        await expectNoViolations(page, OVERLAY_HOST);
-        // The inline validation error state.
-        await page.getByRole('button', { name: 'Create' }).click();
-        await expect(page.getByText('Enter a name for the bank.')).toBeVisible();
+        const dialog = page.getByRole('dialog', { name: 'Save with details' });
+        await expect(dialog.getByRole('combobox', { name: 'Bank' })).toBeVisible();
+        await expect(dialog.getByRole('button', { name: 'New bank...' })).toBeVisible();
+        // ADR-005: pickers only. Nothing in the panel takes typed text.
+        await expect(dialog.getByRole('textbox')).toHaveCount(0);
+        expect(await overlayTextControls(page)).toEqual([]);
         await expectNoViolations(page, OVERLAY_HOST);
       });
 
-      test(`highlight popover (${scheme})`, async ({ env }) => {
+      test(`highlight popover without and with a note (${scheme})`, async ({ env }) => {
         const page = await openFixture(env, '/article.html');
         await page.emulateMedia({ colorScheme: scheme });
         await tripleClick(page, '#p-intro');
@@ -137,7 +188,23 @@ test.describe('overlay: axe WCAG 2.2 AA', () => {
         // A real click on the painted text opens the popover.
         const p = await textPoints(page, { selector: '#p-intro', text: 'primary pacemaker' });
         await page.mouse.click(p.start.x + 20, p.start.y);
-        await expect(page.getByRole('dialog', { name: 'Highlight details' })).toBeVisible();
+        const dialog = page.getByRole('dialog', { name: 'Highlight details' });
+        await expect(dialog).toBeVisible();
+        await expect(dialog.getByText('No note yet.')).toBeVisible();
+        await expect(dialog.getByRole('button', { name: 'Edit note in side panel' })).toBeVisible();
+        await expect(dialog.getByRole('textbox')).toHaveCount(0);
+        await expectNoViolations(page, OVERLAY_HOST);
+
+        // The note is shown read-only once it exists (it is typed in the side panel).
+        const [h] = await storedHighlights(env, page);
+        await setNoteFromExtension(env, h!.id, 'Resting rate is about seventy beats per minute.');
+        await page.keyboard.press('Escape');
+        await expect(dialog).toHaveCount(0);
+        await page.mouse.click(p.start.x + 20, p.start.y);
+        await expect(
+          dialog.getByText('Resting rate is about seventy beats per minute.'),
+        ).toBeVisible();
+        await expect(dialog.getByRole('textbox')).toHaveCount(0);
         await expectNoViolations(page, OVERLAY_HOST);
       });
 
@@ -160,7 +227,7 @@ test.describe('overlay: axe WCAG 2.2 AA', () => {
     // The highlight disappears behind the overlay's back (another tab / the side panel deleted it).
     const stored = await storedHighlights(env, page);
     expect(stored).toHaveLength(1);
-    await softDeleteFromExtension(env, page, stored[0]!.id);
+    await softDeleteFromExtension(env, stored[0]!.id);
     // Undo now fails: the error is announced through the alert region.
     await page.getByRole('button', { name: 'Undo' }).click();
     const alert = page.getByRole('alert').filter({ hasText: /./ });
@@ -168,21 +235,6 @@ test.describe('overlay: axe WCAG 2.2 AA', () => {
     await expectNoViolations(page, OVERLAY_HOST);
   });
 });
-
-async function softDeleteFromExtension(env: Env, page: Page, id: string): Promise<void> {
-  const ext = await env.context.newPage();
-  try {
-    await ext.goto(`chrome-extension://${env.extensionId}/options.html`);
-    const res = await ext.evaluate(
-      (payload) => chrome.runtime.sendMessage({ v: 1, type: 'highlight.delete', payload }),
-      { id },
-    );
-    if (!res?.ok) throw new Error(`highlight.delete failed: ${JSON.stringify(res)}`);
-  } finally {
-    await ext.close();
-  }
-  void page;
-}
 
 test.describe('overlay: semantics', () => {
   // Guards the zero-violation results above against a scanner that silently skips the shadow root.
@@ -223,7 +275,8 @@ test.describe('overlay: semantics', () => {
     });
     expect(info.role).toBe('toolbar');
     expect(info.label).toBe('StudyVault: save selected text');
-    expect(info.shortcut).toBe('Alt+Shift+T');
+    // The focus key is a remappable manifest command now; the page cannot know what the user chose.
+    expect(info.shortcut, 'no fixed aria-keyshortcuts: the key belongs to the user').toBeNull();
     expect(info.names).toEqual(KIND_ORDER);
     // WCAG 2.5.3 Label in Name: a visible text label is contained in the accessible name.
     info.visible.forEach((text, i) => {
@@ -244,9 +297,12 @@ test.describe('overlay: semantics', () => {
       return {
         status: root.querySelectorAll('[role="status"][aria-live="polite"]').length,
         alert: root.querySelectorAll('[role="alert"]').length,
+        // The silent announcer (CaptureUi.announce) is a plain aria-live region, not a second status.
+        announcer: root.querySelectorAll('[data-sv-announcer][aria-live="polite"]').length,
+        announcerRole: root.querySelector('[data-sv-announcer]')?.getAttribute('role') ?? null,
       };
     }, OVERLAY_HOST);
-    expect(regions).toEqual({ status: 1, alert: 1 });
+    expect(regions).toEqual({ status: 1, alert: 1, announcer: 1, announcerRole: null });
 
     await tripleClick(page, '#p-intro');
     await page.getByRole('button', { name: 'Save selection' }).click();
@@ -255,19 +311,40 @@ test.describe('overlay: semantics', () => {
     await expect(page.getByRole('alert').filter({ hasText: 'Saved to Inbox' })).toHaveCount(0);
   });
 
-  test('panel buttons expose expanded state and the dialogs are named', async ({ env }) => {
+  test('only More options is a disclosure; it exposes its state and the dialog is named', async ({
+    env,
+  }) => {
     const page = await openFixture(env, '/article.html');
     await tripleClick(page, '#p-intro');
-    const note = page.getByRole('button', { name: 'Add a note' });
+    const note = page.getByRole('button', { name: NOTE_BUTTON });
     const more = page.getByRole('button', { name: 'More options' });
-    await expect(note).toHaveAttribute('aria-expanded', 'false');
-    await note.click();
-    await expect(note).toHaveAttribute('aria-expanded', 'true');
-    await expect(page.getByRole('dialog', { name: 'Add a note' })).toBeVisible();
+    // The note button is an action (save + hand over), not a panel: it has no expanded state.
+    await expect(note).not.toHaveAttribute('aria-expanded', /.*/);
+    await expect(more).toHaveAttribute('aria-expanded', 'false');
     await more.click();
     await expect(more).toHaveAttribute('aria-expanded', 'true');
-    await expect(note).toHaveAttribute('aria-expanded', 'false');
     await expect(page.getByRole('dialog', { name: 'Save with details' })).toBeVisible();
+    await more.click();
+    await expect(more).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.getByRole('dialog', { name: 'Save with details' })).toHaveCount(0);
+  });
+
+  test('the full name of the hovered or focused button is shown in an aria-hidden caption', async ({
+    env,
+  }) => {
+    const page = await openFixture(env, '/compat-inline.html');
+    await selectInFocusRegion(page);
+    const caption = page.locator(`${OVERLAY_HOST} .sv-caption`);
+    await expect(caption).toHaveAttribute('aria-hidden', 'true');
+    await page.getByRole('button', { name: 'Save as Exception' }).hover();
+    await expect(caption).toHaveText('Save as Exception');
+    await page.mouse.move(2, 2);
+    await expect(caption).not.toHaveText('Save as Exception');
+    // Keyboard focus shows the same caption.
+    await pressFocusToolbar(env, page);
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('ArrowRight');
+    await expect(caption).toHaveText('Save as Formula');
   });
 });
 
@@ -276,7 +353,7 @@ test.describe('overlay: semantics', () => {
 // ---------------------------------------------------------------------------------------------
 
 test.describe('keyboard-only', () => {
-  test('Alt+Shift+T focuses the toolbar and arrow keys rove through every button', async ({
+  test('the focus-toolbar command focuses the toolbar and arrow keys rove through every button', async ({
     env,
   }) => {
     const page = await openFixture(env, '/compat-inline.html');
@@ -285,7 +362,7 @@ test.describe('keyboard-only', () => {
       'focus-region',
     );
 
-    await focusShortcut(page);
+    await pressFocusToolbar(env, page);
     await expect(page.getByRole('button', { name: 'Save selection', exact: true })).toBeFocused();
     expect(await overlayFocusedLabel(page)).toBe('Save selection');
 
@@ -314,12 +391,19 @@ test.describe('keyboard-only', () => {
     expect(stops[stops.length - 1]).toBe(0);
   });
 
-  test('Alt+Shift+T moves focus to a toolbar button that shows a visible focus ring (WCAG 2.4.7)', async ({
+  test('focus-toolbar reports focused:false when there is nothing to focus', async ({ env }) => {
+    const page = await openFixture(env, '/compat-inline.html');
+    await page.locator('#focus-region').focus();
+    expect(await focusToolbar(env, page), 'no toolbar and no toast with an action').toBe(false);
+    expect(await pageActiveId(page), 'the page keeps focus').toBe('focus-region');
+  });
+
+  test('the focus-toolbar command moves focus to a button that shows a visible focus ring (WCAG 2.4.7)', async ({
     env,
   }) => {
     const page = await openFixture(env, '/compat-inline.html');
     await selectInFocusRegion(page);
-    await focusShortcut(page);
+    await pressFocusToolbar(env, page);
     const saveButton = page.getByRole('button', { name: 'Save selection', exact: true });
     await expect(saveButton).toBeFocused();
     const ring = await saveButton.evaluate((el) => {
@@ -336,14 +420,16 @@ test.describe('keyboard-only', () => {
     expect(ring.width).toBeGreaterThanOrEqual(2);
   });
 
-  test('Alt+Shift+T moves focus to the toast Undo button with a visible focus ring (WCAG 2.4.7)', async ({
+  test('the focus-toolbar command moves focus to the toast Undo button with a visible focus ring (WCAG 2.4.7)', async ({
     env,
   }) => {
     const page = await openFixture(env, '/compat-inline.html');
     await selectInFocusRegion(page);
     await page.getByRole('button', { name: 'Save selection', exact: true }).click();
     await expect(page.getByText('Saved to Inbox')).toBeVisible();
-    await focusShortcut(page);
+    // The toast names the way in: the (remappable) "Focus toolbar" shortcut, never a fixed key.
+    await expect(page.getByText('Undo: use the Focus toolbar shortcut')).toBeVisible();
+    await pressFocusToolbar(env, page);
     const undo = page.getByRole('button', { name: 'Undo' });
     await expect(undo).toBeFocused();
     const ring = await undo.evaluate((el) => {
@@ -361,7 +447,7 @@ test.describe('keyboard-only', () => {
   }) => {
     const page = await openFixture(env, '/compat-inline.html');
     await selectInFocusRegion(page);
-    await focusShortcut(page);
+    await pressFocusToolbar(env, page);
     await page.keyboard.press('ArrowRight');
     await page.keyboard.press('ArrowRight');
     expect(await overlayFocusedLabel(page)).toBe('Save as Formula');
@@ -378,7 +464,7 @@ test.describe('keyboard-only', () => {
   test('Space also activates a toolbar button', async ({ env }) => {
     const page = await openFixture(env, '/compat-inline.html');
     await selectInFocusRegion(page);
-    await focusShortcut(page);
+    await pressFocusToolbar(env, page);
     await page.keyboard.press('Space');
     await expect(page.getByText('Saved to Inbox')).toBeVisible();
     expect(await storedHighlights(env, page)).toHaveLength(1);
@@ -389,7 +475,7 @@ test.describe('keyboard-only', () => {
   }) => {
     const page = await openFixture(env, '/compat-inline.html');
     await selectInFocusRegion(page);
-    await focusShortcut(page);
+    await pressFocusToolbar(env, page);
     await expect(page.getByRole('button', { name: 'Save selection', exact: true })).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(bar(page)).toHaveCount(0);
@@ -401,65 +487,81 @@ test.describe('keyboard-only', () => {
     expect(await storedHighlights(env, page)).toEqual([]);
   });
 
-  test('Add a note by keyboard: focus moves into the note, Escape steps back one level at a time', async ({
+  test('the note button by keyboard saves with the default kind and has no text field to type into', async ({
     env,
   }) => {
     const page = await openFixture(env, '/compat-inline.html');
     await selectInFocusRegion(page);
-    await focusShortcut(page);
+    await pressFocusToolbar(env, page);
     await page.keyboard.press('End');
     await page.keyboard.press('ArrowLeft');
-    expect(await overlayFocusedLabel(page)).toBe('Add a note');
+    expect(await overlayFocusedLabel(page)).toBe(NOTE_BUTTON);
     await page.keyboard.press('Enter');
 
-    const note = page.getByRole('textbox', { name: 'Note' });
-    await expect(note).toBeFocused();
-    await page.keyboard.type('mnemonic: hexokinase traps glucose');
-    // Escape closes only the panel and returns to the button that opened it.
+    // Saved at once with the default kind and no comment: the note is typed in the side panel.
+    await expect.poll(async () => (await storedHighlights(env, page)).length).toBe(1);
+    const [h] = await storedHighlights(env, page);
+    expect(h).toMatchObject({
+      kind: 'essential',
+      exactQuote: 'phosphorylates glucose',
+      userComment: '',
+    });
+    await expect(page.getByText(/^Saved/).first()).toBeVisible();
+    expect(await overlayTextControls(page), 'no text field appeared in the page').toEqual([]);
+    await expect(page.getByRole('textbox')).toHaveCount(0);
+  });
+
+  test('More options by keyboard: focus moves in, Tab walks pickers in reading order, Escape steps back', async ({
+    env,
+  }) => {
+    const page = await openFixture(env, '/compat-inline.html');
+    await selectInFocusRegion(page);
+    await pressFocusToolbar(env, page);
+    await page.keyboard.press('End');
+    await page.keyboard.press('Enter');
+    const dialog = page.getByRole('dialog', { name: 'Save with details' });
+    await expect(dialog.getByRole('combobox', { name: 'Bank' })).toBeVisible();
+    await expect(dialog).toBeFocused();
+
+    const order = [
+      ['combobox', 'Bank'],
+      ['button', 'New bank...'],
+      ['combobox', 'Type'],
+      ['combobox', 'Priority'],
+    ] as const;
+    for (const [role, name] of order) {
+      await page.keyboard.press('Tab');
+      await expect(dialog.getByRole(role, { name })).toBeFocused();
+    }
+    await page.keyboard.press('Tab');
+    await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
+
+    // Escape closes only the panel and returns to the More button; the second Escape closes the bar.
     await page.keyboard.press('Escape');
-    await expect(page.getByRole('dialog', { name: 'Add a note' })).toHaveCount(0);
+    await expect(dialog).toHaveCount(0);
     await expect(bar(page)).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Add a note' })).toBeFocused();
-    // A second Escape closes the toolbar and returns to the page.
+    await expect(page.getByRole('button', { name: 'More options' })).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(bar(page)).toHaveCount(0);
     expect(await pageActiveId(page)).toBe('focus-region');
   });
 
-  test('Add a note by keyboard: Ctrl+Enter saves the note with the quote', async ({ env }) => {
+  test('More options by keyboard: Enter on Save saves with the chosen type', async ({ env }) => {
     const page = await openFixture(env, '/compat-inline.html');
     await selectInFocusRegion(page);
-    await focusShortcut(page);
+    await pressFocusToolbar(env, page);
     await page.keyboard.press('End');
-    await page.keyboard.press('ArrowLeft');
     await page.keyboard.press('Enter');
-    await expect(page.getByRole('textbox', { name: 'Note' })).toBeFocused();
-    await page.keyboard.type('hexokinase traps glucose');
-    await page.keyboard.press('Control+Enter');
+    const dialog = page.getByRole('dialog', { name: 'Save with details' });
+    await expect(dialog).toBeFocused();
+    await dialog.getByRole('combobox', { name: 'Type' }).selectOption({ label: 'ƒ Formula' });
+    await dialog.getByRole('button', { name: 'Save', exact: true }).focus();
+    await page.keyboard.press('Enter');
     await expect(page.getByText('Saved to Inbox')).toBeVisible();
     const [h] = await storedHighlights(env, page);
-    expect(h!.exactQuote).toBe('phosphorylates glucose');
-    expect(h!.userComment).toBe('hexokinase traps glucose');
-    expect(await pageActiveId(page)).toBe('focus-region');
-  });
-
-  test('More options by keyboard: Tab from the note reaches Save, Enter saves', async ({ env }) => {
-    const page = await openFixture(env, '/compat-inline.html');
-    await selectInFocusRegion(page);
-    await focusShortcut(page);
-    await page.keyboard.press('End');
-    await page.keyboard.press('Enter');
-    await expect(page.getByRole('combobox', { name: 'Bank' })).toBeVisible();
-    await expect(page.getByRole('textbox', { name: 'Note' })).toBeFocused();
-    await page.keyboard.press('Tab');
-    const dialog = page.getByRole('dialog', { name: 'Save with details' });
-    await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeFocused();
-    await page.keyboard.press('Tab');
-    await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
-    await page.keyboard.press('Shift+Tab');
-    await page.keyboard.press('Enter');
-    await expect(page.getByText('Saved to Inbox')).toBeVisible();
-    expect(await storedHighlights(env, page)).toHaveLength(1);
+    expect(h).toMatchObject({ kind: 'formula', userComment: '' });
   });
 
   test('toast Undo is reachable and operable with the keyboard', async ({ env }) => {
@@ -469,7 +571,7 @@ test.describe('keyboard-only', () => {
     await expect(page.getByText('Saved to Inbox')).toBeVisible();
     await expect.poll(() => paintedNormalised(page)).toHaveLength(1);
 
-    await focusShortcut(page);
+    await pressFocusToolbar(env, page);
     await expect(page.getByRole('button', { name: 'Undo' })).toBeFocused();
     await page.keyboard.press('Enter');
     await expect(page.getByText('Save undone')).toBeVisible();
@@ -477,7 +579,9 @@ test.describe('keyboard-only', () => {
     expect(await pageActiveId(page), 'focus is restored to the page').toBe('focus-region');
   });
 
-  test('highlight popover: focus moves in, Escape closes and restores focus', async ({ env }) => {
+  test('highlight popover: focus moves in, Tab order is reading order, Escape closes and restores focus', async ({
+    env,
+  }) => {
     const page = await openFixture(env, '/compat-inline.html');
     await selectInFocusRegion(page);
     await page.getByRole('button', { name: 'Save selection', exact: true }).click();
@@ -489,11 +593,19 @@ test.describe('keyboard-only', () => {
     const dialog = page.getByRole('dialog', { name: 'Highlight details' });
     await expect(dialog).toBeVisible();
     await expect(dialog).toBeFocused();
-    // Tab order stays inside the popover controls in reading order.
-    await page.keyboard.press('Tab');
-    await expect(dialog.getByRole('button', { name: 'Close highlight details' })).toBeFocused();
-    await page.keyboard.press('Tab');
-    await expect(dialog.getByRole('textbox', { name: 'Note' })).toBeFocused();
+    // Tab order stays inside the popover controls in reading order. The note is read-only text with
+    // an "Edit note in side panel" button where there used to be a textbox.
+    const order = [
+      ['button', 'Close highlight details'],
+      ['button', 'Edit note in side panel'],
+      ['combobox', 'Type'],
+      ['combobox', 'Priority'],
+      ['button', 'Delete'],
+    ] as const;
+    for (const [role, name] of order) {
+      await page.keyboard.press('Tab');
+      await expect(dialog.getByRole(role, { name, exact: true })).toBeFocused();
+    }
     await page.keyboard.press('Escape');
     await expect(dialog).toHaveCount(0);
     expect(await pageActiveId(page)).toBe('focus-region');
@@ -505,11 +617,26 @@ test.describe('keyboard-only', () => {
     for (let i = 0; i < 8; i++) await page.keyboard.press('Shift+ArrowRight');
     await expect.poll(async () => (await selectionSnapshot(page)).text).toBe('Hexokinase phospho');
     await expect(bar(page)).toBeVisible();
-    await focusShortcut(page);
+    await pressFocusToolbar(env, page);
     await page.keyboard.press('Enter');
     await expect(page.getByText('Saved to Inbox')).toBeVisible();
     const [h] = await storedHighlights(env, page);
     expect(h!.exactQuote).toBe('Hexokinase phospho');
+  });
+
+  test('a keyboard save keeps Undo around longer than a pointer save, so the shortcut can reach it', async ({
+    env,
+  }) => {
+    const page = await openFixture(env, '/compat-inline.html');
+    await selectInFocusRegion(page);
+    await pressFocusToolbar(env, page);
+    await page.keyboard.press('Enter'); // Save selection, started from the keyboard
+    await expect(page.getByText('Saved to Inbox')).toBeVisible();
+    // A pointer save is gone after 6 s; a keyboard save is kept (about 15 s). Checked against the
+    // 6 s mark with a margin rather than against the exact constant.
+    await page.waitForTimeout(8_000);
+    await expect(page.getByText('Saved to Inbox')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Undo' })).toBeVisible();
   });
 });
 
@@ -594,6 +721,40 @@ test.describe('extension pages: axe WCAG 2.2 AA', () => {
       // The "Recent" view of the same panel.
       await panel.getByRole('tab', { name: /Recent/ }).click();
       await expectNoViolations(panel);
+    });
+
+    test(`sidepanel.html Banks tab, with and without a validation error (${scheme})`, async ({
+      env,
+    }) => {
+      const panel = await extensionPage(env, 'sidepanel.html');
+      await panel.emulateMedia({ colorScheme: scheme });
+      await panel.getByRole('tab', { name: 'Banks' }).click();
+      await expect(panel.getByRole('button', { name: 'Create bank' })).toBeVisible();
+      await expect(panel.getByRole('list', { name: 'Your banks' })).toBeVisible();
+      await expectNoViolations(panel);
+      await panel.getByRole('button', { name: 'Create bank' }).click();
+      await expect(
+        panel.getByRole('alert').filter({ hasText: 'Enter a name for the bank.' }),
+      ).toBeVisible();
+      await expectNoViolations(panel);
+    });
+
+    test(`popup.html on a denied host (${scheme})`, async ({ env }) => {
+      const popup = await extensionPage(env, 'popup.html');
+      await popup.emulateMedia({ colorScheme: scheme });
+      // The fixture host is put on the deny list the way the options page stores it.
+      const options = await extensionPage(env, 'options.html');
+      await options.evaluate(async () => {
+        const stored = (await chrome.storage.local.get('settings')).settings ?? {};
+        await chrome.storage.local.set({
+          settings: { ...stored, denyList: ['127.0.0.1', 'paypal.com'] },
+        });
+      });
+      const page = await openFixture(env, '/article.html', { activate: false });
+      await page.bringToFront();
+      await expect(popup.getByText('StudyVault is off on 127.0.0.1')).toBeVisible();
+      await expect(popup.getByRole('button', { name: 'Open side panel' })).toBeVisible();
+      await expectNoViolations(popup);
     });
   }
 });

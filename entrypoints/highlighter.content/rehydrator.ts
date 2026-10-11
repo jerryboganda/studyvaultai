@@ -1,9 +1,10 @@
-import type { HighlightView } from '@shared';
+import { sourceKeys, type HighlightView } from '@shared';
 import {
   buildTextStream,
   resolveMany,
   streamTextOfRange,
   type PaintEntry,
+  type Resolution,
   type ResolutionStatus,
   type TextStream,
 } from '@highlights';
@@ -15,6 +16,8 @@ export interface PainterLike {
   readonly supported: boolean;
   paint(entries: readonly PaintEntry[]): void;
   setActive(id: string | null): void;
+  /** Settings.highlightStyle as is ('auto' lets the painter follow prefers-contrast). */
+  setStyle?(style: 'auto' | 'normal' | 'strong'): void;
   hitTest(x: number, y: number): string | null;
   clear(): void;
   destroy(): void;
@@ -44,6 +47,16 @@ export interface RehydratorDeps {
   /** Unresolved outcomes are only reported once the page has been quiet this long. */
   settleMs?: number;
   retry?: RetryBudget;
+  /**
+   * Quiet mode: false = resolve and report as usual but publish no range to the page. Read at every
+   * repaint, so a settings change only needs `repaint()`.
+   */
+  paintEnabled?: () => boolean;
+  /**
+   * Polled by every timer. False once the host context is gone (extension reloaded or updated under
+   * the page): the timer then does nothing, so an orphaned script winds down by itself.
+   */
+  alive?: () => boolean;
 }
 
 type State = ResolutionStatus | 'pending';
@@ -60,7 +73,19 @@ interface Entry {
 }
 
 const MAX_REPORT_BATCH = 500;
+/**
+ * Waits before the 1st..nth re-fetch after a failed load (worker asleep, restarting, a message lost
+ * during navigation). After the last one the page is left alone until something gives a reason to
+ * look again: a data-change signal, the tab becoming visible, a route change.
+ */
+const LOAD_RETRY_MS = [1_000, 2_000, 4_000, 8_000, 16_000] as const;
 const painted = (s: State): boolean => s === 'resolved' || s === 'changed';
+
+/** The identity the worker matches highlights by (`page.highlights`); null when it has none. */
+function keyOf(page: PageRef | null): string | null {
+  const keys = page ? sourceKeys(page.url, page.canonicalUrl) : null;
+  return keys ? `${keys.urlKey}\n${keys.visitedKey}` : null;
+}
 
 /**
  * Keeps the page's painted highlights in step with the stored ones (ADR-004 "Dynamic pages"):
@@ -79,6 +104,11 @@ export class Rehydrator {
   private queued: Promise<void> | null = null;
   private settleTimer: ReturnType<typeof setTimeout> | undefined;
   private deferTimer: ReturnType<typeof setTimeout> | undefined;
+  private loadRetryTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Consecutive failed loads since the last success or the last caller with a reason to look again. */
+  private loadFailures = 0;
+  /** `keyOf(page)` of the newest load: a route change onto the same key forgets nothing. */
+  private loadedKey: string | null = null;
   private destroyed = false;
   private readonly tracker = new ReportTracker();
   private readonly retry: RetryBudget;
@@ -141,8 +171,16 @@ export class Rehydrator {
   // Loading
   // -------------------------------------------------------------------------------------------
 
-  /** Fetch + resolve + paint. Concurrent calls coalesce into at most one follow-up run. */
+  /**
+   * Fetch + resolve + paint. Concurrent calls coalesce into at most one follow-up run. A caller asks
+   * because it has a reason to look again, so a spent retry budget starts over.
+   */
   refresh(): Promise<void> {
+    this.loadFailures = 0;
+    return this.enqueue();
+  }
+
+  private enqueue(): Promise<void> {
     if (this.queued) return this.queued;
     const run = this.chain.then(() => {
       this.queued = null;
@@ -156,19 +194,25 @@ export class Rehydrator {
   }
 
   private async load(): Promise<void> {
-    if (this.destroyed) return;
+    if (!this.live()) return;
     const page = this.deps.page();
     if (!page) return;
     const epoch = this.epoch;
     const startSeq = this.seq;
+    this.loadedKey = keyOf(page);
 
     let views: HighlightView[];
     try {
       views = await this.deps.fetchHighlights(page);
     } catch {
-      return; // worker asleep or unreachable: what is painted stays painted
+      // Worker asleep or unreachable: what is painted stays painted, and the page is not left
+      // blank for good: look again after a growing pause.
+      if (!this.destroyed && epoch === this.epoch) this.armLoadRetry();
+      return;
     }
     if (this.destroyed || epoch !== this.epoch) return;
+    this.loadFailures = 0;
+    this.disarmLoadRetry();
 
     // Local edits made while the request was in flight win over the (older) fetched rows.
     const editedSince = (id: string): boolean => (this.touched.get(id) ?? 0) > startSeq;
@@ -187,7 +231,7 @@ export class Rehydrator {
     this.entries = next;
 
     const fresh = [...next].filter(([, e]) => e.state === 'pending').map(([id]) => id);
-    this.resolve(fresh, this.getStream());
+    this.resolve(fresh);
     this.repaint();
     this.flush();
   }
@@ -216,7 +260,7 @@ export class Rehydrator {
         range: null,
         text: null,
       });
-      this.resolve([view.id], opts.stream ?? this.getStream());
+      this.resolve([view.id], opts.stream);
     }
     this.repaint();
     this.flush();
@@ -237,16 +281,32 @@ export class Rehydrator {
     this.stream = null;
   }
 
-  /** SPA navigation: forget the old page, start a fresh budget, load the new route's highlights. */
-  onRouteChange(): Promise<void> {
+  /**
+   * SPA navigation, the part that must not wait: the old route's results are made stale and its
+   * paint is cleared, so nothing of it can show on the new page. A route whose source keys equal
+   * the loaded page's (same highlights, e.g. a URL the worker folds onto the same source) forgets
+   * nothing, so the page does not flicker. Either way the page text is new: the cached stream goes
+   * and the retry budget starts over. The caller loads (debounced) with `refresh()`.
+   */
+  routeChanged(): void {
+    this.stream = null;
+    this.retry.reset();
+    const key = keyOf(this.deps.page());
+    if (key !== null && key === this.loadedKey) return;
     this.epoch += 1;
     this.entries = new Map();
     this.touched.clear();
-    this.stream = null;
+    this.loadedKey = null;
+    this.loadFailures = 0;
     this.deps.painter.clear();
     this.disarmSettle();
     this.disarmDeferred();
-    this.retry.reset();
+    this.disarmLoadRetry();
+  }
+
+  /** SPA navigation: `routeChanged()` and load the new route's highlights at once. */
+  onRouteChange(): Promise<void> {
+    this.routeChanged();
     return this.refresh();
   }
 
@@ -258,7 +318,7 @@ export class Rehydrator {
    * Everything else keeps its live Range; nothing is re-scanned.
    */
   retryPass(): void {
-    if (this.destroyed) return;
+    if (!this.live()) return;
     this.invalidate();
     const stale: string[] = [];
     const missing: string[] = [];
@@ -273,7 +333,7 @@ export class Rehydrator {
     else if (missing.length > 0) this.deferPass();
     if (targets.length === 0) return;
     try {
-      this.resolve(targets, this.getStream());
+      this.resolve(targets);
     } finally {
       // Only a pass that really built a stream and resolved is charged to the budget.
       if (retrying) this.retry.end();
@@ -286,6 +346,7 @@ export class Rehydrator {
     this.destroyed = true;
     this.disarmSettle();
     this.disarmDeferred();
+    this.disarmLoadRetry();
     this.entries = new Map();
     this.touched.clear();
     this.stream = null;
@@ -300,28 +361,69 @@ export class Rehydrator {
     return this.stream;
   }
 
-  private resolve(ids: readonly string[], stream: TextStream): void {
+  /**
+   * Resolves `ids` against `stream` (built on demand: no highlight to resolve, no stream). Every
+   * other highlight of the page is passed as a sibling, so a passage that lost its own text cannot
+   * be bound onto the text a neighbour owns just because the neighbour is not part of this batch.
+   * Never throws and never leaves an entry `pending`: whatever the engine cannot answer for is
+   * `orphaned` (and is looked at again by the next retry pass).
+   */
+  private resolve(ids: readonly string[], stream?: TextStream): void {
     const targets: Array<{ id: string; anchorSet: HighlightView['anchorSet'] }> = [];
     for (const id of ids) {
       const e = this.entries.get(id);
       if (e) targets.push({ id, anchorSet: e.view.anchorSet });
     }
     if (targets.length === 0) return;
-    for (const [id, res] of resolveMany(targets, stream)) {
+    const batch = new Set(ids);
+    const siblings: Array<HighlightView['anchorSet']> = [];
+    for (const [id, e] of this.entries) if (!batch.has(id)) siblings.push(e.view.anchorSet);
+
+    const results = new Map<string, Resolution>();
+    try {
+      const text = stream ?? this.getStream();
+      try {
+        for (const [id, res] of resolveMany(targets, text, { siblings })) results.set(id, res);
+      } catch {
+        // One anchor the engine cannot handle must not take the rest of the batch down with it.
+        for (const target of targets) {
+          try {
+            for (const [id, res] of resolveMany([target], text, { siblings })) results.set(id, res);
+          } catch {
+            // orphaned below
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('[StudyVault] could not read the page text', err);
+    }
+
+    for (const { id } of targets) {
       const e = this.entries.get(id);
       if (!e) continue;
-      const usable = painted(res.status) && res.range !== null;
-      e.state = usable ? res.status : res.status === 'ambiguous' ? 'ambiguous' : 'orphaned';
-      e.confidence = usable || res.status === 'ambiguous' ? res.confidence : 0;
+      const res = results.get(id);
+      const usable = res !== undefined && painted(res.status) && res.range !== null;
+      e.state = usable ? res.status : res?.status === 'ambiguous' ? 'ambiguous' : 'orphaned';
+      e.confidence = usable || res?.status === 'ambiguous' ? res.confidence : 0;
       e.range = usable ? res.range : null;
-      e.text = e.range ? streamTextOfRange(e.range) : null;
+      try {
+        e.text = e.range ? streamTextOfRange(e.range) : null;
+      } catch {
+        e.state = 'orphaned';
+        e.confidence = 0;
+        e.range = null;
+        e.text = null;
+      }
     }
   }
 
-  private repaint(): void {
+  /** Publishes the resolved ranges to the painter (none in quiet mode: nothing reaches the page). */
+  repaint(): void {
     const list: PaintEntry[] = [];
-    for (const [id, e] of this.entries) {
-      if (e.range) list.push({ id, color: e.view.color, range: e.range });
+    if (this.deps.paintEnabled?.() ?? true) {
+      for (const [id, e] of this.entries) {
+        if (e.range) list.push({ id, color: e.view.color, kind: e.view.kind, range: e.range });
+      }
     }
     this.deps.painter.paint(list);
   }
@@ -364,7 +466,7 @@ export class Rehydrator {
     this.disarmSettle();
     this.settleTimer = setTimeout(() => {
       this.settleTimer = undefined;
-      this.flush(true);
+      if (this.live()) this.flush(true);
     }, this.deps.settleMs ?? 1500);
   }
 
@@ -385,6 +487,28 @@ export class Rehydrator {
   private disarmDeferred(): void {
     if (this.deferTimer !== undefined) clearTimeout(this.deferTimer);
     this.deferTimer = undefined;
+  }
+
+  /** The next re-fetch after a failed load, `LOAD_RETRY_MS` apart; none once they are used up. */
+  private armLoadRetry(): void {
+    this.disarmLoadRetry();
+    const wait = LOAD_RETRY_MS[this.loadFailures];
+    if (wait === undefined) return;
+    this.loadFailures += 1;
+    this.loadRetryTimer = setTimeout(() => {
+      this.loadRetryTimer = undefined;
+      if (this.live()) void this.enqueue();
+    }, wait);
+  }
+
+  private disarmLoadRetry(): void {
+    if (this.loadRetryTimer !== undefined) clearTimeout(this.loadRetryTimer);
+    this.loadRetryTimer = undefined;
+  }
+
+  /** Not destroyed, and the host context (if one is wired in) is still the one that started us. */
+  private live(): boolean {
+    return !this.destroyed && (this.deps.alive?.() ?? true);
   }
 }
 

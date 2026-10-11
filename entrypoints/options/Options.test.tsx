@@ -3,9 +3,18 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import userEvent from '@testing-library/user-event';
 import { browser } from 'wxt/browser';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
-import { DEFAULT_DENY_HOSTS, defaultSettings, type Settings } from '@shared';
+import { KIND_DECORATION } from '@highlights';
+import {
+  DEFAULT_DENY_HOSTS,
+  DENY_LIST_SCOPE_NOTE,
+  HIGHLIGHT_KINDS,
+  KIND_LABELS,
+  StudyVaultError,
+  defaultSettings,
+  type Settings,
+} from '@shared';
 import { getSettings } from '@runtime';
-import { makeChromeFakes, rpc, store } from '@ui/testing/fakes';
+import { COMMANDS, makeChromeFakes, rpc, store } from '@ui/testing/fakes';
 import { Options } from './Options';
 
 vi.mock('@storage', async () => (await import('@ui/testing/fakes')).store.module);
@@ -37,10 +46,28 @@ function wirePermissions() {
   );
 }
 
+/**
+ * Tests that are not about the deny list run with a short one: the starter list has dozens of
+ * entries and every role query in jsdom walks all of them. `withStarterList` is the real default.
+ */
+const SHORT_DENY = ['paypal.com'];
+const withStarterList = { denyList: [...DEFAULT_DENY_HOSTS] };
+
 async function open(settings: Partial<Settings> = {}) {
-  await browser.storage.local.set({ settings: { ...defaultSettings(), ...settings } });
+  await browser.storage.local.set({
+    settings: { ...defaultSettings(), denyList: SHORT_DENY, ...settings },
+  });
   return render(<Options />);
 }
+
+/** "Enable on all sites" is a two-step flow: the question, then Chrome's own prompt. */
+async function enableAll() {
+  await userEvent.click(await screen.findByRole('button', { name: 'Enable on all sites' }));
+  await userEvent.click(await screen.findByRole('button', { name: "Continue to Chrome's prompt" }));
+}
+
+/** What the surface's one polite status region holds right now. */
+const spoken = () => screen.getByRole('status').textContent ?? '';
 
 beforeEach(() => {
   fakeBrowser.reset();
@@ -72,18 +99,55 @@ describe('content', () => {
     expect(screen.getByText('This site')).toBeTruthy();
     expect(screen.getAllByText('All sites').length).toBeGreaterThan(0);
   });
+
+  it('discloses everything that is stored, including the page context and soft delete', async () => {
+    await open();
+    const stored = (await screen.findByText('What is stored on this device')).parentElement!;
+    const text = stored.textContent ?? '';
+    expect(text).toMatch(/up to 64\s+characters of the page text just before it and just after it/);
+    expect(text).toMatch(/nearest heading/);
+    expect(text).toMatch(/hash and the length of the whole\s+page text/);
+    expect(text).toMatch(/where it sits in the\s+page structure/);
+    expect(text).toMatch(/without a user name or password/);
+    expect(text).toMatch(/page title/);
+    expect(text).toMatch(/Deleted highlights stay on this device until you delete all data/);
+    const seen = (await screen.findByText('What a website can see')).parentElement!;
+    expect(seen.textContent).toMatch(/colour and kind/);
+    expect(seen.textContent).toMatch(/sv-hl-amber-formula/);
+  });
+
+  it('wraps everything in one polite status region', async () => {
+    await open();
+    await screen.findByText(/Everything stays on this device/);
+    expect(screen.getAllByRole('status')).toHaveLength(1);
+  });
 });
 
 describe('site access', () => {
-  it('enables all sites: asks Chrome, stores both patterns, syncs, and reflects the state', async () => {
+  it('enables all sites: shows the effective deny list first, then asks Chrome, stores both patterns, syncs', async () => {
+    rpc.background['site.sync'] = () => ({ registeredMatches: ALL });
     let rpcCallsAtRequest = -1;
     chrome.permissions.request.mockImplementation(async (p) => {
       rpcCallsAtRequest = rpc.calls.length;
       p.origins?.forEach((o) => granted.add(o));
       return true;
     });
-    await open();
+    // A short list: every role query in jsdom walks all rows, and the dialog's job is the same.
+    const stayOff = ['paypal.com', 'accounts.google.com', 'mail.google.com'];
+    await open({ denyList: stayOff });
     await userEvent.click(await screen.findByRole('button', { name: 'Enable on all sites' }));
+
+    // Nothing is requested by the first click; the question shows what stays off.
+    const dialog = await screen.findByRole('dialog', { name: 'Turn StudyVault on for all sites?' });
+    expect(chrome.permissions.request).not.toHaveBeenCalled();
+    expect(within(dialog).getByText(DENY_LIST_SCOPE_NOTE)).toBeTruthy();
+    const list = within(dialog).getByRole('region', { name: 'Sites on your deny list' });
+    for (const host of stayOff) expect(within(list).getByText(host)).toBeTruthy();
+    expect(within(dialog).getByText(/these 3 sites/)).toBeTruthy();
+
+    await userEvent.click(
+      within(dialog).getByRole('button', { name: "Continue to Chrome's prompt" }),
+    );
 
     expect(chrome.permissions.request).toHaveBeenCalledWith({ origins: ALL });
     expect(rpcCallsAtRequest).toBe(0);
@@ -94,35 +158,61 @@ describe('site access', () => {
     expect(await screen.findByRole('button', { name: 'Revoke all-sites access' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Enable on all sites' })).toBeNull();
     expect(screen.getByText('On')).toBeTruthy();
+    expect(spoken()).toContain('StudyVault is now on for all sites.');
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'All sites' }));
   });
 
-  it('calls permissions.request synchronously inside the click (user gesture)', async () => {
+  it('says so when the deny list is empty, before asking', async () => {
+    await open({ denyList: [] });
+    await userEvent.click(await screen.findByRole('button', { name: 'Enable on all sites' }));
+    expect(await screen.findByText(/Your deny list is empty/)).toBeTruthy();
+  });
+
+  it('cancelling the question asks Chrome for nothing and returns focus to the button', async () => {
+    await open();
+    const enable = await screen.findByRole('button', { name: 'Enable on all sites' });
+    await userEvent.click(enable);
+    await screen.findByRole('dialog');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(chrome.permissions.request).not.toHaveBeenCalled();
+    expect(document.activeElement).toBe(enable);
+  });
+
+  it('calls permissions.request synchronously inside the confirming click (user gesture)', async () => {
     chrome.permissions.request.mockReturnValue(new Promise(() => undefined));
     await open();
-    const button = await screen.findByRole('button', { name: 'Enable on all sites' });
+    await userEvent.click(await screen.findByRole('button', { name: 'Enable on all sites' }));
+    const confirm = await screen.findByRole('button', { name: "Continue to Chrome's prompt" });
 
-    fireEvent.click(button);
+    fireEvent.click(confirm);
 
     expect(chrome.permissions.request).toHaveBeenCalledWith({ origins: ALL });
   });
 
-  it('declined: explains and changes nothing', async () => {
+  it('declined: explains next to the control and changes nothing', async () => {
     chrome.permissions.request.mockResolvedValue(false);
     await open();
-    await userEvent.click(await screen.findByRole('button', { name: 'Enable on all sites' }));
+    await enableAll();
 
-    expect(await screen.findByText(/Chrome did not grant access to all sites/)).toBeTruthy();
+    const card = (await screen.findByRole('heading', { name: 'All sites' })).parentElement!;
+    expect(await within(card).findByText(/Chrome did not grant access to all sites/)).toBeTruthy();
     expect((await getSettings()).persistentOrigins).toEqual([]);
     expect(rpc.called('site.sync')).toHaveLength(0);
   });
 
-  it('a Chrome error is shown with its real text and a retry', async () => {
+  it('a Chrome error is shown next to the button with its real text and a retry', async () => {
     chrome.permissions.request.mockRejectedValueOnce(
       new Error('Permissions request must be made from a user gesture'),
     );
     await open();
-    await userEvent.click(await screen.findByRole('button', { name: 'Enable on all sites' }));
-    expect((await screen.findByRole('alert')).textContent).toContain('user gesture');
+    await enableAll();
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('user gesture');
+    expect(alert.closest('.opt-card')?.querySelector('h3')?.textContent).toBe('All sites');
 
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(await screen.findByRole('button', { name: 'Revoke all-sites access' })).toBeTruthy();
@@ -139,6 +229,7 @@ describe('site access', () => {
     });
     expect(rpc.called('site.sync')).toHaveLength(1);
     expect(await screen.findByRole('button', { name: 'Enable on all sites' })).toBeTruthy();
+    expect(spoken()).toContain('All-sites access revoked.');
   });
 
   it('lists enabled sites with their real Chrome state and revokes one', async () => {
@@ -158,6 +249,11 @@ describe('site access', () => {
       expect((await getSettings()).persistentOrigins).toEqual(['https://stale.org/*']);
     });
     expect(rpc.called('site.sync')).toHaveLength(1);
+    expect(spoken()).toContain('Revoked access for example.com.');
+    // The row and its button are gone: focus moved to the list's heading, not <body>.
+    expect(document.activeElement).toBe(
+      screen.getByRole('heading', { name: 'Sites enabled one by one' }),
+    );
   });
 
   it('shows a helpful empty state when no site is enabled', async () => {
@@ -166,9 +262,10 @@ describe('site access', () => {
   });
 });
 
-describe('deny list', () => {
+// The starter list has ~80 rows and every role query in jsdom walks them: give a loaded CI/dev box room.
+describe('deny list', { timeout: 30_000 }, () => {
   it('shows defaults, adds a normalised host and syncs', async () => {
-    await open();
+    await open(withStarterList);
     const first = DEFAULT_DENY_HOSTS[0]!;
     const row = (await screen.findByText(first)).closest('li')!;
     expect(within(row).getByText('Default')).toBeTruthy();
@@ -183,10 +280,18 @@ describe('deny list', () => {
     const added = (await screen.findByText('bank.example.com')).closest('li')!;
     expect(within(added).queryByText('Default')).toBeNull();
     expect((screen.getByLabelText('Add a site') as HTMLInputElement).value).toBe('');
+    expect(spoken()).toContain('Added bank.example.com to the deny list.');
+  });
+
+  it('states what the starter list covers instead of claiming banks and mail are covered', async () => {
+    await open(withStarterList);
+    await screen.findByText('Deny list');
+    expect(screen.getByText(DENY_LIST_SCOPE_NOTE)).toBeTruthy();
+    expect(screen.queryByText(/listed by default/)).toBeNull();
   });
 
   it('rejects invalid and duplicate input without changing anything', async () => {
-    await open();
+    await open(withStarterList);
     const input = await screen.findByLabelText('Add a site');
     const add = screen.getByRole('button', { name: 'Add to deny list' });
 
@@ -204,8 +309,27 @@ describe('deny list', () => {
     expect(rpc.called('site.sync')).toHaveLength(0);
   });
 
+  it("after an upgrade the stored list is short: says how many starter sites are missing and keeps the user's own", async () => {
+    await open({ denyList: ['paypal.com', 'my-school.example'] });
+    const missing = DEFAULT_DENY_HOSTS.length - 1;
+    expect(
+      await screen.findByText(
+        new RegExp(`${missing} of the ${DEFAULT_DENY_HOSTS.length} starter sites`),
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText(/the sites you added yourself stay/)).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Restore default sites' }));
+
+    await waitFor(async () => {
+      const list = (await getSettings()).denyList;
+      expect(list).toContain('my-school.example');
+      for (const host of DEFAULT_DENY_HOSTS) expect(list).toContain(host);
+    });
+  });
+
   it('removes an entry and restores the defaults', async () => {
-    await open();
+    await open(withStarterList);
     await userEvent.click(
       await screen.findByRole('button', { name: 'Remove paypal.com from the deny list' }),
     );
@@ -213,6 +337,8 @@ describe('deny list', () => {
       expect((await getSettings()).denyList).not.toContain('paypal.com');
     });
     expect(rpc.called('site.sync')).toHaveLength(1);
+    expect(spoken()).toContain('Removed paypal.com from the deny list.');
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Deny list' }));
     expect(await screen.findByText(/Missing: paypal.com\./)).toBeTruthy();
 
     await userEvent.click(screen.getByRole('button', { name: 'Restore default sites' }));
@@ -223,7 +349,7 @@ describe('deny list', () => {
   });
 
   it('disables restore with an explanation when nothing is missing', async () => {
-    await open();
+    await open(withStarterList);
     const button = await screen.findByRole('button', { name: 'Restore default sites' });
     expect(button.getAttribute('aria-disabled')).toBe('true');
     expect(button.getAttribute('title')).toMatch(/already on the list/);
@@ -267,16 +393,214 @@ describe('appearance and capture', () => {
     await waitFor(async () => expect((await getSettings()).toolbarEnabled).toBe(false));
   });
 
-  it('keeps a failed write visible with Retry, then succeeds', async () => {
+  it('toggles painting, explaining that page scripts can read what is painted', async () => {
+    await open();
+    const box = await screen.findByRole('checkbox', { name: 'Show highlights on pages' });
+    expect((box as HTMLInputElement).checked).toBe(true);
+    const hint = document.getElementById(box.getAttribute('aria-describedby')!)!;
+    expect(hint.textContent).toMatch(/scripts that a site itself runs can read/);
+    expect(hint.textContent).toMatch(/deny list/);
+
+    await userEvent.click(box);
+    await waitFor(async () => expect((await getSettings()).paintHighlights).toBe(false));
+    // The style choices explain why they are off instead of silently doing nothing.
+    const normal = screen.getByRole('radio', { name: /^Normal/ });
+    expect(normal.matches(':disabled')).toBe(true);
+    expect(screen.getByText(/no effect while highlights are not shown/)).toBeTruthy();
+  });
+
+  it('offers automatic, normal and strong highlight style and persists the choice', async () => {
+    await open();
+    const auto = await screen.findByRole('radio', { name: /^Automatic/ });
+    expect((auto as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByRole('radio', { name: /^Normal/ })).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('radio', { name: /^Strong/ }));
+    await waitFor(async () => expect((await getSettings()).highlightStyle).toBe('strong'));
+  });
+
+  it('draws a legend from KIND_DECORATION: every kind, its name and its underline', async () => {
+    await open();
+    const legend = await screen.findByRole('list', { name: 'Underline for each highlight kind' });
+    const rows = within(legend).getAllByRole('listitem');
+    expect(rows).toHaveLength(HIGHLIGHT_KINDS.length);
+    HIGHLIGHT_KINDS.forEach((kind, i) => {
+      const row = rows[i]!;
+      const deco = KIND_DECORATION[kind];
+      expect(within(row).getByText(KIND_LABELS[kind].label, { exact: false })).toBeTruthy();
+      expect(within(row).getByText(deco.label)).toBeTruthy();
+      const sample = within(row).getByText('Sample text');
+      expect(sample.style.textDecorationStyle).toBe(deco.style);
+      expect(sample.style.textDecorationThickness).toBe(`${deco.thickness}px`);
+    });
+
+    await userEvent.click(screen.getByRole('radio', { name: /^Strong/ }));
+    await waitFor(() => {
+      const sample = within(within(legend).getAllByRole('listitem')[0]!).getByText('Sample text');
+      expect(sample.style.textDecorationThickness).toBe(
+        `${KIND_DECORATION[HIGHLIGHT_KINDS[0]!].thickness + 1}px`,
+      );
+    });
+  });
+
+  it('allows private-window capture only after warning where it is stored', async () => {
+    await open();
+    const box = await screen.findByRole('checkbox', { name: 'Save from private windows' });
+    expect((box as HTMLInputElement).checked).toBe(false);
+    const hint = document.getElementById(box.getAttribute('aria-describedby')!)!;
+    expect(hint.textContent).toMatch(/stored in your normal Chrome profile/);
+
+    await userEvent.click(box);
+    await waitFor(async () => expect((await getSettings()).allowIncognitoCapture).toBe(true));
+  });
+
+  it('keeps a failed write visible next to its control with Retry, then succeeds', async () => {
     await open();
     const radio = await screen.findByRole('radio', { name: /^Light/ });
     vi.spyOn(browser.storage.local, 'set').mockRejectedValueOnce(new Error('Quota exceeded'));
     await userEvent.click(radio);
 
-    expect((await screen.findByRole('alert')).textContent).toContain('Quota exceeded');
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Quota exceeded');
+    // In the Appearance section that owns the control, not at the top of the page.
+    expect(alert.closest('section')?.contains(radio)).toBe(true);
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await waitFor(async () => expect((await getSettings()).theme).toBe('light'));
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  });
+});
+
+describe('keyboard shortcuts', () => {
+  it('lists the real bindings from Chrome, shows "Not set", and the in-page keys', async () => {
+    await open();
+    const section = (await screen.findByRole('heading', { name: 'Keyboard shortcuts' }))
+      .parentElement!;
+    const commands = await within(section).findByRole('list', { name: 'Browser shortcuts' });
+    const rows = within(commands).getAllByRole('listitem');
+    expect(rows).toHaveLength(COMMANDS.length);
+    for (const c of COMMANDS) {
+      const row = within(commands).getByText(c.description).closest('li')!;
+      expect(row.textContent).toContain(c.shortcut || 'Not set');
+    }
+    const inPage = within(section).getByRole('list', { name: 'In-page shortcuts' });
+    expect(within(inPage).getByText('Alt+Shift+]')).toBeTruthy();
+    expect(within(inPage).getByText('Alt+Shift+[')).toBeTruthy();
+  });
+
+  it('reflects what the user changed in Chrome when the page regains focus', async () => {
+    await open();
+    expect(await screen.findByText('Alt+Shift+H')).toBeTruthy();
+    chrome.commands.getAll.mockResolvedValue(
+      COMMANDS.map((c) => (c.name === 'quick-save' ? { ...c, shortcut: '' } : c)),
+    );
+
+    fireEvent.focus(window);
+
+    await waitFor(() => expect(screen.queryByText('Alt+Shift+H')).toBeNull());
+  });
+
+  it("opens Chrome's shortcut page in a new tab", async () => {
+    const create = vi.spyOn(browser.tabs, 'create');
+    await open();
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Change shortcuts in Chrome' }),
+    );
+    expect(create).toHaveBeenCalledWith({ url: 'chrome://extensions/shortcuts' });
+  });
+
+  it('reports a failure to open the page, and a failure to read the commands, with Retry', async () => {
+    vi.spyOn(browser.tabs, 'create').mockRejectedValueOnce(new Error('Tabs API unavailable'));
+    chrome.commands.getAll.mockRejectedValueOnce(new Error('commands unavailable'));
+    await open();
+
+    expect(await screen.findByText('commands unavailable')).toBeTruthy();
+    await userEvent.click(
+      within(
+        screen.getByText('commands unavailable').closest('[role="alert"]') as HTMLElement,
+      ).getByRole('button', { name: 'Retry' }),
+    );
+    expect(await screen.findByText('Alt+Shift+S')).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Change shortcuts in Chrome' }));
+    expect(await screen.findByText('Tabs API unavailable')).toBeTruthy();
+  });
+});
+
+describe('delete all data', () => {
+  const openDialog = async () => {
+    await userEvent.click(
+      await screen.findByRole('button', { name: /Delete all StudyVault data/ }),
+    );
+    return screen.findByRole('dialog', { name: 'Delete all StudyVault data?' });
+  };
+
+  it('says what is deleted, is accessible, and defaults to Cancel', async () => {
+    await open();
+    const dialog = await openDialog();
+    expect(dialog.textContent).toMatch(/including ones you already deleted/);
+    expect(dialog.textContent).toMatch(/cannot be undone/);
+    expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: 'Cancel' }));
+
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(store.calls.some((c) => c.fn === 'wipeAllData')).toBe(false);
+  });
+
+  it('wipes the data, then syncs the worker, then reports and moves focus', async () => {
+    await open({ persistentOrigins: ['https://example.com/*'], theme: 'dark' });
+    const dialog = await openDialog();
+
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete everything' }));
+
+    await waitFor(() => expect(store.calls.some((c) => c.fn === 'wipeAllData')).toBe(true));
+    await waitFor(() => expect(rpc.called('site.sync')).toHaveLength(1));
+    expect(
+      await screen.findByText(/All StudyVault data was deleted from this device/),
+    ).toBeTruthy();
+    expect(spoken()).toContain('All StudyVault data was deleted.');
+    expect(document.activeElement).toBe(
+      screen.getByRole('heading', { name: 'Delete all StudyVault data' }),
+    );
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('a storage_unavailable refusal shows its message and no blind Retry', async () => {
+    store.failNext.wipeAllData = new StudyVaultError(
+      'storage_unavailable',
+      'Another StudyVault window is using the data. Close it and try again.',
+    );
+    await open();
+    await userEvent.click(
+      within(await openDialog()).getByRole('button', { name: 'Delete everything' }),
+    );
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Another StudyVault window is using the data');
+    expect(within(alert).queryByRole('button', { name: 'Retry' })).toBeNull();
+  });
+
+  it('says the deletion removes highlights, notes, banks, settings and site access', async () => {
+    await open();
+    const dialog = await openDialog();
+    expect(dialog.textContent).toMatch(
+      /removes your highlights, notes, banks, settings and site access/,
+    );
+  });
+
+  it('shows the real error and repeats every step on Retry', async () => {
+    store.failNext.wipeAllData = new Error('Database is locked by another window');
+    await open();
+    await userEvent.click(
+      within(await openDialog()).getByRole('button', { name: 'Delete everything' }),
+    );
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Database is locked by another window');
+    expect(rpc.called('site.sync')).toHaveLength(0); // nothing after the failed step ran
+
+    await userEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(rpc.called('site.sync')).toHaveLength(1));
+    expect(await screen.findByText(/deleted from this device/)).toBeTruthy();
   });
 });
 

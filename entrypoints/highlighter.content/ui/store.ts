@@ -9,6 +9,8 @@ export interface Toast {
   text: string;
   tone: ToastTone;
   action?: { label: string; run: () => void };
+  /** Overrides how long the toast stays (ms). Internal: the host cannot set it through the contract. */
+  ttl?: number;
 }
 
 export interface UiState {
@@ -16,6 +18,8 @@ export interface UiState {
   toolbar: { selection: SelectionInfo } | null;
   popover: { highlight: HighlightView; anchor: DOMRect } | null;
   toasts: Toast[];
+  /** Screen-reader-only message (CaptureUi.announce). A new id makes an identical text speak again. */
+  announcement: { id: number; text: string } | null;
   /** Counts error toasts so a caller can tell whether the host already reported a failure. */
   errorSeq: number;
 }
@@ -51,7 +55,7 @@ let toastSeq = 0;
 
 export function pushToast(
   store: Store<UiState>,
-  notice: { text: string; tone?: ToastTone; action?: Toast['action'] },
+  notice: { text: string; tone?: ToastTone; action?: Toast['action']; ttl?: number },
 ): number {
   const toast: Toast = { ...notice, id: ++toastSeq, tone: notice.tone ?? 'info' };
   store.set((s) => ({

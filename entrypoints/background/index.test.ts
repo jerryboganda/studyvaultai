@@ -34,8 +34,10 @@ function installFakes() {
       create: vi.fn((_item: unknown, cb?: () => void) => cb?.()),
     },
     permissions: {
+      onAdded: event(),
       onRemoved: event(),
       contains: vi.fn(async (_p: { origins: string[] }) => true),
+      getAll: vi.fn(async () => ({ origins: [] as string[], permissions: [] as string[] })),
     },
     scripting: {
       getRegisteredContentScripts: vi.fn(
@@ -70,6 +72,7 @@ describe('background wiring', () => {
     expect(browser.runtime.onStartup.hasListeners()).toBe(true);
     expect(fakes.commands.onCommand.listeners).toHaveLength(1);
     expect(fakes.contextMenus.onClicked.listeners).toHaveLength(1);
+    expect(fakes.permissions.onAdded.listeners).toHaveLength(1);
     expect(fakes.permissions.onRemoved.listeners).toHaveLength(1);
   });
 
@@ -111,6 +114,103 @@ describe('background wiring', () => {
     await vi.waitFor(() =>
       expect(fakes.scripting.unregisterContentScripts).toHaveBeenCalledTimes(2),
     );
+    // The revoked pattern is also forgotten by the settings hint.
+    const stored = (await browser.storage.local.get('settings')).settings as {
+      persistentOrigins: string[];
+    };
+    expect(stored.persistentOrigins).toEqual([]);
+  });
+
+  it('refuses a private-window capture at the worker until the user allows it', async () => {
+    installFakes();
+    background.main();
+    const send = async (type: string, payload: unknown, sender: object) => {
+      let response: unknown;
+      await fakeBrowser.runtime.onMessage.trigger({ v: 1, type, payload }, sender, (r: unknown) => {
+        response = r;
+      });
+      await vi.waitFor(() => expect(response).toBeDefined());
+      return response as { ok: boolean; data?: unknown; error?: { code: string; message: string } };
+    };
+    const input = {
+      page: { url: 'https://example.com/a', canonicalUrl: null, title: 'A' },
+      exactQuote: 'Aspirin inhibits cyclooxygenase.',
+      anchorSet: {
+        type: 'html',
+        textAlgorithm: 'sv-text-v1',
+        textQuote: { exact: 'Aspirin inhibits cyclooxygenase.', prefix: '', suffix: '' },
+        textPosition: { start: 0, end: 32 },
+        structuralPath: null,
+        contentSignature: 'x',
+        documentTextLength: 100,
+      },
+      headingContext: null,
+      kind: 'essential',
+      color: 'amber',
+      bankId: null,
+      userComment: '',
+      priority: 3,
+      captureMethod: 'toolbar',
+    };
+    const privateTab = {
+      id: browser.runtime.id,
+      tab: { id: 9, incognito: true },
+      url: 'https://example.com/a',
+    };
+
+    const refused = await send('capture.save', input, privateTab);
+    expect(refused).toMatchObject({ ok: false, error: { code: 'forbidden' } });
+    expect(refused.error!.message).toMatch(/private \(incognito\) windows/);
+
+    await browser.storage.local.set({ settings: { allowIncognitoCapture: true } });
+    expect((await send('capture.save', input, privateTab)).ok).toBe(true);
+  });
+
+  it('reconciles when a permission is added outside the extension UI', async () => {
+    const fakes = installFakes();
+    // The user switched "Site access" to "On all sites" in chrome://extensions: Chrome grants it,
+    // raises onAdded, and settings have never heard of it.
+    fakes.permissions.getAll.mockResolvedValue({
+      origins: ['https://*/*'],
+      permissions: [],
+    });
+    fakes.permissions.contains.mockResolvedValue(true);
+    await browser.storage.local.set({
+      settings: { persistentOrigins: [], denyList: ['paypal.com'] },
+    });
+    background.main();
+
+    await Promise.all(fakes.permissions.onAdded.listeners.map((l) => (l as () => unknown)()));
+    await vi.waitFor(() => expect(fakes.scripting.registerContentScripts).toHaveBeenCalledOnce());
+    expect(fakes.scripting.registerContentScripts.mock.calls[0]![0]).toMatchObject([
+      { id: 'sv-persistent', matches: ['https://*/*'], excludeMatches: ['*://*.paypal.com/*'] },
+    ]);
+    // What the options page lists is brought back in line with what runs.
+    await vi.waitFor(async () => {
+      const stored = (await browser.storage.local.get('settings')).settings as {
+        persistentOrigins: string[];
+      };
+      expect(stored.persistentOrigins).toEqual(['https://*/*']);
+    });
+
+    // And the same worker answers the popup truthfully: all sites is on, from Chrome's grant.
+    fakes.scripting.getRegisteredContentScripts.mockResolvedValue([
+      { id: 'sv-persistent', matches: ['https://*/*'] },
+    ]);
+    vi.spyOn(browser.tabs, 'sendMessage').mockRejectedValue(new Error('no receiver'));
+    let response: unknown;
+    await fakeBrowser.runtime.onMessage.trigger(
+      { v: 1, type: 'site.status', payload: { tabId: 3, url: 'https://example.com/a' } },
+      { id: browser.runtime.id },
+      (r: unknown) => {
+        response = r;
+      },
+    );
+    await vi.waitFor(() => expect(response).toBeDefined());
+    expect(response).toMatchObject({
+      ok: true,
+      data: { supported: true, access: 'persistent', allSites: true },
+    });
   });
 
   it('serves RPC through the sender policy and the real repository', async () => {

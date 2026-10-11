@@ -136,6 +136,9 @@ export class FakePainter implements PainterLike {
   clearCalls = 0;
   destroyed = false;
   active: string | null = null;
+  /** Every id (or null) setActive() was called with, in order. */
+  activeCalls: Array<string | null> = [];
+  style: 'auto' | 'normal' | 'strong' | null = null;
   hit: string | null = null;
 
   paint(entries: readonly PaintEntry[]): void {
@@ -144,6 +147,10 @@ export class FakePainter implements PainterLike {
   }
   setActive(id: string | null): void {
     this.active = id;
+    this.activeCalls.push(id);
+  }
+  setStyle(style: 'auto' | 'normal' | 'strong'): void {
+    this.style = style;
   }
   hitTest(): string | null {
     return this.hit;
@@ -175,7 +182,11 @@ export class FakeUi implements CaptureUi {
   hidden = 0;
   popovers: Array<{ view: HighlightView; anchor: DOMRect }> = [];
   toasts: Notice[] = [];
+  announcements: string[] = [];
   applied: Settings[] = [];
+  focusRequests = 0;
+  /** What focusToolbar() answers (nothing to focus when false). */
+  canFocus = false;
   destroyed = false;
 
   showToolbar(selection: SelectionInfo): void {
@@ -192,6 +203,13 @@ export class FakeUi implements CaptureUi {
   }
   applySettings(settings: Settings): void {
     this.applied.push(settings);
+  }
+  focusToolbar(): boolean {
+    this.focusRequests += 1;
+    return this.canFocus;
+  }
+  announce(text: string): void {
+    this.announcements.push(text);
   }
   destroy(): void {
     this.destroyed = true;
@@ -214,6 +232,12 @@ export class FakeBackground {
   epochListeners = new Set<() => void>();
   /** What `sidepanel.open` answers (the worker could not open the panel when false). */
   sidePanelOpens = true;
+  /**
+   * Does a report that only changes resolution rows signal a data change? Not in the current
+   * storage contract (resolution has its own signal; viewers do not re-fetch the page list for it).
+   * True reproduces the older contract, where every viewer re-fetched after every report.
+   */
+  bumpOnResolution = false;
   banks: BankLite[] = [{ id: 'inbox-default', name: 'Inbox', color: 'amber', isInbox: true }];
 
   callsOf(type: string): Call[] {
@@ -316,7 +340,7 @@ export class FakeBackground {
             resolveConfidence: item.confidence,
           });
         }
-        if (changed) this.bump(); // same rule as the real repo: only a real change notifies
+        if (changed && this.bumpOnResolution) this.bump();
         return { updated };
       }
       case 'highlight.delete': {

@@ -2,6 +2,7 @@ import { chromium, expect, type BrowserContext, type Page } from '@playwright/te
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { E2E_EXTENSION_PATH } from './fixtures';
 
 /**
  * Helpers for the lifecycle / persistence / resilience specs (lifecycle.spec.ts, resilience.spec.ts,
@@ -10,7 +11,9 @@ import path from 'node:path';
  * a Chrome API.
  */
 
-export const E2E_EXTENSION_PATH = path.resolve('.output/chrome-mv3-e2e');
+// Same constant as the Playwright fixtures: honours SV_OUT_DIR, so a parallel agent's private build
+// folder is the one that gets launched here too.
+export { E2E_EXTENSION_PATH };
 
 /** Whitespace-collapsed, trimmed text: how the extension's text stream sees page text. */
 export const norm = (s: string): string => s.replace(/\s+/g, ' ').trim();
@@ -203,6 +206,9 @@ export interface DbHighlight {
   resolveConfidence: number | null;
   deletedAt: string | null;
   captureMethod: string;
+  /** Address (credentials removed) and title of the page when the quote was saved. */
+  capturedUrl?: string;
+  capturedTitle?: string;
 }
 
 export interface DbSource {
@@ -460,27 +466,33 @@ export async function evalInContentScript<T>(
 export interface Painted {
   text: string;
   color: string;
+  /** Kind part of the registry name (`sv-hl-<color>-<kind>`), null for a kind-less entry. */
+  kind: string | null;
   /** Closest ancestor element id of the painted range ('' when none). */
   hostId: string;
 }
 
-/** Every non-empty range in an sv-hl-* registry, with where it sits. */
+/**
+ * Every non-empty range in an sv-hl-* registry, with where it sits. Registries are named
+ * `sv-hl-<color>` or `sv-hl-<color>-<kind>`; colour ids have no hyphen, so the colour is the first
+ * segment and `kind` is whatever follows (null for a kind-less entry).
+ */
 export async function paintedDetail(page: Page): Promise<Painted[]> {
   return page.evaluate(() => {
-    const out: Array<{ text: string; color: string; hostId: string }> = [];
+    const out: Array<{ text: string; color: string; kind: string | null; hostId: string }> = [];
     for (const [name, hl] of CSS.highlights) {
       if (!name.startsWith('sv-hl-') || name === 'sv-hl-active') continue;
+      const rest = name.slice('sv-hl-'.length);
+      const dash = rest.indexOf('-');
+      const color = dash < 0 ? rest : rest.slice(0, dash);
+      const kind = dash < 0 ? null : rest.slice(dash + 1);
       for (const abstract of hl as unknown as Iterable<AbstractRange>) {
         const range = abstract as Range;
         const text = range.toString();
         if (text === '') continue;
         const container = range.commonAncestorContainer;
         const el = container.nodeType === 1 ? (container as Element) : container.parentElement;
-        out.push({
-          text,
-          color: name.slice('sv-hl-'.length),
-          hostId: el?.closest('[id]')?.id ?? '',
-        });
+        out.push({ text, color, kind, hostId: el?.closest('[id]')?.id ?? '' });
       }
     }
     return out;

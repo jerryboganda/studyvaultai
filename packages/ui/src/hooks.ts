@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
 import type { Settings } from '@shared';
-import { getSettings, updateSettings, watchDataEpoch, watchSettings } from '@runtime';
+import {
+  getSettings,
+  updateSettings,
+  watchDataEpoch,
+  watchResolutionEpoch,
+  watchSettings,
+} from '@runtime';
 import { observe } from '@storage';
-import { errorMessage } from './text';
+import { describeCommand, type ShortcutInfo } from './shortcuts';
+import { errorMessage, isRetryable } from './text';
 
 /** Query dependencies must be primitives: they are compared through JSON, not identity. */
 export type Dep = string | number | boolean | null | undefined;
@@ -27,6 +34,7 @@ export function useLatest<T>(value: T) {
 export function useSettings() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let live = true;
@@ -39,11 +47,17 @@ export function useSettings() {
         if (live) setError(errorMessage(err, 'Could not read your settings.'));
       },
     );
-    const stop = watchSettings((s) => setSettings(s));
     return () => {
       live = false;
-      stop();
     };
+  }, [attempt]);
+
+  useEffect(() => watchSettings((s) => setSettings(s)), []);
+
+  /** Read the settings again after a failure (the error clears immediately). */
+  const retry = useCallback(() => {
+    setError(null);
+    setAttempt((n) => n + 1);
   }, []);
 
   /** Serialised read-modify-write through @runtime; the returned settings are shown immediately. */
@@ -53,7 +67,7 @@ export function useSettings() {
     return next;
   }, []);
 
-  return { settings, error, update };
+  return { settings, error, retry, update };
 }
 
 /** Mirror the theme setting onto <html data-theme>; "system" removes it so the media query decides. */
@@ -69,36 +83,61 @@ export function useApplyTheme(theme: Settings['theme'] | undefined) {
 // Data
 // ---------------------------------------------------------------------------------------------
 
-/** Counter that changes whenever any context mutated the database (cross-context liveness). */
+/**
+ * Counter that changes whenever any context mutated the database (cross-context liveness): both
+ * the data channel (edits, deletes, new highlights) and the resolution channel (a page re-checked
+ * where its highlights are), so status badges stay current.
+ */
 export function useDataEpoch(): number {
   const [epoch, setEpoch] = useState(0);
-  useEffect(() => watchDataEpoch(() => setEpoch((n) => n + 1)), []);
+  useEffect(() => {
+    const bump = () => setEpoch((n) => n + 1);
+    const stopData = watchDataEpoch(bump);
+    const stopResolution = watchResolutionEpoch(bump);
+    return () => {
+      stopData();
+      stopResolution();
+    };
+  }, []);
   return epoch;
 }
 
 export interface Loadable<T> {
   data: T | undefined;
   error: string | null;
+  /** False when repeating the call cannot help (see `isRetryable`): show the message, no Retry. */
+  retryable: boolean;
   /** True until the first result for the current dependencies has arrived. */
   loading: boolean;
-  /** Clears the result and runs again (Retry buttons). */
+  /** True after `refresh()` until its result arrives; the old data and error stay visible meanwhile. */
+  refreshing: boolean;
+  /** Clears the result and runs again. Blanks the view: use `refresh` for retries. */
   reload(): void;
   /** Runs again but keeps the current data and error visible until the new result arrives. */
   refresh(): void;
 }
 
-type Result<T> = { key: string; data?: T; error?: string } | null;
+type Result<T> = {
+  key: string;
+  run: number;
+  data?: T;
+  error?: string;
+  retryable?: boolean;
+} | null;
 
 function toLoadable<T>(
   result: Result<T>,
   key: string,
+  runs: number,
   actions: Pick<Loadable<T>, 'reload' | 'refresh'>,
 ): Loadable<T> {
   const current = result?.key === key ? result : null;
   return {
     data: current?.data,
     error: current?.error ?? null,
+    retryable: current?.retryable ?? true,
     loading: current === null,
+    refreshing: current !== null && current.run !== runs,
     ...actions,
   };
 }
@@ -123,10 +162,11 @@ export function useAsync<T>(
     let live = true;
     latest.current().then(
       (data) => {
-        if (live) setResult({ key, data });
+        if (live) setResult({ key, run: runs, data });
       },
       (err: unknown) => {
-        if (live) setResult({ key, error: errorMessage(err) });
+        if (live)
+          setResult({ key, run: runs, error: errorMessage(err), retryable: isRetryable(err) });
       },
     );
     return () => {
@@ -139,7 +179,7 @@ export function useAsync<T>(
     setRuns((n) => n + 1);
   }, []);
   const refresh = useCallback(() => setRuns((n) => n + 1), []);
-  return toLoadable(result, key, { reload, refresh });
+  return toLoadable(result, key, runs, { reload, refresh });
 }
 
 /**
@@ -157,10 +197,11 @@ export function useObserved<T>(query: () => Promise<T>, deps: readonly Dep[]): L
     let live = true;
     const stop = observe(() => latest.current()).subscribe(
       (data) => {
-        if (live) setResult({ key, data });
+        if (live) setResult({ key, run: runs, data });
       },
       (err: unknown) => {
-        if (live) setResult({ key, error: errorMessage(err) });
+        if (live)
+          setResult({ key, run: runs, error: errorMessage(err), retryable: isRetryable(err) });
       },
     );
     return () => {
@@ -174,7 +215,7 @@ export function useObserved<T>(query: () => Promise<T>, deps: readonly Dep[]): L
     setRuns((n) => n + 1);
   }, []);
   const refresh = useCallback(() => setRuns((n) => n + 1), []);
-  return toLoadable(result, key, { reload, refresh });
+  return toLoadable(result, key, runs, { reload, refresh });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -208,6 +249,7 @@ export function useActiveTab() {
     tab: ActiveTab | null;
     error: string | null;
   }>({ loading: true, tab: null, error: null });
+  const readAgain = useRef<(() => Promise<void>) | null>(null);
 
   useEffect(() => {
     let live = true;
@@ -240,6 +282,7 @@ export function useActiveTab() {
         }
       }
     };
+    readAgain.current = read;
     void read();
     const onActivated = () => void read();
     const onUpdated = (
@@ -253,12 +296,71 @@ export function useActiveTab() {
     browser.tabs.onUpdated.addListener(onUpdated);
     return () => {
       live = false;
+      readAgain.current = null;
       browser.tabs.onActivated.removeListener(onActivated);
       browser.tabs.onUpdated.removeListener(onUpdated);
     };
   }, []);
 
-  return state;
+  /** Query the tab again after a failure. */
+  const retry = useCallback(() => {
+    setState((prev) => ({ ...prev, loading: true, error: null }));
+    void readAgain.current?.();
+  }, []);
+
+  return { ...state, retry };
+}
+
+/**
+ * The extension's keyboard commands as Chrome has them right now (`commands.getAll`), never a
+ * hard-coded list: the user can change or clear every key. Re-read when the page regains focus,
+ * because shortcuts are edited on chrome://extensions/shortcuts in another tab.
+ */
+export function useShortcuts() {
+  const [state, setState] = useState<{ commands: ShortcutInfo[] | null; error: string | null }>({
+    commands: null,
+    error: null,
+  });
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    let live = true;
+    const read = async () => {
+      try {
+        const all = await browser.commands.getAll();
+        if (!live) return;
+        const commands = all.flatMap((c) =>
+          c.name
+            ? [
+                {
+                  name: c.name,
+                  description: describeCommand(c.name, c.description),
+                  shortcut: c.shortcut ?? '',
+                },
+              ]
+            : [],
+        );
+        setState({ commands, error: null });
+      } catch (err) {
+        if (live) {
+          setState({
+            commands: null,
+            error: errorMessage(err, 'Chrome did not report the keyboard shortcuts.'),
+          });
+        }
+      }
+    };
+    void read();
+    const onFocus = () => void read();
+    window.addEventListener('focus', onFocus);
+    return () => {
+      live = false;
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [attempt]);
+
+  const retry = useCallback(() => setAttempt((n) => n + 1), []);
+  return { ...state, retry };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -273,18 +375,20 @@ export function useActiveTab() {
 export function useAction<A extends unknown[]>(fn: (...args: A) => Promise<void>) {
   const latest = useLatest(fn);
   const lastArgs = useRef<A | null>(null);
-  const [state, setState] = useState<{ busy: boolean; error: string | null }>({
+  const [state, setState] = useState<{ busy: boolean; error: string | null; retryable: boolean }>({
     busy: false,
     error: null,
+    retryable: true,
   });
 
   const run = useCallback(
     (...args: A) => {
       lastArgs.current = args;
-      setState({ busy: true, error: null });
+      setState({ busy: true, error: null, retryable: true });
       return latest.current(...args).then(
-        () => setState({ busy: false, error: null }),
-        (err: unknown) => setState({ busy: false, error: errorMessage(err) }),
+        () => setState({ busy: false, error: null, retryable: true }),
+        (err: unknown) =>
+          setState({ busy: false, error: errorMessage(err), retryable: isRetryable(err) }),
       );
     },
     [latest],
@@ -292,7 +396,15 @@ export function useAction<A extends unknown[]>(fn: (...args: A) => Promise<void>
   const retry = useCallback(() => {
     if (lastArgs.current) void run(...lastArgs.current);
   }, [run]);
-  const clear = useCallback(() => setState({ busy: false, error: null }), []);
+  const clear = useCallback(() => setState({ busy: false, error: null, retryable: true }), []);
 
-  return { run, retry, clear, busy: state.busy, error: state.error };
+  return {
+    run,
+    retry,
+    clear,
+    busy: state.busy,
+    error: state.error,
+    /** False when the failure is not transient: show the message without a Retry button. */
+    retryable: state.retryable,
+  };
 }

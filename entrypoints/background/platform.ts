@@ -1,8 +1,8 @@
 import { browser } from 'wxt/browser';
 import { StudyVaultError } from '@shared';
-import { callTab, getSettings } from '@runtime';
+import { callTab, getSettings, updateSettings } from '@runtime';
 import type { Badge, CommandDeps, MenuPort } from './commands';
-import type { SessionArea } from './deleteLedger';
+import type { SessionArea } from './handlers';
 import {
   CONTENT_SCRIPT_FILE,
   PERSISTENT_SCRIPT_ID,
@@ -24,6 +24,16 @@ export function browserSiteDeps(): SiteAccessDeps {
     getSettings,
     hasPermission: (origin) =>
       browser.permissions.contains({ origins: [origin] }).catch(() => false),
+    grantedOrigins: async () => {
+      try {
+        return (await browser.permissions.getAll()).origins ?? [];
+      } catch {
+        return null;
+      }
+    },
+    rememberOrigins: async (origins) => {
+      await updateSettings((s) => ({ ...s, persistentOrigins: origins }));
+    },
     registeredMatches: async () => {
       const [script] = await browser.scripting.getRegisteredContentScripts({
         ids: [PERSISTENT_SCRIPT_ID],
@@ -71,6 +81,9 @@ export function browserCommandDeps(site: SiteAccess): CommandDeps {
     activate: (tabId) => site.activate(tabId),
     captureSelection: (tabId, method) =>
       callTab(tabId, 'content.captureSelection', { method, bankId: null }),
+    allowIncognitoCapture: async () => (await getSettings()).allowIncognitoCapture,
+    focusToolbar: (tabId) => callTab(tabId, 'content.focusToolbar', {}),
+    stepHighlight: (tabId, direction) => callTab(tabId, 'content.stepHighlight', { direction }),
     openSidePanel: async (windowId) => {
       try {
         await browser.sidePanel.open({ windowId });

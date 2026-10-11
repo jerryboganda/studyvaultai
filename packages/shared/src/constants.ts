@@ -34,7 +34,7 @@ export const KIND_LABELS: Record<
   exception: { label: 'Exception', glyph: '!' },
   differential: { label: 'Differential', glyph: '≠' },
   weak_area: { label: 'Weak area', glyph: '▽' },
-  correction: { label: 'Verified correction', glyph: '✓' },
+  correction: { label: 'Correction (checked by you)', glyph: '✓' },
   question: { label: 'Question', glyph: '?' },
 };
 
@@ -51,6 +51,10 @@ export const DEFAULT_PALETTE: Record<(typeof HIGHLIGHT_KINDS)[number], (typeof C
 
 /** chrome.storage.session key: {highlightId, at} handed from the service worker to the side panel. */
 export const PENDING_FOCUS_KEY = 'sv.pendingFocus';
+
+/** Why a capture from a private window is refused while settings.allowIncognitoCapture is off. */
+export const INCOGNITO_CAPTURE_REFUSAL =
+  'StudyVault does not save from private (incognito) windows. Turn on "Save from private windows" in StudyVault settings to allow it.';
 
 /** Name of the always-present default bank that quick-save falls back to. */
 export const INBOX_BANK_NAME = 'Inbox';
@@ -69,19 +73,111 @@ export const COLOR_SWATCH: Record<(typeof COLOR_IDS)[number], { bg: string; soli
 };
 
 /**
- * Hosts where capture is off unless the user explicitly removes them from the deny list
- * (SECURITY_PRIVACY: banks, payment, mail, health records, auth providers). Subdomains included.
+ * What the default deny list is, in words the UI can show next to it. It is a starter list of
+ * well-known hosts, not a guarantee: banks, health portals and employers' sign-in pages differ by
+ * country and organisation, and the user is expected to add their own.
+ */
+export const DENY_LIST_SCOPE_NOTE =
+  'A starter list of common sign-in, mail, payment, bank and health-portal sites; banks vary by country - add yours.';
+
+/**
+ * STARTER deny list (SECURITY_PRIVACY): hosts where capture is off until the user removes them.
+ * Entries match the host and every subdomain. Well-known sign-in, mail, payment, bank and
+ * health-portal sites only; it is deliberately not presented as complete (DENY_LIST_SCOPE_NOTE).
+ * Every entry must satisfy DENY_HOST (lowercase hostname) so it can become an excludeMatches pattern.
  */
 export const DEFAULT_DENY_HOSTS: readonly string[] = [
+  // Sign-in / identity providers and government sign-in
   'accounts.google.com',
   'login.microsoftonline.com',
   'login.live.com',
   'appleid.apple.com',
+  'account.microsoft.com',
+  'login.yahoo.com',
+  'signin.aws.amazon.com',
+  'id.atlassian.com',
+  'auth0.com',
+  'okta.com',
+  'login.gov',
+  'id.me',
+  'account.gov.uk',
+  'my.gov.au',
+  // Web mail
   'mail.google.com',
   'outlook.live.com',
   'outlook.office.com',
   'outlook.office365.com',
+  'outlook.com',
+  'mail.yahoo.com',
+  'mail.aol.com',
+  'mail.proton.me',
+  'account.proton.me',
+  'protonmail.com',
+  'mail.zoho.com',
+  'icloud.com',
+  'fastmail.com',
+  // Payments and wallets
   'paypal.com',
+  'venmo.com',
+  'cash.app',
+  'wise.com',
+  'dashboard.stripe.com',
+  'checkout.stripe.com',
+  'pay.google.com',
+  'payments.google.com',
+  'squareup.com',
+  // Banks and brokerages: United States
+  'chase.com',
+  'bankofamerica.com',
+  'wellsfargo.com',
+  'citi.com',
+  'usbank.com',
+  'capitalone.com',
+  'americanexpress.com',
+  'schwab.com',
+  'fidelity.com',
+  'usaa.com',
+  // United Kingdom
+  'barclays.co.uk',
+  'hsbc.co.uk',
+  'lloydsbank.com',
+  'natwest.com',
+  'santander.co.uk',
+  'nationwide.co.uk',
+  'monzo.com',
+  // Europe
+  'ing.com',
+  'n26.com',
+  'deutsche-bank.de',
+  'commerzbank.de',
+  'bnpparibas.com',
+  'rabobank.nl',
+  // India
+  'hdfcbank.com',
+  'icicibank.com',
+  'axisbank.com',
+  'onlinesbi.sbi',
+  'kotak.com',
+  // Australia
+  'commbank.com.au',
+  'westpac.com.au',
+  'anz.com.au',
+  'nab.com.au',
+  // Canada
+  'rbc.com',
+  'rbcroyalbank.com',
+  'td.com',
+  'scotiabank.com',
+  'bmo.com',
+  'cibc.com',
+  // Health-record and insurance member portals
+  'mychart.com',
+  'followmyhealth.com',
+  'kp.org',
+  'myhealth.va.gov',
+  'login.nhs.uk',
+  'patientaccess.com',
+  // Browser store pages (extensions cannot run there anyway)
   'chromewebstore.google.com',
   'chrome.google.com',
 ];

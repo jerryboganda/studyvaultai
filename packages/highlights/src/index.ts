@@ -23,4 +23,5 @@ export { resolveAnchor, resolveMany } from './resolve';
 export type { ResolveManyOptions } from './resolve';
 export { bestApproxSubstring, boundedEditDistance, similarity } from './fuzzy';
 export type { ApproxMatch } from './fuzzy';
-export { HighlightPainter } from './painter';
+export { HighlightPainter, KIND_DECORATION } from './painter';
+export type { DecorationStyle, HighlightStyleMode, KindDecoration } from './painter';

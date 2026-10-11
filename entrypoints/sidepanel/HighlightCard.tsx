@@ -16,10 +16,12 @@ import {
   ResolveBadge,
   describeResolveState,
   errorMessage,
+  isRetryable,
   safeHref,
   truncate,
   useAction,
   useLatest,
+  useToast,
 } from '@ui';
 import type { RevealAvailability } from './model';
 import { REVEAL_NOT_FOUND } from './model';
@@ -55,6 +57,7 @@ export function HighlightCard({
 }) {
   const { highlight, source, banks } = item;
   const uid = useId();
+  const { announce } = useToast();
   const [expanded, setExpanded] = useState(false);
   const [revealNote, setRevealNote] = useState<{ ok: boolean; text: string } | null>(null);
   const state = describeResolveState(highlight.resolveStatus);
@@ -74,11 +77,9 @@ export function HighlightCard({
         break;
       case 'reveal': {
         const { found } = await actions.reveal(highlight.id);
-        setRevealNote(
-          found
-            ? { ok: true, text: 'Showing this highlight on the page.' }
-            : { ok: false, text: REVEAL_NOT_FOUND },
-        );
+        const text = found ? 'Showing this highlight on the page.' : REVEAL_NOT_FOUND;
+        setRevealNote({ ok: found, text });
+        announce(text);
         break;
       }
     }
@@ -100,7 +101,7 @@ export function HighlightCard({
       </div>
 
       <div className="sv-stack sv-stack--tight">
-        <blockquote className="sv-quote">
+        <blockquote className="sv-quote" dir="auto">
           {long && !expanded ? truncate(quote, QUOTE_PREVIEW_CHARS) : quote}
         </blockquote>
         {long ? (
@@ -116,7 +117,7 @@ export function HighlightCard({
       </div>
 
       {showSource ? (
-        <p className="sv-small sv-muted sv-wrap">
+        <p className="sv-small sv-muted sv-wrap" dir="auto">
           From {source.title ? `${source.title} · ` : ''}
           {source.host}
           {href ? (
@@ -129,7 +130,9 @@ export function HighlightCard({
           ) : null}
         </p>
       ) : highlight.headingContext ? (
-        <p className="sv-small sv-muted sv-wrap">Under: {highlight.headingContext}</p>
+        <p className="sv-small sv-muted sv-wrap" dir="auto">
+          Under: {highlight.headingContext}
+        </p>
       ) : null}
 
       <div className="sv-row">
@@ -137,7 +140,11 @@ export function HighlightCard({
         {banks.length === 0 ? (
           <span className="sv-muted sv-small">none</span>
         ) : (
-          banks.map((b) => <Badge key={b.id}>{b.name}</Badge>)
+          banks.map((b) => (
+            <Badge key={b.id}>
+              <span dir="auto">{b.name}</span>
+            </Badge>
+          ))
         )}
       </div>
 
@@ -203,15 +210,13 @@ export function HighlightCard({
         </p>
       )}
       {revealNote ? (
-        <InlineNotice tone={revealNote.ok ? 'success' : 'warning'} live>
-          {revealNote.text}
-        </InlineNotice>
+        <InlineNotice tone={revealNote.ok ? 'success' : 'warning'}>{revealNote.text}</InlineNotice>
       ) : null}
       {act.error ? (
         <InlineNotice
           tone="error"
           title="That did not work"
-          action={<Button onClick={act.retry}>Retry</Button>}
+          action={act.retryable ? <Button onClick={act.retry}>Retry</Button> : undefined}
         >
           {act.error}
         </InlineNotice>
@@ -222,7 +227,8 @@ export function HighlightCard({
 
 // ---------------------------------------------------------------------------------------------
 
-type SaveState = { kind: 'idle' | 'saving' | 'saved' } | { kind: 'error'; message: string };
+type SaveState =
+  { kind: 'idle' | 'saving' | 'saved' } | { kind: 'error'; message: string; retryable: boolean };
 
 /**
  * Comment editor with debounced autosave. `value` is what storage holds; `draft` is what the
@@ -241,6 +247,7 @@ function CommentField({
   const [saved, setSaved] = useState(value); // last text known to be persisted
   const [seen, setSeen] = useState(value);
   const [status, setStatus] = useState<SaveState>({ kind: 'idle' });
+  const { announce } = useToast();
   const inflight = useRef<string | null>(null);
   const pending = useRef<string | null>(null);
   const save = useLatest(onSave);
@@ -263,13 +270,18 @@ function CommentField({
         await save.current(text);
         setSaved(text);
         setStatus({ kind: 'saved' });
+        announce('Note saved.');
       } catch (err) {
-        setStatus({ kind: 'error', message: errorMessage(err, 'Could not save your note.') });
+        setStatus({
+          kind: 'error',
+          message: errorMessage(err, 'Could not save your note.'),
+          retryable: isRetryable(err),
+        });
       } finally {
         inflight.current = null;
       }
     },
-    [save],
+    [save, announce],
   );
 
   useEffect(() => {
@@ -302,6 +314,7 @@ function CommentField({
         maxLength={MAX_COMMENT_CHARS}
         value={draft}
         placeholder="Add your own words (optional)"
+        dir="auto"
         aria-describedby={`${id}-status`}
         onChange={(e) => {
           setDraft(e.target.value);
@@ -311,15 +324,18 @@ function CommentField({
           if (draft !== saved) void send(draft);
         }}
       />
-      <div id={`${id}-status`} className="sv-small" role="status">
+      {/* Saved/Saving are spoken through the surface's one status region (announce above). */}
+      <div id={`${id}-status`} className="sv-small">
         {status.kind === 'saving' ? <span className="sv-muted">Saving…</span> : null}
         {status.kind === 'saved' ? <span className="sv-muted">Saved</span> : null}
         {status.kind === 'error' ? (
-          <span>
+          <span role="alert">
             Not saved: {status.message}{' '}
-            <Button variant="ghost" onClick={() => void send(draft)}>
-              Retry
-            </Button>
+            {status.retryable ? (
+              <Button variant="ghost" onClick={() => void send(draft)}>
+                Retry
+              </Button>
+            ) : null}
           </span>
         ) : null}
       </div>

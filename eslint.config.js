@@ -47,6 +47,11 @@ export default tseslint.config(
     },
   },
   {
+    // Plain Node build/CI scripts.
+    files: ['scripts/**/*.mjs'],
+    languageOptions: { globals: { process: 'readonly', URL: 'readonly', console: 'readonly' } },
+  },
+  {
     // Playwright fixtures name their callback `use`, which the hooks rule mistakes for a React hook.
     files: ['tests/**'],
     rules: { 'react-hooks/rules-of-hooks': 'off' },

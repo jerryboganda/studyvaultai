@@ -1,3 +1,4 @@
+import './zodConfig';
 import { z } from 'zod';
 import {
   COLOR_IDS,
@@ -118,6 +119,13 @@ export const Highlight = z.object({
   resolveStatus: ResolveStatus,
   resolveConfidence: z.number().min(0).max(1).nullable(),
   lastResolvedAt: IsoDate.nullable(),
+  /**
+   * Immutable provenance of the capture: the address (credentials removed) and title of the page
+   * as it was when the quote was saved. A Source can span address variants; this does not. Absent
+   * on rows written before these existed. Not indexed, so no Dexie version bump.
+   */
+  capturedUrl: HttpUrl.optional(),
+  capturedTitle: z.string().max(MAX_TITLE_CHARS).optional(),
 });
 export type Highlight = z.infer<typeof Highlight>;
 

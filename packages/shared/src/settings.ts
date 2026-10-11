@@ -20,8 +20,11 @@ export const Settings = z.object({
    * lists them, but nothing is published to the page's CSS.highlights registry (SECURITY_PRIVACY).
    */
   paintHighlights: z.boolean(),
-  /** 'strong' adds a thicker underline per kind and a heavier fill for low-contrast displays. */
-  highlightStyle: z.enum(['normal', 'strong']),
+  /**
+   * 'auto' follows the OS contrast preference (strong under prefers-contrast: more); 'normal' and
+   * 'strong' override it. Strong = thicker underline per kind and a heavier fill.
+   */
+  highlightStyle: z.enum(['auto', 'normal', 'strong']),
   /** Save from private (incognito) windows. Off by default: the database is shared with normal windows. */
   allowIncognitoCapture: z.boolean(),
 });
@@ -39,7 +42,7 @@ export function defaultSettings(): Settings {
     denyList: [...DEFAULT_DENY_HOSTS],
     persistentOrigins: [],
     paintHighlights: true,
-    highlightStyle: 'normal',
+    highlightStyle: 'auto',
     allowIncognitoCapture: false,
   };
 }

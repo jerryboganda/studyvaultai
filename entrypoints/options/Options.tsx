@@ -1,17 +1,20 @@
-import { type Settings } from '@shared';
-import { Button, InlineNotice, useAction, useApplyTheme, useSettings } from '@ui';
+import { Button, InlineNotice, ToastProvider, useApplyTheme, useSettings } from '@ui';
 import { Appearance, Capture } from './Preferences';
 import { About, Privacy } from './Privacy';
+import { KeyboardShortcuts } from './Shortcuts';
 import { SiteAccess } from './SiteAccess';
 
 export function Options() {
-  const { settings, error, update } = useSettings();
-  useApplyTheme(settings?.theme);
+  return (
+    <ToastProvider>
+      <OptionsBody />
+    </ToastProvider>
+  );
+}
 
-  // Every preference write goes through updateSettings; failures stay visible with a retry.
-  const save = useAction(async (mutate: (s: Settings) => Settings) => {
-    await update(mutate);
-  });
+function OptionsBody() {
+  const { settings, error, retry, update } = useSettings();
+  useApplyTheme(settings?.theme);
 
   return (
     <div className="opt">
@@ -29,6 +32,9 @@ export function Options() {
               <a href="#capture">Capture</a>
             </li>
             <li>
+              <a href="#shortcuts">Keyboard shortcuts</a>
+            </li>
+            <li>
               <a href="#privacy">Privacy</a>
             </li>
           </ul>
@@ -37,32 +43,28 @@ export function Options() {
 
       <main className="opt__main">
         {error ? (
-          <InlineNotice tone="error" title="Could not read your settings">
+          <InlineNotice
+            tone="error"
+            title="Could not read your settings"
+            action={<Button onClick={retry}>Retry</Button>}
+          >
             {error}
           </InlineNotice>
         ) : settings === null ? (
-          <p className="sv-muted" role="status">
-            Loading settings…
-          </p>
+          <p className="sv-muted">Loading settings…</p>
         ) : (
           <>
-            {save.error ? (
-              <InlineNotice
-                tone="error"
-                title="Your change was not saved"
-                action={<Button onClick={save.retry}>Retry</Button>}
-              >
-                {save.error}
-              </InlineNotice>
-            ) : null}
             <div id="site-access">
               <SiteAccess settings={settings} />
             </div>
             <div id="appearance">
-              <Appearance settings={settings} write={(m) => void save.run(m)} />
+              <Appearance settings={settings} update={update} />
             </div>
             <div id="capture">
-              <Capture settings={settings} write={(m) => void save.run(m)} />
+              <Capture settings={settings} update={update} />
+            </div>
+            <div id="shortcuts">
+              <KeyboardShortcuts />
             </div>
             <div id="privacy" className="sv-stack">
               <Privacy />

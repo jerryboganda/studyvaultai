@@ -318,3 +318,68 @@ describe('toolbar is click-through while it animates in', () => {
     expect(declsFor(styles, '.sv-float').get('animation')).toBe('sv-in var(--sv-motion) ease-out');
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// Privacy: the shadow host is visible to page scripts, so no style may depend on an attribute of it
+// ---------------------------------------------------------------------------------------------
+
+describe('theme and density are applied inside the shadow root', () => {
+  it('no stylesheet selects on an attribute of the host element', () => {
+    for (const [name, css] of [
+      ['styles.css', readCss(STYLES_CSS)],
+      ['tokens.css', tokensCss],
+    ] as const) {
+      expect(stripComments(css), name).not.toMatch(/:host\([^)]*\[/);
+      expect(stripComments(css), name).not.toMatch(/:host\[/);
+    }
+  });
+
+  it('the theme attribute is read from .sv-root, and its colour scheme follows it', () => {
+    expect(declsFor(styles, ".sv-root[data-theme='light']").get('color-scheme')).toBe('light');
+    expect(declsFor(styles, ".sv-root[data-theme='dark']").get('color-scheme')).toBe('dark');
+    const darkTokens = declsFor(tokenRules, ".sv-root[data-theme='dark']");
+    expect(darkTokens.get('--sv-surface-raised')).toBeDefined();
+    const system = declsFor(
+      tokenRules,
+      ".sv-root:not([data-theme='light'])",
+      '(prefers-color-scheme: dark)',
+    );
+    expect(system.get('--sv-surface-raised')).toBe(darkTokens.get('--sv-surface-raised'));
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// The caption row names the hovered or focused button; it must never move or resize the unit
+// ---------------------------------------------------------------------------------------------
+
+describe('caption row', () => {
+  const caption = declsFor(styles, '.sv-caption');
+
+  it('is always laid out and one line, so it cannot change the unit height', () => {
+    expect(caption.get('flex')).toBe('none');
+    expect(caption.get('white-space')).toBe('nowrap');
+    expect(caption.get('max-width')).toBe('100%');
+    expect(caption.get('overflow')).toBe('hidden');
+    expect(declsFor(styles, '.sv-caption[data-empty]').get('visibility')).toBe('hidden');
+    expect(caption.has('display')).toBe(false);
+    expect(caption.has('position')).toBe(false);
+  });
+
+  it('paints on the audited raised surface and sits on the side away from the selection', () => {
+    const surface = styles.find(
+      (r) => r.media === '' && r.selectors.includes('.sv-caption') && r.decls.has('background'),
+    );
+    expect(surface?.decls.get('background')).toBe('var(--sv-surface-raised)');
+    expect(
+      declsFor(styles, ".sv-unit[data-placement='above'] > .sv-bar-group").get('flex-direction'),
+    ).toBe('column-reverse');
+    expect(declsFor(styles, '.sv-bar-group').get('flex')).toBe('none');
+  });
+
+  it('keeps its border in forced colours', () => {
+    const forced = styles.find(
+      (r) => r.media === '(forced-colors: active)' && r.selectors.includes('.sv-caption'),
+    );
+    expect(forced?.decls.get('border')).toBe('1px solid CanvasText');
+  });
+});

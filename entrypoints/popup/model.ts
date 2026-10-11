@@ -1,5 +1,5 @@
 import type { SiteStatus } from '@shared';
-import { classifyAddress, isAllSitesPattern } from '@ui/hosts';
+import { classifyAddress } from '@ui/hosts';
 
 /**
  * Popup view model: what the active tab's address and the worker's `site.status` answer mean for
@@ -13,16 +13,18 @@ export type PopupState =
   | { kind: 'unsupported'; reason: 'no-address' | 'scheme' | 'pdf'; scheme: string | null }
   | { kind: 'denied'; host: string; entries: string[] }
   | { kind: 'inactive'; host: string; pattern: string; allSites: boolean }
-  /** StudyVault is running in this tab. `persistent`: the site is enabled for every visit. */
+  /**
+   * StudyVault is running in this tab. `persistent`: the site is enabled for every visit.
+   * `allSites`: Chrome grants all-sites access right now (the worker's answer, not a stored setting).
+   */
   | { kind: 'active'; host: string; pattern: string; persistent: boolean; allSites: boolean };
 
 export function derivePopupState(input: {
   url: string | undefined;
   status: SiteStatus | null;
   denyList: readonly string[];
-  persistentOrigins: readonly string[];
 }): PopupState {
-  const { url, status, denyList, persistentOrigins } = input;
+  const { url, status, denyList } = input;
   const address = classifyAddress(url, denyList);
   if (address.kind === 'no-address') {
     return { kind: 'unsupported', reason: 'no-address', scheme: null };
@@ -40,7 +42,8 @@ export function derivePopupState(input: {
     return { kind: 'denied', host, entries: address.kind === 'denied' ? address.entries : [] };
   }
   const pattern = status.pattern ?? '';
-  const allSites = persistentOrigins.some(isAllSitesPattern);
+  // Not settings.persistentOrigins: Chrome can revoke the grant behind the stored list's back.
+  const { allSites } = status;
   if (status.active) {
     return { kind: 'active', host, pattern, persistent: status.access === 'persistent', allSites };
   }

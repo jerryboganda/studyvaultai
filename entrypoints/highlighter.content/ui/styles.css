@@ -26,10 +26,11 @@
   user-select: none;
   -webkit-user-select: none;
 }
-:host([data-theme='light']) .sv-root {
+/* The theme attribute is on .sv-root, inside the shadow root: the host element is visible to page scripts. */
+.sv-root[data-theme='light'] {
   color-scheme: light;
 }
-:host([data-theme='dark']) .sv-root {
+.sv-root[data-theme='dark'] {
   color-scheme: dark;
 }
 
@@ -44,8 +45,8 @@
 }
 
 /*
- * Focus indicator (WCAG 2.4.7, 1.4.11). It keys on :focus, not :focus-visible: Alt+Shift+T and the
- * focus-return paths move focus by script, and after a mouse selection Chrome withholds
+ * Focus indicator (WCAG 2.4.7, 1.4.11). It keys on :focus, not :focus-visible: the Focus toolbar
+ * command and the focus-return paths move focus by script, and after a mouse selection Chrome withholds
  * :focus-visible from script-focused elements, which left the toolbar and the Undo button with
  * outline-style: none. A pointer press never focuses an overlay button (Overlay cancels mousedown),
  * so :focus on a control is always a keyboard or script move. Text fields show it on click, as
@@ -135,12 +136,46 @@
 }
 
 .sv-toolbar,
+.sv-caption,
 .sv-panel,
 .sv-popover,
 .sv-toast {
   background: var(--sv-surface-raised);
   border: 1px solid var(--sv-border);
   box-shadow: var(--sv-shadow);
+}
+
+/*
+ * The toolbar and the caption row that names the hovered or focused button. The caption is always
+ * laid out (empty = visibility: hidden), so showing a name never changes the height of the unit and
+ * with it where the unit is placed. It sits on the side away from the selection: above the bar when
+ * the unit is above the selection, below it otherwise, so the bar stays next to the text.
+ */
+.sv-bar-group {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sv-space-1);
+  max-width: 100%;
+}
+.sv-unit[data-placement='above'] > .sv-bar-group {
+  flex-direction: column-reverse;
+}
+.sv-caption {
+  flex: none;
+  max-width: 100%;
+  padding: 2px var(--sv-space-2);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.45;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-radius: var(--sv-radius-sm);
+}
+.sv-caption[data-empty] {
+  visibility: hidden;
 }
 
 .sv-toolbar {
@@ -428,8 +463,20 @@
 .sv-toast-error .sv-toast-icon {
   color: var(--sv-danger);
 }
+.sv-toast-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
 .sv-toast-text {
   min-width: 0;
+  overflow-wrap: anywhere;
+}
+/* How a keyboard user reaches the action (Undo): the toast is not in the tab order of the page. */
+.sv-toast-hint {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--sv-text-muted);
   overflow-wrap: anywhere;
 }
 
@@ -491,6 +538,7 @@
 
 @media (forced-colors: active) {
   .sv-toolbar,
+  .sv-caption,
   .sv-panel,
   .sv-popover,
   .sv-toast {

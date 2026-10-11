@@ -12,11 +12,14 @@ import {
 } from '@storage';
 import {
   Button,
+  COMMAND,
   EmptyState,
   InlineNotice,
+  ShortcutHints,
   Tabs,
   ToastProvider,
   errorMessage,
+  pickCommands,
   plural,
   useAction,
   useActiveTab,
@@ -25,6 +28,7 @@ import {
   useDataEpoch,
   useObserved,
   useSettings,
+  useShortcuts,
   useToast,
   type Loadable,
 } from '@ui';
@@ -41,9 +45,12 @@ import { usePendingFocus } from './usePendingFocus';
 
 const RECENT_LIMIT = 50;
 
+/** Where focus goes when a toast that held it closes: the panel content, never <body>. */
+const panelContent = () => document.querySelector<HTMLElement>('[role="tabpanel"]');
+
 export function SidePanel() {
   return (
-    <ToastProvider>
+    <ToastProvider returnFocus={panelContent}>
       <Panel />
     </ToastProvider>
   );
@@ -52,9 +59,11 @@ export function SidePanel() {
 type View = 'page' | 'recent' | 'banks';
 
 function Panel() {
-  const { settings, error: settingsError } = useSettings();
+  const settingsState = useSettings();
+  const { settings, error: settingsError } = settingsState;
   useApplyTheme(settings?.theme);
-  const { tab, loading: tabLoading, error: tabError } = useActiveTab();
+  const tabState = useActiveTab();
+  const { tab, loading: tabLoading, error: tabError } = tabState;
   const epoch = useDataEpoch();
   const toast = useToast();
   const [view, setView] = useState<View>('page');
@@ -119,9 +128,13 @@ function Panel() {
       remove: async (id) => {
         await softDeleteHighlight(id);
         await repaint();
+        // Deletion is soft (the row stays so Undo works); say so instead of implying it is gone.
+        // The card that held focus is gone: Undo takes it, so the keyboard is not dropped on <body>.
         toast.push({
-          message: 'Highlight deleted.',
+          message:
+            'Highlight deleted. A copy stays on this device until you delete all data in Settings.',
           action: { label: 'Undo', onClick: () => void restore(id) },
+          focusAction: true,
         });
       },
       reveal: (id) => {
@@ -157,7 +170,20 @@ function Panel() {
       <main className="panel__main">
         {fatal ? (
           <div className="panel__body">
-            <InlineNotice tone="error" title="StudyVault could not start">
+            <InlineNotice
+              tone="error"
+              title="StudyVault could not start"
+              action={
+                <Button
+                  onClick={() => {
+                    if (settingsError) settingsState.retry();
+                    if (tabError) tabState.retry();
+                  }}
+                >
+                  Retry
+                </Button>
+              }
+            >
               {fatal}
             </InlineNotice>
           </div>
@@ -234,12 +260,7 @@ function ThisPage({
     await browser.runtime.openOptionsPage();
   });
 
-  if (state.kind === 'loading')
-    return (
-      <p className="sv-muted" role="status">
-        Loading this page…
-      </p>
-    );
+  if (state.kind === 'loading') return <p className="sv-muted">Loading this page…</p>;
   if (state.kind === 'no-tab') {
     return (
       <EmptyState title="No page to show">
@@ -284,7 +305,7 @@ function ThisPage({
         <InlineNotice
           tone="error"
           title="Could not activate StudyVault"
-          action={<Button onClick={activate.retry}>Retry</Button>}
+          action={activate.retryable ? <Button onClick={activate.retry}>Retry</Button> : undefined}
         >
           {activate.error}
         </InlineNotice>
@@ -312,17 +333,22 @@ function ThisPage({
         <InlineNotice
           tone="error"
           title="Could not load highlights"
-          action={<Button onClick={items.reload}>Retry</Button>}
+          action={
+            items.retryable ? (
+              <Button busy={items.refreshing} onClick={items.refresh}>
+                Retry
+              </Button>
+            ) : undefined
+          }
         >
           {items.error}
         </InlineNotice>
       ) : !groups ? (
-        <p className="sv-muted" role="status">
-          Loading highlights…
-        </p>
+        <p className="sv-muted">Loading highlights…</p>
       ) : groups.attention.length + groups.rest.length === 0 ? (
         <EmptyState title="No highlights on this page yet">
-          Select text on the page and use the StudyVault toolbar to save it to a bank.
+          <p>Select text on the page and use the StudyVault toolbar to save it to a bank.</p>
+          <KeyHints />
         </EmptyState>
       ) : (
         <>
@@ -372,7 +398,9 @@ function PageHeader({
   const attention = list ? groupPageItems(list).attention.length : 0;
   return (
     <div className="sv-stack sv-stack--tight">
-      <h2 className="panel__title sv-wrap">{identity.title || identity.host}</h2>
+      <h2 className="panel__title sv-wrap" dir="auto">
+        {identity.title || identity.host}
+      </h2>
       <p className="sv-muted sv-wrap">{identity.host}</p>
       {list ? (
         <p>
@@ -382,6 +410,18 @@ function PageHeader({
       ) : null}
     </div>
   );
+}
+
+/** The keys that save and move between highlights, as Chrome has them now (never hard-coded). */
+function KeyHints() {
+  const { commands } = useShortcuts();
+  if (!commands) return null;
+  const shown = pickCommands(commands, [
+    COMMAND.quickSave,
+    COMMAND.focusToolbar,
+    COMMAND.nextHighlight,
+  ]);
+  return <ShortcutHints commands={shown} />;
 }
 
 function Unavailable({
@@ -421,8 +461,8 @@ function Unavailable({
     <InlineNotice tone="info" title="StudyVault cannot run on this page">
       <p>
         {a.kind === 'unsupported' ? `This tab uses the "${a.scheme}" address type. ` : ''}
-        Extensions only run on http and https pages; Chrome blocks browser pages and the Chrome Web
-        Store, and local files need a separate opt-in.
+        StudyVault works on http and https pages only. Chrome blocks extensions on its own pages and
+        the Chrome Web Store, and local files (file://) are not supported.
       </p>
     </InlineNotice>
   );
@@ -448,19 +488,19 @@ function Recent({
       <InlineNotice
         tone="error"
         title="Could not load recent highlights"
-        action={<Button onClick={items.reload}>Retry</Button>}
+        action={
+          items.retryable ? (
+            <Button busy={items.refreshing} onClick={items.refresh}>
+              Retry
+            </Button>
+          ) : undefined
+        }
       >
         {items.error}
       </InlineNotice>
     );
   }
-  if (!items.data) {
-    return (
-      <p className="sv-muted" role="status">
-        Loading recent highlights…
-      </p>
-    );
-  }
+  if (!items.data) return <p className="sv-muted">Loading recent highlights…</p>;
   if (items.data.length === 0) {
     return (
       <EmptyState title="Nothing saved yet">

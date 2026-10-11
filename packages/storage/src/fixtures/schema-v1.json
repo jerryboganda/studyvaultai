@@ -1,0 +1,176 @@
+{
+  "_note": "Frozen snapshot of what the schema-version-1 build wrote (before capturedUrl/capturedTitle existed). Never regenerate: it exists to prove that current code still reads and extends real v1 data.",
+  "banks": [
+    {
+      "id": "inbox-default",
+      "schemaVersion": 1,
+      "createdAt": "2026-10-01T09:00:00.000Z",
+      "updatedAt": "2026-10-01T09:00:00.000Z",
+      "deletedAt": null,
+      "name": "Inbox",
+      "color": "blue",
+      "position": 0,
+      "isInbox": true
+    },
+    {
+      "id": "bank-cardiology-01",
+      "schemaVersion": 1,
+      "createdAt": "2026-10-02T09:00:00.000Z",
+      "updatedAt": "2026-10-02T09:00:00.000Z",
+      "deletedAt": null,
+      "name": "Cardiology",
+      "color": "red",
+      "position": 1,
+      "isInbox": false
+    }
+  ],
+  "sources": [
+    {
+      "id": "src-pharm-0001",
+      "schemaVersion": 1,
+      "createdAt": "2026-10-01T09:05:00.000Z",
+      "updatedAt": "2026-10-01T09:05:00.000Z",
+      "deletedAt": null,
+      "type": "web",
+      "urlKey": "https://example.com/notes/pharm",
+      "visitedKey": "https://example.com/notes/pharm",
+      "originalUrl": "https://example.com/notes/pharm?utm_source=newsletter",
+      "canonicalUrl": null,
+      "host": "example.com",
+      "title": "Pharmacology notes"
+    }
+  ],
+  "highlights": [
+    {
+      "id": "hl-aspirin-0001",
+      "schemaVersion": 1,
+      "createdAt": "2026-10-01T09:05:00.000Z",
+      "updatedAt": "2026-10-01T09:05:00.000Z",
+      "deletedAt": null,
+      "sourceId": "src-pharm-0001",
+      "exactQuote": "Aspirin irreversibly inhibits cyclooxygenase.",
+      "normalizedQuote": "aspirin irreversibly inhibits cyclooxygenase.",
+      "quoteHash": "1a96b3b9cb23787af056fb1f9085c56e1cbeefe50063a0639b33ee56e961e7a8",
+      "anchorSet": {
+        "type": "html",
+        "textAlgorithm": "sv-text-v1",
+        "textQuote": {
+          "exact": "Aspirin irreversibly inhibits cyclooxygenase.",
+          "prefix": "lead-in ",
+          "suffix": " trailing"
+        },
+        "textPosition": {
+          "start": 100,
+          "end": 145
+        },
+        "structuralPath": null,
+        "contentSignature": "abc123",
+        "documentTextLength": 6000
+      },
+      "kind": "essential",
+      "color": "amber",
+      "priority": 3,
+      "userComment": "COX-1 and COX-2",
+      "headingContext": "Antiplatelets",
+      "captureMethod": "toolbar",
+      "capturedAt": "2026-10-01T09:05:00.000Z",
+      "resolveStatus": "resolved",
+      "resolveConfidence": 1,
+      "lastResolvedAt": "2026-10-03T08:00:00.000Z"
+    },
+    {
+      "id": "hl-warfarin-0002",
+      "schemaVersion": 1,
+      "createdAt": "2026-10-02T10:00:00.000Z",
+      "updatedAt": "2026-10-02T10:00:00.000Z",
+      "deletedAt": null,
+      "sourceId": "src-pharm-0001",
+      "exactQuote": "Warfarin inhibits vitamin K epoxide reductase.",
+      "normalizedQuote": "warfarin inhibits vitamin k epoxide reductase.",
+      "quoteHash": "0db4fbe0aa691de4528a0d92c9fa79c81dac4d1fcaaf0fcf9808134289d32006",
+      "anchorSet": {
+        "type": "html",
+        "textAlgorithm": "sv-text-v1",
+        "textQuote": {
+          "exact": "Warfarin inhibits vitamin K epoxide reductase.",
+          "prefix": "drug: ",
+          "suffix": " end"
+        },
+        "textPosition": {
+          "start": 900,
+          "end": 946
+        },
+        "structuralPath": null,
+        "contentSignature": "abc123",
+        "documentTextLength": 6000
+      },
+      "kind": "formula",
+      "color": "blue",
+      "priority": 4,
+      "userComment": "",
+      "headingContext": null,
+      "captureMethod": "shortcut",
+      "capturedAt": "2026-10-02T10:00:00.000Z",
+      "resolveStatus": "orphaned",
+      "resolveConfidence": null,
+      "lastResolvedAt": "2026-10-04T08:00:00.000Z"
+    },
+    {
+      "id": "hl-heparin-00003",
+      "schemaVersion": 1,
+      "createdAt": "2026-10-03T11:00:00.000Z",
+      "updatedAt": "2026-10-03T11:00:00.000Z",
+      "deletedAt": "2026-10-05T12:00:00.000Z",
+      "sourceId": "src-pharm-0001",
+      "exactQuote": "Heparin potentiates antithrombin III.",
+      "normalizedQuote": "heparin potentiates antithrombin iii.",
+      "quoteHash": "7a6f5634bd597e4cd25e8be633b8e9441a1d0d41b1350316b3b4d640b3ccf150",
+      "anchorSet": {
+        "type": "html",
+        "textAlgorithm": "sv-text-v1",
+        "textQuote": {
+          "exact": "Heparin potentiates antithrombin III.",
+          "prefix": "class: ",
+          "suffix": " note"
+        },
+        "textPosition": {
+          "start": 1800,
+          "end": 1837
+        },
+        "structuralPath": null,
+        "contentSignature": "abc123",
+        "documentTextLength": 6000
+      },
+      "kind": "weak_area",
+      "color": "orange",
+      "priority": 2,
+      "userComment": "",
+      "headingContext": "Anticoagulants",
+      "captureMethod": "context-menu",
+      "capturedAt": "2026-10-03T11:00:00.000Z",
+      "resolveStatus": "changed",
+      "resolveConfidence": 0.82,
+      "lastResolvedAt": "2026-10-04T08:00:00.000Z"
+    }
+  ],
+  "highlightBanks": [
+    {
+      "highlightId": "hl-aspirin-0001",
+      "bankId": "inbox-default",
+      "folderId": null,
+      "addedAt": "2026-10-01T09:05:00.000Z"
+    },
+    {
+      "highlightId": "hl-warfarin-0002",
+      "bankId": "bank-cardiology-01",
+      "folderId": null,
+      "addedAt": "2026-10-02T10:00:00.000Z"
+    },
+    {
+      "highlightId": "hl-heparin-00003",
+      "bankId": "inbox-default",
+      "folderId": null,
+      "addedAt": "2026-10-03T11:00:00.000Z"
+    }
+  ]
+}

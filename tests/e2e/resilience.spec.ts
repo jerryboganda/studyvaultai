@@ -104,30 +104,44 @@ test.describe('persistence across restart and extension reload', () => {
       await activate(ext1, page);
       await page.bringToFront();
       expect(await selectAndSave(page, { triple: '#quote' }, QUOTE)).toBe('Saved to Inbox');
-      // Second passage through "More options": new bank, kind, priority and a note.
+      // The page has no text field (ADR-005): the bank is named in the side panel, then picked in
+      // the page's "More options" together with kind and priority.
+      const panel1 = await openExtensionPage(first.context, first.extensionId, 'sidepanel.html');
+      await panel1.getByRole('tab', { name: 'Banks' }).click();
+      await panel1.getByLabel('New bank').fill('Cardiology');
+      await panel1.getByRole('button', { name: 'Create bank' }).click();
+      await expect(panel1.getByText('Bank "Cardiology" created.')).toBeVisible();
+
+      await page.bringToFront();
       await tripleClick(page, '#p-multiline');
       await expect(toolbarOf(page)).toBeVisible();
       await page.getByRole('button', { name: 'More options', exact: true }).click();
       const composer = page.getByRole('dialog', { name: 'Save with details' });
       await expect(composer).toBeVisible();
-      await composer.getByRole('button', { name: 'New bank' }).click();
-      await composer.getByLabel('Bank name').fill('Cardiology');
-      await composer.getByRole('button', { name: 'Create' }).click();
-      await expect(composer.getByLabel('Bank', { exact: true })).toHaveValue(/.+/);
+      await expect(composer.getByRole('textbox')).toHaveCount(0);
+      await composer.getByLabel('Bank', { exact: true }).selectOption({ label: 'Cardiology' });
       await composer.getByLabel('Type').selectOption({ label: 'ƒ Formula' });
       await composer.getByLabel('Priority').selectOption('5');
-      await composer.getByLabel('Note').fill('composer note');
       await composer.getByRole('button', { name: 'Save', exact: true }).click();
       await expect(savedToast(page)).toHaveText('Saved to Cardiology');
       await expectPaintedExactly(page, [QUOTE, MULTILINE]);
 
-      // A note typed in the highlight popover (real keyboard input), and a settings change.
-      await page.evaluate(() => window.getSelection()?.removeAllRanges());
-      await page.locator('#quote').click({ position: { x: 24, y: 8 } });
-      const dialog = page.getByRole('dialog', { name: 'Highlight details' });
-      await expect(dialog).toBeVisible();
-      await dialog.getByLabel('Note').fill('remember: CO = HR x SV');
-      await expect(dialog.getByText('Saved', { exact: true })).toBeVisible();
+      // Notes are typed in the side panel too. "Recent" lists every highlight whatever the active
+      // tab is, so both notes are written there (real keyboard input into the card's note field).
+      await panel1.getByRole('tab', { name: /Recent/ }).click();
+      const noteOf = (text: string) =>
+        panel1.locator('article.hl-card', { hasText: text }).getByLabel('Your note');
+      await noteOf('Depolarisation spreads').fill('composer note');
+      await noteOf('Cardiac output equals').fill('remember: CO = HR x SV');
+      await expect
+        .poll(
+          async () =>
+            liveHighlights(await readDb(ext1))
+              .map((h) => h.userComment)
+              .sort(),
+          { message: 'both notes were autosaved by the panel' },
+        )
+        .toEqual(['composer note', 'remember: CO = HR x SV']);
       await patchSettings(ext1, { theme: 'dark', density: 'compact' });
       // ...and persistent access for this origin (a registered content script).
       await patchSettings(ext1, { persistentOrigins: [originPattern(fixtureServer.origin)] });
@@ -746,11 +760,12 @@ test.describe('crash safety and races', () => {
       await selectAndSave(page, { triple: '#quote' }, QUOTE);
       await selectAndSave(page, { triple: '#p-multiline' }, 'maximises stroke');
       await selectAndSave(page, { triple: '#p-intro' }, 'primary pacemaker');
-      await page.evaluate(() => window.getSelection()?.removeAllRanges());
-      await page.locator('#quote').click({ position: { x: 24, y: 8 } });
-      const dialog = page.getByRole('dialog', { name: 'Highlight details' });
-      await dialog.getByLabel('Note').fill('written just before the crash');
-      await expect(dialog.getByText('Saved', { exact: true })).toBeVisible();
+      // A note typed in the side panel (the page has no text field) and confirmed with "Saved".
+      const panel = await openExtensionPage(session.context, session.extensionId, 'sidepanel.html');
+      await panel.getByRole('tab', { name: /Recent/ }).click();
+      const card = panel.locator('article.hl-card', { hasText: 'Cardiac output equals' });
+      await card.getByLabel('Your note').fill('written just before the crash');
+      await expect(card.getByText('Saved', { exact: true })).toBeVisible();
 
       // Kill the browser process itself (not a graceful close): no flush, no shutdown hooks.
       await hardKill(session);

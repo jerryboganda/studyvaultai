@@ -3,10 +3,7 @@ import { defaultSettings } from '@shared';
 import { siteStatus } from '@ui/testing/fakes';
 import { derivePopupState } from './model';
 
-const base = {
-  denyList: defaultSettings().denyList,
-  persistentOrigins: [] as string[],
-};
+const base = { denyList: defaultSettings().denyList };
 
 describe('derivePopupState', () => {
   it('has no address: unsupported, without needing a status', () => {
@@ -67,13 +64,17 @@ describe('derivePopupState', () => {
     });
   });
 
-  it('knows when all-sites access is on', () => {
-    const state = derivePopupState({
-      ...base,
-      persistentOrigins: ['https://*/*', 'http://*/*'],
-      url: 'https://example.com/a',
-      status: siteStatus(),
-    });
-    expect(state).toMatchObject({ kind: 'inactive', allSites: true });
+  it('takes all-sites access from the worker, which asked Chrome, not from a stored list', () => {
+    const url = 'https://example.com/a';
+    expect(
+      derivePopupState({ ...base, url, status: siteStatus({ allSites: true }) }),
+    ).toMatchObject({ kind: 'inactive', allSites: true });
+    expect(
+      derivePopupState({ ...base, url, status: siteStatus({ allSites: true, active: true }) }),
+    ).toMatchObject({ kind: 'active', allSites: true });
+    // Chrome revoked the grant: the worker says false even if Settings still lists the patterns.
+    expect(
+      derivePopupState({ ...base, url, status: siteStatus({ allSites: false, active: true }) }),
+    ).toMatchObject({ kind: 'active', allSites: false });
   });
 });

@@ -1,5 +1,4 @@
 import { createRoot } from 'react-dom/client';
-import type { Settings } from '@shared';
 import type { CaptureHost, CaptureUi } from '../contract';
 import { UiCtx, type UiContext } from './context';
 import { Overlay } from './Overlay';
@@ -8,15 +7,16 @@ import { createStore, pushToast, type UiState } from './store';
 export interface MountOptions {
   /** Element inside the shadow root that the React tree renders into. */
   container: HTMLElement;
-  /** The element carrying data-theme / data-density (the shadow host). */
+  /**
+   * The shadow host. It carries nothing but the marker attribute: theme and density are applied on
+   * an element inside the shadow root, so a page script cannot read the user's settings from it.
+   */
   shadowHost: HTMLElement;
   host: CaptureHost;
 }
 
-/** Alt+Shift+T: move keyboard focus into the overlay. */
-function isFocusShortcut(e: KeyboardEvent): boolean {
-  return e.altKey && e.shiftKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyT';
-}
+/** An announcement is cleared after this long so it does not linger for browse-mode readers. */
+const ANNOUNCE_CLEAR_MS = 8000;
 
 /**
  * Wires the store, React tree and document listeners. Knows nothing about WXT, so jsdom tests can
@@ -29,16 +29,13 @@ export function mountCaptureUi({ container, shadowHost, host }: MountOptions): C
     toolbar: null,
     popover: null,
     toasts: [],
+    announcement: null,
     errorSeq: 0,
   });
   let destroyed = false;
   let returnTarget: HTMLElement | null = null;
-
-  const applyAppearance = (settings: Settings): void => {
-    shadowHost.setAttribute('data-theme', settings.theme);
-    shadowHost.setAttribute('data-density', settings.density);
-  };
-  applyAppearance(store.get().settings);
+  let announceSeq = 0;
+  let announceTimer: ReturnType<typeof setTimeout> | undefined;
 
   const focusedInside = (): HTMLElement | null => {
     const root = container.getRootNode() as Document | ShadowRoot;
@@ -76,28 +73,14 @@ export function mountCaptureUi({ container, shadowHost, host }: MountOptions): C
     },
   };
 
-  const onKeyDown = (e: KeyboardEvent): void => {
-    if (!isFocusShortcut(e)) return;
-    const state = store.get();
-    let target: HTMLElement | null = null;
-    if (state.toolbar) {
-      target = container.querySelector<HTMLElement>('[role="toolbar"] button[tabindex="0"]');
-    } else if (state.toasts.some((t) => t.action)) {
-      target = container.querySelector<HTMLElement>('button[data-sv-toast-action]');
-    }
-    if (!target) return;
-    e.preventDefault();
-    ctx.rememberFocus();
-    target.focus({ preventScroll: true });
-  };
-
   // Light dismiss: a press anywhere on the page closes the highlight popover.
   const onPointerDown = (e: Event): void => {
     if (!store.get().popover || e.composedPath().includes(shadowHost)) return;
     ctx.closePopover(false);
   };
 
-  doc.addEventListener('keydown', onKeyDown, true);
+  // No keydown listener on purpose: the shortcut that brings the user here is a (remappable)
+  // browser command, and a page-level handler for a fixed key swallowed Chrome's own accelerators.
   doc.addEventListener('pointerdown', onPointerDown, true);
 
   const root = createRoot(container);
@@ -127,12 +110,41 @@ export function mountCaptureUi({ container, shadowHost, host }: MountOptions): C
     applySettings(settings) {
       if (destroyed) return;
       store.set({ settings });
-      applyAppearance(settings);
+    },
+    focusToolbar() {
+      if (destroyed) return false;
+      const { toolbar, toasts } = store.get();
+      let target: HTMLElement | null = null;
+      if (toolbar) {
+        target = container.querySelector<HTMLElement>('[role="toolbar"] button[tabindex="0"]');
+      } else {
+        // The newest actionable toast: Undo must undo the save the user just made.
+        const toast = [...toasts].reverse().find((t) => t.action);
+        if (toast) {
+          target = container.querySelector<HTMLElement>(
+            `button[data-sv-toast-action="${toast.id}"]`,
+          );
+        }
+      }
+      if (!target) return false;
+      ctx.rememberFocus();
+      target.focus({ preventScroll: true });
+      if (focusedInside() === target) return true;
+      // A surface that is not laid out yet (hidden until measured) refuses focus.
+      returnTarget = null;
+      return false;
+    },
+    announce(text) {
+      if (destroyed || !text.trim()) return;
+      // A new id replaces the message node, which is what makes an identical text speak again.
+      store.set({ announcement: { id: ++announceSeq, text } });
+      clearTimeout(announceTimer);
+      announceTimer = setTimeout(() => store.set({ announcement: null }), ANNOUNCE_CLEAR_MS);
     },
     destroy() {
       if (destroyed) return;
       destroyed = true;
-      doc.removeEventListener('keydown', onKeyDown, true);
+      clearTimeout(announceTimer);
       doc.removeEventListener('pointerdown', onPointerDown, true);
       root.unmount();
       returnTarget = null;

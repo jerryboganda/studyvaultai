@@ -13,6 +13,8 @@ import { pushToast, useStore } from './store';
 import { floatingStyle, useFloating } from './useFloating';
 
 const DEFAULT_PRIORITY = 3;
+/** Undo stays longer after a keyboard save: the user first has to press the Focus toolbar shortcut. */
+const KEYBOARD_UNDO_MS = 15000;
 const NOTE_IN_PANEL = 'write your note in the side panel';
 
 interface ToolbarAction {
@@ -59,6 +61,9 @@ export function ToolbarUnit({ selection }: { selection: SelectionInfo }) {
   const [panel, setPanel] = useState(false);
   const [busy, setBusy] = useState(false);
   const [active, setActive] = useState(0);
+  // The full name of the button under the pointer or holding focus is shown in a caption row.
+  const [hovered, setHovered] = useState<number | null>(null);
+  const [focused, setFocused] = useState<number | null>(null);
   const busyRef = useRef(false);
   const invokerRef = useRef<HTMLElement | null>(null);
   const unitRef = useRef<HTMLDivElement>(null);
@@ -70,6 +75,9 @@ export function ToolbarUnit({ selection }: { selection: SelectionInfo }) {
       if (busyRef.current) return false;
       busyRef.current = true;
       setBusy(true);
+      // A pointer press never focuses an overlay button, so focus inside means keyboard or AT. The
+      // More options panel holds focus for pointer users too: they only get Undo for longer.
+      const viaKeyboard = ui.focusedInside() !== null;
       const errorsBefore = store.get().errorSeq;
       // The selection this save is for. The user may select something else while it is in flight.
       const savedText = store.get().toolbar?.selection.text;
@@ -83,6 +91,7 @@ export function ToolbarUnit({ selection }: { selection: SelectionInfo }) {
         pushToast(store, {
           text,
           tone: 'success',
+          ttl: undoable && viaKeyboard ? KEYBOARD_UNDO_MS : undefined,
           action: undoable
             ? {
                 label: 'Undo',
@@ -206,6 +215,9 @@ export function ToolbarUnit({ selection }: { selection: SelectionInfo }) {
     buttons[next]?.focus({ preventScroll: true });
   };
 
+  const shown = hovered ?? focused;
+  const caption = shown === null ? null : (actions[shown]?.name ?? null);
+
   return (
     <div
       ref={unitRef}
@@ -219,42 +231,58 @@ export function ToolbarUnit({ selection }: { selection: SelectionInfo }) {
         ui.dismissToolbar();
       }}
     >
-      <div
-        ref={barRef}
-        className="sv-toolbar"
-        role="toolbar"
-        aria-label="StudyVault: save selected text"
-        aria-keyshortcuts="Alt+Shift+T"
-        aria-busy={busy}
-        onKeyDown={onBarKeyDown}
-      >
-        {actions.map((a, i) => (
-          <span
-            key={a.key}
-            className={a.groupStart ? 'sv-toolbar-item sv-group-start' : 'sv-toolbar-item'}
-          >
-            <button
-              type="button"
-              className={a.swatch ? 'sv-btn sv-tool sv-kind' : 'sv-btn sv-tool'}
-              tabIndex={i === active ? 0 : -1}
-              aria-label={a.name}
-              title={a.name}
-              aria-disabled={busy}
-              aria-expanded={a.expanded}
-              aria-haspopup={a.expanded === undefined ? undefined : 'dialog'}
-              data-kind={a.swatch ? a.key : undefined}
-              onFocus={() => setActive(i)}
-              onClick={() => {
-                if (!busyRef.current) a.onActivate();
-              }}
+      <div className="sv-bar-group">
+        <div
+          ref={barRef}
+          className="sv-toolbar"
+          role="toolbar"
+          aria-label="StudyVault: save selected text"
+          aria-busy={busy}
+          onKeyDown={onBarKeyDown}
+        >
+          {actions.map((a, i) => (
+            <span
+              key={a.key}
+              className={a.groupStart ? 'sv-toolbar-item sv-group-start' : 'sv-toolbar-item'}
             >
-              <span aria-hidden="true">{a.content}</span>
-              {a.swatch ? (
-                <span className="sv-swatch" aria-hidden="true" style={{ background: a.swatch }} />
-              ) : null}
-            </button>
-          </span>
-        ))}
+              <button
+                type="button"
+                className={a.swatch ? 'sv-btn sv-tool sv-kind' : 'sv-btn sv-tool'}
+                tabIndex={i === active ? 0 : -1}
+                aria-label={a.name}
+                title={a.name}
+                aria-disabled={busy}
+                aria-expanded={a.expanded}
+                aria-haspopup={a.expanded === undefined ? undefined : 'dialog'}
+                data-kind={a.swatch ? a.key : undefined}
+                onFocus={() => {
+                  setActive(i);
+                  setFocused(i);
+                }}
+                onBlur={() => setFocused(null)}
+                onMouseEnter={() => setHovered(i)}
+                onMouseLeave={() => setHovered(null)}
+                onClick={() => {
+                  if (!busyRef.current) a.onActivate();
+                }}
+              >
+                <span aria-hidden="true">{a.content}</span>
+                {a.swatch ? (
+                  <span className="sv-swatch" aria-hidden="true" style={{ background: a.swatch }} />
+                ) : null}
+              </button>
+            </span>
+          ))}
+        </div>
+        {/* Always laid out (hidden when empty), so showing a name never resizes the unit. The
+            accessible name is on the button itself, hence aria-hidden. */}
+        <div
+          className="sv-caption"
+          aria-hidden="true"
+          data-empty={caption === null ? '' : undefined}
+        >
+          {caption ?? '\u00a0'}
+        </div>
       </div>
 
       {panel ? (

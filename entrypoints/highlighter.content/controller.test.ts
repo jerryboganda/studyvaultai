@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { StudyVaultError, type CaptureResult } from '@shared';
+import { HANDLER_TIMEOUT_MS, callBackground } from '@runtime';
 import { bootOnce } from './boot';
 import {
   FakeBackground,
@@ -125,7 +127,14 @@ afterEach(() => {
   history.replaceState({}, '', '/');
   document.head.innerHTML = '';
   delete (window as { navigation?: unknown }).navigation;
+  delete (document as { visibilityState?: unknown }).visibilityState;
 });
+
+/** The tab goes to the background / comes back (jsdom reports a fixed state otherwise). */
+function setVisibility(state: 'visible' | 'hidden'): void {
+  Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
+  document.dispatchEvent(new Event('visibilitychange'));
+}
 
 describe('boot and page policy', () => {
   it('mounts the overlay, rehydrates stored highlights and answers ping', async () => {
@@ -795,7 +804,7 @@ describe('rehydration', () => {
     expect(status.counts).toMatchObject({ total: 2, resolved: 1, orphaned: 1 });
   });
 
-  it('report-storm guard: our own report does not cause another report', async () => {
+  it('report-storm guard: our own report does not cause another report, or a re-fetch', async () => {
     const background = new FakeBackground();
     const rows = [storedHighlight(MITO), storedHighlight(RIBO)];
     for (const r of rows) background.rows.set(r.id, r);
@@ -803,14 +812,52 @@ describe('rehydration', () => {
     expect(background.callsOf('highlight.reportResolution')).toHaveLength(1);
     const fetchesAfterBoot = background.callsOf('page.highlights').length;
 
-    // FakeBackground bumped the data epoch when it stored the report, exactly like production.
+    // A resolution-only write does not signal a data change (it has its own signal that content
+    // scripts do not watch): nobody re-fetches the page for it.
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(background.callsOf('highlight.reportResolution')).toHaveLength(1);
+    expect(background.callsOf('page.highlights').length).toBe(fetchesAfterBoot);
+    expect(h.painter.ids).toHaveLength(2);
+  });
+
+  it('report-storm guard under the older contract: the echo re-fetch finds nothing new to say', async () => {
+    const background = new FakeBackground();
+    background.bumpOnResolution = true;
+    const rows = [storedHighlight(MITO), storedHighlight(RIBO)];
+    for (const r of rows) background.rows.set(r.id, r);
+    const h = await boot({ background });
+    expect(background.callsOf('highlight.reportResolution')).toHaveLength(1);
+    const fetchesAfterBoot = background.callsOf('page.highlights').length;
+
     await vi.advanceTimersByTimeAsync(300);
     expect(background.callsOf('page.highlights').length).toBe(fetchesAfterBoot + 1);
-    // ...and the re-fetch found nothing new to say, now or later.
     await vi.advanceTimersByTimeAsync(10_000);
     expect(background.callsOf('highlight.reportResolution')).toHaveLength(1);
     expect(background.callsOf('page.highlights').length).toBe(fetchesAfterBoot + 1);
     expect(h.painter.ids).toHaveLength(2);
+  });
+
+  it('a lost data-change signal never stalls painting: saves paint at once, the rest on the next look', async () => {
+    const background = new FakeBackground();
+    background.bump = () => undefined; // every epoch event is dropped on the way
+    const h = await boot({ background });
+
+    // A save paints from its own result, with no echo needed, and settles after one report.
+    await selectText(MITO);
+    const saved = await h.host.save(saveRequest);
+    expect(h.painter.ids).toEqual([saved.highlight.id]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(background.callsOf('highlight.reportResolution')).toHaveLength(1);
+
+    // A highlight added by another tab, whose signal never arrived, is picked up when the reader
+    // comes back to this tab.
+    const elsewhere = storedHighlight(RIBO);
+    background.rows.set(elsewhere.id, elsewhere);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(h.painter.ids).toEqual([saved.highlight.id]);
+    setVisibility('visible');
+    await vi.advanceTimersByTimeAsync(300);
+    expect(h.painter.ids).toEqual([saved.highlight.id, elsewhere.id].sort());
   });
 
   it('a save notifies once and settles (no refresh/report loop)', async () => {
@@ -862,9 +909,12 @@ describe('rehydration', () => {
     history.pushState({}, '', '/route-two');
     document.body.appendChild(document.createElement('span')); // a mutation reaches the observer
     await vi.advanceTimersByTimeAsync(50);
+    // The old page is forgotten at once; only the load of the new one waits for the debounce.
+    expect(h.painter.clearCalls).toBe(1);
+    expect(h.painter.ids).toEqual([]);
+    await vi.advanceTimersByTimeAsync(200);
     await flushPromises();
 
-    expect(h.painter.clearCalls).toBeGreaterThanOrEqual(1);
     const lastFetch = background.callsOf('page.highlights').at(-1)!.payload as { url: string };
     expect(lastFetch.url).toBe(`${window.location.origin}/route-two`);
     expect(h.painter.ids).toEqual([second.id]);
@@ -879,9 +929,51 @@ describe('rehydration', () => {
 
     history.pushState({}, '', '/via-navigation-api');
     nav.dispatchEvent(new Event('navigatesuccess'));
-    await flushPromises();
+    await vi.advanceTimersByTimeAsync(200);
     expect(background.callsOf('page.highlights').length).toBe(fetches + 1);
     expect(h.painter.clearCalls).toBe(1);
+  });
+
+  it('a burst of route changes costs one fetch, for the route it ended on', async () => {
+    const background = new FakeBackground();
+    const first = storedHighlight(MITO);
+    background.rows.set(first.id, first);
+    await boot({ background });
+    const fetches = background.callsOf('page.highlights').length;
+
+    // A router that redirects: /a -> /b -> /c within a few milliseconds, one mutation each.
+    for (const path of ['/a', '/b', '/c']) {
+      history.pushState({}, '', path);
+      document.body.appendChild(document.createElement('span'));
+      await vi.advanceTimersByTimeAsync(10);
+    }
+    expect(background.callsOf('page.highlights').length).toBe(fetches); // nothing loaded yet
+    await vi.advanceTimersByTimeAsync(300);
+    const loads = background.callsOf('page.highlights').slice(fetches);
+    expect(loads).toHaveLength(1);
+    expect((loads[0]!.payload as { url: string }).url).toBe(`${window.location.origin}/c`);
+  });
+
+  it('a route change that leaves the source keys as they were keeps the paint (no clear, no flicker)', async () => {
+    // Two addresses too long to store: the stored page address is cut to the same path, so the
+    // worker would answer with the same highlights for both.
+    const long = (tail: string) => `/long-page?q=${'x'.repeat(2100)}${tail}`;
+    history.replaceState({}, '', long('a'));
+    const background = new FakeBackground();
+    const first = storedHighlight(MITO);
+    background.rows.set(first.id, first);
+    const h = await boot({ background });
+    const fetches = background.callsOf('page.highlights').length;
+    expect(h.painter.ids).toEqual([first.id]);
+
+    history.pushState({}, '', long('b'));
+    document.body.appendChild(document.createElement('span'));
+    await vi.advanceTimersByTimeAsync(300);
+    await flushPromises();
+
+    expect(h.painter.clearCalls).toBe(0); // nothing was forgotten...
+    expect(h.painter.ids).toEqual([first.id]); // ...and it is still painted
+    expect(background.callsOf('page.highlights').length).toBe(fetches + 1); // re-resolved on the new DOM
   });
 
   it('an anchor jump on the same page is not a route change', async () => {
@@ -1237,11 +1329,14 @@ describe('keyboard route to highlights (Alt+Shift+] next, Alt+Shift+[ previous)'
     press({ code: 'BracketLeft' });
     expect(shown(h).slice(-2)).toEqual([ids[2], ids[1]]);
 
-    // Scrolls instantly (the popover is anchored to the final position) and flashes the highlight.
+    // Scrolls instantly (the popover is anchored to the final position) and holds the emphasis:
+    // the 2 s flash of a reveal would take it away while the popover is still being read.
     expect(scrollBy.mock.calls.at(-1)![0]).toMatchObject({ behavior: 'instant' });
     expect(h.painter.active).toBe(ids[1]);
     await vi.advanceTimersByTimeAsync(2100);
-    expect(h.painter.active).toBeNull();
+    expect(h.painter.active).toBe(ids[1]);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.painter.active).toBe(ids[1]);
   });
 
   it('follows document order, not the order they were stored in', async () => {
@@ -1439,9 +1534,9 @@ describe('keyboard route to highlights (Alt+Shift+] next, Alt+Shift+[ previous)'
     expect(gone.h.ui.popovers).toHaveLength(0);
   });
 
-  it('causes no refresh, no report and no timers beyond the 2 s flash', async () => {
-    const { h, background, press } = await withHighlights();
-    await vi.advanceTimersByTimeAsync(10_000); // the boot report and its echo have settled
+  it('causes no refresh, no report and arms no timers at all', async () => {
+    const { h, background, press, ids } = await withHighlights();
+    await vi.advanceTimersByTimeAsync(10_000); // the boot report has settled
     const timers = vi.getTimerCount();
     const fetches = background.callsOf('page.highlights').length;
     const reports = background.callsOf('highlight.reportResolution').length;
@@ -1449,8 +1544,134 @@ describe('keyboard route to highlights (Alt+Shift+] next, Alt+Shift+[ previous)'
     await vi.advanceTimersByTimeAsync(10_000);
     expect(background.callsOf('page.highlights')).toHaveLength(fetches);
     expect(background.callsOf('highlight.reportResolution')).toHaveLength(reports);
-    expect(h.painter.active).toBeNull();
-    expect(vi.getTimerCount()).toBe(timers); // the 2 s flash timer has run out, nothing else was armed
+    expect(h.painter.active).toBe(ids[2]); // six steps from the top: the last one reached
+    expect(vi.getTimerCount()).toBe(timers); // the held emphasis is no timer: nothing lingers
+  });
+
+  describe('holding the emphasis until the reader leaves', () => {
+    it.each([
+      [
+        'a press on the page',
+        () => document.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true })),
+      ],
+      [
+        'Escape',
+        () =>
+          document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })),
+      ],
+      [
+        'focus returning to the page',
+        () => document.dispatchEvent(new FocusEvent('focusin', { bubbles: true })),
+      ],
+    ])('is dropped by %s', async (_name, leave) => {
+      const { h, press, ids } = await withHighlights();
+      press();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(h.painter.active).toBe(ids[0]);
+      leave();
+      expect(h.painter.active).toBeNull();
+    });
+
+    it('is not dropped by a press inside the overlay, or by the overlay taking focus', async () => {
+      const { h, press, ids } = await withHighlights();
+      document.body.insertAdjacentHTML(
+        'beforeend',
+        '<div data-studyvault><button id="ob">Close</button></div>',
+      );
+      press();
+      const button = document.getElementById('ob')!;
+      button.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, composed: true }));
+      button.dispatchEvent(new FocusEvent('focusin', { bubbles: true, composed: true }));
+      expect(h.painter.active).toBe(ids[0]);
+    });
+
+    it('is dropped when the reader selects text, and by a route change', async () => {
+      const { h, press, ids } = await withHighlights();
+      press();
+      await selectText(RIBO); // a real selection: the toolbar is offered
+      expect(h.ui.toolbar.at(-1)?.text).toBe(RIBO);
+      expect(h.painter.active).toBeNull();
+
+      press();
+      expect(h.painter.active).toBe(ids[1]);
+      history.pushState({}, '', '/elsewhere');
+      document.body.appendChild(document.createElement('span'));
+      await vi.advanceTimersByTimeAsync(50);
+      expect(h.painter.active).toBeNull();
+    });
+
+    it('a reveal after a step is a plain 2 s flash again', async () => {
+      const { h, ids, press } = await withHighlights();
+      press();
+      expect(await h.handlers['content.reveal']!({ id: ids[2] }, {} as never)).toEqual({
+        found: true,
+      });
+      expect(h.painter.active).toBe(ids[2]);
+      await vi.advanceTimersByTimeAsync(2_100);
+      expect(h.painter.active).toBeNull();
+    });
+  });
+
+  it('puts the caret at the highlight, collapsed, so Tab and a screen reader continue from there', async () => {
+    const { press, ids, h } = await withHighlights();
+    select(LINK); // something is selected elsewhere
+    press();
+    const sel = document.getSelection()!;
+    expect(sel.isCollapsed).toBe(true);
+    const start = h.painter.painted.find((p) => p.id === ids[0])!.range;
+    expect(sel.anchorNode).toBe(start.startContainer);
+    expect(sel.anchorOffset).toBe(start.startOffset);
+  });
+
+  it('a command leaves the caret and the focus alone while the user is typing in a field', async () => {
+    const { h } = await withHighlights();
+    document.body.insertAdjacentHTML('beforeend', '<input id="f" type="text" value="draft">');
+    const field = document.getElementById('f') as HTMLInputElement;
+    field.focus();
+    field.setSelectionRange(1, 3);
+    const collapse = vi.spyOn(Selection.prototype, 'collapse');
+
+    const out = await h.handlers['content.stepHighlight']!({ direction: 'next' }, {} as never);
+    expect(out).toEqual({ found: true }); // the command still goes to the highlight...
+    expect(collapse).not.toHaveBeenCalled(); // ...but never moves the selection out of the field
+    expect(document.activeElement).toBe(field);
+    expect([field.selectionStart, field.selectionEnd]).toEqual([1, 3]);
+  });
+
+  describe('announcement', () => {
+    it('says where the reader is: position, kind, the start of the quote, and what is not placed', async () => {
+      const background = new FakeBackground();
+      const mito = storedHighlight(MITO, { kind: 'formula' });
+      const ribo = storedHighlight(RIBO);
+      const lost = storedHighlight(LINK);
+      lost.anchorSet.textQuote.exact = 'a quotation that does not occur anywhere on this page';
+      for (const r of [mito, ribo, lost]) background.rows.set(r.id, r);
+      const h = await boot({ background });
+      window.scrollBy = vi.fn() as never;
+
+      await h.handlers['content.stepHighlight']!({ direction: 'next' }, {} as never);
+      await h.handlers['content.stepHighlight']!({ direction: 'next' }, {} as never);
+      expect(h.ui.announcements).toEqual([
+        'Highlight 1 of 2, Formula: mitochondria is the powerhouse of the cell. 1 not placed on this page.',
+        'Highlight 2 of 2, Essential fact: Ribosomes build proteins from amino acids. 1 not placed on this page.',
+      ]);
+    });
+
+    it('cuts a long quote at 80 characters and is silent about placement when all are placed', async () => {
+      const sentence =
+        'The mitochondria is the powerhouse of the cell and makes ATP for energy, and then goes on for a good while longer so that the quote is cut short';
+      setBody(`<article><p>${sentence}.</p></article>`);
+      const background = new FakeBackground();
+      const stored = storedHighlight(sentence);
+      background.rows.set(stored.id, stored);
+      const h = await boot({ background });
+      window.scrollBy = vi.fn() as never;
+
+      await h.handlers['content.stepHighlight']!({ direction: 'next' }, {} as never);
+      expect(h.ui.announcements).toEqual([
+        `Highlight 1 of 1, Essential fact: ${sentence.slice(0, 80)}…`,
+      ]);
+    });
   });
 
   it('is detached with the session: nothing is left on the document after destroy', async () => {
@@ -1767,6 +1988,464 @@ describe('settings', () => {
     expect(h.ui.hidden).toBe(1);
     await selectText(RIBO);
     expect(h.ui.toolbar).toHaveLength(1);
+  });
+
+  describe('highlight style', () => {
+    it('is handed to the painter at boot, on every change, and to a painter made later', async () => {
+      const h = await boot({ settings: { highlightStyle: 'strong' } });
+      expect(h.painter.style).toBe('strong');
+
+      h.setSettings({ highlightStyle: 'normal' });
+      expect(h.painter.style).toBe('normal');
+      h.setSettings({ highlightStyle: 'auto' });
+      expect(h.painter.style).toBe('auto');
+
+      h.setSettings({ denyList: ['localhost'] }); // unmount...
+      await flushPromises();
+      h.setSettings({ denyList: [] }); // ...and mount a new painter
+      await flushPromises();
+      expect(h.painters).toHaveLength(2);
+      expect(h.painter.style).toBe('auto');
+    });
+
+    it('works with a painter that has no setStyle', async () => {
+      const background = new FakeBackground();
+      const stored = storedHighlight(MITO);
+      background.rows.set(stored.id, stored);
+      const h = startHarness({ background });
+      harnesses.push(h);
+      await h.controller.ready;
+      const painter = h.painter as { setStyle?: unknown };
+      painter.setStyle = undefined;
+      expect(() => h.setSettings({ highlightStyle: 'strong' })).not.toThrow();
+      expect(h.painter.ids).toEqual([stored.id]);
+    });
+
+    it('the highlight kind goes to the painter with every entry', async () => {
+      const background = new FakeBackground();
+      const formula = storedHighlight(MITO, { kind: 'formula', color: 'blue' });
+      background.rows.set(formula.id, formula);
+      const h = await boot({ background });
+      expect(h.painter.painted.map((p) => [p.color, p.kind])).toEqual([['blue', 'formula']]);
+    });
+  });
+
+  describe('quiet mode (paintHighlights: false)', () => {
+    async function quiet() {
+      const background = new FakeBackground();
+      const stored = storedHighlight(MITO);
+      background.rows.set(stored.id, stored);
+      const h = await boot({ background, settings: { paintHighlights: false } });
+      return { h, background, stored };
+    }
+
+    it('resolves and reports, but publishes no range to the page', async () => {
+      const { h, background, stored } = await quiet();
+      expect(h.painter.painted).toEqual([]);
+      expect(h.painter.paintCalls).toBeGreaterThan(0); // told to paint nothing, not left alone
+      const status = await h.handlers['content.pageStatus']!({}, {} as never);
+      expect(status.counts).toMatchObject({ total: 1, resolved: 1 });
+      expect(background.callsOf('highlight.reportResolution')).toHaveLength(1);
+      expect(background.rows.get(stored.id)!.resolveStatus).toBe('resolved');
+    });
+
+    it('capture and undo keep working, and paint nothing', async () => {
+      const { h } = await quiet();
+      await selectText(RIBO);
+      const saved = await h.host.save(saveRequest);
+      expect(saved.status).toBe('created');
+      expect(h.painter.painted).toEqual([]);
+      expect((await h.handlers['content.pageStatus']!({}, {} as never)).counts.total).toBe(2);
+      await h.host.undo(saved.highlight.id);
+      expect(h.painter.painted).toEqual([]);
+    });
+
+    it('show-on-page scrolls but emphasises nothing; stepping holds nothing', async () => {
+      const { h, stored } = await quiet();
+      const scrollBy = vi.fn();
+      window.scrollBy = scrollBy as never;
+      expect(await h.handlers['content.reveal']!({ id: stored.id }, {} as never)).toEqual({
+        found: true,
+      });
+      expect(scrollBy).toHaveBeenCalled();
+      const out = await h.handlers['content.stepHighlight']!({ direction: 'next' }, {} as never);
+      expect(out).toEqual({ found: true });
+      expect(h.ui.popovers).toHaveLength(1); // the popover and announcement are the overlay's own
+      expect(h.painter.activeCalls).toEqual([]); // no registry entry, not even a short-lived one
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(h.painter.painted).toEqual([]);
+    });
+
+    it('switches live, both ways, and takes the emphasis back with the paint', async () => {
+      const { h, stored } = await quiet();
+      h.setSettings({ paintHighlights: true });
+      expect(h.painter.ids).toEqual([stored.id]);
+
+      window.scrollBy = vi.fn() as never;
+      await h.handlers['content.stepHighlight']!({ direction: 'next' }, {} as never);
+      expect(h.painter.active).toBe(stored.id);
+
+      h.setSettings({ paintHighlights: false });
+      expect(h.painter.painted).toEqual([]);
+      expect(h.painter.active).toBeNull();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(h.painter.painted).toEqual([]); // no later repaint brings it back
+
+      h.setSettings({ paintHighlights: true });
+      expect(h.painter.ids).toEqual([stored.id]);
+    });
+
+    it('a data change while quiet is resolved but still not painted', async () => {
+      const { h, background } = await quiet();
+      const added = storedHighlight(RIBO);
+      background.rows.set(added.id, added);
+      background.bump();
+      await vi.advanceTimersByTimeAsync(400);
+      expect(h.painter.painted).toEqual([]);
+      expect((await h.handlers['content.pageStatus']!({}, {} as never)).counts.resolved).toBe(2);
+    });
+  });
+});
+
+describe('the first look at the page', () => {
+  it('retries a failed fetch with a growing pause until the worker answers', async () => {
+    const background = new FakeBackground();
+    const stored = storedHighlight(MITO);
+    background.rows.set(stored.id, stored);
+    background.failNext('page.highlights', new StudyVaultError('no_receiver', 'worker asleep'), 2);
+    const h = await boot({ background });
+    expect(h.painter.ids).toEqual([]);
+    expect(background.callsOf('page.highlights')).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(background.callsOf('page.highlights')).toHaveLength(2);
+    expect(h.painter.ids).toEqual([]);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(background.callsOf('page.highlights')).toHaveLength(3);
+    expect(h.painter.ids).toEqual([stored.id]);
+  });
+
+  it('the overlay is not held up by the retries', async () => {
+    const background = new FakeBackground();
+    background.failNext('page.highlights', new StudyVaultError('no_receiver', 'worker asleep'), 99);
+    const h = await boot({ background });
+    expect(h.uiCreated).toBe(1);
+    await selectText(MITO);
+    expect(h.ui.toolbar).toHaveLength(1);
+    expect(await h.handlers['content.ping']!({}, {} as never)).toMatchObject({ ready: true });
+  });
+
+  it('coming back to the tab (and a bfcache restore) looks again, even after the retries ran out', async () => {
+    const background = new FakeBackground();
+    const stored = storedHighlight(MITO);
+    background.rows.set(stored.id, stored);
+    background.failNext('page.highlights', new StudyVaultError('no_receiver', 'gone'), 6);
+    const h = await boot({ background });
+    await vi.advanceTimersByTimeAsync(40_000);
+    expect(background.callsOf('page.highlights')).toHaveLength(6);
+    expect(h.painter.ids).toEqual([]);
+
+    setVisibility('hidden');
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(background.callsOf('page.highlights')).toHaveLength(6); // hidden: nothing to do
+    setVisibility('visible');
+    await vi.advanceTimersByTimeAsync(300);
+    expect(background.callsOf('page.highlights')).toHaveLength(7);
+    expect(h.painter.ids).toEqual([stored.id]);
+
+    // A page restored from the back/forward cache missed whatever changed while it was frozen.
+    const added = storedHighlight(RIBO);
+    background.rows.set(added.id, added);
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: false }));
+    await vi.advanceTimersByTimeAsync(300);
+    expect(h.painter.ids).toEqual([stored.id]);
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+    await vi.advanceTimersByTimeAsync(300);
+    expect(h.painter.ids).toEqual([stored.id, added.id].sort());
+  });
+
+  it('stops retrying when the page is unmounted', async () => {
+    const background = new FakeBackground();
+    background.failNext('page.highlights', new StudyVaultError('no_receiver', 'gone'), 99);
+    const h = await boot({ background });
+    h.setSettings({ denyList: ['localhost'] });
+    await flushPromises();
+    const fetches = background.callsOf('page.highlights').length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(background.callsOf('page.highlights')).toHaveLength(fetches);
+  });
+});
+
+describe('manifest commands', () => {
+  const sender = {} as never;
+
+  it('focus-toolbar asks the overlay and reports what it did', async () => {
+    const h = await boot();
+    h.ui.canFocus = true;
+    expect(await h.handlers['content.focusToolbar']!({}, sender)).toEqual({ focused: true });
+    h.ui.canFocus = false;
+    expect(await h.handlers['content.focusToolbar']!({}, sender)).toEqual({ focused: false });
+    expect(h.ui.focusRequests).toBe(2);
+  });
+
+  it('focus-toolbar says false where there is nothing to focus: no overlay, denied site', async () => {
+    const noUi = await boot({ uiFails: true });
+    expect(await noUi.handlers['content.focusToolbar']!({}, sender)).toEqual({ focused: false });
+
+    const denied = await boot({ settings: { denyList: ['localhost'] } });
+    expect(await denied.handlers['content.focusToolbar']!({}, sender)).toEqual({ focused: false });
+  });
+
+  describe('next-highlight / previous-highlight', () => {
+    const LINK = 'link text inside the page';
+
+    async function withThree(opts: HarnessOptions = {}) {
+      const background = opts.background ?? new FakeBackground();
+      const rows = [storedHighlight(MITO), storedHighlight(RIBO), storedHighlight(LINK)];
+      for (const r of rows) background.rows.set(r.id, r);
+      window.scrollBy = vi.fn() as never;
+      const h = await boot({ ...opts, background });
+      const ids = rows.map((r) => r.id) as [string, string, string];
+      const step = (direction: 'next' | 'previous') =>
+        h.handlers['content.stepHighlight']!({ direction }, sender);
+      return { h, ids, step };
+    }
+    const shown = (h: Harness): string[] => h.ui.popovers.map((p) => p.view.id);
+
+    it('walks the highlights in document order and wraps, opening the popover and holding the emphasis', async () => {
+      const { h, ids, step } = await withThree();
+      expect(await step('next')).toEqual({ found: true });
+      await step('next');
+      await step('next');
+      await step('next');
+      expect(shown(h)).toEqual([ids[0], ids[1], ids[2], ids[0]]);
+      await step('previous');
+      expect(shown(h).at(-1)).toBe(ids[2]);
+      expect(h.painter.active).toBe(ids[2]);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(h.painter.active).toBe(ids[2]);
+      expect(h.ui.announcements).toHaveLength(5);
+    });
+
+    it('continues from where the in-page key route left off: one position, two routes', async () => {
+      const add = vi.spyOn(document, 'addEventListener');
+      const { h, ids, step } = await withThree();
+      const keydown = add.mock.calls
+        .filter((c) => c[0] === 'keydown' && !(c[2] as { passive?: boolean } | undefined)?.passive)
+        .at(-1)![1] as (e: unknown) => void;
+      const key = (code: string) =>
+        keydown({
+          isTrusted: true,
+          altKey: true,
+          shiftKey: true,
+          ctrlKey: false,
+          metaKey: false,
+          repeat: false,
+          code,
+          composedPath: () => [],
+          preventDefault() {},
+        });
+      key('BracketRight');
+      await step('next');
+      key('BracketRight');
+      await step('previous');
+      expect(shown(h)).toEqual([ids[0], ids[1], ids[2], ids[1]]);
+    });
+
+    it('found is false, with a toast, when the page has no highlight or none is visible', async () => {
+      const h = await boot();
+      expect(await h.handlers['content.stepHighlight']!({ direction: 'next' }, sender)).toEqual({
+        found: false,
+      });
+      expect(h.ui.toasts.at(-1)).toMatchObject({ text: 'No highlights on this page yet.' });
+
+      const { h: hidden, step } = await withThree();
+      Object.defineProperty(Range.prototype, 'getClientRects', {
+        configurable: true,
+        value: () => [],
+      });
+      try {
+        expect(await step('next')).toEqual({ found: false });
+        expect(hidden.ui.toasts.at(-1)).toMatchObject({
+          text: 'No visible highlights on this page.',
+        });
+        expect(hidden.ui.popovers).toHaveLength(0);
+        expect(hidden.painter.active).toBeNull();
+      } finally {
+        delete (Range.prototype as { getClientRects?: unknown }).getClientRects;
+      }
+    });
+
+    it('found is false where nothing is mounted (denied site)', async () => {
+      const h = await boot({ settings: { denyList: ['localhost'] } });
+      expect(await h.handlers['content.stepHighlight']!({ direction: 'previous' }, sender)).toEqual(
+        { found: false },
+      );
+    });
+
+    it('still scrolls to the highlight when the overlay did not start', async () => {
+      const { h, step } = await withThree({ uiFails: true });
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      expect(await step('next')).toEqual({ found: true });
+      expect(h.painter.active).not.toBeNull();
+    });
+  });
+});
+
+describe('an orphaned script (extension reloaded or updated under the page)', () => {
+  it('stops at the first page mutation: nothing painted, no listeners, no more calls', async () => {
+    const background = new FakeBackground();
+    const stored = storedHighlight(MITO);
+    background.rows.set(stored.id, stored);
+    const h = await boot({ background });
+    const calls = background.calls.length;
+
+    h.ctx.isValid = false; // WXT reports an invalid context from now on
+    document.body.appendChild(document.createElement('div')).textContent = 'a late widget';
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(h.painter.destroyed).toBe(true);
+    expect(h.ui.destroyed).toBe(true);
+    expect(h.served.active).toBe(false);
+    expect(background.epochListeners.size).toBe(0);
+    expect(background.calls.length).toBe(calls);
+  });
+
+  it('a data-change signal that arrives after the extension is gone does not call it', async () => {
+    const background = new FakeBackground();
+    const h = await boot({ background });
+    const calls = background.calls.length;
+    h.ctx.isValid = false;
+    background.bump();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(background.calls.length).toBe(calls);
+    expect(h.painter.destroyed).toBe(true);
+  });
+
+  it('a route change after the extension is gone loads nothing', async () => {
+    const background = new FakeBackground();
+    const h = await boot({ background });
+    const calls = background.calls.length;
+    h.ctx.isValid = false;
+    history.pushState({}, '', '/after-update');
+    document.body.appendChild(document.createElement('span'));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(background.calls.length).toBe(calls);
+    expect(h.painter.destroyed).toBe(true);
+  });
+});
+
+describe('failures are reported to the right party', () => {
+  it('a highlight that was stored but could not be placed on the page is not a failed save', async () => {
+    const h = await boot();
+    await selectText(MITO);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    h.painter.paint = () => {
+      throw new Error('painter exploded');
+    };
+
+    const result = await h.host.save(saveRequest);
+    expect(result.status).toBe('created');
+    expect(h.background.rows.has(result.highlight.id)).toBe(true);
+    expect(h.ui.toasts.filter((t) => t.tone === 'error')).toEqual([]);
+    expect(h.background.callsOf('capture.save')).toHaveLength(1); // and nothing retried it
+  });
+
+  it('the same holds for quick-save, update and restore', async () => {
+    const background = new FakeBackground();
+    const stored = storedHighlight(MITO);
+    background.rows.set(stored.id, stored);
+    const h = await boot({ background });
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    h.painter.paint = () => {
+      throw new Error('painter exploded');
+    };
+
+    select(RIBO);
+    const quick = await h.handlers['content.captureSelection']!(
+      { method: 'shortcut', bankId: null },
+      {} as never,
+    );
+    expect(quick).toMatchObject({ status: 'created' });
+    await expect(h.host.update(stored.id, { color: 'green' })).resolves.toMatchObject({
+      color: 'green',
+    });
+    await h.host.remove(stored.id);
+    await expect(h.host.restore(stored.id)).resolves.toMatchObject({ id: stored.id });
+    expect(h.ui.toasts.filter((t) => t.tone === 'error')).toEqual([]);
+  });
+
+  describe('a worker that does not answer in time (real runtime transport)', () => {
+    function realTransport(h: { background: FakeBackground }) {
+      Object.assign(h.background, { call: callBackground });
+    }
+
+    it('is called slow, not lost, and the save is offered again', async () => {
+      const background = new FakeBackground();
+      vi.spyOn(fakeBrowser.runtime, 'sendMessage').mockImplementation((async (message: {
+        type: string;
+      }) => {
+        if (message.type === 'page.highlights') {
+          return { ok: true, data: { sourceId: null, highlights: [] } };
+        }
+        return new Promise(() => undefined); // capture.save is never answered
+      }) as never);
+      realTransport({ background });
+      const h = await boot({ background });
+      await selectText(MITO);
+
+      const saving = h.host.save(saveRequest).catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(HANDLER_TIMEOUT_MS);
+      const err = await saving;
+      expect(err).toBeInstanceOf(StudyVaultError);
+      const toast = h.ui.toasts.at(-1)!;
+      expect(toast.tone).toBe('error');
+      expect(toast.text).toBe('StudyVault is taking too long to respond. Try again in a moment.');
+      expect(toast.text).not.toMatch(/lost contact|reload/i);
+      expect(toast.action?.label).toBe('Retry');
+    });
+
+    it('answers before the RPC handler budget runs out, so the user is told which step was slow', async () => {
+      const background = new FakeBackground();
+      vi.spyOn(fakeBrowser.runtime, 'sendMessage').mockImplementation((async (message: {
+        type: string;
+      }) => {
+        if (message.type === 'page.highlights') {
+          return { ok: true, data: { sourceId: null, highlights: [] } };
+        }
+        return new Promise(() => undefined);
+      }) as never);
+      realTransport({ background });
+      const h = await boot({ background });
+      select(RIBO);
+
+      const quick = h.handlers['content.captureSelection']!(
+        { method: 'shortcut', bankId: null },
+        {} as never,
+      ).catch((e: unknown) => e);
+      let settled = false;
+      void quick.then(() => (settled = true));
+      await vi.advanceTimersByTimeAsync(HANDLER_TIMEOUT_MS - 1);
+      expect(settled).toBe(true); // our own error beat the runtime's "background worker" one
+      expect(await quick).toMatchObject({ message: expect.stringMatching(/taking too long/) });
+    });
+
+    it('a transport with no receiver still says the connection is lost', async () => {
+      const background = new FakeBackground();
+      vi.spyOn(fakeBrowser.runtime, 'sendMessage').mockImplementation((async (message: {
+        type: string;
+      }) => {
+        if (message.type === 'page.highlights') {
+          return { ok: true, data: { sourceId: null, highlights: [] } };
+        }
+        throw new Error('Could not establish connection. Receiving end does not exist.');
+      }) as never);
+      realTransport({ background });
+      const h = await boot({ background });
+      await selectText(MITO);
+      await expect(h.host.save(saveRequest)).rejects.toThrow();
+      expect(h.ui.toasts.at(-1)!.text).toMatch(/lost contact/);
+    });
   });
 });
 

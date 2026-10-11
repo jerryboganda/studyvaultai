@@ -1,6 +1,6 @@
 /** Test-only helpers for the overlay (never imported by production code). */
 import { vi } from 'vitest';
-import { act, createEvent, within } from '@testing-library/react';
+import { act, within } from '@testing-library/react';
 import {
   defaultSettings,
   type AnchorSet,
@@ -128,16 +128,14 @@ export function cleanupUi(): void {
   document.body.innerHTML = '';
 }
 
-/** Alt+Shift+T on the document, as a user would press it. Returns the event for default-prevented checks. */
-export function pressFocusShortcut(): KeyboardEvent {
-  const event = createEvent.keyDown(document.body, {
-    key: 'T',
-    code: 'KeyT',
-    altKey: true,
-    shiftKey: true,
-  });
+/**
+ * What the page logic does on the `focus-toolbar` command: ask the overlay to take keyboard focus.
+ * The overlay listens for no key of its own, so there is no key to press here.
+ */
+export function focusToolbar(ui: CaptureUi): boolean {
+  let focused = false;
   act(() => {
-    document.body.dispatchEvent(event);
+    focused = ui.focusToolbar();
   });
-  return event as KeyboardEvent;
+  return focused;
 }

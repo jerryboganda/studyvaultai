@@ -4,7 +4,6 @@ import { BackgroundRpc } from '@shared';
 import { getSettings, serveRpc, updateSettings } from '@runtime';
 import { repo } from '@storage';
 import { createCommandHandlers, installContextMenu } from './commands';
-import { createDeleteLedger } from './deleteLedger';
 import { createHandlers } from './handlers';
 import {
   browserCommandDeps,
@@ -30,7 +29,6 @@ export default defineBackground(() => {
       getSettings,
       updateSettings,
       site,
-      ledger: createDeleteLedger(browserSessionArea()),
       extensionBaseUrl: browser.runtime.getURL('/'),
       openSidePanel: browserOpenSidePanel,
       session: browserSessionArea(),
@@ -50,6 +48,11 @@ export default defineBackground(() => {
     site.sync().catch(report);
   });
   browser.runtime.onStartup.addListener(() => {
+    site.sync().catch(report);
+  });
+  // Chrome's grants are the truth and can change outside our UI (chrome://extensions, enterprise
+  // policy): reconcile the registration in both directions.
+  browser.permissions.onAdded.addListener(() => {
     site.sync().catch(report);
   });
   browser.permissions.onRemoved.addListener(() => {

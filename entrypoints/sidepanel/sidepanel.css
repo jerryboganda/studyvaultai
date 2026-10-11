@@ -3,6 +3,13 @@ html,
 body {
   height: 100%;
 }
+/*
+ * The toast stack is fixed to the bottom edge. A focused control that scrolls into view must come to
+ * rest above it (WCAG 2.4.11 Focus Not Obscured), and the last card must be able to scroll clear of it.
+ */
+html {
+  scroll-padding-bottom: 9rem;
+}
 .panel {
   display: flex;
   flex-direction: column;
@@ -22,7 +29,8 @@ body {
   min-width: 0;
 }
 .panel__body {
-  padding: var(--sv-space-3);
+  /* Bottom room so the last card can scroll clear of the fixed toast stack. */
+  padding: var(--sv-space-3) var(--sv-space-3) 6rem;
   min-width: 0;
 }
 .panel__title {

@@ -75,20 +75,8 @@ jobs:
             find .output/chrome-mv3 -type f -printf '%s\t%p\n' | sort -rn | head -15
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: Assert shipped manifest is least-privilege
-        run: |
-          node -e "
-            const m = require('./.output/chrome-mv3/manifest.json');
-            const fail = (msg) => { console.error('MANIFEST CHECK FAILED: ' + msg); process.exit(1); };
-            if (m.manifest_version !== 3) fail('not MV3');
-            if (m.host_permissions && m.host_permissions.length) fail('host_permissions present: ' + m.host_permissions);
-            if (m.content_scripts && m.content_scripts.length) fail('static content_scripts present');
-            if (m.web_accessible_resources && m.web_accessible_resources.length) fail('web_accessible_resources present');
-            const perms = [...(m.permissions || [])].sort().join(',');
-            const want = 'activeTab,contextMenus,scripting,sidePanel,storage';
-            if (perms !== want) fail('permissions ' + perms + ' != ' + want);
-            console.log('manifest ok:', perms, '| optional hosts:', m.optional_host_permissions);
-          "
+      - name: Release gate (manifest, CSP, commands, remote code, size budgets, prod React in e2e)
+        run: node scripts/check-build.mjs
       - uses: actions/upload-artifact@v7
         with:
           name: extension-builds

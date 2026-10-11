@@ -68,10 +68,18 @@ export interface CaptureUi {
   }): void;
   /** Re-apply theme / palette when settings change. */
   applySettings(settings: Settings): void;
-  /** Move keyboard focus into the visible toolbar (or an actionable toast). false = nothing to focus. */
-  focusToolbar?(): boolean;
-  /** Polite screen-reader announcement with no visible toast (e.g. "Highlight 2 of 5: ..."). */
-  announce?(text: string): void;
+  /**
+   * Move keyboard focus into the visible toolbar or, when there is none, the newest actionable
+   * toast (Undo). Returns false when nothing could take focus; the caller then leaves the key to
+   * the page. Reached through the remappable `focus-toolbar` command: the overlay itself listens
+   * for no keys, so it cannot shadow a browser accelerator.
+   */
+  focusToolbar(): boolean;
+  /**
+   * Polite screen-reader announcement with no visible toast (e.g. "Highlight 2 of 5: ...").
+   * Repeating the same text is announced again. Empty text is ignored.
+   */
+  announce(text: string): void;
   /** Remove listeners and DOM. Called on context invalidation. */
   destroy(): void;
 }

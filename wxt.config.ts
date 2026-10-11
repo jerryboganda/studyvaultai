@@ -41,9 +41,25 @@ export default defineConfig({
         suggested_key: { default: 'Alt+Shift+H' },
         description: 'Quick-save the current selection',
       },
+      // Chrome allows at most four suggested keys; previous-highlight is user-assignable.
+      // [ and ] are not valid manifest keys, so the in-page Alt+Shift+] / [ stay as extra routes.
+      'focus-toolbar': {
+        suggested_key: { default: 'Alt+Shift+Y' },
+        description: 'Move keyboard focus into the selection toolbar',
+      },
+      'next-highlight': {
+        suggested_key: { default: 'Alt+Shift+Period' },
+        description: 'Go to the next highlight on the page',
+      },
+      'previous-highlight': {
+        description: 'Go to the previous highlight on the page',
+      },
     },
+    // Defence in depth for "nothing leaves the device": extension pages may only talk to themselves.
+    // Sync/AI phases must add their endpoints here deliberately.
     content_security_policy: {
-      extension_pages: "script-src 'self'; object-src 'self'; base-uri 'self'",
+      extension_pages:
+        "script-src 'self'; object-src 'self'; base-uri 'self'; connect-src 'self'; frame-src 'none'; form-action 'none'",
     },
   },
   hooks: {

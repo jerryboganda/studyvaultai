@@ -11,6 +11,7 @@ export {
   listRecentHighlights,
   listPageHighlights,
   listBanksWithCounts,
+  wipeAllData,
   repo,
 } from './repo';
 export { observe, type Observable } from './observe';

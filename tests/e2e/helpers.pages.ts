@@ -1,5 +1,6 @@
 import type { BrowserContext, CDPSession, Locator, Page, Worker } from '@playwright/test';
 import net from 'node:net';
+import { PENDING_FOCUS_KEY } from '@shared';
 import { activateTab } from './helpers';
 import { expect, prodTest as prodBase, test as base } from './fixtures';
 
@@ -114,10 +115,44 @@ export async function openFixture(
   return page;
 }
 
-/** tab.activate through the real RPC, then wait until the overlay host is mounted. */
+/**
+ * tab.activate through the real RPC, then wait until the content script is fully running: the
+ * overlay host is mounted AND its first rehydration has finished (content.pageStatus answers only
+ * after it). Without the second wait a test that opens the side panel right away races the page's
+ * own first `page.highlights` round trip, which is what creates the database on a fresh profile.
+ */
 export async function activate(env: Env, page: Page): Promise<void> {
   await activateTab(env.context, env.extensionId, page);
   await expect(page.locator(OVERLAY_HOST)).toHaveCount(1);
+  const ext = await env.context.newPage();
+  try {
+    await ext.goto(`chrome-extension://${env.extensionId}/options.html`);
+    const url = page.url();
+    await expect
+      .poll(
+        () =>
+          ext.evaluate(async (pageUrl) => {
+            const tab = (await chrome.tabs.query({})).find((t) => t.url === pageUrl);
+            if (tab?.id === undefined) return 'no tab';
+            try {
+              const reply = (await chrome.tabs.sendMessage(tab.id, {
+                v: 1,
+                type: 'content.pageStatus',
+                payload: {},
+              })) as { ok: boolean; error?: { code: string } } | undefined;
+              // Any answer means the controller finished starting (a refusal such as an address
+              // that is too long to store is still an answer).
+              return reply ? 'ready' : 'no reply';
+            } catch (err) {
+              return `not yet: ${String((err as Error)?.message ?? err)}`;
+            }
+          }, url),
+        { message: 'content script should finish its first rehydration' },
+      )
+      .toBe('ready');
+  } finally {
+    await ext.close();
+  }
 }
 
 export const toolbarOf = (page: Page): Locator =>
@@ -259,6 +294,14 @@ export async function sendFromContentWorld(
  */
 export async function viewing(env: Env, name: ExtPageName, target: Page): Promise<Page> {
   const ext = await openExt(env, name);
+  if (name !== 'options') {
+    // The page reads the active tab when it mounts and then follows tab events. Its `load` event
+    // comes before React has mounted, so switching tabs right away can land between the page's
+    // first query and its listener registration: the event is lost and the page stays on its own
+    // tab. Wait for the page's own first answer (it is the active tab, an extension page, and says
+    // it cannot run there) before switching.
+    await expect(ext.getByText(/StudyVault cannot run on this page/).first()).toBeVisible();
+  }
   await target.bringToFront();
   await activeTabId(ext);
   return ext;
@@ -267,6 +310,40 @@ export async function viewing(env: Env, name: ExtPageName, target: Page): Promis
 /** Make `target` the active tab again (e.g. after a helper opened and closed a temporary page). */
 export async function show(target: Page): Promise<void> {
   await target.bringToFront();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Side panel state
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * What the "This page" list of a side panel shows right now: `loading` (nothing decided yet),
+ * `empty` (the empty state), `cards:<n>`, or `error: <message>` (the load failed and the panel says
+ * so, with a Retry). Read from the DOM the user sees.
+ */
+export async function pageListState(side: Page): Promise<string> {
+  return side.evaluate(() => {
+    const text = document.body.innerText;
+    const failed = Array.from(document.querySelectorAll('[role="alert"]')).find((el) =>
+      /Could not load highlights/.test(el.textContent ?? ''),
+    );
+    if (failed) return `error: ${(failed.textContent ?? '').replace(/\s+/g, ' ').trim()}`;
+    if (text.includes('Could not load highlights')) return 'error: Could not load highlights';
+    const cards = document.querySelectorAll('article').length;
+    if (cards > 0) return `cards:${cards}`;
+    if (text.includes('No highlights on this page yet')) return 'empty';
+    return 'loading';
+  });
+}
+
+/** Wait until the "This page" list has left `loading` (it answered, or it failed and says so). */
+export async function waitForPageList(side: Page, timeout = 15_000): Promise<void> {
+  await expect
+    .poll(() => pageListState(side), {
+      timeout,
+      message: 'the side panel list should settle (loaded or failed), not stay on "loading"',
+    })
+    .not.toBe('loading');
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -396,8 +473,120 @@ export async function captureSelectionVia(ext: Page, tabId: number): Promise<Env
   }, tabId);
 }
 
-/** Painted texts per colour registry (`sv-hl-<color>`), excluding the active one. */
+/**
+ * Manifest command "focus-toolbar" as the worker sends it: TabRpc content.focusToolbar to the
+ * content script of tab `tabId`, from an extension page (Playwright cannot press manifest shortcuts).
+ */
+export async function focusToolbarVia(ext: Page, tabId: number): Promise<Envelope> {
+  return ext.evaluate(async (id) => {
+    const reply: unknown = await chrome.tabs.sendMessage(id, {
+      v: 1,
+      type: 'content.focusToolbar',
+      payload: {},
+    });
+    return reply as Envelope;
+  }, tabId);
+}
+
+/** Manifest commands "next-highlight" / "previous-highlight": TabRpc content.stepHighlight. */
+export async function stepHighlightVia(
+  ext: Page,
+  tabId: number,
+  direction: 'next' | 'previous',
+): Promise<Envelope> {
+  return ext.evaluate(
+    async ({ id, direction }) => {
+      const reply: unknown = await chrome.tabs.sendMessage(id, {
+        v: 1,
+        type: 'content.stepHighlight',
+        payload: { direction },
+      });
+      return reply as Envelope;
+    },
+    { id: tabId, direction },
+  );
+}
+
+/**
+ * Start recording every change of the service worker -> side panel hand-over key
+ * (chrome.storage.session `sv.pendingFocus`, ADR-005) in extension page `ext`. A real side panel
+ * removes the entry as soon as it has acted on it, so reading the key afterwards would race; the
+ * log keeps each value that was ever written.
+ */
+export async function recordPendingFocus(ext: Page): Promise<void> {
+  await ext.evaluate((key) => {
+    const w = window as unknown as { __svPending?: Array<{ highlightId: string; at: number }> };
+    w.__svPending = [];
+    chrome.storage.onChanged.addListener((changes, area) => {
+      const change = changes[key];
+      if (area !== 'session' || !change || change.newValue == null) return;
+      w.__svPending?.push(change.newValue as { highlightId: string; at: number });
+    });
+  }, PENDING_FOCUS_KEY);
+}
+
+/** Values written to the hand-over key since `recordPendingFocus`. */
+export async function pendingFocusLog(
+  ext: Page,
+): Promise<Array<{ highlightId: string; at: number }>> {
+  return ext.evaluate(
+    () =>
+      (window as unknown as { __svPending?: Array<{ highlightId: string; at: number }> })
+        .__svPending ?? [],
+  );
+}
+
+/**
+ * The CSS the painter adopted into the page, per registry name: the declarations of the rule that
+ * lists `::highlight(<name>)`. Reads `document.adoptedStyleSheets` (public to the page), so it sees
+ * exactly what the browser paints with. Only unconditional rules are read (not @media blocks).
+ */
+export async function highlightRuleFor(
+  page: Page,
+  registryName: string,
+): Promise<{ style: string; thickness: string; line: string; fill: string } | null> {
+  return page.evaluate((name) => {
+    const wanted = `::highlight(${name})`;
+    for (const sheet of document.adoptedStyleSheets) {
+      for (const rule of Array.from(sheet.cssRules)) {
+        if (!(rule instanceof CSSStyleRule)) continue;
+        const names = rule.selectorText.split(',').map((s) => s.trim());
+        if (!names.includes(wanted)) continue;
+        return {
+          style: rule.style.getPropertyValue('text-decoration-style'),
+          thickness: rule.style.getPropertyValue('text-decoration-thickness'),
+          line: rule.style.getPropertyValue('text-decoration-line'),
+          fill: rule.style.getPropertyValue('background-color'),
+        };
+      }
+    }
+    return null;
+  }, registryName);
+}
+
+/**
+ * Painted texts per colour, excluding the active one. Registries are named `sv-hl-<color>` for a
+ * kind-less entry and `sv-hl-<color>-<kind>` otherwise (packages/highlights painter.ts); colour ids
+ * contain no hyphen, so the colour is the first segment and every kind of one colour is merged.
+ */
 export async function paintedByColor(page: Page): Promise<Record<string, string[]>> {
+  return page.evaluate(() => {
+    const out: Record<string, string[]> = {};
+    for (const [name, hl] of CSS.highlights) {
+      if (!name.startsWith('sv-hl-') || name === 'sv-hl-active') continue;
+      const rest = name.slice('sv-hl-'.length);
+      const color = rest.split('-')[0] ?? rest;
+      const texts = Array.from(hl as unknown as Iterable<AbstractRange>).map((r) =>
+        (r as Range).toString(),
+      );
+      if (texts.length > 0) (out[color] ??= []).push(...texts);
+    }
+    return out;
+  });
+}
+
+/** Painted texts per full registry name (`sv-hl-<color>[-<kind>]`), excluding the active one. */
+export async function paintedByRegistry(page: Page): Promise<Record<string, string[]>> {
   return page.evaluate(() => {
     const out: Record<string, string[]> = {};
     for (const [name, hl] of CSS.highlights) {
@@ -405,9 +594,18 @@ export async function paintedByColor(page: Page): Promise<Record<string, string[
       const texts = Array.from(hl as unknown as Iterable<AbstractRange>).map((r) =>
         (r as Range).toString(),
       );
-      if (texts.length > 0) out[name.slice('sv-hl-'.length)] = texts;
+      if (texts.length > 0) out[name] = texts;
     }
     return out;
+  });
+}
+
+/** Number of ranges currently published under any `sv-hl-*` registry (the active one included). */
+export async function publishedRangeCount(page: Page): Promise<number> {
+  return page.evaluate(() => {
+    let n = 0;
+    for (const [name, hl] of CSS.highlights) if (name.startsWith('sv-hl-')) n += hl.size;
+    return n;
   });
 }
 

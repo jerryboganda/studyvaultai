@@ -335,7 +335,9 @@ test.describe('messaging security: what a web page can and cannot reach', () => 
         );
       },
       await page.evaluate(() => {
-        const hl = CSS.highlights.get('sv-hl-amber');
+        // Registries are `sv-hl-<color>[-<kind>]`: take the first range of any amber one.
+        const name = Array.from(CSS.highlights.keys()).find((n) => n.startsWith('sv-hl-amber'));
+        const hl = name ? CSS.highlights.get(name) : undefined;
         const range = hl ? (Array.from(hl as unknown as Iterable<Range>)[0] as Range) : null;
         const r = range?.getClientRects()[0];
         return { x: Math.round((r?.left ?? 0) + 5), y: Math.round((r?.top ?? 0) + 5) };
@@ -352,7 +354,8 @@ test.describe('messaging security: what a web page can and cannot reach', () => 
 
     // Positive control: a REAL click on the same spot does open the highlight details.
     const spot = await page.evaluate(() => {
-      const hl = CSS.highlights.get('sv-hl-amber');
+      const name = Array.from(CSS.highlights.keys()).find((n) => n.startsWith('sv-hl-amber'));
+      const hl = CSS.highlights.get(name ?? '');
       const range = Array.from(hl as unknown as Iterable<Range>)[0] as Range;
       const r = range.getClientRects()[0] as DOMRect;
       return { x: r.left + 5, y: r.top + r.height / 2 };
@@ -504,6 +507,51 @@ test.describe('messaging security: what a web page can and cannot reach', () => 
     expect(
       (await highlightsOf(ext, bUrl)).some((h) => h.exactQuote === 'Second injected quote.'),
     ).toBe(false);
+  });
+
+  // Ownership is the site of the highlight's source, deleted or not: a deleted row still belongs to
+  // its page, so Undo needs no per-tab memory. Unknown ids are "not found", not "forbidden".
+  test('Undo is authorised by same-site ownership: another same-site tab may restore, another site may not, an unknown id is not_found', async ({
+    env,
+  }) => {
+    const ext = await openExt(env, 'options');
+    const a1 = await openFixture(env, '/article.html');
+    const a2 = await openFixture(env, '/pages-b.html'); // same site, another tab and another page
+    const b = await openFixture(env, '/article.html', { origin: env.altOrigin });
+    await saveBlock(ext, a1, '#p-intro');
+    const [h] = await highlightsOf(ext, a1.url());
+    if (!h) throw new Error('setup: the highlight must exist');
+    const tabA1 = await tabIdOf(ext, a1);
+    const tabA2 = await tabIdOf(ext, a2);
+    const tabB = await tabIdOf(ext, b);
+    const send = (tab: number, type: string, payload: unknown) =>
+      sendFromContentWorld(ext, tab, { v: 1, type, payload });
+
+    expect(await send(tabA1, 'highlight.delete', { id: h.id })).toMatchObject({ ok: true });
+    expect(await highlightsOf(ext, a1.url())).toHaveLength(0);
+    // A repeated delete is idempotent.
+    expect(await send(tabA1, 'highlight.delete', { id: h.id })).toMatchObject({ ok: true });
+
+    // Another site cannot bring it back (and learns nothing more than "forbidden").
+    expect(err(await send(tabB, 'highlight.restore', { id: h.id }))).toMatchObject({
+      code: 'forbidden',
+    });
+    expect(await highlightsOf(ext, a1.url())).toHaveLength(0);
+
+    // A different tab of the same site can: the Undo that was started in a1 may finish in a2.
+    expect(await send(tabA2, 'highlight.restore', { id: h.id })).toMatchObject({ ok: true });
+    expect(await highlightsOf(ext, a1.url())).toHaveLength(1);
+
+    // Ids that never existed are not found, whichever action names them.
+    const unknown = 'sv_never_existed_0000';
+    for (const [type, payload] of [
+      ['highlight.restore', { id: unknown }],
+      ['highlight.delete', { id: unknown }],
+      ['highlight.update', { id: unknown, patch: { priority: 2 } }],
+    ] as const) {
+      const reply = await send(tabA1, type, payload);
+      expect(err(reply), `${type}: ${JSON.stringify(reply)}`).toMatchObject({ code: 'not_found' });
+    }
   });
 
   test('a deny-listed site is refused at the worker even when the content script is not mounted', async ({

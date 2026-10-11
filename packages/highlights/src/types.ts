@@ -1,4 +1,4 @@
-import type { ColorId, HtmlAnchorSet } from '@shared';
+import type { ColorId, HighlightKind, HtmlAnchorSet } from '@shared';
 
 /**
  * Public contract of @highlights (ADR-004). Implementations live next to this file.
@@ -54,6 +54,11 @@ export interface Resolution {
 export interface PaintEntry {
   id: string;
   color: ColorId;
+  /**
+   * Semantic kind. When set, the highlight also gets that kind's non-colour cue (KIND_DECORATION) and is
+   * registered as `sv-hl-<color>-<kind>`; without it the highlight is a plain `sv-hl-<color>` fill.
+   */
+  kind?: HighlightKind;
   range: Range;
 }
 

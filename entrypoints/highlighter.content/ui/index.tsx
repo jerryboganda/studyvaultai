@@ -36,6 +36,8 @@ export const createCaptureUi: CreateCaptureUi = async (ctx, host) => {
     onRemove: (mounted) => mounted?.destroy(),
   });
   // Marked before mounting so the text stream and mutation observer never see the host unmarked.
+  // This is the only attribute the page-visible host ever carries; theme and density are applied
+  // inside the shadow root (Overlay.tsx).
   ui.shadowHost.setAttribute(HOST_ATTRIBUTE, '');
   ui.mount();
 
@@ -47,6 +49,8 @@ export const createCaptureUi: CreateCaptureUi = async (ctx, host) => {
     showHighlightPopover: (highlight, anchor) => mounted.showHighlightPopover(highlight, anchor),
     toast: (notice) => mounted.toast(notice),
     applySettings: (settings) => mounted.applySettings(settings),
+    focusToolbar: () => mounted.focusToolbar(),
+    announce: (text) => mounted.announce(text),
     destroy: () => ui.remove(),
   };
 };

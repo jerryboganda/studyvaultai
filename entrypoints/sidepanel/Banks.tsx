@@ -17,19 +17,25 @@ export function Banks() {
         <InlineNotice
           tone="error"
           title="Could not load banks"
-          action={<Button onClick={banks.reload}>Retry</Button>}
+          action={
+            banks.retryable ? (
+              <Button busy={banks.refreshing} onClick={banks.refresh}>
+                Retry
+              </Button>
+            ) : undefined
+          }
         >
           {banks.error}
         </InlineNotice>
       ) : !banks.data ? (
-        <p className="sv-muted" role="status">
-          Loading banks…
-        </p>
+        <p className="sv-muted">Loading banks…</p>
       ) : (
         <ul className="bank-list" aria-label="Your banks">
           {banks.data.map(({ bank, count }) => (
             <li key={bank.id} className="bank-item">
-              <span className="sv-grow sv-wrap">{bank.name}</span>
+              <span className="sv-grow sv-wrap" dir="auto">
+                {bank.name}
+              </span>
               {bank.isInbox ? <Badge>Default</Badge> : null}
               <Badge>{plural(count, 'highlight')}</Badge>
             </li>
@@ -96,7 +102,7 @@ function NewBankForm() {
         <InlineNotice
           tone="error"
           title="Could not create the bank"
-          action={<Button onClick={create.retry}>Retry</Button>}
+          action={create.retryable ? <Button onClick={create.retry}>Retry</Button> : undefined}
         >
           {create.error}
         </InlineNotice>

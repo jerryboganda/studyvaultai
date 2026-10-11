@@ -45,7 +45,7 @@ exist in content scripts on `http:` pages.
 `ambiguous` and `orphaned` are **not painted**; they surface in the side panel for the user.
 
 ## Rendering
-CSS Custom Highlight API (`CSS.highlights`) with one `Highlight` per colour (`sv-hl-<color>`), styled by a
+CSS Custom Highlight API (`CSS.highlights`) with one `Highlight` per colour and kind (`sv-hl-<color>-<kind>`; kind-less entries use `sv-hl-<color>`), styled by a
 constructed stylesheet in `document.adoptedStyleSheets` (no DOM nodes are added to the page). Ranges are
 not hit-testable, so clicks use `caretRangeFromPoint` + `Range.isPointInRange` against the resolved set.
 Without `CSS.highlights` the product degrades visibly: capture still works, painting is off, and the UI
@@ -74,3 +74,15 @@ The engine is deliberately stricter than the order above; every tightening can o
 Navigation API (`navigate`/`navigatesuccess`) with a URL-compare fallback in the observer handles SPA
 route changes. A single debounced `MutationObserver` marks the stream dirty; only unresolved or
 disconnected highlights are re-resolved, with bounded retries for lazy-loaded content.
+
+## Non-colour cues (2026-10-11)
+Each kind has a distinct underline (style, thickness) via `::highlight()` text-decoration, derived from the page's text colour so it stays >= 3:1 on light and dark pages; the fill alone is 1.3-1.5:1 on white and is not relied on. `setStyle('auto'|'normal'|'strong')`; `prefers-contrast: more` upgrades `auto` to strong; `forced-colors: active` drops fills and draws CanvasText underlines. Single source of truth: `KIND_DECORATION` in `@highlights`.
+
+## Dynamic pages: load and retry behaviour (2026-10-11)
+- A failed first `page.highlights` fetch (cold worker on session restore) retries with capped backoff
+  (1, 2, 4, 8, 16 s; six attempts); a `visibilitychange` to visible or a bfcache `pageshow` revives it.
+- Route changes forget the old page immediately but debounce the fetch+resolve (150 ms, 1 s max wait).
+- Every resolve path (initial, retry pass, upsert) passes the other entries' anchors as `siblings`, so a
+  deleted passage can never fuzzy-bind onto a neighbour's painted text.
+- A page with zero highlights builds zero text streams.
+- Worker calls time out at 12 s (below the runtime's 15 s handler budget) so the slow party is named.

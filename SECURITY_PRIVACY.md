@@ -5,7 +5,7 @@
 - Access to arbitrary websites must be user-initiated per-site or optional all-sites access; do not require `host_permissions: <all_urls>` for functionality that works via activeTab and optional hosts.
 - Permission explanations before requesting an elevated scope; revoke/deny must have useful fallback and no nagging.
 - `file://` access and incognito need distinct user opt-ins and are disabled by default. Never auto-upload incognito content.
-- Preserve site-based deny list for banks, payment pages, mail and health records, auth providers; no hidden passive scraping.
+- Preserve a site-based deny list and ship a STARTER list of well-known sign-in, mail, payment, bank and health-portal hosts (never described as complete: banks differ by country and the user adds their own); no hidden passive scraping.
 
 ## Protected browser contexts
 - Chrome built-in PDF viewer is a protected internal extension/document context: ordinary third-party content scripts cannot edit its internal PDF UI.
@@ -34,9 +34,9 @@
 A web page is untrusted code running in the same document the extension annotates. Verified by review
 and E2E (see docs/adr/004 and 005). What a page script on a site where StudyVault is active can learn:
 - **Which passages are highlighted, where, and their kind/colour.** Highlights are painted through the
-  document-level CSS Custom Highlight registry (`CSS.highlights`, names `sv-hl-<colour>`), which is shared
+  document-level CSS Custom Highlight registry (`CSS.highlights`, names `sv-hl-<colour>-<kind>`, so the semantic kind such as weak_area or question is visible too), which is shared
   with the page's main world. A script can enumerate it and read each range's text. Mitigations: sites on
-  the deny list (default: mail, banks/payments, auth providers) are never painted; the registry holds
+  the deny list (a starter list of common sign-in, mail, payment and bank sites, user-editable) are never painted; the registry holds
   only ranges of text that the page itself contains. Not mitigated: third-party scripts on a non-denied
   site can see the user's marks. Users should add sensitive sites to the deny list.
 - **That StudyVault is installed**: the `<studyvault-overlay>` host element and an adopted stylesheet exist

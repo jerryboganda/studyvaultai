@@ -6,9 +6,9 @@ import {
   BIOLOGY,
   INBOX,
   cleanupUi,
+  focusToolbar,
   makeHighlight,
   mountUi,
-  pressFocusShortcut,
   rect,
 } from './testHarness';
 
@@ -283,7 +283,7 @@ describe('closing', () => {
   it('Escape closes only the panel and returns focus to the button that opened it', async () => {
     const m = mountUi();
     show(m.ui);
-    pressFocusShortcut();
+    focusToolbar(m.ui);
     const user = userEvent.setup();
     await user.keyboard('{End}');
     const more = m.q.getByRole('button', { name: 'More options' });

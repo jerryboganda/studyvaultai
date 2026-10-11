@@ -1,6 +1,7 @@
 import { act, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ContentScriptContext } from 'wxt/utils/content-script-context';
+import { defaultSettings } from '@shared';
 import { makeHost, rect } from './testHarness';
 
 interface FakeCall {
@@ -95,13 +96,36 @@ describe('createCaptureUi', () => {
     expect(call.options.mode).toBe('closed');
   });
 
-  it('renders through the returned CaptureUi and applies the theme to the host', async () => {
-    const { ui, call, q } = await create();
-    expect(call.shadowHost.getAttribute('data-theme')).toBe('system');
+  it('renders through the returned CaptureUi', async () => {
+    const { ui, q } = await create();
     act(() => ui.showToolbar({ text: 'hello', rect: rect() }));
     expect(q.getByRole('toolbar')).toBeTruthy();
     act(() => ui.toast({ text: 'Hello there', tone: 'info' }));
     expect(q.getByText('Hello there')).toBeTruthy();
+  });
+
+  it('keeps the theme and density off the page-visible host: they live inside the shadow root', async () => {
+    const { ui, call, q } = await create();
+    const settings = { ...defaultSettings(), theme: 'dark' as const, density: 'compact' as const };
+    act(() => ui.applySettings(settings));
+    act(() => ui.showToolbar({ text: 'hello', rect: rect() }));
+    expect(call.shadowHost.getAttributeNames()).toEqual(['data-studyvault']);
+    const root = call.shadow.querySelector('.sv-root') as HTMLElement;
+    expect(root.getAttribute('data-theme')).toBe('dark');
+    expect(root.getAttribute('data-density')).toBe('compact');
+    expect(q.getByRole('toolbar')).toBeTruthy();
+  });
+
+  it('exposes focusToolbar and announce, not a key handler', async () => {
+    const { ui, call, q } = await create();
+    expect(ui.focusToolbar()).toBe(false);
+    act(() => ui.showToolbar({ text: 'hello', rect: rect() }));
+    expect(ui.focusToolbar()).toBe(true);
+    expect((call.shadow as ShadowRoot).activeElement).toBe(
+      q.getByRole('button', { name: 'Save selection' }),
+    );
+    act(() => ui.announce('Highlight 1 of 1'));
+    expect(call.shadow.querySelector('[data-sv-announcer]')?.textContent).toBe('Highlight 1 of 1');
   });
 
   it('destroy removes the host and tears the tree down, and is safe to repeat', async () => {

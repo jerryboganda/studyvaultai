@@ -15,7 +15,14 @@ import {
 
 function setup(
   settings: Partial<Settings> = {},
-  opts: { granted?: string[]; registered?: string[] | null; url?: string | undefined } = {},
+  opts: {
+    /** Patterns `permissions.contains` says yes to. */
+    granted?: string[];
+    /** `permissions.getAll().origins`; defaults to `granted`. null = Chrome could not be asked. */
+    grantedList?: string[] | null;
+    registered?: string[] | null;
+    url?: string | undefined;
+  } = {},
 ) {
   const state = {
     registered: opts.registered === undefined ? null : opts.registered,
@@ -27,6 +34,10 @@ function setup(
   const deps = {
     getSettings: async () => ({ ...defaultSettings(), ...settings }),
     hasPermission: vi.fn(async (origin: string) => granted.has(origin)),
+    grantedOrigins: vi.fn(async () =>
+      opts.grantedList === undefined ? [...granted] : opts.grantedList,
+    ),
+    rememberOrigins: vi.fn(async (_origins: string[]) => undefined),
     registeredMatches: vi.fn(async () => state.registered),
     register: vi.fn(async (s: PersistentScript) => {
       calls.push('register');
@@ -163,7 +174,7 @@ describe('site.sync', () => {
         ],
         denyList: ['ok.example', '*.wild.example', 'with/path', 'host:8080', 'ok.example'],
       },
-      { granted: ['https://good.example/*', 'not a pattern', '<all_urls>'] },
+      { granted: ['https://good.example/*', 'not a pattern'] },
     );
     const out = await t.site.sync();
     expect(out.registeredMatches).toEqual(['https://good.example/*']);
@@ -203,6 +214,67 @@ describe('site.sync', () => {
   });
 });
 
+describe('site.sync reconciles with what Chrome grants', () => {
+  it('registers a grant that settings never heard of (given in chrome://extensions) and remembers it', async () => {
+    const t = setup({ persistentOrigins: [] }, { granted: ['https://given.example/*'] });
+    expect(await t.site.sync()).toEqual({ registeredMatches: ['https://given.example/*'] });
+    expect(t.state.registered).toEqual(['https://given.example/*']);
+    expect(t.deps.rememberOrigins).toHaveBeenCalledWith(['https://given.example/*']);
+  });
+
+  it('treats an all-sites grant reported as <all_urls> as both web schemes', async () => {
+    const t = setup({ persistentOrigins: [] }, { granted: [], grantedList: ['<all_urls>'] });
+    expect((await t.site.sync()).registeredMatches).toEqual(['https://*/*', 'http://*/*']);
+  });
+
+  it('keeps the exact patterns the user asked for while a broader grant covers them', async () => {
+    // Chrome reports only the broad grant; "https://a.example/*" is covered by it.
+    const t = setup(
+      { persistentOrigins: ['https://a.example/*'], denyList: [] },
+      { granted: ['https://a.example/*', 'https://*/*'], grantedList: ['https://*/*'] },
+    );
+    expect((await t.site.sync()).registeredMatches).toEqual(['https://a.example/*', 'https://*/*']);
+    // The hint learns about the broad grant, so the options page shows what is really running.
+    expect(t.deps.rememberOrigins).toHaveBeenCalledWith(['https://a.example/*', 'https://*/*']);
+  });
+
+  it('forgets a hint Chrome no longer covers and unregisters', async () => {
+    const t = setup(
+      { persistentOrigins: ['https://old.example/*'] },
+      { granted: [], registered: ['https://old.example/*'] },
+    );
+    expect(await t.site.sync()).toEqual({ registeredMatches: [] });
+    expect(t.calls).toEqual(['unregister']);
+    expect(t.deps.rememberOrigins).toHaveBeenCalledWith([]);
+  });
+
+  it('does not touch the user choices when Chrome cannot be asked, and falls back to the hints', async () => {
+    const t = setup(
+      { persistentOrigins: ['https://a.example/*', 'https://gone.example/*'] },
+      { granted: ['https://a.example/*'], grantedList: null },
+    );
+    expect(await t.site.sync()).toEqual({ registeredMatches: ['https://a.example/*'] });
+    expect(t.deps.rememberOrigins).not.toHaveBeenCalled();
+  });
+
+  it('does not write settings when they already match', async () => {
+    const t = setup(
+      { persistentOrigins: ['https://a.example/*', 'https://b.example/*'] },
+      { granted: ['https://b.example/*', 'https://a.example/*'] },
+    );
+    await t.site.sync();
+    expect(t.deps.rememberOrigins).not.toHaveBeenCalled();
+  });
+
+  it('survives a failed settings write: the registration is still made', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const t = setup({ persistentOrigins: [] }, { granted: ['https://a.example/*'] });
+    t.deps.rememberOrigins.mockRejectedValueOnce(new Error('storage down'));
+    expect(await t.site.sync()).toEqual({ registeredMatches: ['https://a.example/*'] });
+    expect(warn).toHaveBeenCalled();
+  });
+});
+
 describe('site.status', () => {
   it('reports unsupported schemes without probing the tab', async () => {
     const t = setup();
@@ -213,6 +285,7 @@ describe('site.status', () => {
         pattern: null,
         access: 'none',
         active: false,
+        allSites: false,
       });
     }
     expect(t.deps.isActive).not.toHaveBeenCalled();
@@ -226,6 +299,7 @@ describe('site.status', () => {
       pattern: 'https://example.com/*',
       access: 'none',
       active: false,
+      allSites: false,
     });
   });
 
@@ -244,6 +318,75 @@ describe('site.status', () => {
     expect((await t.site.status({ tabId: 1, url: 'https://example.com/p' })).access).toBe(
       'persistent',
     );
+  });
+
+  describe('allSites is what Chrome grants and a registration covers, not a stored flag', () => {
+    const status = (t: ReturnType<typeof setup>, url = 'https://example.com/p') =>
+      t.site.status({ tabId: 1, url });
+
+    it('is true with an all-sites grant and an all-sites registration', async () => {
+      const t = setup(
+        { persistentOrigins: [] },
+        {
+          granted: ['https://example.com/*', 'https://*/*'],
+          grantedList: ['https://*/*'],
+          registered: ['https://*/*'],
+        },
+      );
+      expect(await status(t)).toMatchObject({ allSites: true, access: 'persistent' });
+    });
+
+    it('is true when Chrome reports the grant as <all_urls>', async () => {
+      const t = setup(
+        {},
+        {
+          granted: ['https://example.com/*'],
+          grantedList: ['<all_urls>'],
+          registered: ['https://*/*'],
+        },
+      );
+      expect((await status(t)).allSites).toBe(true);
+    });
+
+    it('is false when the setting says all sites but Chrome revoked the grant', async () => {
+      const t = setup(
+        { persistentOrigins: ['https://*/*', 'http://*/*'] },
+        { granted: [], registered: ['https://*/*'] },
+      );
+      expect((await status(t)).allSites).toBe(false);
+    });
+
+    it('is false when the grant is there but nothing is registered that covers the page', async () => {
+      const t = setup({}, { granted: ['https://*/*'], registered: null });
+      expect((await status(t)).allSites).toBe(false);
+      const narrow = setup({}, { granted: ['https://*/*'], registered: ['https://example.com/*'] });
+      expect((await status(narrow)).allSites).toBe(false);
+    });
+
+    it('is false for one-site grants, for another scheme and for a denied host', async () => {
+      const oneSite = setup(
+        {},
+        { granted: ['https://example.com/*'], registered: ['https://example.com/*'] },
+      );
+      expect((await status(oneSite)).allSites).toBe(false);
+
+      const httpsOnly = setup({}, { granted: ['https://*/*'], registered: ['https://*/*'] });
+      expect((await status(httpsOnly, 'http://example.com/p')).allSites).toBe(false);
+
+      const denied = setup(
+        { denyList: ['example.com'] },
+        { granted: ['https://*/*'], registered: ['https://*/*'] },
+      );
+      expect(await status(denied)).toMatchObject({ denied: true, allSites: false });
+    });
+
+    it('is false when Chrome cannot be asked', async () => {
+      const t = setup(
+        {},
+        { granted: ['https://*/*'], grantedList: null, registered: ['https://*/*'] },
+      );
+      expect((await status(t)).allSites).toBe(false);
+    });
   });
 
   it('none when registered but the permission was revoked since', async () => {

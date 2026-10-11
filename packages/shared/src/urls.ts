@@ -106,9 +106,20 @@ export function sameSite(a: string | URL, b: string | URL): boolean {
   );
 }
 
+/** `url` with a leading "www." removed from the host, for comparing two spellings of one site. */
+function foldWww(url: string): string {
+  const u = new URL(url);
+  u.hostname = withoutWww(u.hostname);
+  return u.toString();
+}
+
 /**
- * A page-declared canonical URL is only trusted when it stays on the same site (scheme, port and
- * host, ignoring a leading "www."), so a hostile page cannot claim another site's identity.
+ * A page-declared canonical URL is trusted only when it names the page itself: same scheme, port and
+ * host (a leading "www." is ignored) and, after normalisation (tracking and credential parameters,
+ * fragment and trailing slash ignored), the same path and query. A canonical that points anywhere
+ * else is a claim about content, not identity: "/" on every route of a single-page app or "page 1"
+ * on every page of a listing would merge unrelated pages into one source. Those are keyed by the
+ * visited URL instead.
  */
 export function trustedCanonical(pageUrl: string, canonicalHref: string | null): string | null {
   if (!canonicalHref) return null;
@@ -121,7 +132,10 @@ export function trustedCanonical(pageUrl: string, canonicalHref: string | null):
     canon = null;
   }
   if (!canon || !sameSite(canon, page)) return null;
-  return normalizeUrl(canon.toString());
+  const canonical = normalizeUrl(canon.toString());
+  const visited = normalizeUrl(page.toString());
+  if (canonical === null || visited === null) return null;
+  return foldWww(canonical) === foldWww(visited) ? canonical : null;
 }
 
 export function sourceKeys(pageUrl: string, canonicalHref: string | null) {

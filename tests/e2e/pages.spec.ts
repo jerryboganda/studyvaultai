@@ -1,4 +1,6 @@
 import type { Page } from '@playwright/test';
+import { DEFAULT_DENY_HOSTS } from '@shared';
+import { describeResolveState } from '@ui/resolveState';
 import {
   activate,
   activeTexts,
@@ -14,6 +16,7 @@ import {
   openFixture,
   openRealPopup,
   pageLuminance,
+  pageListState,
   paintedByColor,
   patchSettings,
   saveBlock,
@@ -26,6 +29,7 @@ import {
   toolbarOf,
   tripleClickBlock,
   viewing,
+  waitForPageList,
   RawTarget,
   OVERLAY_HOST,
 } from './helpers.pages';
@@ -46,9 +50,11 @@ test.describe('popup: state matrix', () => {
     const popup = await openExt(env, 'popup'); // opened as a tab: active tab == the popup
     await expect(popup.getByText('StudyVault cannot run on this page')).toBeVisible();
     await expect(popup.getByText(/"chrome-extension:" address type/)).toBeVisible();
+    // Nothing to activate here, but the side panel (saved highlights from every page) is always offered.
     await expect(
-      popup.getByRole('button', { name: /Activate on this tab|Open side panel|Always enable/ }),
+      popup.getByRole('button', { name: /Activate on this tab|Always enable/ }),
     ).toHaveCount(0);
+    await expect(popup.getByRole('button', { name: 'Open side panel' })).toBeVisible();
     expect(errorsOf(popup)).toEqual([]);
   });
 
@@ -67,9 +73,10 @@ test.describe('popup: state matrix', () => {
       await expect(popup.getByText('StudyVault cannot run on this page')).toBeVisible();
       await expect(popup.getByText('Open a regular website to capture highlights.')).toBeVisible();
       await expect(
-        popup.getByRole('button', { name: /Activate on this tab|Open side panel|Always enable/ }),
+        popup.getByRole('button', { name: /Activate on this tab|Always enable/ }),
       ).toHaveCount(0);
-      // The only control left is the way out to settings.
+      // What is left: the side panel (it works without the page) and the way out to settings.
+      await expect(popup.getByRole('button', { name: 'Open side panel' })).toBeVisible();
       await expect(popup.getByRole('button', { name: 'Settings and privacy' })).toBeVisible();
       expect(errorsOf(popup)).toEqual([]);
     });
@@ -266,7 +273,9 @@ test.describe('side panel: page list and editing', () => {
     await expect(cards.nth(0)).toHaveAccessibleName(/^Essential fact: The sinoatrial node/);
     await expect(cards.nth(1)).toHaveAccessibleName(/^Formula: Depolarisation spreads/);
     await expect(cards.nth(0).getByText('Inbox')).toBeVisible();
-    await expect(cards.nth(0).getByText('Resolved', { exact: true })).toBeVisible();
+    await expect(
+      cards.nth(0).getByText(describeResolveState('resolved').label, { exact: true }),
+    ).toBeVisible();
     expect(errorsOf(side)).toEqual([]);
   });
 
@@ -276,6 +285,12 @@ test.describe('side panel: page list and editing', () => {
     await expect(
       side.getByRole('heading', { level: 2, name: 'Renal Physiology Notes' }),
     ).toBeVisible();
+    // The heading comes from the tab; the list comes from the database. Wait for the panel's own
+    // settled state (not for a text that may or may not show up) and then assert WHICH state it is:
+    // a failed load must surface as its own message, not as a 10 s "text not found".
+    await expect(side.getByRole('tab', { name: /^This page/ })).toBeVisible();
+    await waitForPageList(side);
+    expect(await pageListState(side), 'the panel loaded the list of an empty page').toBe('empty');
     await expect(side.getByText('No highlights on this page yet')).toBeVisible();
     await expect(side.getByRole('tab', { name: /This page \(0\)/ })).toBeVisible();
   });
@@ -337,7 +352,10 @@ test.describe('side panel: page list and editing', () => {
 
     const side = await viewing(env, 'sidepanel', page);
     await side.getByRole('button', { name: 'Show on page' }).click();
-    await expect(side.getByText('Showing this highlight on the page.')).toBeVisible();
+    // Shown in the card and also spoken through the panel's status region: look at the card's.
+    await expect(
+      side.getByRole('article').getByText('Showing this highlight on the page.'),
+    ).toBeVisible();
     await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(100);
     await expect
       .poll(() => activeTexts(page))
@@ -607,7 +625,10 @@ test.describe('options: theme', () => {
 
     // The in-page overlay: attribute on the shadow host and the toolbar's computed background.
     await page.bringToFront();
-    await expect(page.locator(OVERLAY_HOST)).toHaveAttribute('data-theme', 'dark');
+    // The host carries only its marker attribute (a page script can read it); the theme is applied
+    // on the root element inside the shadow root.
+    await expect(page.locator(OVERLAY_HOST)).not.toHaveAttribute('data-theme', /.*/);
+    await expect(page.locator(`${OVERLAY_HOST} .sv-root`)).toHaveAttribute('data-theme', 'dark');
     await tripleClickBlock(page, '#p-intro');
     const bar = toolbarOf(page);
     await expect(bar).toBeVisible();
@@ -642,8 +663,13 @@ test.describe('options: deny list', () => {
   }) => {
     const options = await openExt(env, 'options');
     const rows = options.getByRole('group', { name: 'Deny list' }).getByRole('listitem');
-    const count = await rows.count();
-    expect(count).toBe(11); // the shipped defaults
+    // The list renders after settings load: wait for it, then compare with the shipped starter list
+    // (imported, never a literal count).
+    await expect(rows).not.toHaveCount(0);
+    const count = DEFAULT_DENY_HOSTS.length;
+    await expect(rows).toHaveCount(count);
+    // The worker may write settings on its own (the install-time site sync); a rejected entry may not.
+    const before = await storedSettings(options);
 
     const CASES: Array<[string, RegExp]> = [
       ['', /Enter a site such as example\.com\./],
@@ -666,7 +692,7 @@ test.describe('options: deny list', () => {
     await field(options).fill('example.com');
     await expect(options.getByRole('alert')).toHaveCount(0);
     await expect(field(options)).not.toHaveAttribute('aria-invalid', 'true');
-    expect(await storedSettings(options)).toBeUndefined(); // nothing was written by any rejection
+    expect(await storedSettings(options)).toEqual(before); // nothing was written by any rejection
   });
 
   test('valid entries are normalised, listed, persisted and removable; defaults can be restored', async ({
@@ -725,7 +751,9 @@ test.describe('options: deny list', () => {
     await options.bringToFront();
     await field(options).fill('localhost');
     await add(options).click();
-    await expect(options.getByText('localhost', { exact: true })).toBeVisible();
+    await expect(
+      options.getByRole('group', { name: 'Deny list' }).getByText('localhost', { exact: true }),
+    ).toBeVisible();
 
     await expect(page.locator(OVERLAY_HOST)).toHaveCount(0);
     await expect(toolbarOf(page)).toHaveCount(0);
@@ -748,7 +776,10 @@ test.describe('options: deny list', () => {
       'a-very-long-subdomain-name-for-layout-testing.example-institution-of-higher-learning.org',
     );
     await add(options).click();
-    await expect(options.getByText(/a-very-long-subdomain-name/)).toBeVisible();
+    // The entry is also spoken through the page's status region: look at the list.
+    await expect(
+      options.getByRole('group', { name: 'Deny list' }).getByText(/a-very-long-subdomain-name/),
+    ).toBeVisible();
     await options.setViewportSize({ width: 320, height: 700 });
     await expect.poll(() => options.evaluate(() => window.innerWidth)).toBe(320);
     const report = await layoutReport(options);

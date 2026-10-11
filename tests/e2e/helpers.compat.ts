@@ -412,6 +412,42 @@ export async function tabRpc(
 }
 
 /**
+ * Manifest command "focus-toolbar" as the service worker sends it (TabRpc content.focusToolbar), sent
+ * from an extension page: Playwright cannot press manifest shortcuts. True when focus moved into the
+ * selection toolbar or the newest actionable toast.
+ */
+export async function focusToolbar(env: Env, page: Page): Promise<boolean> {
+  const res = await tabRpc(env, page, 'content.focusToolbar');
+  expect(res.ok, `content.focusToolbar: ${JSON.stringify(res)}`).toBe(true);
+  return (res.data as { focused: boolean }).focused;
+}
+
+/** Manifest commands "next-highlight" / "previous-highlight" (TabRpc content.stepHighlight). */
+export async function stepHighlight(
+  env: Env,
+  page: Page,
+  direction: 'next' | 'previous',
+): Promise<boolean> {
+  const res = await tabRpc(env, page, 'content.stepHighlight', { direction });
+  expect(res.ok, `content.stepHighlight: ${JSON.stringify(res)}`).toBe(true);
+  return (res.data as { found: boolean }).found;
+}
+
+/** BackgroundRpc request (the transport the popup and side panel use) from a throwaway extension page. */
+export async function backgroundRpc(
+  env: Env,
+  type: string,
+  payload: unknown,
+): Promise<{ ok: boolean; data?: unknown; error?: { code: string; message: string } }> {
+  return withExtensionPage(env, (ext) =>
+    ext.evaluate(
+      async ({ type: t, payload: p }) => chrome.runtime.sendMessage({ v: 1, type: t, payload: p }),
+      { type, payload },
+    ),
+  );
+}
+
+/**
  * Real browser page zoom through chrome.tabs.setZoom (per-tab). `factor` 1.25 = 125 %.
  * Returns the resulting layout viewport so callers can assert the zoom actually applied.
  */

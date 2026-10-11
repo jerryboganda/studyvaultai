@@ -10,7 +10,7 @@ import {
   type PageStatus,
   type Settings,
 } from '@shared';
-import { INBOX, BIOLOGY, makeChromeFakes, makeItem, rpc, store } from '@ui/testing/fakes';
+import { COMMANDS, INBOX, BIOLOGY, makeChromeFakes, makeItem, rpc, store } from '@ui/testing/fakes';
 import { SidePanel } from './SidePanel';
 
 vi.mock('@storage', async () => (await import('@ui/testing/fakes')).store.module);
@@ -79,7 +79,7 @@ describe('This page', () => {
     expect(screen.getByText('1 highlight')).toBeTruthy();
     const card = screen.getByRole('article');
     expect(within(card).getByText('Formula')).toBeTruthy();
-    expect(within(card).getByText('Resolved')).toBeTruthy();
+    expect(within(card).getByText('Found on page')).toBeTruthy();
     expect(within(card).getByText('Inbox')).toBeTruthy();
     expect(within(card).getByText('Biology')).toBeTruthy();
     expect(rpc.called('content.pageStatus')[0]?.tabId).toBe(11);
@@ -115,10 +115,40 @@ describe('This page', () => {
     expect(screen.getByText('Source changed')).toBeTruthy();
   });
 
-  it('shows the empty state when the page has no highlights', async () => {
+  it('shows the empty state when the page has no highlights, naming the real keys', async () => {
     live();
+    const fakes = makeChromeFakes();
+    fakes.commands.getAll.mockResolvedValue(
+      COMMANDS.map((c) => (c.name === 'quick-save' ? { ...c, shortcut: 'Ctrl+Shift+8' } : c)),
+    );
+    Object.assign(browser, fakes);
     await open();
     expect(await screen.findByText('No highlights on this page yet')).toBeTruthy();
+    const empty = screen.getByText('No highlights on this page yet').parentElement!;
+    expect(await within(empty).findByText('Ctrl+Shift+8')).toBeTruthy();
+    expect(within(empty).queryByText('Alt+Shift+H')).toBeNull(); // read from Chrome, not hard-coded
+    expect(within(empty).getByText('Alt+Shift+Y')).toBeTruthy();
+  });
+
+  it('lets the browser pick the direction of quotes, notes and titles (Arabic, Hebrew)', async () => {
+    live();
+    const arabicTitle = '\u0645\u0644\u0627\u062d\u0638\u0627\u062a';
+    const arabicQuote =
+      '\u0627\u0644\u0645\u064a\u062a\u0648\u0643\u0648\u0646\u062f\u0631\u064a\u0627';
+    const arabicHeading = '\u0645\u0642\u062f\u0645\u0629';
+    rpc.tab['content.pageStatus'] = () => status({ title: arabicTitle });
+    store.reset([
+      makeItem({
+        highlight: { exactQuote: arabicQuote, headingContext: arabicHeading },
+        source: { title: arabicTitle },
+      }),
+    ]);
+    await open();
+    const quote = await screen.findByText(arabicQuote);
+    expect(quote.getAttribute('dir')).toBe('auto');
+    expect(screen.getByLabelText('Your note').getAttribute('dir')).toBe('auto');
+    expect(screen.getByRole('heading', { name: arabicTitle }).getAttribute('dir')).toBe('auto');
+    expect(screen.getByText(`Under: ${arabicHeading}`).getAttribute('dir')).toBe('auto');
   });
 
   it('collapses long quotes and expands them on request', async () => {
@@ -172,17 +202,36 @@ describe('This page', () => {
   it('shows a failed save with the real error and retries', async () => {
     live();
     store.reset([makeItem()]);
-    store.failNext.updateHighlight = new StudyVaultError('storage_unavailable', 'Disk is full');
+    store.failNext.updateHighlight = new StudyVaultError('internal', 'Disk hiccup');
     await open();
     const note = await screen.findByLabelText('Your note');
 
     await userEvent.type(note, 'Oops');
     await userEvent.tab();
 
-    expect(await screen.findByText(/Not saved: Disk is full/)).toBeTruthy();
+    expect(await screen.findByText(/Not saved: Disk hiccup/)).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(await screen.findByText('Saved')).toBeTruthy();
     expect(store.items[0]!.highlight.userComment).toBe('Oops');
+  });
+
+  it('shows storage_unavailable as a message, without a blind Retry', async () => {
+    live();
+    store.reset([makeItem()]);
+    store.failNext.updateHighlight = new StudyVaultError(
+      'storage_unavailable',
+      'Your data was saved by a newer version of StudyVault.',
+    );
+    await open();
+    const note = await screen.findByLabelText('Your note');
+
+    await userEvent.type(note, 'Stuck');
+    await userEvent.tab();
+
+    expect(
+      await screen.findByText(/Your data was saved by a newer version of StudyVault/),
+    ).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
   });
 
   it('changes kind (and the colour that goes with it) and priority', async () => {
@@ -216,13 +265,52 @@ describe('This page', () => {
     await waitFor(() => expect(screen.queryByText('Delete me.')).toBeNull());
     expect(store.calls.some((c) => c.fn === 'softDeleteHighlight' && c.args[0] === id)).toBe(true);
     expect(rpc.called('content.refresh').length).toBeGreaterThan(0);
-    expect(await screen.findByText('Highlight deleted.')).toBeTruthy();
+    // Honest about soft delete: a copy stays until the user wipes everything.
+    expect(
+      await screen.findByText(
+        'Highlight deleted. A copy stays on this device until you delete all data in Settings.',
+      ),
+    ).toBeTruthy();
+    // The card that had focus is gone: Undo takes it instead of <body>.
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Undo' }));
 
     await userEvent.click(screen.getByRole('button', { name: 'Undo' }));
 
     expect(await screen.findByText('Delete me.')).toBeTruthy();
     expect(store.calls.some((c) => c.fn === 'restoreHighlight' && c.args[0] === id)).toBe(true);
     expect(await screen.findByText('Highlight restored.')).toBeTruthy();
+    // The toast closed with focus inside it: focus goes back to the panel content, not <body>.
+    expect(document.activeElement).toBe(screen.getByRole('tabpanel'));
+  });
+
+  it('puts the toast region before the page content in DOM order', async () => {
+    live();
+    store.reset([makeItem()]);
+    const { container } = await open();
+    await screen.findByRole('article');
+    const region = screen.getByRole('status');
+    const main = container.querySelector('main')!;
+    expect(region.compareDocumentPosition(main) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getAllByRole('status')).toHaveLength(1);
+  });
+
+  it('error toasts are persistent alerts with a text prefix and a dismiss button', async () => {
+    live();
+    store.reset([makeItem({ highlight: { exactQuote: 'Restore me.' } })]);
+    await open();
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    store.failNext.restoreHighlight = new StudyVaultError('storage_unavailable', 'Disk is full');
+    await userEvent.click(await screen.findByRole('button', { name: 'Undo' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Error:');
+    expect(alert.textContent).toContain('Could not restore the highlight: Disk is full');
+    expect(within(alert).getByRole('button', { name: 'Dismiss notification' })).toBeTruthy();
+    // No timer: still there well after a neutral toast would be gone.
+    await new Promise((r) => setTimeout(r, 300));
+    expect(screen.getByRole('alert')).toBeTruthy();
+    await userEvent.click(within(alert).getByRole('button', { name: 'Dismiss notification' }));
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('shows on page, and says so when the highlight cannot be found', async () => {
@@ -234,12 +322,15 @@ describe('This page', () => {
     await open();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Show on page' }));
-    expect(await screen.findByText(/could not find this highlight on the page/)).toBeTruthy();
+    const card = screen.getByRole('article');
+    expect(await within(card).findByText(/could not find this highlight on the page/)).toBeTruthy();
     expect(rpc.called('content.reveal')[0]?.payload).toEqual({ id });
+    // Also spoken through the surface's one status region.
+    expect(screen.getByRole('status').textContent).toContain('could not find this highlight');
 
     found = true;
     await userEvent.click(screen.getByRole('button', { name: 'Show on page' }));
-    expect(await screen.findByText('Showing this highlight on the page.')).toBeTruthy();
+    expect(await within(card).findByText('Showing this highlight on the page.')).toBeTruthy();
   });
 
   it('without a content script: explains, still lists saved highlights, then activates', async () => {
@@ -314,14 +405,22 @@ describe('This page', () => {
   it('surfaces a storage error with Retry', async () => {
     live();
     store.reset([makeItem({ highlight: { exactQuote: 'Back again.' } })]);
-    store.failNext.listPageHighlights = new StudyVaultError(
-      'storage_unavailable',
-      'IndexedDB is unavailable',
-    );
+    store.failNext.listPageHighlights = new StudyVaultError('internal', 'IndexedDB hiccup');
     await open();
-    expect(await screen.findByText('IndexedDB is unavailable')).toBeTruthy();
+    expect(await screen.findByText('IndexedDB hiccup')).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(await screen.findByText('Back again.')).toBeTruthy();
+  });
+
+  it('storage_unavailable on the list shows its message and no Retry', async () => {
+    live();
+    store.failNext.listPageHighlights = new StudyVaultError(
+      'storage_unavailable',
+      'The Inbox could not be read.',
+    );
+    await open();
+    expect(await screen.findByText('The Inbox could not be read.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
   });
 });
 
@@ -403,6 +502,10 @@ describe('Note hand-over from the page overlay', () => {
       expect(document.activeElement).toBe(notes[1]);
     });
     await waitFor(async () => expect(await storedEntry()).toBeUndefined());
+    // Focus moved on the page overlay's request: it is announced, with the quote it is about.
+    expect(screen.getByRole('status').textContent).toContain(
+      `Editing note for "${store.items[1]!.highlight.exactQuote}"`,
+    );
   });
 
   it('follows a request that arrives while the panel is already open', async () => {
@@ -556,16 +659,13 @@ describe('Banks tab', () => {
   });
 
   it('shows the real storage error, keeps the name and retries', async () => {
-    store.failNext.createBank = new StudyVaultError(
-      'storage_unavailable',
-      'IndexedDB is unavailable',
-    );
+    store.failNext.createBank = new StudyVaultError('internal', 'IndexedDB hiccup');
     await openBanks();
     const field = await screen.findByLabelText('New bank');
     await userEvent.type(field, 'Neurology');
     await userEvent.click(screen.getByRole('button', { name: 'Create bank' }));
 
-    expect(await screen.findByText('IndexedDB is unavailable')).toBeTruthy();
+    expect(await screen.findByText('IndexedDB hiccup')).toBeTruthy();
     expect((field as HTMLInputElement).value).toBe('Neurology');
 
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));

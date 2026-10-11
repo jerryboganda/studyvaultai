@@ -12,7 +12,6 @@ import {
   type Settings,
 } from '@shared';
 import type { RepoApi } from '@storage';
-import { createDeleteLedger } from './deleteLedger';
 import { createHandlers } from './handlers';
 import type { SiteAccess } from './siteAccess';
 
@@ -50,6 +49,9 @@ const extensionSender = (): Sender => ({ id: 'test-extension-id', url: `${EXT_BA
 /** An extension page opened as a normal tab (has sender.tab). */
 const extensionTabSender = (): Sender =>
   ({ id: 'test-extension-id', tab: { id: 3 }, url: `${EXT_BASE}options.html` }) as Sender;
+/** A content script in a private (incognito) tab. */
+const incognitoSender = (url: string, tabId = 7): Sender =>
+  ({ id: 'test-extension-id', tab: { id: tabId, incognito: true }, url, frameId: 0 }) as Sender;
 
 function captureInput(over: Partial<CaptureInput['page']> = {}): CaptureInput {
   return {
@@ -77,6 +79,9 @@ function setup(initial: Partial<Settings> = {}) {
   const deleted = new Map<string, { sourceId: string; urlKey: string; visitedKey: string }>();
   const own = (id: string, urlKey: string, visitedKey = urlKey) =>
     live.set(id, { sourceId: `src-${id}`, urlKey, visitedKey });
+  /** A soft-deleted highlight: only `includeDeleted` lookups see it. */
+  const ownDeleted = (id: string, urlKey: string, visitedKey = urlKey) =>
+    deleted.set(id, { sourceId: `src-${id}`, urlKey, visitedKey });
 
   const repo = {
     saveCapture: vi.fn(
@@ -106,12 +111,16 @@ function setup(initial: Partial<Settings> = {}) {
       return { ...VIEW, id };
     }),
     reportResolutions: vi.fn(async (items: unknown[]) => items.length),
-    getHighlightSource: vi.fn(async (id: string) => live.get(id) ?? null),
+    getHighlightSource: vi.fn(
+      async (id: string, options?: { includeDeleted?: boolean }) =>
+        live.get(id) ?? (options?.includeDeleted ? deleted.get(id) : undefined) ?? null,
+    ),
     listBanks: vi.fn(async () => [BANK, OTHER_BANK]),
     createBank: vi.fn(async (name: string) => ({ ...OTHER_BANK, name })),
     listRecentHighlights: vi.fn(async () => []),
     listPageHighlights: vi.fn(async () => []),
     listBanksWithCounts: vi.fn(async () => []),
+    wipeAllData: vi.fn(async () => undefined),
   } satisfies RepoApi;
 
   const updateSettings = vi.fn(async (mutate: (s: Settings) => Settings) => {
@@ -125,6 +134,7 @@ function setup(initial: Partial<Settings> = {}) {
       pattern: 'https://example.com/*',
       access: 'none' as const,
       active: false,
+      allSites: false,
     })),
     sync: vi.fn(async () => ({ registeredMatches: [] })),
     activate: vi.fn(async () => undefined),
@@ -136,7 +146,6 @@ function setup(initial: Partial<Settings> = {}) {
       for (const [k, v] of Object.entries(items)) store.set(k, v);
     }),
   };
-  const ledger = createDeleteLedger(area);
   const openSidePanel = vi.fn(async (_tabId: number): Promise<void> => undefined);
 
   const handlers = createHandlers({
@@ -144,7 +153,6 @@ function setup(initial: Partial<Settings> = {}) {
     getSettings: async () => settings,
     updateSettings,
     site,
-    ledger,
     extensionBaseUrl: EXT_BASE,
     openSidePanel,
     session: area,
@@ -156,8 +164,8 @@ function setup(initial: Partial<Settings> = {}) {
     updateSettings,
     site,
     own,
+    ownDeleted,
     settings: () => settings,
-    ledger,
     openSidePanel,
     session: area,
     pendingFocus: () => store.get(PENDING_FOCUS_KEY),
@@ -292,6 +300,74 @@ describe('capture.save sender policy', () => {
   });
 });
 
+describe('capture.save without a bank (shortcut and context menu)', () => {
+  const sender = pageSender('https://example.com/notes/pharm');
+  const lastUsed = async (settings: Partial<Settings>, input = captureInput()) => {
+    const t = setup(settings);
+    await t.handlers['capture.save'](input, sender);
+    return t;
+  };
+
+  it('files into the last-used bank while it still exists', async () => {
+    const t = await lastUsed({ lastBankId: OTHER_BANK.id });
+    expect(t.repo.saveCapture.mock.calls[0]![0].bankId).toBe(OTHER_BANK.id);
+  });
+
+  it('falls back to the Inbox (bankId stays null) when that bank is gone', async () => {
+    const t = await lastUsed({ lastBankId: 'bank-deleted1' });
+    expect(t.repo.saveCapture.mock.calls[0]![0].bankId).toBeNull();
+  });
+
+  it('uses the Inbox when nothing was saved yet, without listing banks', async () => {
+    const t = await lastUsed({ lastBankId: null });
+    expect(t.repo.saveCapture.mock.calls[0]![0].bankId).toBeNull();
+    expect(t.repo.listBanks).not.toHaveBeenCalled();
+  });
+
+  it('never overrides a bank the caller chose', async () => {
+    const t = await lastUsed({ lastBankId: OTHER_BANK.id }, { ...captureInput(), bankId: BANK.id });
+    expect(t.repo.saveCapture.mock.calls[0]![0].bankId).toBe(BANK.id);
+    expect(t.repo.listBanks).not.toHaveBeenCalled();
+  });
+});
+
+describe('capture.save from private windows', () => {
+  const url = 'https://example.com/notes/pharm';
+
+  it('is refused with a clear forbidden message, before anything is written', async () => {
+    const t = setup();
+    const result = t.handlers['capture.save'](captureInput(), incognitoSender(url));
+    await expect(result).rejects.toMatchObject({
+      code: 'forbidden',
+      message: expect.stringMatching(/private \(incognito\) windows/),
+    });
+    expect(t.repo.saveCapture).not.toHaveBeenCalled();
+    expect(t.updateSettings).not.toHaveBeenCalled();
+  });
+
+  it('is allowed once the user turned it on', async () => {
+    const t = setup({ allowIncognitoCapture: true });
+    expect(await code(t.handlers['capture.save'](captureInput(), incognitoSender(url)))).toBe(
+      'resolved',
+    );
+    expect(t.repo.saveCapture).toHaveBeenCalledOnce();
+  });
+
+  it('applies to extension pages in a private tab too, and not to normal tabs', async () => {
+    const t = setup();
+    const privateExtensionTab = {
+      id: 'test-extension-id',
+      tab: { id: 3, incognito: true },
+      url: `${EXT_BASE}options.html`,
+    } as Sender;
+    expect(await code(t.handlers['capture.save'](captureInput(), privateExtensionTab))).toBe(
+      'forbidden',
+    );
+    const normal = { ...pageSender(url), tab: { id: 7, incognito: false } } as Sender;
+    expect(await code(t.handlers['capture.save'](captureInput(), normal))).toBe('resolved');
+  });
+});
+
 describe('page.highlights', () => {
   it('looks up the sender page and rejects other origins', async () => {
     const t = setup();
@@ -401,18 +477,16 @@ describe('highlight.* ownership', () => {
     }
   });
 
-  it('does not honour an Undo for a deletion recorded on another scheme or port', async () => {
+  it('does not honour an Undo for a deleted highlight of another scheme or port', async () => {
     const t = setup();
-    await t.ledger.add({
-      tabId: 7,
-      id: 'hl-ledger01',
-      urlKey: 'https://example.com:8443/a',
-      visitedKey: 'https://example.com:8443/a',
-    });
-    expect(await code(t.handlers['highlight.restore']({ id: 'hl-ledger01' }, sender))).toBe(
-      'forbidden',
-    );
+    t.ownDeleted('hl-ledger01', 'https://example.com:8443/a');
+    t.ownDeleted('hl-ledger02', 'http://example.com/a');
+    for (const id of ['hl-ledger01', 'hl-ledger02']) {
+      expect(await code(t.handlers['highlight.restore']({ id }, sender)), id).toBe('forbidden');
+      expect(await code(t.handlers['highlight.delete']({ id }, sender)), id).toBe('forbidden');
+    }
     expect(t.repo.restoreHighlight).not.toHaveBeenCalled();
+    expect(t.repo.softDeleteHighlight).not.toHaveBeenCalled();
   });
 
   it('rejects a source with only one key on the sender site', async () => {
@@ -427,40 +501,48 @@ describe('highlight.* ownership', () => {
 
   it('answers not_found for an unknown or deleted id', async () => {
     const t = setup();
-    expect(
-      await code(
-        t.handlers['highlight.update']({ id: 'hl-missing1', patch: { priority: 1 } }, sender),
-      ),
-    ).toBe('not_found');
+    t.ownDeleted('hl-deleted1', 'https://example.com/notes/pharm');
+    for (const id of ['hl-missing1', 'hl-deleted1']) {
+      expect(
+        await code(t.handlers['highlight.update']({ id, patch: { priority: 1 } }, sender)),
+        id,
+      ).toBe('not_found');
+    }
     expect(await code(t.handlers['highlight.delete']({ id: 'hl-missing1' }, sender))).toBe(
       'not_found',
     );
+    expect(await code(t.handlers['highlight.restore']({ id: 'hl-missing1' }, sender))).toBe(
+      'not_found',
+    );
+    expect(t.repo.updateHighlight).not.toHaveBeenCalled();
   });
 
-  it('delete is idempotent for the tab that deleted, and restore (undo) works only there', async () => {
+  it('delete is idempotent and restore (undo) is authorised by the page the highlight belongs to', async () => {
     const t = setup();
     t.own('hl-undo0001', 'https://example.com/notes/pharm');
 
     await t.handlers['highlight.delete']({ id: 'hl-undo0001' }, sender);
     expect(t.repo.softDeleteHighlight).toHaveBeenCalledOnce();
-    // The row is now soft-deleted: the repo reports null, the ledger proves it was ours.
+    // The row is now soft-deleted; the ownership lookup includes deleted rows, so a repeat resolves.
     expect(await code(t.handlers['highlight.delete']({ id: 'hl-undo0001' }, sender))).toBe(
       'resolved',
     );
-    expect(t.repo.softDeleteHighlight).toHaveBeenCalledOnce();
+    expect(t.repo.getHighlightSource).toHaveBeenLastCalledWith('hl-undo0001', {
+      includeDeleted: true,
+    });
 
-    // Another tab (same site) did not delete it: refused.
-    expect(
-      await code(
-        t.handlers['highlight.restore'](
-          { id: 'hl-undo0001' },
-          pageSender('https://example.com/notes/pharm', 99),
-        ),
-      ),
-    ).toBe('forbidden');
+    // A highlight of another site cannot be restored from here.
+    t.ownDeleted('hl-foreign01', 'https://bank.example/account');
+    expect(await code(t.handlers['highlight.restore']({ id: 'hl-foreign01' }, sender))).toBe(
+      'forbidden',
+    );
     expect(t.repo.restoreHighlight).not.toHaveBeenCalled();
 
-    const restored = await t.handlers['highlight.restore']({ id: 'hl-undo0001' }, sender);
+    // Any tab of the same site can undo it: the proof is the stored row, not a per-tab memory.
+    const restored = await t.handlers['highlight.restore'](
+      { id: 'hl-undo0001' },
+      pageSender('https://example.com/notes/pharm', 99),
+    );
     expect(restored.id).toBe('hl-undo0001');
     expect(t.repo.restoreHighlight).toHaveBeenCalledOnce();
   });
@@ -473,13 +555,6 @@ describe('highlight.* ownership', () => {
     expect(
       await code(t.handlers['highlight.restore']({ id: 'hl-moved001' }, afterNavigation)),
     ).toBe('forbidden');
-  });
-
-  it('refuses to restore an id the page never deleted', async () => {
-    const t = setup();
-    expect(await code(t.handlers['highlight.restore']({ id: 'hl-unknown1' }, sender))).toBe(
-      'forbidden',
-    );
   });
 
   it('reportResolution: all own passes through; unknown ids are left to the repo', async () => {

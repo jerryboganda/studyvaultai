@@ -14,9 +14,9 @@ import {
   INBOX,
   cleanupUi,
   makeHighlight,
+  focusToolbar,
   makeResult,
   mountUi,
-  pressFocusShortcut,
   rect,
 } from './testHarness';
 
@@ -45,6 +45,12 @@ describe('toolbar rendering', () => {
     expect(q.getByRole('button', { name: NOTE })).toBeTruthy();
     expect(q.getByRole('button', { name: 'More options' })).toBeTruthy();
     expect(q.getAllByRole('button')).toHaveLength(HIGHLIGHT_KINDS.length + 3);
+  });
+
+  it('does not advertise a key: the Focus toolbar shortcut is remappable', () => {
+    const { ui, q } = mountUi();
+    show(ui);
+    expect(q.getByRole('toolbar').hasAttribute('aria-keyshortcuts')).toBe(false);
   });
 
   it('shows the glyph for every kind so colour is never the only cue', () => {
@@ -453,7 +459,7 @@ describe('a newer selection while a save is in flight', () => {
 });
 
 describe('keyboard', () => {
-  it('Alt+Shift+T moves focus into the toolbar and nothing else', () => {
+  it('focusToolbar moves focus into the toolbar and does nothing else', () => {
     const { ui, shadow, q, host } = mountUi();
     const page = document.createElement('button');
     page.textContent = 'page';
@@ -461,16 +467,64 @@ describe('keyboard', () => {
     page.focus();
     show(ui);
 
-    const event = pressFocusShortcut();
-    expect(event.defaultPrevented).toBe(true);
+    expect(focusToolbar(ui)).toBe(true);
     expect(shadow.activeElement).toBe(q.getByRole('button', { name: 'Save selection' }));
     expect(host.save).not.toHaveBeenCalled();
     expect(host.dismissSelection).not.toHaveBeenCalled();
   });
 
-  it('Alt+Shift+T is left alone when there is nothing to focus', () => {
-    mountUi();
-    expect(pressFocusShortcut().defaultPrevented).toBe(false);
+  it('focusToolbar returns false and leaves focus alone when there is nothing to focus', () => {
+    const { ui } = mountUi();
+    const page = document.createElement('button');
+    document.body.append(page);
+    page.focus();
+    expect(focusToolbar(ui)).toBe(false);
+    expect(document.activeElement).toBe(page);
+  });
+
+  it('focusToolbar reports false when focus did not land (surface not visible yet)', () => {
+    const { ui, container } = mountUi();
+    show(ui);
+    const real = HTMLElement.prototype.focus;
+    // Chrome ignores focus() on a visibility:hidden element; jsdom does not, so model that.
+    vi.spyOn(HTMLElement.prototype, 'focus').mockImplementation(function (
+      this: HTMLElement,
+      options?: FocusOptions,
+    ) {
+      if (this.closest<HTMLElement>('.sv-unit')?.style.visibility === 'hidden') return;
+      real.call(this, options);
+    });
+    (container.querySelector('.sv-unit') as HTMLElement).style.visibility = 'hidden';
+    expect(focusToolbar(ui)).toBe(false);
+    vi.restoreAllMocks();
+  });
+
+  it('listens for no key: Alt+Shift+T belongs to the browser even while the toolbar shows', () => {
+    const add = vi.spyOn(document, 'addEventListener');
+    const { ui, host } = mountUi();
+    expect(add.mock.calls.filter(([type]) => /^key/.test(String(type)))).toEqual([]);
+    show(ui);
+    act(() =>
+      ui.toast({
+        text: 'Saved to Inbox',
+        tone: 'success',
+        action: { label: 'Undo', run: vi.fn() },
+      }),
+    );
+
+    const event = createEvent.keyDown(document.body, {
+      key: 'T',
+      code: 'KeyT',
+      altKey: true,
+      shiftKey: true,
+    });
+    act(() => {
+      document.body.dispatchEvent(event);
+    });
+    expect(event.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(document.body);
+    expect(host.save).not.toHaveBeenCalled();
+    add.mockRestore();
   });
 
   it('keeps a single tab stop and moves it with the arrow, Home and End keys', async () => {
@@ -480,7 +534,7 @@ describe('keyboard', () => {
       q.getAllByRole('button').filter((b) => b.getAttribute('tabindex') === '0').length;
     expect(stops()).toBe(1);
 
-    pressFocusShortcut();
+    focusToolbar(ui);
     const user = userEvent.setup();
     const first = q.getByRole('button', { name: 'Save selection' });
     expect(shadow.activeElement).toBe(first);
@@ -503,7 +557,7 @@ describe('keyboard', () => {
   it('Enter and Space activate the focused button', async () => {
     const { ui, host } = mountUi();
     show(ui);
-    pressFocusShortcut();
+    focusToolbar(ui);
     await userEvent.setup().keyboard('{ArrowRight}{Enter}');
     expect(host.save).toHaveBeenCalledWith(expect.objectContaining({ kind: 'essential' }));
   });
@@ -515,7 +569,7 @@ describe('keyboard', () => {
     document.body.append(page);
     page.focus();
     show(ui);
-    pressFocusShortcut();
+    focusToolbar(ui);
     await userEvent.setup().keyboard('{Escape}');
     expect(q.queryByRole('toolbar')).toBeNull();
     expect(document.activeElement).toBe(page);
@@ -528,16 +582,42 @@ describe('keyboard', () => {
     document.body.append(page);
     page.focus();
     show(ui);
-    pressFocusShortcut();
+    focusToolbar(ui);
     await userEvent.setup().keyboard('{Enter}');
     expect(await q.findByText('Saved to Inbox')).toBeTruthy();
     expect(document.activeElement).toBe(page);
 
-    pressFocusShortcut();
+    expect(focusToolbar(ui)).toBe(true);
     expect(document.activeElement).not.toBe(page);
     expect((document.activeElement as HTMLElement).shadowRoot?.activeElement?.textContent).toBe(
       'Undo',
     );
+  });
+
+  it('focusToolbar lands on the newest Undo, and on the toolbar before any toast', () => {
+    const { ui, shadow, q } = mountUi();
+    const older = vi.fn();
+    const newer = vi.fn();
+    act(() => {
+      ui.toast({ text: 'Saved to Inbox', tone: 'success', action: { label: 'Undo', run: older } });
+      ui.toast({
+        text: 'Saved to Biology',
+        tone: 'success',
+        action: { label: 'Undo', run: newer },
+      });
+    });
+    expect(focusToolbar(ui)).toBe(true);
+    // Enter on the focused button must undo the latest save, not the first toast on screen.
+    fireEvent.click(shadow.activeElement as HTMLElement);
+    expect(newer).toHaveBeenCalledTimes(1);
+    expect(older).not.toHaveBeenCalled();
+
+    show(ui);
+    act(() =>
+      ui.toast({ text: 'Saved again', tone: 'success', action: { label: 'Undo', run: vi.fn() } }),
+    );
+    expect(focusToolbar(ui)).toBe(true);
+    expect(shadow.activeElement).toBe(q.getByRole('button', { name: 'Save selection' }));
   });
 });
 
@@ -576,6 +656,103 @@ describe('toasts', () => {
     fireEvent.mouseLeave(card);
     act(() => void vi.advanceTimersByTime(6100));
     expect(q.queryByText('Saved to Inbox')).toBeNull();
+  });
+
+  describe('Undo is reachable by keyboard', () => {
+    const undoToast = (ui: ReturnType<typeof mountUi>['ui']): void =>
+      act(() =>
+        ui.toast({
+          text: 'Saved to Inbox',
+          tone: 'success',
+          action: { label: 'Undo', run: vi.fn() },
+        }),
+      );
+
+    it('does not time out while keyboard focus is inside it, and starts the clock on leaving', () => {
+      const { ui, q } = mountUi();
+      undoToast(ui);
+      const undo = q.getByRole('button', { name: 'Undo' });
+      act(() => undo.focus());
+      act(() => void vi.advanceTimersByTime(60_000));
+      expect(q.queryByText('Saved to Inbox')).toBeTruthy();
+
+      act(() => undo.blur());
+      act(() => void vi.advanceTimersByTime(5900));
+      expect(q.queryByText('Saved to Inbox')).toBeTruthy();
+      act(() => void vi.advanceTimersByTime(200));
+      expect(q.queryByText('Saved to Inbox')).toBeNull();
+    });
+
+    it('a pointer that comes and goes does not release a toast that holds keyboard focus', () => {
+      const { ui, q } = mountUi();
+      undoToast(ui);
+      const undo = q.getByRole('button', { name: 'Undo' });
+      const card = undo.closest('.sv-toast') as HTMLElement;
+      act(() => undo.focus());
+      fireEvent.mouseEnter(card);
+      fireEvent.mouseLeave(card);
+      act(() => void vi.advanceTimersByTime(60_000));
+      expect(q.queryByText('Saved to Inbox')).toBeTruthy();
+    });
+
+    it('moving focus from Undo to Dismiss is not leaving the toast', () => {
+      const { ui, q } = mountUi();
+      undoToast(ui);
+      act(() => q.getByRole('button', { name: 'Undo' }).focus());
+      act(() => q.getByRole('button', { name: 'Dismiss notification' }).focus());
+      act(() => void vi.advanceTimersByTime(60_000));
+      expect(q.queryByText('Saved to Inbox')).toBeTruthy();
+    });
+
+    it('says how to reach the action without naming a key', () => {
+      const { ui, q } = mountUi();
+      undoToast(ui);
+      const hint = q.getByText('Undo: use the Focus toolbar shortcut');
+      // Inside the polite region, so it is announced with the toast; not part of the toast text.
+      expect(hint.closest('[aria-live="polite"]')).toBeTruthy();
+      expect(q.getByText('Saved to Inbox').textContent).toBe('Saved to Inbox');
+      expect(hint.textContent).not.toMatch(/Alt|Ctrl|Shift|Cmd|⌘/);
+
+      act(() =>
+        ui.toast({
+          text: 'Could not save',
+          tone: 'error',
+          action: { label: 'Retry', run: vi.fn() },
+        }),
+      );
+      expect(q.getByText('Retry: use the Focus toolbar shortcut')).toBeTruthy();
+    });
+
+    it('a toast without an action has no hint', () => {
+      const { ui, q } = mountUi();
+      act(() => ui.toast({ text: 'Save undone', tone: 'info' }));
+      expect(q.queryByText(/Focus toolbar shortcut/)).toBeNull();
+    });
+
+    it('keeps the 6 s default for a pointer save and allows 15 s after a keyboard save', async () => {
+      const { ui, host, q } = mountUi();
+      show(ui);
+      // Pointer: the press never focuses an overlay button, so nothing is focused inside.
+      await act(async () => {
+        fireEvent.click(q.getByRole('button', { name: 'Save selection' }));
+      });
+      expect(q.getByText('Saved to Inbox')).toBeTruthy();
+      act(() => void vi.advanceTimersByTime(6100));
+      expect(q.queryByText('Saved to Inbox')).toBeNull();
+
+      // Keyboard: focus is on the toolbar button when it is activated.
+      show(ui, { text: 'Ribosomes make protein', rect: rect(100, 300, 120, 20) });
+      focusToolbar(ui);
+      await act(async () => {
+        fireEvent.click(q.getByRole('button', { name: 'Save selection' }));
+      });
+      expect(host.save).toHaveBeenCalledTimes(2);
+      expect(q.getByText('Saved to Inbox')).toBeTruthy();
+      act(() => void vi.advanceTimersByTime(14_900));
+      expect(q.queryByText('Saved to Inbox')).toBeTruthy();
+      act(() => void vi.advanceTimersByTime(200));
+      expect(q.queryByText('Saved to Inbox')).toBeNull();
+    });
   });
 
   it('runs a host-supplied action once and dismisses the toast', () => {
@@ -632,15 +809,18 @@ describe('selection changes and settings', () => {
     expect(q.getByRole('toolbar')).toBeTruthy();
   });
 
-  it('applySettings updates theme, density and palette live', () => {
-    const { ui, hostEl, q } = mountUi();
+  it('applySettings updates theme, density and palette live, inside the shadow root', () => {
+    const { ui, hostEl, container, q } = mountUi();
     show(ui);
-    expect(hostEl.getAttribute('data-theme')).toBe('system');
+    const root = container.querySelector('.sv-root') as HTMLElement;
+    expect(root.getAttribute('data-theme')).toBe('system');
     const settings = { ...defaultSettings(), theme: 'dark' as const, density: 'compact' as const };
     settings.palette = { ...DEFAULT_PALETTE, formula: 'red' };
     act(() => ui.applySettings(settings));
-    expect(hostEl.getAttribute('data-theme')).toBe('dark');
-    expect(hostEl.getAttribute('data-density')).toBe('compact');
+    expect(root.getAttribute('data-theme')).toBe('dark');
+    expect(root.getAttribute('data-density')).toBe('compact');
+    // The host is visible to page scripts: it carries the marker and nothing the user chose.
+    expect(hostEl.getAttributeNames()).toEqual(['data-studyvault']);
     const probe = document.createElement('i');
     probe.style.background = COLOR_SWATCH.red.solid;
     const swatch = q
@@ -654,10 +834,142 @@ describe('selection changes and settings', () => {
     show(ui);
     act(() => ui.destroy());
     expect(container.childElementCount).toBe(0);
-    expect(pressFocusShortcut().defaultPrevented).toBe(false);
+    expect(ui.focusToolbar()).toBe(false);
+    act(() => ui.announce('late'));
     act(() => ui.toast({ text: 'late', tone: 'info' }));
     expect(container.childElementCount).toBe(0);
     expect(host.save).not.toHaveBeenCalled();
     expect(INBOX.id).toBeTruthy();
+  });
+});
+
+describe('caption row: the full name of the hovered or focused button', () => {
+  const caption = (container: HTMLElement): HTMLElement =>
+    container.querySelector('.sv-caption') as HTMLElement;
+
+  it('is in the unit, outside the toolbar and hidden from assistive technology', () => {
+    const { ui, container } = mountUi();
+    show(ui);
+    const row = caption(container);
+    expect(row.closest('.sv-unit')).toBeTruthy();
+    expect(row.closest('[role="toolbar"]')).toBeNull();
+    // The accessible name is on the button; reading the row as well would say everything twice.
+    expect(row.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('is laid out while empty, so showing a name does not resize or move the unit', () => {
+    const { ui, container, q } = mountUi();
+    show(ui);
+    const unit = container.querySelector('.sv-unit') as HTMLElement;
+    const before = unit.style.transform;
+    expect(caption(container).hasAttribute('data-empty')).toBe(true);
+    // A no-break space keeps the line box, which is what reserves the height.
+    expect(caption(container).textContent).toBe(' ');
+
+    act(() => q.getByRole('button', { name: 'Save as Essential fact' }).focus());
+    expect(caption(container).textContent).toBe('Save as Essential fact');
+    expect(caption(container).hasAttribute('data-empty')).toBe(false);
+    expect(unit.style.transform).toBe(before);
+    expect(unit.dataset.placement).toBe('above');
+  });
+
+  it('names a button on focus, keeps title and aria-label, and clears on blur', () => {
+    const { ui, container, q } = mountUi();
+    show(ui);
+    const kind = q.getByRole('button', { name: 'Save as Question' });
+    expect(kind.getAttribute('title')).toBe('Save as Question');
+    act(() => kind.focus());
+    expect(caption(container).textContent).toBe('Save as Question');
+    act(() => kind.blur());
+    expect(caption(container).hasAttribute('data-empty')).toBe(true);
+  });
+
+  it('names a button on hover; hover wins over focus and focus shows again afterwards', () => {
+    const { ui, container, q } = mountUi();
+    show(ui);
+    const saved = q.getByRole('button', { name: 'Save selection' });
+    const kind = q.getByRole('button', { name: 'Save as Formula' });
+    act(() => saved.focus());
+    fireEvent.mouseEnter(kind);
+    expect(caption(container).textContent).toBe('Save as Formula');
+    fireEvent.mouseLeave(kind);
+    expect(caption(container).textContent).toBe('Save selection');
+  });
+
+  it('follows the arrow keys', async () => {
+    const { ui, container } = mountUi();
+    show(ui);
+    focusToolbar(ui);
+    await userEvent.setup().keyboard('{ArrowRight}');
+    expect(caption(container).textContent).toBe('Save as Essential fact');
+  });
+
+  it('is plain text, whatever the name', () => {
+    const { ui, container } = mountUi();
+    show(ui);
+    expect(caption(container).children).toHaveLength(0);
+  });
+});
+
+describe('announce: a silent live region, separate from the toasts', () => {
+  const region = (container: HTMLElement): HTMLElement =>
+    container.querySelector('[data-sv-announcer]') as HTMLElement;
+
+  it('exists from the start, is polite and visually hidden', () => {
+    const { container } = mountUi();
+    const r = region(container);
+    expect(r.getAttribute('aria-live')).toBe('polite');
+    expect(r.className).toBe('sv-sr');
+    expect(r.textContent).toBe('');
+  });
+
+  it('puts the text in the region and no toast on screen', () => {
+    const { ui, container, q } = mountUi();
+    act(() => ui.announce('Highlight 2 of 5, Essential fact: "Mitochondria"'));
+    expect(region(container).textContent).toBe('Highlight 2 of 5, Essential fact: "Mitochondria"');
+    expect(container.querySelector('.sv-toast')).toBeNull();
+    // The toast regions stay the only role=status / role=alert in the tree.
+    expect(q.getAllByRole('status')).toHaveLength(1);
+    expect(q.getAllByRole('alert')).toHaveLength(1);
+  });
+
+  it('renders markup in the text as text', () => {
+    const { ui, container } = mountUi();
+    const markup = '<img src=x onerror="window.__svXss = 5">';
+    act(() => ui.announce(markup));
+    expect(region(container).querySelector('img')).toBeNull();
+    expect(region(container).textContent).toBe(markup);
+  });
+
+  it('replaces the message node so an identical text is announced again', () => {
+    const { ui, container } = mountUi();
+    act(() => ui.announce('Highlight 1 of 2'));
+    const first = region(container).firstElementChild;
+    act(() => ui.announce('Highlight 1 of 2'));
+    const second = region(container).firstElementChild;
+    expect(second?.textContent).toBe('Highlight 1 of 2');
+    expect(second).not.toBe(first);
+    expect(first?.isConnected).toBe(false);
+    expect(region(container).childElementCount).toBe(1);
+  });
+
+  it('ignores empty text and clears itself so it does not linger', () => {
+    vi.useFakeTimers();
+    const { ui, container } = mountUi();
+    act(() => ui.announce('   '));
+    expect(region(container).textContent).toBe('');
+    act(() => ui.announce('Highlight 1 of 2'));
+    act(() => void vi.advanceTimersByTime(8100));
+    expect(region(container).textContent).toBe('');
+  });
+
+  it('a new announcement postpones the clearing of the previous one', () => {
+    vi.useFakeTimers();
+    const { ui, container } = mountUi();
+    act(() => ui.announce('one'));
+    act(() => void vi.advanceTimersByTime(5000));
+    act(() => ui.announce('two'));
+    act(() => void vi.advanceTimersByTime(5000));
+    expect(region(container).textContent).toBe('two');
   });
 });

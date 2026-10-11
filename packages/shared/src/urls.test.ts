@@ -65,13 +65,40 @@ describe('same site and trusted canonical', () => {
     expect(sameSite(page, 'ftp://example.com/b')).toBe(false);
   });
 
-  it('accepts a same-site canonical, resolving relative hrefs', () => {
+  it('accepts a canonical that names the page itself, resolving relative hrefs', () => {
     const page = 'https://example.com/a/b?utm_source=x';
-    expect(trustedCanonical(page, 'https://example.com/canon')).toBe('https://example.com/canon');
-    expect(trustedCanonical(page, '/canon/')).toBe('https://example.com/canon');
-    expect(trustedCanonical(page, 'https://www.example.com/canon')).toBe(
-      'https://www.example.com/canon',
+    expect(trustedCanonical(page, 'https://example.com/a/b')).toBe('https://example.com/a/b');
+    expect(trustedCanonical(page, '/a/b/')).toBe('https://example.com/a/b');
+    expect(trustedCanonical(page, 'b')).toBe('https://example.com/a/b');
+    // www. is the same site, and tracking parameters or a fragment are not identity.
+    expect(trustedCanonical(page, 'https://www.example.com/a/b')).toBe(
+      'https://www.example.com/a/b',
     );
+    expect(
+      trustedCanonical('https://www.example.com/a/b?fbclid=z#intro', 'https://example.com/a/b'),
+    ).toBe('https://example.com/a/b');
+    expect(trustedCanonical('https://example.com/a?b=2&a=1', '/a?a=1&b=2')).toBe(
+      'https://example.com/a?a=1&b=2',
+    );
+  });
+
+  it('rejects a same-site canonical that points at a different page', () => {
+    // Single-page app: "/" is declared on every route.
+    expect(trustedCanonical('https://spa.test/courses/12', '/')).toBeNull();
+    expect(trustedCanonical('https://spa.test/courses/12', 'https://spa.test/')).toBeNull();
+    // Listing: page 2 declares page 1.
+    expect(trustedCanonical('https://shop.test/list?page=2', '/list')).toBeNull();
+    expect(trustedCanonical('https://shop.test/list/page/2', '/list/')).toBeNull();
+    // A different query is a different page; a different path is too.
+    expect(trustedCanonical('https://shop.test/item?id=2', '/item?id=1')).toBeNull();
+    expect(trustedCanonical('https://example.com/a/b', 'https://example.com/canon')).toBeNull();
+    // Hash-routed apps: the route is the identity and the canonical omits it.
+    expect(trustedCanonical('https://app.test/#/courses/1', 'https://app.test/')).toBeNull();
+    // They are keyed by the visited URL.
+    expect(sourceKeys('https://spa.test/courses/12', '/')).toEqual({
+      urlKey: 'https://spa.test/courses/12',
+      visitedKey: 'https://spa.test/courses/12',
+    });
   });
 
   it('rejects a canonical on another host, scheme or port', () => {

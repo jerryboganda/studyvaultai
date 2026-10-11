@@ -1,6 +1,7 @@
 import type { z } from 'zod';
 import { uuidv7 } from 'uuidv7';
-import { bumpDataEpoch } from '@runtime';
+import { bumpDataEpoch, bumpResolutionEpoch, revokeAllSiteAccess } from '@runtime';
+import { browser } from 'wxt/browser';
 import {
   Bank,
   CaptureInput,
@@ -25,8 +26,9 @@ import {
   type CaptureResult,
   type HighlightView,
 } from '@shared';
-import { withDb, type StudyVaultDb } from './db';
+import { deleteDatabase, withDb, withWritableDb, type StudyVaultDb } from './db';
 import { normalizeQuote, quoteHash } from './normalize';
+import { normaliseRow } from './rows';
 import type { BankWithCount, HighlightListItem, RepoApi } from './types';
 
 // ---------------------------------------------------------------------------------------------
@@ -49,26 +51,37 @@ function parseInput<T>(schema: z.ZodType<T>, value: unknown, what: string): T {
 
 const requireId = (id: string) => parseInput(Id, id, 'id');
 
-/** Rows are validated on the way out; a corrupt row is skipped (and logged), never fatal. */
+/**
+ * Rows are validated on the way out (after `normaliseRow`, so every schemaVersion >= 1 is read);
+ * a corrupt row is skipped (and logged), never fatal. A row that fails here is only ever skipped:
+ * no code path may write over a row it could not read.
+ */
 function parseRow<T>(schema: z.ZodType<T>, row: unknown, table: string): T | null {
-  const result = schema.safeParse(row);
+  const result = schema.safeParse(normaliseRow(row));
   if (result.success) return result.data;
   const id = (row as { id?: unknown } | null | undefined)?.id;
-  console.warn(`[studyvault] skipping invalid ${table} row`, id, result.error.message);
+  console.warn(`[StudyVault] skipping invalid ${table} row`, id, result.error.message);
   return null;
 }
 
 /**
- * Tell other contexts the data changed. Serialised so two quick writes cannot read the same
+ * Tell other contexts something changed. Serialised so two quick writes cannot read the same
  * counter value and collapse into one notification. Never throws: liveness must not fail a write.
  */
-let epochChain: Promise<void> = Promise.resolve();
-function signalChange(): Promise<void> {
-  epochChain = epochChain
-    .then(() => bumpDataEpoch())
-    .catch((err: unknown) => console.warn('[studyvault] bumpDataEpoch failed', err));
-  return epochChain;
+function signaller(bump: () => Promise<void>, name: string): () => Promise<void> {
+  let chain: Promise<void> = Promise.resolve();
+  return () => {
+    chain = chain
+      .then(bump)
+      .catch((err: unknown) => console.warn(`[StudyVault] ${name} failed`, err));
+    return chain;
+  };
 }
+
+/** Highlights, notes or banks changed: every viewer re-fetches. */
+const signalChange = signaller(bumpDataEpoch, 'bumpDataEpoch');
+/** Only resolver outcomes changed: panels refresh their badges, content scripts are not woken. */
+const signalResolution = signaller(bumpResolutionEpoch, 'bumpResolutionEpoch');
 
 // ---------------------------------------------------------------------------------------------
 // banks
@@ -110,16 +123,29 @@ async function readBanks(db: StudyVaultDb): Promise<Bank[]> {
   );
 }
 
-/** Idempotent. Call only inside a readwrite transaction that includes `banks`. */
+/**
+ * Idempotent. Call only inside a readwrite transaction that includes `banks`. A row that exists is
+ * never replaced: a deleted Inbox is revived field by field, and one that cannot be read stops the
+ * write instead of being overwritten by a fresh default (which would also hide the data in it).
+ */
 async function ensureInbox(db: StudyVaultDb, ts: string): Promise<Bank> {
   const stored = await db.banks.get(INBOX_BANK_ID);
-  const parsed = stored ? parseRow(Bank, stored, 'bank') : null;
-  if (parsed && parsed.deletedAt === null && parsed.isInbox) return parsed;
-  const row: Bank = parsed
-    ? { ...parsed, isInbox: true, deletedAt: null, updatedAt: ts }
-    : defaultInbox(ts);
-  await db.banks.put(row);
-  return row;
+  if (stored === undefined) {
+    const inbox = defaultInbox(ts);
+    await db.banks.add(inbox);
+    return inbox;
+  }
+  const parsed = parseRow(Bank, stored, 'bank');
+  if (!parsed) {
+    throw new StudyVaultError(
+      'storage_unavailable',
+      'The Inbox record in the local database could not be read, so nothing was saved and nothing was overwritten. Choose another bank, or export your data and report this.',
+    );
+  }
+  if (parsed.deletedAt === null && parsed.isInbox) return parsed;
+  const revived = { isInbox: true, deletedAt: null, updatedAt: ts };
+  await db.banks.update(INBOX_BANK_ID, revived);
+  return { ...parsed, ...revived };
 }
 
 async function resolveTargetBank(
@@ -204,7 +230,7 @@ async function toItems(db: StudyVaultDb, rows: Highlight[]): Promise<HighlightLi
   for (const row of rows) {
     const source = sources.get(row.sourceId);
     if (!source) {
-      console.warn('[studyvault] skipping highlight without a source', row.id);
+      console.warn('[StudyVault] skipping highlight without a source', row.id);
       continue;
     }
     const bankIds = memberships.get(row.id) ?? [];
@@ -277,15 +303,26 @@ async function liveHighlightsOf(db: StudyVaultDb, sourceIds: string[]): Promise<
   );
 }
 
-/** Same quote at "the same place": overlapping stream ranges, or identical surrounding context. */
+/**
+ * Same quote at "the same place". Offsets only mean something inside one version of the document,
+ * so they count only when both captures saw the same text stream (equal signature and length): an
+ * edited page shifts every offset, and an unrelated repeat of the sentence can land on an old range.
+ *  - same document: overlapping ranges, or identical context on both sides (a repeated block);
+ *  - otherwise: the text just before OR just after must match (the page changed on one side).
+ */
 function samePlace(a: AnchorSet, b: AnchorSet): boolean {
   if (a.type !== 'html' || b.type !== 'html') return false;
-  const overlap =
-    a.textPosition.start < b.textPosition.end && b.textPosition.start < a.textPosition.end;
-  return (
-    overlap ||
-    (a.textQuote.prefix === b.textQuote.prefix && a.textQuote.suffix === b.textQuote.suffix)
-  );
+  const sameStream =
+    a.contentSignature === b.contentSignature && a.documentTextLength === b.documentTextLength;
+  if (sameStream) {
+    const overlap =
+      a.textPosition.start < b.textPosition.end && b.textPosition.start < a.textPosition.end;
+    return (
+      overlap ||
+      (a.textQuote.prefix === b.textQuote.prefix && a.textQuote.suffix === b.textQuote.suffix)
+    );
+  }
+  return a.textQuote.prefix === b.textQuote.prefix || a.textQuote.suffix === b.textQuote.suffix;
 }
 
 async function addMembership(
@@ -327,7 +364,7 @@ export async function saveCapture(input: CaptureInput): Promise<CaptureResult> {
   const hash = await quoteHash(normalized);
   const ts = now();
 
-  const { result, changed } = await withDb((db) =>
+  const { result, changed } = await withWritableDb((db) =>
     db.transaction('rw', allTables(db), async () => {
       const bank = await resolveTargetBank(db, capture.bankId, ts);
       const sources = await matchSources(db, keys);
@@ -408,6 +445,8 @@ export async function saveCapture(input: CaptureInput): Promise<CaptureResult> {
           resolveStatus: 'unchecked',
           resolveConfidence: null,
           lastResolvedAt: null,
+          capturedUrl: originalUrl,
+          capturedTitle: capture.page.title,
         };
         await db.highlights.put(highlight);
         await db.highlightBanks.put({
@@ -462,7 +501,7 @@ export async function updateHighlight(id: string, patch: HighlightPatch): Promis
   const changes = Object.fromEntries(
     Object.entries(parsed).filter(([, value]) => value !== undefined),
   ) as HighlightPatch;
-  const { view, changed } = await withDb((db) =>
+  const { view, changed } = await withWritableDb((db) =>
     db.transaction('rw', allTables(db), async () => {
       const row = await liveHighlight(db, id);
       const differs = (Object.keys(changes) as Array<keyof HighlightPatch>).some(
@@ -480,7 +519,7 @@ export async function updateHighlight(id: string, patch: HighlightPatch): Promis
 
 export async function softDeleteHighlight(id: string): Promise<void> {
   requireId(id);
-  const changed = await withDb((db) =>
+  const changed = await withWritableDb((db) =>
     db.transaction('rw', db.highlights, async () => {
       const row = await db.highlights.get(id);
       if (!row) throw new StudyVaultError('not_found', 'Highlight not found');
@@ -495,7 +534,7 @@ export async function softDeleteHighlight(id: string): Promise<void> {
 
 export async function restoreHighlight(id: string): Promise<HighlightView> {
   requireId(id);
-  const { view, changed } = await withDb((db) =>
+  const { view, changed } = await withWritableDb((db) =>
     db.transaction('rw', allTables(db), async () => {
       const stored = await db.highlights.get(id);
       const row = stored ? parseRow(Highlight, stored, 'highlight') : null;
@@ -518,7 +557,7 @@ export async function reportResolutions(
     reports.set(item.id, parseInput(ResolutionReport, item, 'resolution report'));
   }
   if (reports.size === 0) return 0;
-  const { updated, changed } = await withDb((db) =>
+  const { updated, changed } = await withWritableDb((db) =>
     db.transaction('rw', db.highlights, async () => {
       const ts = now();
       let updated = 0;
@@ -539,19 +578,21 @@ export async function reportResolutions(
       return { updated, changed };
     }),
   );
-  // Only a real outcome change notifies: viewers repaint and re-report on notification, so
-  // announcing unchanged reports would loop.
-  if (changed) await signalChange();
+  // Only a real outcome change notifies, and only on the resolution channel: the page that
+  // produced these outcomes already knows them, so content scripts are not woken to refetch and
+  // repaint (and re-report). Panels watch this channel to refresh their badges.
+  if (changed) await signalResolution();
   return updated;
 }
 
 export async function getHighlightSource(
   id: string,
+  options: { includeDeleted?: boolean } = {},
 ): Promise<{ sourceId: string; urlKey: string; visitedKey: string } | null> {
   requireId(id);
   return withDb(async (db) => {
     const row = await db.highlights.get(id);
-    if (!row || isDeleted(row)) return null;
+    if (!row || (isDeleted(row) && options.includeDeleted !== true)) return null;
     const stored = await db.sources.get(row.sourceId);
     const source = stored ? parseRow(Source, stored, 'source') : null;
     return source
@@ -566,13 +607,14 @@ export async function listBanks(): Promise<BankLite[]> {
 
 export async function createBank(name: string): Promise<BankLite> {
   const bankName = parseInput(Bank.shape.name, name, 'bank name');
-  const bank = await withDb((db) =>
+  const bank = await withWritableDb((db) =>
     db.transaction('rw', db.banks, async () => {
       const ts = now();
       await ensureInbox(db, ts);
-      // After the Inbox exists the highest position is at least 0, so user banks start at 1.
-      const last = await db.banks.orderBy('position').last();
-      const position = Math.floor((last?.position ?? 0) + 1);
+      // Highest position among rows that can be read, so a corrupt row (a position that is not a
+      // number sorts last in IndexedDB) cannot make us write a bank that fails validation.
+      const top = Math.max(0, ...(await readBanks(db)).map((b) => b.position));
+      const position = Math.floor(top) + 1;
       const row: Bank = {
         id: uuidv7(),
         schemaVersion: SCHEMA_VERSION,
@@ -654,6 +696,21 @@ export async function listBanksWithCounts(): Promise<BankWithCount[]> {
   );
 }
 
+export async function wipeAllData(): Promise<void> {
+  // The database first: if it cannot be deleted (another window holds it) nothing else is touched.
+  await deleteDatabase();
+  await browser.storage.local.clear();
+  await browser.storage.session?.clear();
+  // Optional host permissions are part of what StudyVault holds: left granted, the worker would
+  // register the persistent script again from Chrome's grants. Best effort (no permissions API in
+  // some test and embedded contexts).
+  await revokeAllSiteAccess().catch((err: unknown) =>
+    console.warn('[StudyVault] could not revoke site access', err),
+  );
+  // Settings are gone and the database is empty: viewers must drop what they are showing.
+  await signalChange();
+}
+
 /** Compile-time proof that every RepoApi member is implemented with the exact signature. */
 export const repo = {
   saveCapture,
@@ -668,4 +725,5 @@ export const repo = {
   listRecentHighlights,
   listPageHighlights,
   listBanksWithCounts,
+  wipeAllData,
 } satisfies RepoApi;

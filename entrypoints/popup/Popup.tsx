@@ -1,14 +1,18 @@
-import { useState } from 'react';
+import { useRef, useState, type RefObject } from 'react';
 import { browser } from 'wxt/browser';
-import type { SiteStatus } from '@shared';
+import { DEFAULT_DENY_HOSTS, DENY_LIST_SCOPE_NOTE, type SiteStatus } from '@shared';
 import { callBackground, callTab } from '@runtime';
 import { listBanks, listRecentHighlights } from '@storage';
 import {
   Button,
+  COMMAND,
   InlineNotice,
   KindChip,
+  ShortcutHints,
+  ToastProvider,
   editDenyList,
   grantSiteAccess,
+  pickCommands,
   plural,
   revokeSiteAccess,
   truncate,
@@ -16,20 +20,35 @@ import {
   useActiveTab,
   useApplyTheme,
   useAsync,
+  useDataEpoch,
   useObserved,
   useSettings,
+  useShortcuts,
+  useToast,
   type ActiveTab,
 } from '@ui';
 import { derivePopupState, type PopupState } from './model';
 
 const RECENT_LIMIT = 5;
 
-type Op = 'activate' | 'enable' | 'disable' | 'allow' | 'panel';
+type Op = 'activate' | 'enable' | 'disable' | 'allow';
 
 export function Popup() {
-  const { settings, error: settingsError } = useSettings();
+  return (
+    <ToastProvider>
+      <PopupBody />
+    </ToastProvider>
+  );
+}
+
+function PopupBody() {
+  const settingsState = useSettings();
+  const { settings, error: settingsError } = settingsState;
   useApplyTheme(settings?.theme);
-  const { tab, loading: tabLoading, error: tabError } = useActiveTab();
+  const tabState = useActiveTab();
+  const { tab, loading: tabLoading, error: tabError } = tabState;
+  /** Focus lands here after an action replaced the control that had it (never on <body>). */
+  const heading = useRef<HTMLHeadingElement>(null);
 
   const url = tab?.url;
   const status = useAsync<SiteStatus | null>(
@@ -43,48 +62,52 @@ export function Popup() {
   const state: PopupState | null =
     settings === null || tabLoading
       ? null
-      : derivePopupState({
-          url,
-          status: status.data ?? null,
-          denyList: settings.denyList,
-          persistentOrigins: settings.persistentOrigins,
-        });
+      : derivePopupState({ url, status: status.data ?? null, denyList: settings.denyList });
+
+  const failure = settingsError ?? tabError ?? status.error;
+  // Only the worker's answer can be a non-transient storage error; settings and tab reads can be redone.
+  const retryable = settingsError || tabError ? true : status.retryable;
+  /** Retries whatever failed: the settings read, the tab query, or the worker's site check. */
+  const retry = () => {
+    if (settingsError) settingsState.retry();
+    if (tabError) tabState.retry();
+    if (status.error) status.refresh();
+  };
 
   return (
     <div className="popup">
       <header className="popup__head">
-        <h1>StudyVault AI</h1>
+        <h1 ref={heading} tabIndex={-1}>
+          StudyVault AI
+        </h1>
         {state && 'host' in state && state.host ? (
           <p className="sv-muted sv-wrap">{state.host}</p>
         ) : null}
       </header>
       <main className="popup__main">
-        {settingsError || tabError || status.error ? (
+        {failure ? (
           <InlineNotice
             tone="error"
             title="StudyVault could not check this tab"
             action={
-              <Button
-                onClick={() => {
-                  status.reload();
-                }}
-              >
-                Retry
-              </Button>
+              retryable ? (
+                <Button busy={status.refreshing} onClick={retry}>
+                  Retry
+                </Button>
+              ) : undefined
             }
           >
-            {settingsError ?? tabError ?? status.error}
+            {failure}
           </InlineNotice>
         ) : state === null || state.kind === 'loading' ? (
-          <p role="status" className="sv-muted">
-            Checking this tab…
-          </p>
+          <p className="sv-muted">Checking this tab…</p>
         ) : (
           <TabState
             tab={tab}
             state={state}
             lastBankId={settings?.lastBankId ?? null}
             onChanged={status.refresh}
+            focusAfter={heading}
           />
         )}
       </main>
@@ -117,108 +140,152 @@ function TabState({
   state,
   lastBankId,
   onChanged,
+  focusAfter,
 }: {
   tab: ActiveTab | null;
   state: Exclude<PopupState, { kind: 'loading' }>;
   lastBankId: string | null;
+  /** Quiet re-check: the current view stays until the new answer arrives. */
   onChanged(): void;
+  focusAfter: RefObject<HTMLElement | null>;
 }) {
+  const { announce } = useToast();
   /** Why "Always enable" did not (fully) happen; shown as a warning in every state. */
   const [warning, setWarning] = useState<string | null>(null);
+  /** Allowing a starter-list site needs a second, deliberate step. */
+  const [confirming, setConfirming] = useState<'no' | 'asking' | 'cancelled'>('no');
+
+  const warn = (text: string) => {
+    setWarning(text);
+    announce(text);
+  };
 
   const act = useAction(async (op: Op) => {
     if (!tab) throw new Error('There is no active tab.');
     setWarning(null);
+    let spoken: string | null = null;
     switch (op) {
       case 'activate':
         await callBackground('tab.activate', { tabId: tab.id });
+        spoken = 'Activated on this tab.';
         break;
       case 'enable': {
         if (state.kind !== 'inactive' && state.kind !== 'active') return;
         // First await in the click: Chrome needs the user gesture for the permission prompt.
         const { granted, notRegistered } = await grantSiteAccess([state.pattern]);
         if (!granted) {
-          setWarning(
-            `Chrome did not give StudyVault access to ${state.host}. Nothing was changed. You can still use "Activate on this tab".`,
+          warn(
+            `Chrome did not give StudyVault access to ${state.host}. Nothing was changed. ${
+              state.kind === 'inactive'
+                ? 'You can still use "Activate on this tab".'
+                : 'StudyVault stays on for this tab only.'
+            }`,
           );
           return;
         }
         if (notRegistered.length > 0) {
-          setWarning(
-            `Chrome allowed StudyVault on ${state.host}, but StudyVault could not set it to start by itself on every visit. It is active on this tab now; after you reload or return, use "Activate on this tab" again.`,
+          warn(
+            `Chrome allowed StudyVault on ${state.host}, but StudyVault could not set it to start by itself on every visit. It is active on this tab now; after you reload or return, open this popup and choose "Activate on this tab" again.`,
           );
+        } else {
+          spoken = `Always on for ${state.host}.`;
         }
         await callBackground('tab.activate', { tabId: tab.id });
         break;
       }
       case 'disable':
-        if (state.kind === 'active') await revokeSiteAccess([state.pattern]);
+        if (state.kind === 'active') {
+          await revokeSiteAccess([state.pattern]);
+          spoken = `Always-on turned off for ${state.host}.`;
+        }
         break;
       case 'allow':
         if (state.kind === 'denied') {
           const entries = state.entries;
           await editDenyList((list) => list.filter((e) => !entries.includes(e)));
+          spoken = `Allowed StudyVault on ${state.host}.`;
         }
         break;
-      case 'panel':
-        // The click is the gesture sidePanel.open needs; nothing may be awaited before it.
-        await browser.sidePanel.open({ windowId: tab.windowId });
-        window.close();
-        return;
     }
+    setConfirming('no');
     onChanged();
+    if (spoken) announce(spoken);
+    // The control that was clicked is replaced by the new state: keep focus on a stable element.
+    focusAfter.current?.focus();
   });
 
   const failure = act.error ? (
     <InlineNotice
       tone="error"
       title="That did not work"
-      action={<Button onClick={act.retry}>Retry</Button>}
+      action={act.retryable ? <Button onClick={act.retry}>Retry</Button> : undefined}
     >
       {act.error}
     </InlineNotice>
   ) : null;
-  const warningNotice = warning ? (
-    <InlineNotice tone="warning" live>
-      {warning}
-    </InlineNotice>
-  ) : null;
+  const warningNotice = warning ? <InlineNotice tone="warning">{warning}</InlineNotice> : null;
 
   switch (state.kind) {
     case 'unsupported':
-      return <Unsupported state={state} />;
+      return (
+        <div className="sv-stack">
+          <Unsupported state={state} />
+          <OpenPanel tab={tab} />
+        </div>
+      );
 
-    case 'denied':
+    case 'denied': {
+      const entries = state.entries.join(', ');
+      const starter = state.entries.some((e) => DEFAULT_DENY_HOSTS.includes(e));
       return (
         <div className="sv-stack">
           <InlineNotice tone="warning" title={`StudyVault is off on ${state.host}`}>
             <p>
-              This site is on your deny list
-              {state.entries.length > 0 ? ` (${state.entries.join(', ')})` : ''}, so the toolbar and
-              highlights stay off here. Banks, mail, payment and sign-in sites are blocked by
-              default.
+              This site is on your deny list{entries ? ` (${entries})` : ''}, so the toolbar and
+              highlights stay off here and nothing can be saved.
             </p>
+            <p>{DENY_LIST_SCOPE_NOTE}</p>
           </InlineNotice>
-          {state.entries.length > 0 ? (
-            <Button
-              variant="primary"
-              busy={act.busy}
-              onClick={() => void act.run('allow')}
-            >{`Allow StudyVault on ${state.host}`}</Button>
-          ) : (
+          {state.entries.length === 0 ? (
             <Button busy={act.busy} onClick={onChanged}>
               Check again
             </Button>
+          ) : confirming === 'asking' ? (
+            <InlineNotice tone="warning" title={`Allow StudyVault on ${state.host}?`}>
+              <p>
+                {entries} is on StudyVault&apos;s starter deny list, which keeps it away from
+                sign-in, mail, payment and similar sites. If you allow it, the toolbar and
+                highlights run there, and scripts on that site can see which passages you mark.
+              </p>
+              <div className="sv-row">
+                <Button busy={act.busy} onClick={() => void act.run('allow')}>
+                  {`Yes, allow StudyVault on ${state.host}`}
+                </Button>
+                <Button autoFocus variant="ghost" onClick={() => setConfirming('cancelled')}>
+                  Keep it off
+                </Button>
+              </div>
+            </InlineNotice>
+          ) : (
+            <div className="sv-stack sv-stack--tight">
+              <p>
+                Allowing it removes {entries} from your deny list, which also re-enables its
+                subdomains. You can add it back in Settings.
+              </p>
+              <div>
+                <Button
+                  autoFocus={confirming === 'cancelled'}
+                  busy={act.busy}
+                  onClick={() => (starter ? setConfirming('asking') : void act.run('allow'))}
+                >{`Allow StudyVault on ${state.host}`}</Button>
+              </div>
+            </div>
           )}
-          {state.entries.length > 0 ? (
-            <p className="sv-muted sv-small">
-              This removes {state.entries.join(', ')} from the deny list, which also re-enables its
-              subdomains. You can add it back in Settings.
-            </p>
-          ) : null}
           {failure}
+          <OpenPanel tab={tab} />
         </div>
       );
+    }
 
     case 'inactive':
       return (
@@ -252,6 +319,7 @@ function TabState({
           )}
           {warningNotice}
           {failure}
+          <OpenPanel tab={tab} />
         </div>
       );
 
@@ -262,14 +330,54 @@ function TabState({
           <AccessLine state={state} busy={act.busy} run={act.run} />
           {warningNotice}
           {failure}
-          <Button variant="primary" busy={act.busy} onClick={() => void act.run('panel')}>
-            Open side panel
-          </Button>
+          <OpenPanel tab={tab} primary />
+          <KeyHints />
           <Banks lastBankId={lastBankId} />
           <Recent />
         </div>
       );
   }
+}
+
+/** Opens the side panel for this window. Offered in every state: the panel works without the page. */
+function OpenPanel({ tab, primary = false }: { tab: ActiveTab | null; primary?: boolean }) {
+  const open = useAction(async () => {
+    if (!tab) throw new Error('There is no active tab.');
+    // The click is the gesture sidePanel.open needs; nothing may be awaited before it.
+    await browser.sidePanel.open({ windowId: tab.windowId });
+    window.close();
+  });
+  return (
+    <div className="sv-stack sv-stack--tight">
+      <div>
+        <Button
+          variant={primary ? 'primary' : 'secondary'}
+          busy={open.busy}
+          disabledReason={tab ? undefined : 'There is no active tab to open the panel for.'}
+          onClick={() => void open.run()}
+        >
+          Open side panel
+        </Button>
+      </div>
+      {open.error ? (
+        <InlineNotice
+          tone="error"
+          title="Could not open the side panel"
+          action={open.retryable ? <Button onClick={open.retry}>Retry</Button> : undefined}
+        >
+          {open.error}
+        </InlineNotice>
+      ) : null}
+    </div>
+  );
+}
+
+/** The keys that save and open the panel, read from Chrome (the user may have changed them). */
+function KeyHints() {
+  const { commands } = useShortcuts();
+  if (!commands) return null;
+  const shown = pickCommands(commands, [COMMAND.quickSave, COMMAND.openSidePanel]);
+  return <ShortcutHints commands={shown} />;
 }
 
 function Unsupported({ state }: { state: Extract<PopupState, { kind: 'unsupported' }> }) {
@@ -293,8 +401,8 @@ function Unsupported({ state }: { state: Extract<PopupState, { kind: 'unsupporte
       ) : (
         <p>
           {state.scheme ? `This tab uses the "${state.scheme}" address type. ` : ''}
-          Extensions only run on http and https pages. Browser pages are blocked by Chrome, and
-          local files (file://) are off by default and need a separate opt-in for each extension.
+          StudyVault works on http and https pages only. Chrome blocks extensions on its own pages,
+          and local files (file://) are not supported.
         </p>
       )}
       <p>Open a regular website to capture highlights.</p>
@@ -343,13 +451,21 @@ function AccessLine({
 }
 
 function PageSummary({ tabId, url }: { tabId: number; url: string | undefined }) {
-  const page = useAsync(() => callTab(tabId, 'content.pageStatus', {}), [tabId, url]);
+  // Edits and re-checks from any context change what the page counts say: ask the page again.
+  const epoch = useDataEpoch();
+  const page = useAsync(() => callTab(tabId, 'content.pageStatus', {}), [tabId, url], [epoch]);
   if (page.error) {
     return (
       <InlineNotice
         tone="error"
         title="Could not read this page"
-        action={<Button onClick={page.reload}>Retry</Button>}
+        action={
+          page.retryable ? (
+            <Button busy={page.refreshing} onClick={page.refresh}>
+              Retry
+            </Button>
+          ) : undefined
+        }
       >
         {page.error}
       </InlineNotice>
@@ -383,7 +499,9 @@ function Banks({ lastBankId }: { lastBankId: string | null }) {
   return (
     <p>
       <span className="sv-muted">{last ? 'Last used bank: ' : 'Saving to: '}</span>
-      <strong className="sv-wrap">{target.name}</strong>
+      <strong className="sv-wrap" dir="auto">
+        {target.name}
+      </strong>
       {last ? null : <span className="sv-muted"> (default)</span>}
     </p>
   );
@@ -397,7 +515,13 @@ function Recent() {
       {recent.error ? (
         <InlineNotice
           tone="error"
-          action={<Button onClick={recent.reload}>Retry</Button>}
+          action={
+            recent.retryable ? (
+              <Button busy={recent.refreshing} onClick={recent.refresh}>
+                Retry
+              </Button>
+            ) : undefined
+          }
         >{`Could not load recent saves: ${recent.error}`}</InlineNotice>
       ) : !recent.data ? (
         <p className="sv-muted">Loading…</p>
@@ -410,8 +534,10 @@ function Recent() {
           {recent.data.map(({ highlight, source }) => (
             <li key={highlight.id} className="popup__item">
               <KindChip kind={highlight.kind} color={highlight.color} />
-              <p className="sv-quote popup__quote">{truncate(highlight.exactQuote, 200)}</p>
-              <p className="sv-muted sv-small sv-wrap">
+              <p className="sv-quote popup__quote" dir="auto">
+                {truncate(highlight.exactQuote, 200)}
+              </p>
+              <p className="sv-muted sv-small sv-wrap" dir="auto">
                 {source.title ? `${source.title} · ` : ''}
                 {source.host}
               </p>

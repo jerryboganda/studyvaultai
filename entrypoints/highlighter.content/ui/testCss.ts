@@ -96,7 +96,7 @@ export function declsFor(rules: Rule[], selector: string, media = ''): Map<strin
 export interface Scenario {
   /** The operating-system colour scheme (prefers-color-scheme). */
   system: 'light' | 'dark';
-  /** data-theme on the overlay host: the user's own Theme setting. */
+  /** data-theme on .sv-root (inside the shadow root): the user's own Theme setting. */
   attr: 'system' | 'light' | 'dark';
   /** prefers-contrast: more. */
   contrast: boolean;
@@ -134,17 +134,21 @@ function selectorMatch(selector: string, s: Scenario): { applies: boolean; speci
     case ':host':
       return { applies: true, specificity: 1 };
     case ":root:not([data-theme='light'])":
-    case ":host(:not([data-theme='light']))":
+    case ".sv-root:not([data-theme='light'])":
       return { applies: s.attr !== 'light', specificity: 2 };
     case ":root[data-theme='dark']":
-    case ":host([data-theme='dark'])":
+    case ".sv-root[data-theme='dark']":
       return { applies: s.attr === 'dark', specificity: 2 };
     default:
       throw new Error(`tokens.css selector not modelled by the contrast test: ${selector}`);
   }
 }
 
-/** Custom properties as the cascade resolves them on the overlay host in the given scenario. */
+/**
+ * Custom properties as the cascade resolves them for the overlay in the given scenario: the host
+ * (:host) and its .sv-root container are one element here, because .sv-root inherits from the host
+ * and every .sv-root rule is at least as specific as the :host one it overrides.
+ */
 export function computeTokens(rules: Rule[], s: Scenario): Map<string, string> {
   const winner = new Map<string, { value: string; specificity: number; order: number }>();
   for (const rule of rules) {
