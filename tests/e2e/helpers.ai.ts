@@ -144,15 +144,66 @@ export async function pageContents(page: Page): Promise<string> {
 export const aiSwitch = (options: Page): Locator =>
   options.getByRole('checkbox', { name: 'Turn on AI features' });
 
+/**
+ * Patience for the first write of a fresh profile. The vault database is created on first use, and a
+ * CI runner can stall its disk for tens of seconds (a first attempt was observed to leave the page on
+ * "Loading decks…" for the whole default 10 s, and its retry took 40 s instead of 7). The wait is on
+ * the real condition, so a healthy machine still passes in milliseconds.
+ */
+const COLD_WRITE_MS = 45_000;
+
+/** What a stalled first write looks like from the page: Web Locks, databases, pending texts. */
+async function stallReport(options: Page): Promise<string> {
+  return options.evaluate(async () => {
+    const out: Record<string, unknown> = {};
+    try {
+      out.locks = await navigator.locks.query();
+    } catch (e) {
+      out.locks = String(e);
+    }
+    try {
+      out.databases = await indexedDB.databases();
+    } catch (e) {
+      out.databases = String(e);
+    }
+    out.pendingText = Array.from(document.querySelectorAll('main p, main span'))
+      .map((el) => (el.textContent ?? '').trim())
+      .filter((t) => /^(Loading|Checking Chrome|Reading )/.test(t));
+    out.settings = (await chrome.storage.local.get('settings')).settings ?? null;
+    return JSON.stringify(out, null, 2);
+  });
+}
+
+/** The settings page has finished its first loads (database open, worker answered). */
+async function pageLoaded(options: Page): Promise<void> {
+  await expect(options.getByText(/^(Loading|Checking Chrome|Reading )/)).toHaveCount(0, {
+    timeout: COLD_WRITE_MS,
+  });
+}
+
 export async function enableAi(options: Page): Promise<void> {
+  // Not while the page is still starting its own reads: the write would queue behind them (and the
+  // click is the first thing to touch the database on a fresh profile).
+  await expect(aiSwitch(options)).toBeVisible();
+  await pageLoaded(options);
   await aiSwitch(options).click();
-  await expect(aiSwitch(options)).toBeChecked();
-  await expect
-    .poll(
-      async () => ((await storedSettings(options))?.features as { ai?: boolean } | undefined)?.ai,
-    )
-    .toBe(true);
-  await expect(options.getByTestId('ai-base-url')).toBeVisible();
+  try {
+    // The real condition: the switch is checked AND the section it guards has appeared.
+    await expect(aiSwitch(options)).toBeChecked({ timeout: COLD_WRITE_MS });
+    await expect(options.getByTestId('ai-base-url')).toBeVisible({ timeout: COLD_WRITE_MS });
+    await expect
+      .poll(
+        async () => ((await storedSettings(options))?.features as { ai?: boolean } | undefined)?.ai,
+        { timeout: COLD_WRITE_MS },
+      )
+      .toBe(true);
+  } catch (error) {
+    await test.info().attach('ai-switch-stall.json', {
+      body: await stallReport(options).catch((e: unknown) => String(e)),
+      contentType: 'application/json',
+    });
+    throw error;
+  }
 }
 
 export async function configureProvider(
@@ -163,7 +214,9 @@ export async function configureProvider(
   await options.getByTestId('ai-model').fill(cfg.model ?? MODEL);
   await options.getByTestId('ai-save-settings').click();
   await expect
-    .poll(async () => (await metaValue<{ baseUrl?: string }>(options, 'aiSettings'))?.baseUrl)
+    .poll(async () => (await metaValue<{ baseUrl?: string }>(options, 'aiSettings'))?.baseUrl, {
+      timeout: COLD_WRITE_MS,
+    })
     .toBe(cfg.baseUrl);
   await expect(options.getByTestId('ai-save-settings')).toHaveAttribute('aria-disabled', 'true');
 }
@@ -171,7 +224,9 @@ export async function configureProvider(
 export async function saveKey(options: Page, key: string): Promise<void> {
   await options.getByTestId('ai-key-input').fill(key);
   await options.getByTestId('ai-key-save').click();
-  await expect(options.getByTestId('ai-key-mask')).toHaveText(maskOf(key));
+  await expect(options.getByTestId('ai-key-mask')).toHaveText(maskOf(key), {
+    timeout: COLD_WRITE_MS,
+  });
   await expect(options.getByTestId('ai-key-input')).toHaveValue('');
 }
 

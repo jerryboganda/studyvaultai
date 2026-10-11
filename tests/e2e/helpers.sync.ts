@@ -258,9 +258,15 @@ export async function sessionStore(page: Page): Promise<Record<string, unknown>>
  * "Delete all data" gives it back, and the API object disappears with it.
  */
 export async function alarmNames(page: Page): Promise<string[]> {
-  return page.evaluate(async () =>
-    chrome.alarms ? (await chrome.alarms.getAll()).map((a) => a.name).sort() : [],
-  );
+  return page.evaluate(async () => {
+    // Without the permission the namespace may be missing (Windows) or present with every method
+    // throwing "not available in this context" (Linux): both mean no alarm is scheduled.
+    try {
+      return chrome.alarms ? (await chrome.alarms.getAll()).map((a) => a.name).sort() : [];
+    } catch {
+      return [];
+    }
+  });
 }
 
 /** The current settings flag the worker enforces (through the page's own read of `settings`). */

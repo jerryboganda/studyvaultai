@@ -28,6 +28,7 @@ import {
   saveKey,
   setUpAi,
   storageDump,
+  storedSettings,
   test,
   watchTraffic,
   type Env,
@@ -174,6 +175,47 @@ test.describe('AI is off until the person turns it on', () => {
     await expect(options.locator('#ai').getByTestId('ai-test')).toHaveCount(0);
     expect(provider.seen).toEqual([]);
     expect(nonFixture(env, traffic), 'no request left the browser at all').toEqual([]);
+  });
+
+  test('a click on the switch is never dropped: when the settings write has to wait for another window, it still lands afterwards', async ({
+    env,
+    provider,
+  }) => {
+    // The failure seen once on a CI runner: the switch stayed unchecked for 10 s because the write
+    // (a read-modify-write under the Web Lock "studyvault-settings") was held up. Reproduced on
+    // purpose: another StudyVault window holds that lock while the person clicks.
+    const options = await openExt(env, 'options');
+    await expect(aiSwitch(options)).toBeVisible();
+    const holder = await env.context.newPage();
+    await holder.goto(`chrome-extension://${env.extensionId}/options.html`);
+    await holder.evaluate(
+      () =>
+        new Promise<void>((held) => {
+          void navigator.locks.request(
+            'studyvault-settings',
+            () =>
+              new Promise<void>((release) => {
+                (window as unknown as { __release: () => void }).__release = release;
+                held();
+              }),
+          );
+        }),
+    );
+
+    await aiSwitch(options).click();
+    // The write is queued behind the lock: nothing is stored while it is held.
+    expect(
+      ((await storedSettings(options))?.features as { ai?: boolean } | undefined)?.ai ?? false,
+    ).toBe(false);
+    await holder.evaluate(() => (window as unknown as { __release: () => void }).__release());
+
+    // The click was kept: the flag is stored, the switch is on and the section it guards appears.
+    await expect(aiSwitch(options)).toBeChecked();
+    await expect(options.getByTestId('ai-base-url')).toBeVisible();
+    await expect
+      .poll(async () => ((await storedSettings(options))?.features as { ai?: boolean })?.ai)
+      .toBe(true);
+    expect(provider.seen, 'turning the feature on sends nothing').toEqual([]);
   });
 });
 
