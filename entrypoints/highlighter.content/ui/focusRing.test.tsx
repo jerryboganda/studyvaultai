@@ -21,13 +21,12 @@ describe('every focusable control of the overlay is under the focus-ring rule', 
     expect(ring.get('outline')).toContain('solid');
   });
 
-  it('toolbar, composers (with the new-bank form), popover and toast actions', async () => {
+  it('toolbar, More options panel, popover and toast actions', async () => {
     const m = mountUi();
     const user = userEvent.setup();
     act(() => m.ui.showToolbar({ text: 'abc', rect: rect(100, 200, 50, 20) }));
     await user.click(m.q.getByRole('button', { name: 'More options' }));
     await within(m.q.getByRole('dialog')).findByRole('combobox', { name: 'Bank' });
-    await user.click(m.q.getByRole('button', { name: 'New bank' }));
     act(() =>
       m.ui.toast({
         text: 'Saved',
@@ -38,8 +37,9 @@ describe('every focusable control of the overlay is under the focus-ring rule', 
     act(() => m.ui.showHighlightPopover(makeHighlight(), rect(100, 300, 120, 20)));
 
     const found = focusables(m.container);
-    // Toolbar (10) + popover and toast controls: a floor, so a refactor cannot hide controls from this check.
-    expect(found.length).toBeGreaterThanOrEqual(15);
+    // Toolbar (10) + panel (6) + popover (6) + toast (2): a floor, so a refactor cannot hide
+    // controls from this check.
+    expect(found.length).toBeGreaterThanOrEqual(22);
     const outside = found.filter((el) => !el.closest(RING_SCOPE));
     expect(outside.map((el) => el.outerHTML.slice(0, 60))).toEqual([]);
   });

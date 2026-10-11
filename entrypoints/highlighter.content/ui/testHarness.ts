@@ -1,6 +1,6 @@
 /** Test-only helpers for the overlay (never imported by production code). */
 import { vi } from 'vitest';
-import { act, createEvent, fireEvent, within } from '@testing-library/react';
+import { act, createEvent, within } from '@testing-library/react';
 import {
   defaultSettings,
   type AnchorSet,
@@ -94,6 +94,7 @@ export function makeHost(settings: Settings = defaultSettings(), over: Partial<C
     remove: vi.fn(async () => undefined),
     restore: vi.fn(async () => makeHighlight()),
     dismissSelection: vi.fn(),
+    openInSidePanel: vi.fn(async (_highlightId: string | null) => true),
     ...over,
   };
   return host as unknown as MockHost;
@@ -125,15 +126,6 @@ export function cleanupUi(): void {
     hostEl.remove();
   }
   document.body.innerHTML = '';
-}
-
-/**
- * Sets a text field the way typing would, as far as React can tell. user-event's own typing cannot
- * be used inside a shadow root: it prepares elements from a document-level focus listener, which
- * sees the retargeted shadow host, so React's value tracker misses the change.
- */
-export function typeInto(field: HTMLElement, value: string): void {
-  fireEvent.change(field, { target: { value } });
 }
 
 /** Alt+Shift+T on the document, as a user would press it. Returns the event for default-prevented checks. */

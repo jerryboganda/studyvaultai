@@ -91,6 +91,7 @@ export function HighlightCard({
   return (
     <article
       className="hl-card"
+      data-highlight-id={highlight.id}
       aria-label={`${KIND_LABELS[highlight.kind].label}: ${truncate(quote, 60)}`}
     >
       <div className="sv-row">

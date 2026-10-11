@@ -1,15 +1,17 @@
 import type { Browser } from 'wxt/browser';
 import {
+  PENDING_FOCUS_KEY,
   StudyVaultError,
   isHostDenied,
   parseHttpUrl,
+  sameSite,
   trustedCanonical,
   type BackgroundRpc,
   type Settings,
 } from '@shared';
 import type { Handlers } from '@runtime';
 import type { RepoApi } from '@storage';
-import type { DeleteLedger } from './deleteLedger';
+import type { DeleteLedger, SessionArea } from './deleteLedger';
 import type { SiteAccess } from './siteAccess';
 
 /**
@@ -21,19 +23,22 @@ import type { SiteAccess } from './siteAccess';
  *  - "page": a content script. The only data it can trust is `sender.url`, which Chrome sets.
  *
  * Page callers may use only: capture.save, page.highlights, highlight.update/delete/restore/
- * reportResolution, banks.list, bank.create. site.* and tab.activate are extension-only.
+ * reportResolution, banks.list, bank.create, sidepanel.open (for the sender's own tab only; the
+ * focus request is honoured only for a highlight of the sender's site). site.* and tab.activate
+ * are extension-only.
  *
  * Identity rules for page callers (payload URLs are never trusted):
  *  - capture.save / page.highlights: payload `url` must have the same ORIGIN as `sender.url`
  *    (path may differ: SPAs change it with pushState). `canonicalUrl` is kept only when
- *    `trustedCanonical` accepts it for that page (same host, ignoring "www.").
+ *    `trustedCanonical` accepts it for that page (same scheme, port and host, ignoring "www.").
  *  - capture.save is also refused when the sender's host is on the deny list.
  *  - highlight.*: the highlight's Source (`getHighlightSource`) must be on the sender's SITE:
- *    both `urlKey` and `visitedKey` must be accepted by `trustedCanonical(sender.url, key)`,
- *    i.e. same host ignoring "www.". An exact-URL compare is deliberately NOT used: a source's
- *    `urlKey` is the page-declared canonical (it may differ from the visited URL by query or
- *    path), and SPA route changes leave previous-route highlights painted. The page can already
- *    declare any same-host canonical and read any same-origin page's highlights through
+ *    both `urlKey` and `visitedKey` must have the sender's ORIGIN (`sameSite`: same scheme, same
+ *    port, same host ignoring a leading "www."). Host alone is not a site: http vs https and
+ *    :8443 vs :443 are different servers. An exact-URL compare is deliberately NOT used: a
+ *    source's `urlKey` is the page-declared canonical (it may differ from the visited URL by
+ *    query or path), and SPA route changes leave previous-route highlights painted. The page can
+ *    already declare any same-site canonical and read any same-origin page's highlights through
  *    page.highlights, so a same-site rule grants nothing new while keeping Undo/edit working.
  *    Foreign sources -> forbidden; unknown or deleted ids -> not_found.
  */
@@ -51,6 +56,13 @@ export interface HandlerDeps {
   ledger: DeleteLedger;
   /** `chrome-extension://<id>/` */
   extensionBaseUrl: string;
+  /**
+   * `sidePanel.open({ tabId })`. Chrome honours it only inside the user gesture that the message
+   * carried, so the handler calls this before it awaits anything.
+   */
+  openSidePanel(tabId: number): Promise<void>;
+  /** chrome.storage.session: hands the highlight to focus over to the side panel. */
+  session: Pick<SessionArea, 'set'>;
 }
 
 const forbidden = (message: string) => new StudyVaultError('forbidden', message);
@@ -84,8 +96,7 @@ export function createHandlers(deps: HandlerDeps): Handlers<BackgroundRpc> {
   };
 
   const ownsSource = (caller: PageCaller, keys: SourceKeys) =>
-    trustedCanonical(caller.url.href, keys.urlKey) !== null &&
-    trustedCanonical(caller.url.href, keys.visitedKey) !== null;
+    sameSite(caller.url, keys.urlKey) && sameSite(caller.url, keys.visitedKey);
 
   const assertOwns = (caller: PageCaller, keys: SourceKeys) => {
     if (!ownsSource(caller, keys)) throw forbidden('That highlight belongs to a different site.');
@@ -184,6 +195,48 @@ export function createHandlers(deps: HandlerDeps): Handlers<BackgroundRpc> {
     },
 
     'bank.create': ({ name }) => deps.repo.createBank(name),
+
+    'sidepanel.open': async ({ focusHighlightId }, sender) => {
+      const caller = callerOf(sender);
+      const tabId = sender.tab?.id;
+      if (tabId === undefined) {
+        throw new StudyVaultError('invalid_request', 'There is no tab to open the side panel for.');
+      }
+      // Nothing may be awaited before this call (user gesture). The async wrapper turns a
+      // synchronous throw (no sidePanel API in this browser) into a rejection.
+      const opening = (async () => deps.openSidePanel(tabId))().then(
+        () => true,
+        (err: unknown) => {
+          console.warn('[StudyVault] could not open the side panel', err);
+          return false;
+        },
+      );
+
+      // A page may only ask to focus a highlight of its own site; anything else is ignored.
+      let focus: string | null = null;
+      if (focusHighlightId !== null) {
+        if (caller.kind === 'extension') {
+          focus = focusHighlightId;
+        } else {
+          const source = await deps.repo
+            .getHighlightSource(focusHighlightId)
+            .catch((err: unknown) => {
+              console.warn('[StudyVault] could not check the highlight to focus', err);
+              return null;
+            });
+          if (source && ownsSource(caller, source)) focus = focusHighlightId;
+        }
+      }
+
+      // Stored even when opening failed: if the user opens the panel by hand within the next 30
+      // seconds (the overlay says so), it still jumps to the note.
+      if (focus !== null) {
+        await deps.session
+          .set({ [PENDING_FOCUS_KEY]: { highlightId: focus, at: Date.now() } })
+          .catch((err: unknown) => console.warn('[StudyVault] could not hand over the focus', err));
+      }
+      return { opened: await opening };
+    },
 
     'site.status': async (input, sender) => {
       extensionOnly(sender);

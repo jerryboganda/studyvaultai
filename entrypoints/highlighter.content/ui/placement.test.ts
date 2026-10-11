@@ -16,30 +16,30 @@ const place = (selection: Rect, over: Partial<Parameters<typeof placeToolbar>[0]
 
 describe('placeToolbar', () => {
   it('prefers the space above the selection, centred on it', () => {
-    // centre x = 400 + 100 = 500 -> 500 - 150 = 350; above = 300 - 8 - 40 = 252
-    expect(place(rect(400, 300, 200, 20))).toMatchObject({ x: 350, y: 252, placement: 'above' });
+    // centre x = 400 + 100 = 500 -> 500 - 150 = 350; above = 300 - 12 - 40 = 248
+    expect(place(rect(400, 300, 200, 20))).toMatchObject({ x: 350, y: 248, placement: 'above' });
   });
 
   it('flips below when the selection touches the top edge', () => {
-    // above = 5 - 8 - 40 < margin; below = 5 + 20 + 8 = 33
-    expect(place(rect(400, 5, 200, 20))).toMatchObject({ x: 350, y: 33, placement: 'below' });
+    // above = 5 - 12 - 40 < margin; below = 5 + 20 + 12 = 37
+    expect(place(rect(400, 5, 200, 20))).toMatchObject({ x: 350, y: 37, placement: 'below' });
   });
 
   it('flips below when the selection is partly scrolled above the viewport', () => {
     const r = place(rect(400, -100, 200, 130));
     expect(r.placement).toBe('below');
-    expect(r.y).toBe(38); // bottom = 30, + gap
+    expect(r.y).toBe(42); // bottom = 30, + gap
   });
 
   it('keeps above at the bottom edge, where below has no room', () => {
     const r = place(rect(400, 760, 200, 20));
-    expect(r).toMatchObject({ x: 350, y: 712, placement: 'above' });
+    expect(r).toMatchObject({ x: 350, y: 708, placement: 'above' });
   });
 
   it('places a tall selection that starts in view above its first line', () => {
     const r = place(rect(100, 200, 700, 3000));
     expect(r.placement).toBe('above');
-    expect(r.y).toBe(152);
+    expect(r.y).toBe(148);
   });
 
   it('covers a selection that fills the viewport, on the nearest edge (top)', () => {
@@ -144,6 +144,33 @@ describe('placeToolbar', () => {
         }
       }
     }
+  });
+
+  it('stays clear of the whole line box of the selected word, not just its glyph box', () => {
+    // 20px text with a 40px line height, wrapped over two lines. The word on line 2 has a glyph box
+    // of 23px; its line box reaches 8.5px above and below it. The seam between line 1 and line 2 is
+    // the top of that line box, and a click there selects the word and then has to reach the page
+    // again (triple click), so the toolbar must end above the seam, not 8px above the glyphs.
+    const lineTop = 300;
+    const halfLeading = (40 - 23) / 2;
+    const glyphs = rect(400, lineTop + halfLeading, 60, 23);
+    const above = place(glyphs);
+    expect(above.placement).toBe('above');
+    expect(above.y + TOOLBAR.h).toBeLessThanOrEqual(lineTop);
+
+    // Same word on a line near the top: the toolbar flips below, and must start under the line box.
+    const lineBottom = 10 + 40;
+    const top = rect(400, 10 + halfLeading, 60, 23);
+    const below = place(top);
+    expect(below.placement).toBe('below');
+    expect(below.y).toBeGreaterThanOrEqual(lineBottom);
+  });
+
+  it('keeps at least a 12px gap to the glyph box above and below by default', () => {
+    const a = place(rect(400, 300, 60, 20));
+    expect(300 - (a.y + TOOLBAR.h)).toBeGreaterThanOrEqual(12);
+    const b = place(rect(400, 5, 60, 20));
+    expect(b.y - (5 + 20)).toBeGreaterThanOrEqual(12);
   });
 
   it('rounds to whole pixels', () => {

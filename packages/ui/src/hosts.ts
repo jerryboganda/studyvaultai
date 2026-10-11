@@ -1,6 +1,9 @@
-import { parseHttpUrl } from '@shared';
+import { DENY_HOST, denyEntriesFor, parseHttpUrl } from '@shared';
 
 /** Pure host / match-pattern helpers shared by the popup, side panel and options page. */
+
+// One deny-list matcher for the worker, the content script and every page (trailing dots included).
+export { denyEntriesFor };
 
 export const ALL_SITES_ORIGINS = ['https://*/*', 'http://*/*'] as const;
 const ALL_SITES = new Set<string>([...ALL_SITES_ORIGINS, '*://*/*', '<all_urls>']);
@@ -27,15 +30,6 @@ export function safeHref(url: string | null | undefined): string | undefined {
 export function isPdfUrl(url: string): boolean {
   const u = parseHttpUrl(url);
   return u !== null && /\.pdf$/i.test(u.pathname);
-}
-
-/** Deny entries that switch capture off for `host` (the host itself or a parent domain). */
-export function denyEntriesFor(host: string, denyList: readonly string[]): string[] {
-  const h = host.toLowerCase();
-  return denyList.filter((entry) => {
-    const e = entry.trim().toLowerCase();
-    return e.length > 0 && (h === e || h.endsWith(`.${e}`));
-  });
 }
 
 export type AddressClass =
@@ -67,9 +61,6 @@ export function classifyAddress(
   if (isPdfUrl(url)) return { kind: 'pdf', host };
   return { kind: 'ok', url, host };
 }
-
-// Same shape the background accepts when it turns deny entries into excludeMatches.
-const DENY_HOST = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/;
 
 /** Turn what the user typed ("https://Example.com/path", "*.example.com") into a deny-list host. */
 export function normalizeDenyInput(input: string): { host: string } | { error: string } {

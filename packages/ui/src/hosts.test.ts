@@ -46,6 +46,17 @@ describe('denyEntriesFor', () => {
     expect(denyEntriesFor('google.com', list)).toEqual([]);
     expect(denyEntriesFor('MAIL.GOOGLE.COM', list)).toEqual(['mail.google.com']);
   });
+
+  it('treats a trailing-dot FQDN as the same host', () => {
+    const list = ['paypal.com'];
+    expect(denyEntriesFor('paypal.com.', list)).toEqual(['paypal.com']);
+    expect(denyEntriesFor('www.paypal.com.', list)).toEqual(['paypal.com']);
+    expect(classifyAddress('https://www.paypal.com./pay', list)).toEqual({
+      kind: 'denied',
+      host: 'www.paypal.com.',
+      entries: ['paypal.com'],
+    });
+  });
 });
 
 describe('classifyAddress', () => {
@@ -82,6 +93,7 @@ describe('normalizeDenyInput', () => {
     ['*.example.com', 'example.com'],
     ['example.com.', 'example.com'],
     ['localhost', 'localhost'],
+    ['my_host.example.com', 'my_host.example.com'],
   ])('accepts %j', (input, host) => {
     expect(normalizeDenyInput(input)).toEqual({ host });
   });

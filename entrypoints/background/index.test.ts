@@ -3,6 +3,7 @@ import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { browser } from 'wxt/browser';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
+import { PENDING_FOCUS_KEY } from '@shared';
 import { resetDbForTests } from '@storage';
 import background from './index';
 import { ACTIVATE_TIMEOUT_MS } from './siteAccess';
@@ -145,6 +146,66 @@ describe('background wiring', () => {
 
     const other = await send('banks.list', {}, { id: 'some-other-extension' });
     expect(other).toMatchObject({ ok: false, error: { code: 'forbidden' } });
+  });
+
+  it('sidepanel.open calls chrome.sidePanel.open inside the message event, then stores the hand-over', async () => {
+    const fakes = installFakes();
+    background.main();
+    const page = { id: browser.runtime.id, tab: { id: 4 }, url: 'https://example.com/a' };
+    const send = (type: string, payload: unknown, sender: object) => {
+      let response: unknown;
+      // Not awaited: whatever the worker does synchronously has happened when this returns.
+      void fakeBrowser.runtime.onMessage.trigger({ v: 1, type, payload }, sender, (r: unknown) => {
+        response = r;
+      });
+      return () => vi.waitFor(() => expect(response).toBeDefined()).then(() => response);
+    };
+    const saved = await send(
+      'capture.save',
+      {
+        page: { url: 'https://example.com/a', canonicalUrl: null, title: 'A' },
+        exactQuote: 'Aspirin inhibits cyclooxygenase.',
+        anchorSet: {
+          type: 'html',
+          textAlgorithm: 'sv-text-v1',
+          textQuote: { exact: 'Aspirin inhibits cyclooxygenase.', prefix: '', suffix: '' },
+          textPosition: { start: 0, end: 32 },
+          structuralPath: null,
+          contentSignature: 'x',
+          documentTextLength: 100,
+        },
+        headingContext: null,
+        kind: 'essential',
+        color: 'amber',
+        bankId: null,
+        userComment: '',
+        priority: 3,
+        captureMethod: 'toolbar',
+      },
+      page,
+    )();
+    const id = (saved as { data: { highlight: { id: string } } }).data.highlight.id;
+
+    const reply = send('sidepanel.open', { focusHighlightId: id }, page);
+    expect(fakes.sidePanel.open).toHaveBeenCalledWith({ tabId: 4 });
+    expect(await reply()).toEqual({ ok: true, data: { opened: true } });
+    const stored = (await browser.storage.session.get(PENDING_FOCUS_KEY))[PENDING_FOCUS_KEY];
+    expect(stored).toMatchObject({ highlightId: id });
+
+    // A page cannot ask for another site's highlight to be focused.
+    await browser.storage.session.remove(PENDING_FOCUS_KEY);
+    const other = send(
+      'sidepanel.open',
+      { focusHighlightId: id },
+      {
+        ...page,
+        url: 'https://other.example/a',
+      },
+    );
+    expect(await other()).toEqual({ ok: true, data: { opened: true } });
+    expect(
+      (await browser.storage.session.get(PENDING_FOCUS_KEY))[PENDING_FOCUS_KEY],
+    ).toBeUndefined();
   });
 
   it('quick-save command injects, asks the tab to capture and badges the result', async () => {

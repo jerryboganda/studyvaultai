@@ -28,6 +28,7 @@ import {
   useToast,
   type Loadable,
 } from '@ui';
+import { Banks } from './Banks';
 import { HighlightCard, type CardActions } from './HighlightCard';
 import {
   derivePageState,
@@ -36,6 +37,7 @@ import {
   type PageIdentity,
   type PageState,
 } from './model';
+import { usePendingFocus } from './usePendingFocus';
 
 const RECENT_LIMIT = 50;
 
@@ -47,7 +49,7 @@ export function SidePanel() {
   );
 }
 
-type View = 'page' | 'recent';
+type View = 'page' | 'recent' | 'banks';
 
 function Panel() {
   const { settings, error: settingsError } = useSettings();
@@ -56,6 +58,8 @@ function Panel() {
   const epoch = useDataEpoch();
   const toast = useToast();
   const [view, setView] = useState<View>('page');
+  // The page overlay asked for a note: the card to focus is in "This page".
+  usePendingFocus(() => setView('page'));
 
   // The content script is the authority on the page's identity (canonical URL, live title).
   const status = useAsync(
@@ -163,6 +167,7 @@ function Panel() {
             tabs={[
               { id: 'page', label: 'This page', count },
               { id: 'recent', label: 'Recent' },
+              { id: 'banks', label: 'Banks' },
             ]}
             value={view}
             onChange={(id) => setView(id as View)}
@@ -179,7 +184,7 @@ function Panel() {
                   actions={actions}
                   pageIds={pageIds}
                 />
-              ) : (
+              ) : view === 'recent' ? (
                 <Recent
                   items={recent}
                   live={live}
@@ -187,6 +192,8 @@ function Panel() {
                   paletteFor={paletteFor}
                   actions={actions}
                 />
+              ) : (
+                <Banks />
               )}
             </div>
           </Tabs>

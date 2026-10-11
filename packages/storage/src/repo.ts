@@ -17,6 +17,7 @@ import {
   SCHEMA_VERSION,
   Source,
   StudyVaultError,
+  redactUrl,
   sourceKeys,
   trustedCanonical,
   type AnchorSet,
@@ -305,9 +306,18 @@ async function addMembership(
 export async function saveCapture(input: CaptureInput): Promise<CaptureResult> {
   const capture = parseInput(CaptureInput, input, 'capture');
   const keys = sourceKeys(capture.page.url, capture.page.canonicalUrl);
+  // The stored address has no credentials: presigned-URL signatures, OAuth tokens and fragments are
+  // not provenance, and a rotating token must not fork one page into many sources.
+  const originalUrl = redactUrl(capture.page.url);
   // Normalisation can lengthen a URL (percent-encoding); a record we could not read back is worse
   // than a refused capture.
-  if (!keys || keys.urlKey.length > MAX_URL_CHARS || keys.visitedKey.length > MAX_URL_CHARS) {
+  if (
+    !keys ||
+    originalUrl === null ||
+    keys.urlKey.length > MAX_URL_CHARS ||
+    keys.visitedKey.length > MAX_URL_CHARS ||
+    originalUrl.length > MAX_URL_CHARS
+  ) {
     throw new StudyVaultError('invalid_request', 'Page URL cannot be stored as a source');
   }
   const canonicalUrl = trustedCanonical(capture.page.url, capture.page.canonicalUrl);
@@ -369,7 +379,7 @@ export async function saveCapture(input: CaptureInput): Promise<CaptureResult> {
             type: 'web',
             urlKey: keys.urlKey,
             visitedKey: keys.visitedKey,
-            originalUrl: capture.page.url,
+            originalUrl,
             canonicalUrl,
             host: new URL(capture.page.url).hostname,
             title: capture.page.title,

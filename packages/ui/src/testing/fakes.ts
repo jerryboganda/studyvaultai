@@ -167,6 +167,23 @@ export class FakeStore {
         .slice(0, limit);
     },
     listBanks: async () => [...this.banks],
+    listBanksWithCounts: async () =>
+      this.banks.map((bank) => ({
+        bank,
+        count: this.items.filter((i) => i.banks.some((b) => b.id === bank.id)).length,
+      })),
+    createBank: async (name: string) => {
+      this.record('createBank', [name]);
+      const bank: BankLite = {
+        id: `bank-new${String(this.banks.length).padStart(4, '0')}`,
+        name: name.trim(),
+        color: 'teal',
+        isInbox: false,
+      };
+      this.banks = [...this.banks, bank];
+      this.notify();
+      return bank;
+    },
     updateHighlight: async (id: string, patch: HighlightPatch) => {
       this.record('updateHighlight', [id, patch]);
       const item = this.find(id);

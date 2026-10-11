@@ -4,6 +4,7 @@ import { bootOnce } from './boot';
 import {
   FakeBackground,
   clearSelection,
+  emulateUserModify,
   flushPromises,
   newId,
   select,
@@ -437,6 +438,83 @@ describe('save pipeline', () => {
     expect(JSON.stringify(payload)).not.toContain('PRIVATE-DRAFT');
     expect(payload.anchorSet.textQuote.suffix).toBe('');
     expect(h.painter.texts).toEqual(['Public text before the draft editor.']); // still resolves
+  });
+
+  it('saves a triple-clicked paragraph that sits right above an editor, without any of the draft', async () => {
+    const h = await boot();
+    setBody(
+      '<h2>Comments</h2><p id="para">Public text before the draft editor.</p>' +
+        '<div id="ed" contenteditable="true">PRIVATE-DRAFT: text the user is still typing.</div>',
+    );
+    // Chromium: a triple-click ends at offset 0 of the next block, here the editor itself.
+    const range = document.createRange();
+    range.setStart(document.getElementById('para')!.firstChild!, 0);
+    range.setEnd(document.getElementById('ed')!, 0);
+    document.getSelection()!.removeAllRanges();
+    document.getSelection()!.addRange(range);
+    document.dispatchEvent(new Event('selectionchange'));
+    await vi.advanceTimersByTimeAsync(80);
+    expect(h.ui.toolbar.at(-1)?.text).toBe('Public text before the draft editor.');
+
+    await h.host.save(saveRequest);
+    const payload = h.background.callsOf('capture.save')[0]!.payload as {
+      exactQuote: string;
+      anchorSet: { textQuote: { exact: string; suffix: string } };
+    };
+    expect(payload.exactQuote).toBe('Public text before the draft editor.');
+    expect(payload.anchorSet.textQuote.suffix).toBe('');
+    expect(JSON.stringify(payload)).not.toContain('PRIVATE-DRAFT');
+    expect(h.painter.texts).toEqual(['Public text before the draft editor.']);
+  });
+
+  describe('a CSS-only editor (-webkit-user-modify: read-write)', () => {
+    let restore: () => void;
+    beforeEach(() => {
+      restore = emulateUserModify();
+    });
+    afterEach(() => restore());
+
+    it('is never offered the toolbar, and never stores the start of its draft as context', async () => {
+      const h = await boot();
+      setBody(
+        '<p id="a">Public text before the editor.</p>' +
+          '<div id="ed" data-user-modify="read-write">PRIVATE-DRAFT: still typing</div>' +
+          '<p id="b">Public text after the editor.</p>',
+      );
+      // Drag across the editor: refused whole.
+      const across = document.createRange();
+      across.setStart(document.getElementById('a')!.firstChild!, 0);
+      across.setEnd(document.getElementById('b')!.firstChild!, 11);
+      document.getSelection()!.addRange(across);
+      document.dispatchEvent(new Event('selectionchange'));
+      await vi.advanceTimersByTimeAsync(80);
+      expect(h.ui.toolbar).toHaveLength(0);
+
+      // A selection beside it is fine, but its stored context stops where the draft begins.
+      await selectText('Public text before the editor.');
+      expect(h.ui.toolbar).toHaveLength(1);
+      await h.host.save(saveRequest);
+      const payload = h.background.callsOf('capture.save')[0]!.payload;
+      expect(JSON.stringify(payload)).not.toContain('PRIVATE-DRAFT');
+      expect(
+        (payload as { anchorSet: { textQuote: { suffix: string } } }).anchorSet.textQuote.suffix,
+      ).toBe('');
+    });
+
+    it('is refused by quick-save too', async () => {
+      const h = await boot();
+      setBody(
+        '<p id="a">Public text before the editor.</p>' +
+          '<div id="ed" data-user-modify="read-write">PRIVATE-DRAFT: still typing</div>',
+      );
+      select('PRIVATE-DRAFT: still');
+      const out = await h.handlers['content.captureSelection']!(
+        { method: 'shortcut', bankId: null },
+        {} as never,
+      );
+      expect(out).toMatchObject({ status: 'blocked' });
+      expect(h.background.callsOf('capture.save')).toHaveLength(0);
+    });
   });
 
   it('the selection survives interaction with the overlay (range cloned before focus moves)', async () => {
@@ -1038,6 +1116,361 @@ describe('click on a highlight', () => {
   });
 });
 
+describe('openInSidePanel', () => {
+  it('sends the request in the same task as the call, then resolves to opened', async () => {
+    const h = await boot();
+    const id = newId();
+    const pending = h.host.openInSidePanel(id);
+    // No await in between: the user gesture of the click that got us here must still be live.
+    expect(h.background.callsOf('sidepanel.open')).toEqual([
+      { type: 'sidepanel.open', payload: { focusHighlightId: id } },
+    ]);
+    expect(await pending).toBe(true);
+    expect(h.ui.toasts).toHaveLength(0);
+  });
+
+  it('opens without focusing a highlight', async () => {
+    const h = await boot();
+    expect(await h.host.openInSidePanel(null)).toBe(true);
+    expect(h.background.callsOf('sidepanel.open')[0]!.payload).toEqual({ focusHighlightId: null });
+  });
+
+  it('resolves to false and tells the user when the worker could not open it', async () => {
+    const h = await boot();
+    h.background.sidePanelOpens = false;
+    expect(await h.host.openInSidePanel(null)).toBe(false);
+    expect(h.ui.toasts.at(-1)).toMatchObject({
+      tone: 'error',
+      text: expect.stringContaining('side panel'),
+    });
+  });
+
+  it('never rejects: a lost extension connection becomes false and a reload hint', async () => {
+    const h = await boot();
+    h.background.failNext('sidepanel.open', new StudyVaultError('no_receiver', 'gone'));
+    await expect(h.host.openInSidePanel(newId())).resolves.toBe(false);
+    expect(h.ui.toasts.at(-1)).toMatchObject({
+      tone: 'error',
+      text: expect.stringContaining('Reload this page'),
+    });
+
+    h.background.failNext('sidepanel.open', new StudyVaultError('internal', 'boom'));
+    await expect(h.host.openInSidePanel(null)).resolves.toBe(false);
+    expect(h.ui.toasts.at(-1)).toMatchObject({ tone: 'error' });
+  });
+});
+
+describe('keyboard route to highlights (Alt+Shift+] next, Alt+Shift+[ previous)', () => {
+  const LINK = 'link text inside the page';
+
+  type KeyLike = {
+    isTrusted: boolean;
+    altKey: boolean;
+    shiftKey: boolean;
+    ctrlKey: boolean;
+    metaKey: boolean;
+    repeat: boolean;
+    code: string;
+    composedPath: () => EventTarget[];
+    preventDefault: () => void;
+  };
+
+  /** Like clickDriver: jsdom cannot make a trusted keydown, so call the controller's listener. */
+  async function withHighlights(opts: HarnessOptions = {}) {
+    const add = vi.spyOn(document, 'addEventListener');
+    const background = opts.background ?? new FakeBackground();
+    const rows = [storedHighlight(MITO), storedHighlight(RIBO), storedHighlight(LINK)];
+    for (const r of rows) background.rows.set(r.id, r);
+    const h = await boot({ ...opts, background });
+    const call = add.mock.calls
+      .filter((c) => c[0] === 'keydown' && !(c[2] as { passive?: boolean } | undefined)?.passive)
+      .at(-1);
+    const listener = call?.[1] as (e: unknown) => void;
+    const scrollBy = vi.fn();
+    window.scrollBy = scrollBy as never;
+    const press = (init: Partial<KeyLike> = {}, target: Node = document.body) => {
+      const preventDefault = vi.fn();
+      const event: KeyLike = {
+        isTrusted: true,
+        altKey: true,
+        shiftKey: true,
+        ctrlKey: false,
+        metaKey: false,
+        repeat: false,
+        code: 'BracketRight',
+        composedPath: () => {
+          const path: EventTarget[] = [];
+          for (let n: Node | null = target; n; n = n.parentNode) path.push(n);
+          return path;
+        },
+        preventDefault,
+        ...init,
+      };
+      listener(event);
+      return { preventDefault, options: call?.[2] as AddEventListenerOptions | undefined };
+    };
+    const ids = rows.map((r) => r.id) as [string, string, string];
+    return { h, background, rows, ids, press, scrollBy, listener };
+  }
+
+  const shown = (h: Harness): string[] => h.ui.popovers.map((p) => p.view.id);
+
+  afterEach(() => {
+    delete (Range.prototype as { getBoundingClientRect?: unknown }).getBoundingClientRect;
+    delete (Range.prototype as { getClientRects?: unknown }).getClientRects;
+  });
+
+  it('steps through the painted highlights in document order, wrapping at both ends', async () => {
+    const { h, ids, press, scrollBy } = await withHighlights();
+    expect(h.painter.ids).toHaveLength(3);
+
+    const first = press();
+    expect(first.preventDefault).toHaveBeenCalledTimes(1);
+    expect(first.options).toMatchObject({ capture: true });
+    expect(first.options?.passive).not.toBe(true); // it must be able to preventDefault
+    press();
+    press();
+    press(); // wraps
+    expect(shown(h)).toEqual([ids[0], ids[1], ids[2], ids[0]]);
+
+    press({ code: 'BracketLeft' }); // back from the first: wraps to the last
+    press({ code: 'BracketLeft' });
+    expect(shown(h).slice(-2)).toEqual([ids[2], ids[1]]);
+
+    // Scrolls instantly (the popover is anchored to the final position) and flashes the highlight.
+    expect(scrollBy.mock.calls.at(-1)![0]).toMatchObject({ behavior: 'instant' });
+    expect(h.painter.active).toBe(ids[1]);
+    await vi.advanceTimersByTimeAsync(2100);
+    expect(h.painter.active).toBeNull();
+  });
+
+  it('follows document order, not the order they were stored in', async () => {
+    const background = new FakeBackground();
+    setBody(ARTICLE);
+    const late = storedHighlight(LINK);
+    const early = storedHighlight(MITO);
+    background.rows.set(late.id, late); // inserted first
+    background.rows.set(early.id, early);
+    const add = vi.spyOn(document, 'addEventListener');
+    const h = await boot({ background });
+    const listener = add.mock.calls
+      .filter((c) => c[0] === 'keydown' && !(c[2] as { passive?: boolean } | undefined)?.passive)
+      .at(-1)![1] as (e: unknown) => void;
+    window.scrollBy = vi.fn() as never;
+    const key = { isTrusted: true, altKey: true, shiftKey: true, ctrlKey: false, metaKey: false };
+    listener({
+      ...key,
+      repeat: false,
+      code: 'BracketRight',
+      composedPath: () => [],
+      preventDefault() {},
+    });
+    expect(shown(h)).toEqual([early.id]);
+  });
+
+  it('starts from the reader position: the first highlight at or below the top of the viewport', async () => {
+    const { h, ids, press } = await withHighlights();
+    // MITO is above the fold, RIBO just below its top edge, the link further down.
+    Object.defineProperty(Range.prototype, 'getBoundingClientRect', {
+      configurable: true,
+      value(this: Range) {
+        const text = this.toString();
+        const top = text.includes('mitochondria') ? -500 : text.includes('Ribosomes') ? 100 : 900;
+        return { top, height: 20, left: 0, width: 50, right: 50, bottom: top + 20 };
+      },
+    });
+    press();
+    expect(shown(h)).toEqual([ids[1]]);
+  });
+
+  it('previous with nothing reached yet goes to the last highlight above the viewport', async () => {
+    const { h, ids, press } = await withHighlights();
+    Object.defineProperty(Range.prototype, 'getBoundingClientRect', {
+      configurable: true,
+      value(this: Range) {
+        const text = this.toString();
+        const top = text.includes('link text') ? 900 : text.includes('Ribosomes') ? -100 : -500;
+        return { top, height: 20, left: 0, width: 50, right: 50, bottom: top + 20 };
+      },
+    });
+    press({ code: 'BracketLeft' });
+    expect(shown(h)).toEqual([ids[1]]);
+  });
+
+  it('continues from the highlight the reader clicked', async () => {
+    const add = vi.spyOn(document, 'addEventListener');
+    const background = new FakeBackground();
+    const rows = [storedHighlight(MITO), storedHighlight(RIBO), storedHighlight(LINK)];
+    for (const r of rows) background.rows.set(r.id, r);
+    const h = await boot({ background });
+    window.scrollBy = vi.fn() as never;
+    const click = clickDriver(add);
+    h.painter.hit = rows[1]!.id;
+    click.click(document.getElementById('lnk')!);
+    expect(shown(h)).toEqual([rows[1]!.id]);
+
+    const keydown = add.mock.calls
+      .filter((c) => c[0] === 'keydown' && !(c[2] as { passive?: boolean } | undefined)?.passive)
+      .at(-1)![1] as (e: unknown) => void;
+    keydown({
+      isTrusted: true,
+      altKey: true,
+      shiftKey: true,
+      ctrlKey: false,
+      metaKey: false,
+      repeat: false,
+      code: 'BracketRight',
+      composedPath: () => [],
+      preventDefault() {},
+    });
+    expect(shown(h)).toEqual([rows[1]!.id, rows[2]!.id]);
+  });
+
+  it('skips a highlight whose text is hidden, and says so when none can be shown', async () => {
+    const { h, ids, press, scrollBy } = await withHighlights();
+    let hiddenWords: string[] = ['mitochondria'];
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value(this: Range) {
+        return hiddenWords.some((w) => this.toString().includes(w))
+          ? []
+          : [{ width: 80, height: 18 }];
+      },
+    });
+    press(); // MITO is in a closed panel: the next one is shown
+    expect(shown(h)).toEqual([ids[1]]);
+
+    hiddenWords = ['mitochondria', 'Ribosomes', 'link text'];
+    const before = scrollBy.mock.calls.length;
+    const out = press();
+    expect(out.preventDefault).toHaveBeenCalledTimes(1);
+    expect(shown(h)).toEqual([ids[1]]); // nothing new
+    expect(scrollBy.mock.calls.length).toBe(before); // and nothing scrolled
+    expect(h.ui.toasts.at(-1)).toMatchObject({ text: 'No visible highlights on this page.' });
+  });
+
+  it('announces when the page has no highlights', async () => {
+    const add = vi.spyOn(document, 'addEventListener');
+    const h = await boot();
+    const keydown = add.mock.calls
+      .filter((c) => c[0] === 'keydown' && !(c[2] as { passive?: boolean } | undefined)?.passive)
+      .at(-1)![1] as (e: unknown) => void;
+    keydown({
+      isTrusted: true,
+      altKey: true,
+      shiftKey: true,
+      ctrlKey: false,
+      metaKey: false,
+      repeat: false,
+      code: 'BracketLeft',
+      composedPath: () => [],
+      preventDefault() {},
+    });
+    expect(h.ui.popovers).toHaveLength(0);
+    expect(h.ui.toasts.at(-1)).toMatchObject({
+      tone: 'info',
+      text: 'No highlights on this page yet.',
+    });
+  });
+
+  it('ignores other keys, other modifiers, key repeat and scripted events', async () => {
+    const { h, press } = await withHighlights();
+    for (const init of [
+      { code: 'KeyT' },
+      { shiftKey: false },
+      { altKey: false },
+      { ctrlKey: true }, // AltGr on Windows reports Ctrl+Alt
+      { metaKey: true },
+      { repeat: true },
+      { isTrusted: false },
+    ] as Array<Partial<KeyLike>>) {
+      expect(press(init).preventDefault).not.toHaveBeenCalled();
+    }
+    expect(h.ui.popovers).toHaveLength(0);
+    expect(h.ui.toasts).toHaveLength(0);
+  });
+
+  afterEach(() => {
+    document.designMode = 'off';
+  });
+
+  it('stays out of the way while the user is editing', async () => {
+    const { h, press } = await withHighlights();
+    document.body.insertAdjacentHTML(
+      'beforeend',
+      '<input id="f" type="text"><div id="ce" contenteditable="true" tabindex="0">draft</div>',
+    );
+    const field = document.getElementById('f') as HTMLInputElement;
+    field.focus();
+    expect(press({}, field).preventDefault).not.toHaveBeenCalled();
+    field.blur();
+    const editor = document.getElementById('ce')!;
+    editor.focus();
+    expect(press({}, editor).preventDefault).not.toHaveBeenCalled();
+    editor.blur();
+    // The target alone is enough (focus may already have moved on when a handler runs).
+    expect(press({}, editor).preventDefault).not.toHaveBeenCalled();
+    document.designMode = 'on';
+    expect(press().preventDefault).not.toHaveBeenCalled();
+    document.designMode = 'off';
+    expect(h.ui.popovers).toHaveLength(0);
+    expect(press().preventDefault).toHaveBeenCalledTimes(1); // and works again afterwards
+    expect(h.ui.popovers).toHaveLength(1);
+  });
+
+  it('ignores keys pressed inside the overlay (its note field types text)', async () => {
+    const { h, press } = await withHighlights();
+    document.body.insertAdjacentHTML(
+      'beforeend',
+      '<div data-studyvault><button id="ob">x</button></div>',
+    );
+    expect(press({}, document.getElementById('ob')!).preventDefault).not.toHaveBeenCalled();
+    expect(h.ui.popovers).toHaveLength(0);
+  });
+
+  it('does nothing when the overlay did not start, or the extension context is gone', async () => {
+    const noUi = await withHighlights({ uiFails: true });
+    expect(noUi.press().preventDefault).not.toHaveBeenCalled();
+    noUi.h.controller.destroy();
+
+    const gone = await withHighlights();
+    gone.h.ctx.isValid = false;
+    expect(gone.press().preventDefault).not.toHaveBeenCalled();
+    expect(gone.h.ui.popovers).toHaveLength(0);
+  });
+
+  it('causes no refresh, no report and no timers beyond the 2 s flash', async () => {
+    const { h, background, press } = await withHighlights();
+    await vi.advanceTimersByTimeAsync(10_000); // the boot report and its echo have settled
+    const timers = vi.getTimerCount();
+    const fetches = background.callsOf('page.highlights').length;
+    const reports = background.callsOf('highlight.reportResolution').length;
+    for (let i = 0; i < 6; i++) press();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(background.callsOf('page.highlights')).toHaveLength(fetches);
+    expect(background.callsOf('highlight.reportResolution')).toHaveLength(reports);
+    expect(h.painter.active).toBeNull();
+    expect(vi.getTimerCount()).toBe(timers); // the 2 s flash timer has run out, nothing else was armed
+  });
+
+  it('is detached with the session: nothing is left on the document after destroy', async () => {
+    const add = vi.spyOn(document, 'addEventListener');
+    const remove = vi.spyOn(document, 'removeEventListener');
+    const { h, press, listener } = await withHighlights();
+    const added = add.mock.calls.filter((c) => c[1] === listener);
+    expect(added).toHaveLength(1);
+    h.controller.destroy();
+    expect(remove.mock.calls.filter((c) => c[0] === 'keydown' && c[1] === listener)).toHaveLength(
+      1,
+    );
+    expect(h.ui.destroyed).toBe(true);
+    // A late event through a retained reference still changes nothing.
+    expect(press().preventDefault).not.toHaveBeenCalled();
+    expect(h.ui.popovers).toHaveLength(0);
+    expect(h.ui.toasts).toHaveLength(0);
+  });
+});
+
 describe('tab RPC', () => {
   const sender = {} as never;
 
@@ -1287,6 +1720,32 @@ describe('tab RPC', () => {
       expect(h.painter.active).toBeNull();
     });
 
+    it('reports found=false, and moves nothing, for a highlight whose text is hidden', async () => {
+      const background = new FakeBackground();
+      const stored = storedHighlight(MITO);
+      background.rows.set(stored.id, stored);
+      const h = await boot({ background });
+      const scrollBy = vi.fn();
+      window.scrollBy = scrollBy as never;
+      const timers = vi.getTimerCount();
+      // A display:none panel: the range resolves (hidden text is in the stream) but has no box.
+      Object.defineProperty(Range.prototype, 'getClientRects', {
+        configurable: true,
+        value: () => [],
+      });
+      try {
+        expect(h.painter.ids).toEqual([stored.id]); // resolved, so the old code said found:true
+        expect(await h.handlers['content.reveal']!({ id: stored.id }, sender)).toEqual({
+          found: false,
+        });
+        expect(scrollBy).not.toHaveBeenCalled();
+        expect(h.painter.active).toBeNull();
+        expect(vi.getTimerCount()).toBe(timers); // no flash timer armed
+      } finally {
+        delete (Range.prototype as { getClientRects?: unknown }).getClientRects;
+      }
+    });
+
     it('finds a highlight created elsewhere before the data-change refresh arrived', async () => {
       const h = await boot();
       window.scrollBy = vi.fn() as never;
@@ -1348,7 +1807,14 @@ describe('context invalidation', () => {
     );
     const leakedWin = balance(winAdd.mock.calls, winRemove.mock.calls);
     expect(docAdd.mock.calls.map((c) => c[0])).toEqual(
-      expect.arrayContaining(['selectionchange', 'pointerdown', 'pointerup', 'click', 'keyup']),
+      expect.arrayContaining([
+        'selectionchange',
+        'pointerdown',
+        'pointerup',
+        'click',
+        'keyup',
+        'keydown',
+      ]),
     );
     expect(winAdd.mock.calls.map((c) => c[0])).toEqual(
       expect.arrayContaining(['scroll', 'resize', 'popstate', 'hashchange']),

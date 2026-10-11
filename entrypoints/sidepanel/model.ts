@@ -1,4 +1,4 @@
-import type { PageStatus } from '@shared';
+import { MAX_BANK_NAME_CHARS, type PageStatus } from '@shared';
 import type { HighlightListItem } from '@storage';
 import { classifyAddress, hostOf, type AddressClass } from '@ui/hosts';
 import { describeResolveState } from '@ui/resolveState';
@@ -110,3 +110,13 @@ export function revealAvailability(opts: {
 
 export const REVEAL_NOT_FOUND =
   'StudyVault could not find this highlight on the page right now. The page text may have changed or has not finished loading; your saved quote is unchanged.';
+
+/** What is wrong with a bank name the user typed, or null when it can be created. */
+export function validateBankName(input: string): string | null {
+  const name = input.trim();
+  if (name === '') return 'Enter a name for the bank.';
+  if (name.length > MAX_BANK_NAME_CHARS) {
+    return `Use ${MAX_BANK_NAME_CHARS} characters or fewer (this is ${name.length}).`;
+  }
+  return null;
+}

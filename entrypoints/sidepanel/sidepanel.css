@@ -50,3 +50,23 @@ body {
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: var(--sv-space-2);
 }
+.panel__error {
+  color: var(--sv-danger);
+  font-weight: 600;
+}
+.bank-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+}
+.bank-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sv-space-2);
+  padding: var(--sv-space-2) var(--sv-space-3);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface-raised);
+  min-width: 0;
+}

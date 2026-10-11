@@ -1,5 +1,7 @@
 import { browser } from 'wxt/browser';
+import { isRegistrablePattern } from '@shared';
 import { callBackground, updateSettings } from '@runtime';
+import { patternHost } from './hosts';
 
 /**
  * Site-access flows shared by the popup and the options page (ADR-003). Each one persists the
@@ -16,17 +18,36 @@ function checkSize(list: readonly string[], what: string) {
   }
 }
 
-/** Ask Chrome for host access; false when the user declined (nothing is changed then). */
-export async function grantSiteAccess(patterns: readonly string[]): Promise<boolean> {
+export interface GrantResult {
+  /** False when the user declined in Chrome's prompt; nothing was changed then. */
+  granted: boolean;
+  /**
+   * Requested patterns the worker did not register after the sync. Chrome granted the access, but
+   * the content script will not start by itself there: the UI must say so.
+   */
+  notRegistered: string[];
+}
+
+/** Ask Chrome for host access, remember it, and report which patterns really became always-on. */
+export async function grantSiteAccess(patterns: readonly string[]): Promise<GrantResult> {
+  // Checked before the prompt (synchronously, so the user gesture survives): a pattern the worker
+  // cannot register would be stored and then silently dropped by every sync.
+  const unusable = patterns.filter((p) => !isRegistrablePattern(p));
+  if (unusable.length > 0) {
+    const names = unusable.map((p) => patternHost(p) ?? p).join(', ');
+    throw new Error(
+      `StudyVault cannot keep itself switched on for ${names}: Chrome would accept the permission, but this address cannot be registered as an always-on site. Use "Activate on this tab" there instead.`,
+    );
+  }
   const granted = await browser.permissions.request({ origins: [...patterns] });
-  if (!granted) return false;
+  if (!granted) return { granted: false, notRegistered: [] };
   await updateSettings((s) => {
     const persistentOrigins = [...new Set([...s.persistentOrigins, ...patterns])];
     checkSize(persistentOrigins, 'enabled sites');
     return { ...s, persistentOrigins };
   });
-  await callBackground('site.sync', {});
-  return true;
+  const { registeredMatches } = await callBackground('site.sync', {});
+  return { granted: true, notRegistered: patterns.filter((p) => !registeredMatches.includes(p)) };
 }
 
 export async function revokeSiteAccess(patterns: readonly string[]): Promise<void> {

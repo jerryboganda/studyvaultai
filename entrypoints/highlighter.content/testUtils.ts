@@ -67,6 +67,34 @@ export function clearSelection(): void {
   document.getSelection()?.removeAllRanges();
 }
 
+/**
+ * jsdom's style engine drops properties it does not know, so `-webkit-user-modify` (a CSS-only
+ * editing surface) never shows up in getComputedStyle. This makes it answer from a
+ * `data-user-modify="read-write"` attribute on the element or on its nearest ancestor that has one
+ * (the property is inherited), "read-only" otherwise. Returns the function that undoes it.
+ */
+export function emulateUserModify(): () => void {
+  const original = window.getComputedStyle;
+  window.getComputedStyle = ((el: Element, pseudo?: string | null) => {
+    const style = original.call(window, el, pseudo);
+    return new Proxy(style, {
+      get(target, prop) {
+        if (prop === 'getPropertyValue') {
+          return (name: string): string =>
+            name === '-webkit-user-modify'
+              ? (el.closest('[data-user-modify]')?.getAttribute('data-user-modify') ?? 'read-only')
+              : target.getPropertyValue(name);
+        }
+        const value: unknown = Reflect.get(target, prop);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+  }) as typeof window.getComputedStyle;
+  return () => {
+    window.getComputedStyle = original;
+  };
+}
+
 let idCounter = 0;
 export const newId = (prefix = 'hl'): string => `${prefix}-${String(++idCounter).padStart(8, '0')}`;
 
@@ -184,6 +212,8 @@ export class FakeBackground {
   /** Requests of a gated type wait here before the worker handles them. */
   gates = new Map<string, Promise<void>>();
   epochListeners = new Set<() => void>();
+  /** What `sidepanel.open` answers (the worker could not open the panel when false). */
+  sidePanelOpens = true;
   banks: BankLite[] = [{ id: 'inbox-default', name: 'Inbox', color: 'amber', isInbox: true }];
 
   callsOf(type: string): Call[] {
@@ -316,6 +346,8 @@ export class FakeBackground {
         this.bump();
         return next;
       }
+      case 'sidepanel.open':
+        return { opened: this.sidePanelOpens };
       case 'banks.list':
         return { banks: this.banks, lastBankId: null };
       case 'bank.create': {

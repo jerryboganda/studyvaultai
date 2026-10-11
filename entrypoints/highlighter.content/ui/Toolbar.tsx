@@ -8,13 +8,12 @@ import {
 } from '@shared';
 import type { SaveRequest, SelectionInfo } from '../contract';
 import { Composer } from './Composer';
-import { errorMessage, useUi } from './context';
+import { errorMessage, openSidePanel, useUi } from './context';
 import { pushToast, useStore } from './store';
 import { floatingStyle, useFloating } from './useFloating';
 
 const DEFAULT_PRIORITY = 3;
-
-type PanelMode = 'note' | 'advanced';
+const NOTE_IN_PANEL = 'write your note in the side panel';
 
 interface ToolbarAction {
   key: string;
@@ -28,17 +27,25 @@ interface ToolbarAction {
   onActivate(): void;
 }
 
-function savedNotice(result: CaptureResult): { text: string; undoable: boolean } {
+/** `note`: the side panel is open on this highlight, so say where to write the note. */
+function savedNotice(result: CaptureResult, note: boolean): { text: string; undoable: boolean } {
   const bank = result.bank.name;
   switch (result.status) {
     case 'created':
-      return { text: `Saved to ${bank}`, undoable: true };
+      return { text: note ? `Saved - ${NOTE_IN_PANEL}` : `Saved to ${bank}`, undoable: true };
     case 'restored':
-      return { text: `Restored in ${bank}`, undoable: true };
+      return {
+        text: note ? `Restored - ${NOTE_IN_PANEL}` : `Restored in ${bank}`,
+        undoable: true,
+      };
     default:
       // A duplicate may only have gained a bank membership; undo would delete the older highlight.
       return {
-        text: result.addedToBank ? `Already saved - added to ${bank}` : `Already saved in ${bank}`,
+        text: note
+          ? `Already saved - ${NOTE_IN_PANEL}`
+          : result.addedToBank
+            ? `Already saved - added to ${bank}`
+            : `Already saved in ${bank}`,
         undoable: false,
       };
   }
@@ -49,7 +56,7 @@ export function ToolbarUnit({ selection }: { selection: SelectionInfo }) {
   const { host, store } = ui;
   const settings = useStore(store, (s) => s.settings);
 
-  const [panel, setPanel] = useState<PanelMode | null>(null);
+  const [panel, setPanel] = useState(false);
   const [busy, setBusy] = useState(false);
   const [active, setActive] = useState(0);
   const busyRef = useRef(false);
@@ -59,15 +66,20 @@ export function ToolbarUnit({ selection }: { selection: SelectionInfo }) {
   const placement = useFloating(unitRef, selection.rect, panel);
 
   const save = useCallback(
-    async (req: SaveRequest): Promise<boolean> => {
+    async (req: SaveRequest, note = false): Promise<boolean> => {
       if (busyRef.current) return false;
       busyRef.current = true;
       setBusy(true);
       const errorsBefore = store.get().errorSeq;
+      // The selection this save is for. The user may select something else while it is in flight.
+      const savedText = store.get().toolbar?.selection.text;
       try {
         const result = await host.save(req);
-        const { text, undoable } = savedNotice(result);
         const id = result.highlight.id;
+        // The id exists only now, after the round trip. chrome.sidePanel.open still has the click's
+        // transient user activation (about 5 s; measured: allowed after 3 s, refused after 6 s).
+        const noted = note && (await openSidePanel(ui, id));
+        const { text, undoable } = savedNotice(result, noted);
         pushToast(store, {
           text,
           tone: 'success',
@@ -87,8 +99,12 @@ export function ToolbarUnit({ selection }: { selection: SelectionInfo }) {
               }
             : undefined,
         });
-        host.dismissSelection();
-        ui.closeToolbar();
+        // Same selection (text), not same object: scrolling re-places the toolbar with a new rect.
+        // A newer selection owns the toolbar now and must not be dismissed with this one.
+        if (store.get().toolbar?.selection.text === savedText) {
+          host.dismissSelection();
+          ui.closeToolbar();
+        }
         return true;
       } catch (err) {
         // The host usually reports (and offers Retry for) its own failures; do not double up.
@@ -107,29 +123,33 @@ export function ToolbarUnit({ selection }: { selection: SelectionInfo }) {
     [host, store, ui],
   );
 
-  const quick = (kind: HighlightKind | null): void => {
+  /** `note`: after the save, open the side panel on the new highlight (the note is typed there). */
+  const quick = (kind: HighlightKind | null, note = false): void => {
     const current = host.settings();
     const k = kind ?? current.defaultKind;
-    void save({
-      kind: k,
-      color: current.palette[k],
-      bankId: null,
-      comment: '',
-      priority: DEFAULT_PRIORITY,
-    });
+    void save(
+      {
+        kind: k,
+        color: current.palette[k],
+        bankId: null,
+        comment: '',
+        priority: DEFAULT_PRIORITY,
+      },
+      note,
+    );
   };
 
-  const togglePanel = (mode: PanelMode): void => {
-    if (panel === mode) return closePanel();
+  const togglePanel = (): void => {
+    if (panel) return closePanel();
     ui.rememberFocus();
     invokerRef.current = ui.focusedInside();
-    setPanel(mode);
+    setPanel(true);
   };
 
   function closePanel(): void {
     const invoker = invokerRef.current;
     invokerRef.current = null;
-    setPanel(null);
+    setPanel(false);
     // Keyboard users go back to the button that opened the panel; pointer users to the page.
     if (invoker?.isConnected) invoker.focus({ preventScroll: true });
     else ui.restoreFocus();
@@ -152,18 +172,17 @@ export function ToolbarUnit({ selection }: { selection: SelectionInfo }) {
     })),
     {
       key: 'note',
-      name: 'Add a note',
+      name: 'Save and add a note in the side panel',
       content: 'Note',
-      expanded: panel === 'note',
       groupStart: true,
-      onActivate: () => togglePanel('note'),
+      onActivate: () => quick(null, true),
     },
     {
       key: 'more',
       name: 'More options',
       content: 'More',
-      expanded: panel === 'advanced',
-      onActivate: () => togglePanel('advanced'),
+      expanded: panel,
+      onActivate: togglePanel,
     },
   ];
 
@@ -239,13 +258,7 @@ export function ToolbarUnit({ selection }: { selection: SelectionInfo }) {
       </div>
 
       {panel ? (
-        <Composer
-          mode={panel}
-          quote={selection.text}
-          busy={busy}
-          onSave={save}
-          onCancel={closePanel}
-        />
+        <Composer quote={selection.text} busy={busy} onSave={save} onCancel={closePanel} />
       ) : null}
     </div>
   );

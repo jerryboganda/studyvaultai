@@ -44,7 +44,10 @@ export interface Resolution {
   /** Non-null only for `resolved` and `changed`. `ambiguous`/`orphaned` are never given a range. */
   range: Range | null;
   method: ResolutionMethod;
-  /** Number of exact occurrences of the quote that were found (0 for fuzzy/orphaned). */
+  /**
+   * Number of exact occurrences of the quote that were scored: all of them up to 5,000, a
+   * selection beyond that (0 for fuzzy/orphaned).
+   */
   candidateCount: number;
 }
 

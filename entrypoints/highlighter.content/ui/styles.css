@@ -59,15 +59,18 @@
   box-shadow: 0 0 0 2px var(--sv-focus-halo);
 }
 /*
- * The dialog container takes focus only so a screen reader announces it and Tab continues inside.
- * A plain :focus (pointer opened) shows no frame around the whole popover; a keyboard-driven one
- * (:focus-visible) draws an inset ring. Both restore the popover's own drop shadow.
+ * A dialog container (the popover, the "More options" panel) takes focus only so a screen reader
+ * announces it and Tab continues inside. A plain :focus (pointer opened) shows no frame around the
+ * whole surface; a keyboard-driven one (:focus-visible) draws an inset ring. Both restore the
+ * surface's own drop shadow.
  */
-.sv-popover:focus {
+.sv-popover:focus,
+.sv-panel:focus {
   outline: none;
   box-shadow: var(--sv-shadow);
 }
-.sv-popover:focus-visible {
+.sv-popover:focus-visible,
+.sv-panel:focus-visible {
   outline: 2px solid var(--sv-focus);
   outline-offset: -4px;
   box-shadow: var(--sv-shadow);
@@ -106,6 +109,12 @@
  * values are the fallback until useFloating has measured; it then sets px limits from the layout
  * viewport (100vw/100vh include scrollbars). What does not fit scrolls inside the panel, with the
  * action row pinned.
+ *
+ * The toolbar appears while a double or triple click is still going on, right next to the word, and
+ * a box that is still fading in already takes pointer events: it swallowed the next click. Until the
+ * enter animation has finished it is click-through (sv-arm holds pointer-events: none for exactly
+ * its duration, then the element's own value, auto, applies). Reduced motion turns every animation
+ * off, so it is interactive at once.
  */
 .sv-unit {
   display: flex;
@@ -114,6 +123,15 @@
   gap: 6px;
   max-width: calc(100vw - 16px);
   max-height: calc(100vh - 16px);
+  animation:
+    sv-in var(--sv-motion) ease-out,
+    sv-arm var(--sv-motion) linear;
+}
+@keyframes sv-arm {
+  from,
+  to {
+    pointer-events: none;
+  }
 }
 
 .sv-toolbar,
@@ -242,15 +260,14 @@
   min-width: 0;
 }
 .sv-field > label,
-.sv-new-bank > label {
+.sv-field > .sv-label {
   font-size: 12px;
   font-weight: 600;
   color: var(--sv-text-muted);
 }
-.sv-new-bank {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sv-space-1);
+/* A button that sits under its field rather than stretching across it. */
+.sv-btn-start {
+  align-self: flex-start;
 }
 
 .sv-row {
@@ -276,20 +293,6 @@
   background: var(--sv-bg);
   border: 1px solid var(--sv-border-strong);
   border-radius: var(--sv-radius-sm);
-  user-select: text;
-  -webkit-user-select: text;
-}
-/* The UA default (#757575) is 4.04:1 on the dark field. Firefox also dims placeholders; opacity 1 keeps the ratio. */
-.sv-control::placeholder {
-  color: var(--sv-text-muted);
-  opacity: 1;
-}
-.sv-control[aria-invalid='true'] {
-  border-color: var(--sv-danger);
-}
-.sv-textarea {
-  min-height: 64px;
-  resize: vertical;
 }
 
 /*
@@ -338,6 +341,11 @@
 .sv-muted {
   font-size: 12px;
   color: var(--sv-text-muted);
+}
+/* The note is the user's own text: keep their line breaks, never let a long word widen the popover. */
+.sv-note-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .sv-status {
   min-height: 18px;
@@ -426,7 +434,7 @@
 }
 
 /*
- * Short viewports (a 1280x720 window at 150% zoom and up, a laptop at 200%). The composer and the
+ * Short viewports (a 1280x720 window at 150% zoom and up, a laptop at 200%). The panel and the
  * popover tighten up first; only then does the content scroll inside the panel.
  */
 @media (max-height: 520px) {
@@ -444,44 +452,30 @@
     -webkit-line-clamp: 2;
     line-clamp: 2;
   }
-  /* rows="3" would win over min-height, so the height is set outright. */
-  .sv-textarea {
-    height: 48px;
-    min-height: 48px;
-  }
 }
-/* ...and when there is also width to spare, "More options" goes two columns instead of five rows. */
+/* ...and when there is also width to spare, "More options" goes two columns instead of four rows. */
 @media (max-height: 520px) and (min-width: 480px) {
-  .sv-panel[data-mode='advanced'] {
+  .sv-panel {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     grid-template-areas:
       'quote quote'
-      'bank note'
-      'kind note'
+      'bank kind'
       'actions actions';
     align-items: start;
     column-gap: var(--sv-space-3);
     width: 560px;
   }
-  .sv-panel[data-mode='advanced'] > .sv-quote {
+  .sv-panel > .sv-quote {
     grid-area: quote;
   }
-  .sv-panel[data-mode='advanced'] > .sv-area-bank {
+  .sv-panel > .sv-area-bank {
     grid-area: bank;
   }
-  .sv-panel[data-mode='advanced'] > .sv-area-kind {
+  .sv-panel > .sv-area-kind {
     grid-area: kind;
   }
-  .sv-panel[data-mode='advanced'] > .sv-area-note {
-    grid-area: note;
-    align-self: stretch;
-  }
-  .sv-panel[data-mode='advanced'] > .sv-area-note > .sv-textarea {
-    flex: 1 1 auto;
-    resize: none;
-  }
-  .sv-panel[data-mode='advanced'] > .sv-actions {
+  .sv-panel > .sv-actions {
     grid-area: actions;
   }
 }
@@ -504,7 +498,8 @@
   }
   /* The halo is a box-shadow, which forced colours drop; the outline alone carries the indicator. */
   .sv-root :focus,
-  .sv-popover:focus-visible {
+  .sv-popover:focus-visible,
+  .sv-panel:focus-visible {
     outline-color: Highlight;
     box-shadow: none;
   }

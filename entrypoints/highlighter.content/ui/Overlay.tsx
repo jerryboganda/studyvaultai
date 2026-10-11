@@ -5,14 +5,13 @@ import { useStore } from './store';
 import { Toasts } from './Toasts';
 import { ToolbarUnit } from './Toolbar';
 
-const TEXT_ENTRY = 'input, textarea, select';
-
 /**
- * Pressing a control must not collapse the page selection or pull focus off the page. Text entry
- * is the exception: it needs the caret, and focusing it is a deliberate act.
+ * Pressing a control must not collapse the page selection or pull focus off the page. A native
+ * <select> is the exception: it cannot open without its mousedown. The overlay has no free-text
+ * fields (page scripts can observe keystrokes typed in the page); text is typed in the side panel.
  */
 function keepPageState(e: SyntheticEvent): void {
-  if (e.target instanceof Element && e.target.closest(TEXT_ENTRY)) return;
+  if (e.target instanceof Element && e.target.closest('select')) return;
   e.preventDefault();
 }
 

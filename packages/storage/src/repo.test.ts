@@ -262,6 +262,85 @@ describe('saveCapture', () => {
   });
 });
 
+describe('credentials in page addresses', () => {
+  const quote = 'Aspirin irreversibly inhibits cyclooxygenase.';
+  const cap1 = (url: string, canonicalUrl: string | null = null, start = 100) =>
+    cap(quote, start, { page: { url, canonicalUrl, title: 'Doc' } });
+
+  it('stores no query token, fragment token or userinfo as the source address or key', async () => {
+    const url =
+      'https://user:SECRETPW@files.example.com/doc.html?page=2&X-Amz-Signature=SECRETSIG&X-Amz-Credential=SECRETKEY&token=SECRETTOK#access_token=SECRETFRAG&token_type=bearer';
+    await saveCapture(cap1(url));
+
+    const [source] = await getDb().sources.toArray();
+    expect(source).toMatchObject({
+      originalUrl: 'https://files.example.com/doc.html?page=2',
+      urlKey: 'https://files.example.com/doc.html?page=2',
+      visitedKey: 'https://files.example.com/doc.html?page=2',
+      canonicalUrl: null,
+    });
+    const stored = JSON.stringify(await getDb().sources.toArray());
+    expect(stored).not.toContain('SECRET');
+    expect(stored).not.toContain('access_token');
+  });
+
+  it('scrubs a credential inside a route fragment but keeps the route', async () => {
+    await saveCapture(cap1('https://app.example.com/#/reset?token=abc&step=2'));
+    const [source] = await getDb().sources.toArray();
+    expect(source).toMatchObject({
+      originalUrl: 'https://app.example.com/#/reset?step=2',
+      visitedKey: 'https://app.example.com/#/reset?step=2',
+    });
+  });
+
+  it('keeps the visited address openable: order and tracking parameters are untouched', async () => {
+    await saveCapture(cap1('https://example.com/p?z=1&utm_source=n&a=2&sig=zzz'));
+    const [source] = await getDb().sources.toArray();
+    expect(source!.originalUrl).toBe('https://example.com/p?z=1&utm_source=n&a=2');
+    expect(source!.visitedKey).toBe('https://example.com/p?a=2&z=1');
+  });
+
+  it('a revisit with a rotated token finds the same source and its highlights', async () => {
+    const first = await saveCapture(cap1('https://reports.example.com/q3?id=9&token=aaa111'));
+    expect(first.status).toBe('created');
+
+    const found = await getPageHighlights('https://reports.example.com/q3?token=bbb222&id=9', null);
+    expect(found.highlights.map((h) => h.id)).toEqual([first.highlight.id]);
+    expect(
+      (await listPageHighlights('https://reports.example.com/q3?id=9&token=ccc333', null)).map(
+        (i) => i.highlight.id,
+      ),
+    ).toEqual([first.highlight.id]);
+
+    // Saving the same quote again from the rotated URL is a duplicate, not a second source.
+    const again = await saveCapture(cap1('https://reports.example.com/q3?id=9&token=ddd444'));
+    expect(again.status).toBe('duplicate');
+    expect((await counts()).sources).toBe(1);
+  });
+
+  it('a presigned URL that changes every visit stays one source', async () => {
+    const presigned = (n: number) =>
+      `https://bucket.s3.example.com/notes.html?X-Amz-Date=2026101${n}&X-Amz-Signature=sig${n}&X-Amz-Expires=300`;
+    await saveCapture(cap1(presigned(1)));
+    await saveCapture(
+      cap(`${quote} Second.`, 500, {
+        page: { url: presigned(2), canonicalUrl: null, title: 'Doc' },
+      }),
+    );
+    expect((await counts()).sources).toBe(1);
+    expect((await getPageHighlights(presigned(3), null)).highlights).toHaveLength(2);
+  });
+
+  it('pages that differ in a real parameter remain different sources', async () => {
+    await saveCapture(cap1('https://example.com/view?id=1&token=a'));
+    await saveCapture(cap1('https://example.com/view?id=2&token=a'));
+    expect((await counts()).sources).toBe(2);
+    expect(
+      (await getPageHighlights('https://example.com/view?id=1&token=z', null)).highlights,
+    ).toHaveLength(1);
+  });
+});
+
 describe('Inbox and concurrency', () => {
   it('creates exactly one Inbox and N distinct highlights under 20 concurrent saves', async () => {
     const results = await Promise.all(

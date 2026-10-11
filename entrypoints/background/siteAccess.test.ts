@@ -77,6 +77,12 @@ describe('patternCovers', () => {
     ['http://127.0.0.1:8080/*', 'http://127.0.0.1:8080/page', true],
     ['http://127.0.0.1:8080/*', 'http://127.0.0.1:9090/page', false],
     ['https://example.com:443/*', 'https://example.com/page', true],
+    ['https://my_host.example.com/*', 'https://my_host.example.com/a', true],
+    ['https://*.my_host.example.com/*', 'https://sub.my_host.example.com/a', true],
+    ['http://[::1]/*', 'http://[::1]:3000/page', true],
+    ['http://[::1]:3000/*', 'http://[::1]:3000/page', true],
+    ['http://[::1]:3000/*', 'http://[::1]:4000/page', false],
+    ['http://[2001:db8::1]/*', 'http://[2001:db8::1]/', true],
     ['<all_urls>', 'https://example.com/', false],
     ['https://example.com/path/*', 'https://example.com/path/x', false], // only origin-wide patterns
   ];
@@ -165,6 +171,29 @@ describe('site.sync', () => {
     expect(t.deps.hasPermission).not.toHaveBeenCalledWith('not a pattern');
   });
 
+  it('registers hosts with underscores and bracketed IPv6 literals instead of dropping them', async () => {
+    const patterns = ['https://my_host.example.com/*', 'http://[::1]:3000/*', 'http://[::1]/*'];
+    const t = setup({ persistentOrigins: patterns, denyList: [] }, { granted: patterns });
+    expect((await t.site.sync()).registeredMatches).toEqual(patterns);
+    expect(t.state.registered).toEqual(patterns);
+  });
+
+  it('turns deny entries into excludeMatches after normalising case and a trailing dot', async () => {
+    const t = setup(
+      {
+        persistentOrigins: ['https://*/*'],
+        denyList: ['PayPal.com.', 'my_host.example', 'x.test'],
+      },
+      { granted: ['https://*/*'] },
+    );
+    await t.site.sync();
+    expect(t.deps.register.mock.calls[0]![0].excludeMatches).toEqual([
+      '*://*.paypal.com/*',
+      '*://*.my_host.example/*',
+      '*://*.x.test/*',
+    ]);
+  });
+
   it('accepts broad "all sites" patterns', async () => {
     const t = setup(
       { persistentOrigins: ['https://*/*', 'http://*/*'], denyList: [] },
@@ -222,6 +251,17 @@ describe('site.status', () => {
     expect((await t.site.status({ tabId: 1, url: 'https://example.com/p' })).access).toBe('none');
   });
 
+  it('a trailing-dot spelling of a denied host is denied too', async () => {
+    const t = setup({ denyList: ['paypal.com'] });
+    for (const url of ['https://paypal.com./pay', 'https://www.paypal.com./pay']) {
+      expect(await t.site.status({ tabId: 1, url }), url).toMatchObject({
+        supported: true,
+        denied: true,
+        access: 'none',
+      });
+    }
+  });
+
   it('denied host is reported denied and never persistent', async () => {
     const t = setup(
       { denyList: ['example.com'] },
@@ -265,6 +305,19 @@ describe('tab.activate', () => {
     expect(err.code).toBe('forbidden');
     expect(err.message).toContain('mail.google.com');
     expect(t.deps.inject).not.toHaveBeenCalled();
+  });
+
+  it('refuses a deny-listed host written with a trailing dot (same server, same rule)', async () => {
+    for (const url of [
+      'https://paypal.com./signin',
+      'https://www.paypal.com./signin',
+      'https://MAIL.GOOGLE.COM./mail/u/0/',
+    ]) {
+      const t = setup({}, { url });
+      const err = await failure(t.site.activate(5));
+      expect(err.code, url).toBe('forbidden');
+      expect(t.deps.inject, url).not.toHaveBeenCalled();
+    }
   });
 
   it('maps a closed tab to not_found', async () => {

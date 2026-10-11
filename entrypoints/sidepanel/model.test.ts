@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { defaultSettings, type PageStatus } from '@shared';
 import { makeItem } from '@ui/testing/fakes';
-import { derivePageState, groupPageItems, revealAvailability } from './model';
+import { derivePageState, groupPageItems, revealAvailability, validateBankName } from './model';
 
 const status: PageStatus = {
   url: 'https://example.com/notes',
@@ -110,5 +110,18 @@ describe('revealAvailability', () => {
       enabled: false,
       reason: expect.stringContaining('another page'),
     });
+  });
+});
+
+describe('validateBankName', () => {
+  it('accepts a trimmed name up to the limit', () => {
+    expect(validateBankName('  Cardiology ')).toBeNull();
+    expect(validateBankName('x'.repeat(80))).toBeNull();
+  });
+
+  it('explains an empty or over-long name', () => {
+    expect(validateBankName('')).toBe('Enter a name for the bank.');
+    expect(validateBankName(' \t ')).toBe('Enter a name for the bank.');
+    expect(validateBankName('x'.repeat(81))).toMatch(/80 characters or fewer \(this is 81\)/);
   });
 });

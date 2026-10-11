@@ -2,6 +2,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Browser } from 'wxt/browser';
 import {
+  PENDING_FOCUS_KEY,
   StudyVaultError,
   defaultSettings,
   type BankLite,
@@ -129,12 +130,14 @@ function setup(initial: Partial<Settings> = {}) {
     activate: vi.fn(async () => undefined),
   };
   const store = new Map<string, unknown>();
-  const ledger = createDeleteLedger({
-    get: async (key) => ({ [key]: store.get(key) }),
-    set: async (items) => {
+  const area = {
+    get: async (key: string) => ({ [key]: store.get(key) }),
+    set: vi.fn(async (items: Record<string, unknown>) => {
       for (const [k, v] of Object.entries(items)) store.set(k, v);
-    },
-  });
+    }),
+  };
+  const ledger = createDeleteLedger(area);
+  const openSidePanel = vi.fn(async (_tabId: number): Promise<void> => undefined);
 
   const handlers = createHandlers({
     repo,
@@ -143,9 +146,22 @@ function setup(initial: Partial<Settings> = {}) {
     site,
     ledger,
     extensionBaseUrl: EXT_BASE,
+    openSidePanel,
+    session: area,
   }) as Required<ReturnType<typeof createHandlers>>;
 
-  return { handlers, repo, updateSettings, site, own, settings: () => settings, ledger };
+  return {
+    handlers,
+    repo,
+    updateSettings,
+    site,
+    own,
+    settings: () => settings,
+    ledger,
+    openSidePanel,
+    session: area,
+    pendingFocus: () => store.get(PENDING_FOCUS_KEY),
+  };
 }
 
 async function code(promise: Promise<unknown>): Promise<string> {
@@ -198,7 +214,13 @@ describe('capture.save sender policy', () => {
 
   it('rejects a sender on a deny-listed host (and its subdomains) without touching storage', async () => {
     const t = setup();
-    for (const host of ['accounts.google.com', 'login.paypal.com']) {
+    // A trailing dot names the same server and must not slip past the list.
+    for (const host of [
+      'accounts.google.com',
+      'login.paypal.com',
+      'paypal.com.',
+      'www.paypal.com.',
+    ]) {
       const url = `https://${host}/signin`;
       const status = await code(t.handlers['capture.save'](captureInput({ url }), pageSender(url)));
       expect(status, host).toBe('forbidden');
@@ -344,6 +366,55 @@ describe('highlight.* ownership', () => {
     expect(t.repo.restoreHighlight).not.toHaveBeenCalled();
   });
 
+  it('a source on another scheme or port of the same host is another site', async () => {
+    const t = setup();
+    t.own('hl-http0001', 'http://example.com/notes/pharm'); // http vs https
+    t.own('hl-port0001', 'https://example.com:8443/notes/pharm'); // :8443 vs :443
+    t.own('hl-visit001', 'https://example.com/notes/pharm', 'http://example.com/notes/pharm');
+    t.own('hl-www00001', 'https://www.example.com/notes/pharm'); // same site: www is folded
+    t.own('hl-port4430', 'https://example.com:443/notes/pharm'); // explicit default port
+
+    for (const id of ['hl-http0001', 'hl-port0001', 'hl-visit001']) {
+      expect(
+        await code(t.handlers['highlight.update']({ id, patch: { priority: 5 } }, sender)),
+        id,
+      ).toBe('forbidden');
+      expect(await code(t.handlers['highlight.delete']({ id }, sender)), id).toBe('forbidden');
+      expect(await code(t.handlers['highlight.restore']({ id }, sender)), id).toBe('forbidden');
+    }
+    expect(
+      await code(
+        t.handlers['highlight.reportResolution'](
+          { items: [{ id: 'hl-port0001', status: 'resolved', confidence: 1 }] },
+          sender,
+        ),
+      ),
+    ).toBe('forbidden');
+    expect(t.repo.updateHighlight).not.toHaveBeenCalled();
+    expect(t.repo.softDeleteHighlight).not.toHaveBeenCalled();
+
+    for (const id of ['hl-www00001', 'hl-port4430']) {
+      expect(
+        await code(t.handlers['highlight.update']({ id, patch: { priority: 5 } }, sender)),
+        id,
+      ).toBe('resolved');
+    }
+  });
+
+  it('does not honour an Undo for a deletion recorded on another scheme or port', async () => {
+    const t = setup();
+    await t.ledger.add({
+      tabId: 7,
+      id: 'hl-ledger01',
+      urlKey: 'https://example.com:8443/a',
+      visitedKey: 'https://example.com:8443/a',
+    });
+    expect(await code(t.handlers['highlight.restore']({ id: 'hl-ledger01' }, sender))).toBe(
+      'forbidden',
+    );
+    expect(t.repo.restoreHighlight).not.toHaveBeenCalled();
+  });
+
   it('rejects a source with only one key on the sender site', async () => {
     const t = setup();
     t.own('hl-mixed01', 'https://example.com/ok', 'https://bank.example/visited');
@@ -453,6 +524,108 @@ describe('highlight.* ownership', () => {
     expect(t.repo.getHighlightSource).not.toHaveBeenCalled();
     await t.handlers['highlight.delete']({ id: 'hl-foreign' }, extensionSender());
     expect(t.repo.softDeleteHighlight).toHaveBeenCalledWith('hl-foreign');
+  });
+});
+
+describe('sidepanel.open', () => {
+  const sender = pageSender('https://example.com/notes/pharm?x=2');
+
+  it('opens the panel for the sender tab before awaiting anything, then hands the focus over', async () => {
+    const t = setup();
+    t.own('hl-own0001', 'https://example.com/notes/pharm');
+    const pending = t.handlers['sidepanel.open']({ focusHighlightId: 'hl-own0001' }, sender);
+    // Synchronous: Chrome honours sidePanel.open only inside the user gesture of the message.
+    expect(t.openSidePanel).toHaveBeenCalledTimes(1);
+    expect(t.openSidePanel).toHaveBeenCalledWith(7);
+
+    expect(await pending).toEqual({ opened: true });
+    // The ownership lookup (async storage) comes after the open call, never before it.
+    expect(t.openSidePanel.mock.invocationCallOrder[0]!).toBeLessThan(
+      t.repo.getHighlightSource.mock.invocationCallOrder[0]!,
+    );
+    expect(t.pendingFocus()).toEqual({ highlightId: 'hl-own0001', at: expect.any(Number) });
+  });
+
+  it('opens without a focus request and writes no hand-over', async () => {
+    const t = setup();
+    expect(await t.handlers['sidepanel.open']({ focusHighlightId: null }, sender)).toEqual({
+      opened: true,
+    });
+    expect(t.pendingFocus()).toBeUndefined();
+    expect(t.session.set).not.toHaveBeenCalled();
+  });
+
+  it('ignores a focus request for a highlight of another site, scheme or port, or an unknown one', async () => {
+    const t = setup();
+    t.own('hl-foreign1', 'https://bank.example/account');
+    t.own('hl-http0001', 'http://example.com/notes/pharm');
+    t.own('hl-port0001', 'https://example.com:8443/notes/pharm');
+    for (const focusHighlightId of ['hl-foreign1', 'hl-http0001', 'hl-port0001', 'hl-missing1']) {
+      expect(
+        await t.handlers['sidepanel.open']({ focusHighlightId }, sender),
+        focusHighlightId,
+      ).toEqual({ opened: true });
+    }
+    expect(t.session.set).not.toHaveBeenCalled();
+    expect(t.openSidePanel).toHaveBeenCalledTimes(4);
+  });
+
+  it('reports opened:false when the panel cannot be opened, but keeps the hand-over for a manual open', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const t = setup();
+    t.own('hl-own0001', 'https://example.com/notes/pharm');
+    t.openSidePanel.mockRejectedValueOnce(
+      new Error('may only be called in response to a user gesture'),
+    );
+    expect(await t.handlers['sidepanel.open']({ focusHighlightId: 'hl-own0001' }, sender)).toEqual({
+      opened: false,
+    });
+    expect(t.pendingFocus()).toMatchObject({ highlightId: 'hl-own0001' });
+
+    // A browser without the API throws synchronously.
+    t.openSidePanel.mockImplementationOnce(() => {
+      throw new TypeError('browser.sidePanel is undefined');
+    });
+    expect(await t.handlers['sidepanel.open']({ focusHighlightId: null }, sender)).toEqual({
+      opened: false,
+    });
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+
+  it('still opens when the hand-over cannot be stored', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const t = setup();
+    t.own('hl-own0001', 'https://example.com/notes/pharm');
+    t.session.set.mockRejectedValueOnce(new Error('session storage unavailable'));
+    expect(await t.handlers['sidepanel.open']({ focusHighlightId: 'hl-own0001' }, sender)).toEqual({
+      opened: true,
+    });
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('is refused for non-http senders and has nothing to open without a tab', async () => {
+    const t = setup();
+    expect(
+      await code(
+        t.handlers['sidepanel.open']({ focusHighlightId: null }, pageSender('chrome://settings/')),
+      ),
+    ).toBe('forbidden');
+    // The popup and the side panel have no sender.tab; they open the panel themselves.
+    expect(
+      await code(t.handlers['sidepanel.open']({ focusHighlightId: null }, extensionSender())),
+    ).toBe('invalid_request');
+    expect(t.openSidePanel).not.toHaveBeenCalled();
+  });
+
+  it('extension pages opened as a tab may focus any highlight', async () => {
+    const t = setup();
+    t.own('hl-foreign1', 'https://bank.example/account');
+    expect(
+      await t.handlers['sidepanel.open']({ focusHighlightId: 'hl-foreign1' }, extensionTabSender()),
+    ).toEqual({ opened: true });
+    expect(t.openSidePanel).toHaveBeenCalledWith(3);
+    expect(t.pendingFocus()).toMatchObject({ highlightId: 'hl-foreign1' });
+    expect(t.repo.getHighlightSource).not.toHaveBeenCalled();
   });
 });
 

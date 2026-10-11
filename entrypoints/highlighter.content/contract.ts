@@ -46,6 +46,12 @@ export interface CaptureHost {
   restore(id: string): Promise<HighlightView>;
   /** The selection was consumed or dismissed; controller may clear its stored range. */
   dismissSelection(): void;
+  /**
+   * Open the side panel (extension origin) for this tab, optionally focusing a highlight's note.
+   * The overlay never contains free-text inputs: page scripts can observe keystrokes typed inside
+   * the page document. Must be called synchronously from a user gesture handler.
+   */
+  openInSidePanel(highlightId: string | null): Promise<boolean>;
 }
 
 export interface CaptureUi {
@@ -62,6 +68,10 @@ export interface CaptureUi {
   }): void;
   /** Re-apply theme / palette when settings change. */
   applySettings(settings: Settings): void;
+  /** Move keyboard focus into the visible toolbar (or an actionable toast). false = nothing to focus. */
+  focusToolbar?(): boolean;
+  /** Polite screen-reader announcement with no visible toast (e.g. "Highlight 2 of 5: ..."). */
+  announce?(text: string): void;
   /** Remove listeners and DOM. Called on context invalidation. */
   destroy(): void;
 }

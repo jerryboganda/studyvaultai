@@ -24,6 +24,16 @@ describe('overlay source hygiene (page data is untrusted)', () => {
     }
   });
 
+  it('has no free-text control: page scripts observe keystrokes typed in the page', () => {
+    // Text is typed in the side panel (extension origin). Only <select> pickers may live here.
+    const freeText =
+      /<textarea|<input\b|contentEditable|contenteditable|role="(?:textbox|searchbox)"|type="(?:text|search|password|email|url|tel)"/;
+    for (const { file, text } of sources) {
+      const code = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+      expect(code, file).not.toMatch(freeText);
+    }
+  });
+
   it('keeps layout units in px (host pages change rem)', () => {
     const css = fs.readFileSync(path.join(DIR, 'styles.css'), 'utf8');
     const withoutComments = css.replace(/\/\*[\s\S]*?\*\//g, '');

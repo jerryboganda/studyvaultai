@@ -35,7 +35,7 @@ const SURFACES = [BG, SURFACE, RAISED];
 /** Text (>= 4.5:1): which token is painted as text on which surfaces. */
 const TEXT: Array<[fg: string, on: string[]]> = [
   ['--sv-text', SURFACES],
-  // Quote, labels, status, icon buttons, and the textarea placeholder (on --sv-bg).
+  // Quote, labels, hints, status and icon buttons.
   ['--sv-text-muted', SURFACES],
   // Text buttons and links, also on their hover fill (--sv-surface).
   ['--sv-accent', SURFACES],
@@ -97,12 +97,6 @@ describe('overlay colours reach WCAG AA in every theme', () => {
     expect(contrast('#757575', '#101318')).toBeCloseTo(4.04, 2);
   });
 
-  it('the placeholder uses the muted text colour at full opacity', () => {
-    const decls = declsFor(styles, '.sv-control::placeholder');
-    expect(decls.get('color')).toBe('var(--sv-text-muted)');
-    expect(decls.get('opacity')).toBe('1');
-  });
-
   it('more contrast really applies in dark mode (equal specificity to the dark blocks)', () => {
     for (const attr of ['system', 'dark'] as const) {
       const tokens = computeTokens(tokenRules, { system: 'dark', attr, contrast: true });
@@ -161,27 +155,36 @@ describe('focus indicator', () => {
     expect(ring.get('box-shadow')).toBe('0 0 0 2px var(--sv-focus-halo)');
   });
 
-  it('is not gated by :focus-visible anywhere except the programmatically focused dialog', () => {
+  // The surfaces that take focus themselves (programmatically) so Tab and Escape work from them.
+  const DIALOGS = ['.sv-popover', '.sv-panel'];
+
+  it('is not gated by :focus-visible anywhere except the programmatically focused dialogs', () => {
     const gated = styles.filter((r) =>
-      r.selectors.some((s) => s.includes(':focus-visible') && !s.startsWith('.sv-popover')),
+      r.selectors.some(
+        (s) => s.includes(':focus-visible') && !DIALOGS.some((d) => s.startsWith(d)),
+      ),
     );
     expect(gated.map((r) => r.selectors)).toEqual([]);
   });
 
-  it('never removes an outline except on the dialog container, which has an inset ring instead', () => {
+  it('never removes an outline except on a dialog container, which has an inset ring instead', () => {
     const removed = styles.filter((r) => {
       const o = r.decls.get('outline');
       return o !== undefined && /^(none|0)$/.test(o);
     });
-    expect(removed.flatMap((r) => r.selectors)).toEqual(['.sv-popover:focus']);
-    const inset = declsFor(styles, '.sv-popover:focus-visible');
-    expect(inset.get('outline')).toBe('2px solid var(--sv-focus)');
-    expect(px(inset.get('outline-offset'))).toBeLessThan(0);
+    expect(removed.flatMap((r) => r.selectors)).toEqual(DIALOGS.map((d) => `${d}:focus`));
+    for (const d of DIALOGS) {
+      const inset = declsFor(styles, `${d}:focus-visible`);
+      expect(inset.get('outline'), d).toBe('2px solid var(--sv-focus)');
+      expect(px(inset.get('outline-offset')), d).toBeLessThan(0);
+    }
   });
 
-  it('keeps the popover drop shadow while it is focused', () => {
-    for (const sel of ['.sv-popover:focus', '.sv-popover:focus-visible']) {
-      expect(declsFor(styles, sel).get('box-shadow'), sel).toBe('var(--sv-shadow)');
+  it('keeps the drop shadow of a dialog while it is focused', () => {
+    for (const d of DIALOGS) {
+      for (const sel of [`${d}:focus`, `${d}:focus-visible`]) {
+        expect(declsFor(styles, sel).get('box-shadow'), sel).toBe('var(--sv-shadow)');
+      }
     }
   });
 
@@ -240,18 +243,15 @@ describe('reflow', () => {
   it('tightens up on short viewports before it resorts to scrolling', () => {
     const short = '(max-height: 520px)';
     expect(declsFor(styles, '.sv-quote', short).get('-webkit-line-clamp')).toBe('2');
-    expect(declsFor(styles, '.sv-textarea', short).get('height')).toBe('48px');
     const panel = declsFor(styles, '.sv-panel', short);
     expect(panel.get('padding')).toBeDefined();
   });
 
   it('puts More options in two columns on a short but wide viewport', () => {
     const wide = '(max-height: 520px) and (min-width: 480px)';
-    const grid = declsFor(styles, ".sv-panel[data-mode='advanced']", wide);
+    const grid = declsFor(styles, '.sv-panel', wide);
     expect(grid.get('display')).toBe('grid');
-    expect(grid.get('grid-template-areas')).toBe(
-      "'quote quote' 'bank note' 'kind note' 'actions actions'",
-    );
+    expect(grid.get('grid-template-areas')).toBe("'quote quote' 'bank kind' 'actions actions'");
     // A fixed width, but never wider than the unit (max-width: 100%), which is capped to the viewport.
     expect(grid.get('width')).toBe('560px');
     expect(grid.get('max-width')).toBeUndefined();
@@ -262,5 +262,59 @@ describe('reflow', () => {
     expect(declsFor(styles, '.sv-toasts').get('max-width')).toBe('calc(100vw - 32px)');
     expect(declsFor(styles, '.sv-toast').get('max-width')).toBe('100%');
     expect(declsFor(styles, '.sv-toast-text').get('overflow-wrap')).toBe('anywhere');
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Multi-click seam: the toolbar appears next to the word a double click selected, while the third
+// click of a triple click is still on its way. It must not take that click.
+// ---------------------------------------------------------------------------------------------
+
+describe('toolbar is click-through while it animates in', () => {
+  const css = stripComments(readCss(STYLES_CSS));
+  const unit = declsFor(styles, '.sv-unit');
+
+  it('holds pointer-events: none for exactly the duration of the enter animation', () => {
+    const names = (unit.get('animation') ?? '').split(',').map((a) => a.trim());
+    const enter = names.find((a) => a.startsWith('sv-in '));
+    const arm = names.find((a) => a.startsWith('sv-arm '));
+    expect(enter, 'enter animation').toBeDefined();
+    expect(arm, 'click-through animation').toBeDefined();
+    // Same duration token: the toolbar is interactive the moment it has finished appearing.
+    const duration = (a: string | undefined): string => a?.split(' ')[1] ?? '';
+    expect(duration(arm)).toBe('var(--sv-motion)');
+    expect(duration(arm)).toBe(duration(enter));
+  });
+
+  it('the keyframes disable pointer events at both ends and nothing else', () => {
+    const block = /@keyframes sv-arm\s*\{([\s\S]*?\})\s*\}/.exec(css);
+    expect(block, '@keyframes sv-arm').not.toBeNull();
+    expect(block?.[1]?.replace(/\s+/g, ' ').trim()).toBe('from, to { pointer-events: none; }');
+  });
+
+  it('is interactive afterwards: the unit itself never sets pointer-events', () => {
+    expect(unit.has('pointer-events')).toBe(false);
+    for (const rule of styles.filter((r) =>
+      r.selectors.some((s) => /(^|\s)\.sv-(unit|toolbar|panel)\b/.test(s)),
+    )) {
+      expect(rule.decls.get('pointer-events'), rule.selectors.join(', ')).toBeUndefined();
+    }
+  });
+
+  it('is interactive at once with reduced motion: every animation is off', () => {
+    const off = declsFor(styles, '.sv-root *', '(prefers-reduced-motion: reduce)');
+    expect(off.get('animation')).toBe('none !important');
+    // And the duration token is zero there, for the animations that read it.
+    const tokens = computeTokens(tokenRules, { system: 'light', attr: 'light', contrast: false });
+    expect(tokens.get('--sv-motion')).toBe('120ms');
+    const reduced = tokenRules.filter(
+      (r) => r.media === '(prefers-reduced-motion: reduce)' && r.decls.has('--sv-motion'),
+    );
+    expect(reduced.map((r) => r.decls.get('--sv-motion'))).toEqual(['0ms']);
+  });
+
+  it('only the toolbar unit goes click-through, not the popover or the toasts', () => {
+    expect(declsFor(styles, '.sv-popover').get('animation')).toBeUndefined();
+    expect(declsFor(styles, '.sv-float').get('animation')).toBe('sv-in var(--sv-motion) ease-out');
   });
 });

@@ -18,8 +18,8 @@
     "format": "prettier --check .",
     "format:write": "prettier --write .",
     "test": "vitest run",
-    "build:e2e": "wxt build --mode e2e",
-    "test:e2e": "wxt build && wxt build --mode e2e && playwright test"
+    "build:e2e": "node scripts/build-e2e.mjs",
+    "test:e2e": "wxt build && node scripts/build-e2e.mjs && playwright test"
   },
   "dependencies": {
     "dexie": "4.4.6",

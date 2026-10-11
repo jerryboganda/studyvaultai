@@ -84,7 +84,7 @@ export function Popup() {
             tab={tab}
             state={state}
             lastBankId={settings?.lastBankId ?? null}
-            onChanged={status.reload}
+            onChanged={status.refresh}
           />
         )}
       </main>
@@ -123,11 +123,12 @@ function TabState({
   lastBankId: string | null;
   onChanged(): void;
 }) {
-  const [declined, setDeclined] = useState<string | null>(null);
+  /** Why "Always enable" did not (fully) happen; shown as a warning in every state. */
+  const [warning, setWarning] = useState<string | null>(null);
 
   const act = useAction(async (op: Op) => {
     if (!tab) throw new Error('There is no active tab.');
-    setDeclined(null);
+    setWarning(null);
     switch (op) {
       case 'activate':
         await callBackground('tab.activate', { tabId: tab.id });
@@ -135,12 +136,17 @@ function TabState({
       case 'enable': {
         if (state.kind !== 'inactive' && state.kind !== 'active') return;
         // First await in the click: Chrome needs the user gesture for the permission prompt.
-        const granted = await grantSiteAccess([state.pattern]);
+        const { granted, notRegistered } = await grantSiteAccess([state.pattern]);
         if (!granted) {
-          setDeclined(
+          setWarning(
             `Chrome did not give StudyVault access to ${state.host}. Nothing was changed. You can still use "Activate on this tab".`,
           );
           return;
+        }
+        if (notRegistered.length > 0) {
+          setWarning(
+            `Chrome allowed StudyVault on ${state.host}, but StudyVault could not set it to start by itself on every visit. It is active on this tab now; after you reload or return, use "Activate on this tab" again.`,
+          );
         }
         await callBackground('tab.activate', { tabId: tab.id });
         break;
@@ -172,9 +178,9 @@ function TabState({
       {act.error}
     </InlineNotice>
   ) : null;
-  const declinedNotice = declined ? (
+  const warningNotice = warning ? (
     <InlineNotice tone="warning" live>
-      {declined}
+      {warning}
     </InlineNotice>
   ) : null;
 
@@ -244,7 +250,7 @@ function TabState({
               </p>
             </div>
           )}
-          {declinedNotice}
+          {warningNotice}
           {failure}
         </div>
       );
@@ -254,7 +260,7 @@ function TabState({
         <div className="sv-stack">
           {tab ? <PageSummary tabId={tab.id} url={tab.url} /> : null}
           <AccessLine state={state} busy={act.busy} run={act.run} />
-          {declinedNotice}
+          {warningNotice}
           {failure}
           <Button variant="primary" busy={act.busy} onClick={() => void act.run('panel')}>
             Open side panel

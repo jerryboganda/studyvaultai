@@ -17,6 +17,7 @@ import type { ContentScriptContext } from 'wxt/utils/content-script-context';
 import type { CaptureHost, CaptureUi, CreateCaptureUi, SaveRequest } from './contract';
 import {
   inspectSelection,
+  isEditingContext,
   isInsideHost,
   rectAt,
   rectOf,
@@ -62,6 +63,21 @@ const MUTATION_DEBOUNCE_MS = 400;
 const MUTATION_MAX_WAIT_MS = 1000;
 const REVEAL_FLASH_MS = 2000;
 const DEFAULT_PRIORITY = 3;
+
+const LOST_CONTACT =
+  'StudyVault lost contact with the extension. Reload this page, then try again.';
+const SIDE_PANEL_FAILED = 'Could not open the StudyVault side panel. Try again.';
+
+/**
+ * Keyboard route to the painted highlights: Alt+Shift+] is the next one in document order and
+ * Alt+Shift+[ the previous one (wrapping). Physical keys, like the overlay's Alt+Shift+T, so the
+ * shortcut does not depend on where a layout puts the brackets. Ignored while typing or editing.
+ */
+function highlightStep(e: KeyboardEvent): 1 | -1 | 0 {
+  if (!e.altKey || !e.shiftKey || e.ctrlKey || e.metaKey || e.repeat) return 0;
+  if (e.code === 'BracketRight') return 1;
+  return e.code === 'BracketLeft' ? -1 : 0;
+}
 
 /** A failure whose message is already written for the user. */
 class CaptureProblem extends StudyVaultError {
@@ -119,7 +135,7 @@ function describeError(err: unknown): string {
         return 'StudyVault storage is unavailable right now. Try again in a moment.';
       case 'unsupported_page':
       case 'no_receiver':
-        return 'StudyVault lost contact with the extension. Reload this page, then try again.';
+        return LOST_CONTACT;
       case 'invalid_request':
         return 'StudyVault could not accept this selection from the page.';
       default:
@@ -161,6 +177,8 @@ export function startController(deps: ControllerDeps): Controller {
   let pointerActive = false;
   /** The last pointer gesture started inside our UI; sticky until the user acts on the page. */
   let uiPointer = false;
+  /** The highlight last reached by keyboard, click or reveal: where next / previous continue from. */
+  let navigated: string | null = null;
 
   const blockReason = (): 'denied-site' | null =>
     captureBlock(win.location.href, settings.denyList) ? 'denied-site' : null;
@@ -328,6 +346,25 @@ export function startController(deps: ControllerDeps): Controller {
     },
 
     dismissSelection,
+
+    // No await before the message: chrome.sidePanel.open() needs the user gesture, and callBackground
+    // hands the message to the runtime synchronously, so the click handler's activation still holds.
+    openInSidePanel(highlightId) {
+      const fail = (text: string): false => {
+        session?.ui?.toast({ text, tone: 'error' });
+        return false;
+      };
+      return call('sidepanel.open', { focusHighlightId: highlightId }).then(
+        ({ opened }) => opened || fail(SIDE_PANEL_FAILED),
+        (err: unknown) =>
+          fail(
+            err instanceof StudyVaultError &&
+              (err.code === 'no_receiver' || err.code === 'unsupported_page')
+              ? LOST_CONTACT
+              : SIDE_PANEL_FAILED,
+          ),
+      );
+    },
   };
 
   // -------------------------------------------------------------------------------------------
@@ -363,6 +400,54 @@ export function startController(deps: ControllerDeps): Controller {
     const { range, text } = stored;
     if (!range.startContainer.isConnected || range.collapsed) return hideSelection();
     ui.showToolbar({ text, rect: rectOf(range) });
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Reaching a highlight (side panel "show on page", keyboard next / previous)
+  // -------------------------------------------------------------------------------------------
+
+  /**
+   * Scrolls the highlight to the centre and flashes it. False, with nothing moved, when its text is
+   * hidden (closed tab panel or accordion): there is nowhere to scroll to.
+   */
+  function showHighlight(s: Session, id: string, range: Range, instant = false): boolean {
+    if (!scrollRangeToCenter(win, range, { instant })) return false;
+    s.painter.setActive(id);
+    if (s.revealTimer !== undefined) clearTimeout(s.revealTimer);
+    s.revealTimer = setTimeout(() => {
+      s.revealTimer = undefined;
+      s.painter.setActive(null);
+    }, REVEAL_FLASH_MS);
+    navigated = id;
+    return true;
+  }
+
+  /** Next / previous painted highlight: scroll to it, flash it and open its popover (focus moves in). */
+  function stepHighlight(s: Session, ui: CaptureUi, step: 1 | -1): void {
+    const list = s.rehydrator.painted();
+    const n = list.length;
+    if (n === 0) {
+      ui.toast({ text: 'No highlights on this page yet.', tone: 'info' });
+      return;
+    }
+    let from = navigated === null ? -1 : list.findIndex((h) => h.id === navigated);
+    if (from < 0) {
+      // Not reached by keyboard yet: continue from the reader's position, the top edge of the
+      // viewport (first highlight at or below it). Without layout every top is 0: first / last.
+      const edge = list.findIndex((h) => rectOf(h.range).top >= 0);
+      const below = edge < 0 ? n : edge;
+      from = step === 1 ? below - 1 : below;
+    }
+    for (let k = 1; k <= n; k++) {
+      const hit = list[(((from + step * k) % n) + n) % n]!;
+      const view = s.rehydrator.viewOf(hit.id);
+      // Hidden highlights are skipped, so the shortcut never "does nothing" while others exist.
+      if (!view || !showHighlight(s, hit.id, hit.range, true)) continue;
+      // The jump was instant, so the range's rect is final and the popover anchors to it.
+      ui.showHighlightPopover(view, rectOf(hit.range));
+      return;
+    }
+    ui.toast({ text: 'No visible highlights on this page.', tone: 'info' });
   }
 
   // -------------------------------------------------------------------------------------------
@@ -443,9 +528,29 @@ export function startController(deps: ControllerDeps): Controller {
         const view = id === null ? undefined : s.rehydrator.viewOf(id);
         if (!id || !view) return;
         const range = s.rehydrator.rangeOf(id);
+        navigated = id;
         ui.showHighlightPopover(view, range ? rectOf(range) : rectAt(ev.clientX, ev.clientY));
       },
       capturing,
+    );
+
+    // Alt+Shift+] / Alt+Shift+[ (see highlightStep). Not passive: the handled key is not also
+    // delivered to the page's own shortcuts as a default action. Registered through listen(), so
+    // it goes away with the session (unmount, deny list, context invalidation).
+    listen(
+      doc,
+      'keydown',
+      (e) => {
+        const ev = e as KeyboardEvent;
+        const step = highlightStep(ev);
+        const ui = s.ui;
+        if (step === 0 || session !== s || !ui || !ev.isTrusted || !ctx.isValid) return;
+        // A key pressed inside the overlay belongs to the overlay (its note field types text).
+        if (pathHasHost(ev) || isEditingContext(doc, ev.composedPath()[0] ?? null)) return;
+        ev.preventDefault();
+        stepHighlight(s, ui, step);
+      },
+      { capture: true },
     );
 
     // Rehydration triggers: data changes elsewhere, route changes, DOM mutations.
@@ -526,6 +631,7 @@ export function startController(deps: ControllerDeps): Controller {
     toolbarVisible = false;
     pointerActive = false;
     uiPointer = false;
+    navigated = null;
     if (!s) return;
     for (const cleanup of s.cleanups.splice(0)) {
       try {
@@ -665,14 +771,8 @@ export function startController(deps: ControllerDeps): Controller {
         range = s.rehydrator.rangeOf(id);
       }
       if (!range || session !== s) return { found: false };
-      scrollRangeToCenter(win, range);
-      s.painter.setActive(id);
-      if (s.revealTimer !== undefined) clearTimeout(s.revealTimer);
-      s.revealTimer = setTimeout(() => {
-        s.revealTimer = undefined;
-        s.painter.setActive(null);
-      }, REVEAL_FLASH_MS);
-      return { found: true };
+      // Resolved but hidden (display:none panel, closed <details>) is not "found on the page".
+      return { found: showHighlight(s, id, range) };
     },
   });
 

@@ -9,10 +9,19 @@ const alias = {
   '@ui': 'packages/ui/src',
 };
 
+// The e2e variant (scripts/build-e2e.mjs sets SV_E2E=1) is the SAME production build plus loopback host
+// permissions and an open overlay shadow root. It is an env flag, not `--mode e2e`: WXT maps a custom
+// mode onto NODE_ENV, which would silently bundle React's DEV build into the tested extension.
+const E2E = process.env.SV_E2E === '1';
+
 export default defineConfig({
   modules: ['@wxt-dev/module-react'],
+  // Parallel agents build into their own folder (SV_OUT_DIR=.output-<name>) so bundles never clobber.
+  outDir: process.env.SV_OUT_DIR ?? '.output',
+  ...(E2E ? { outDirTemplate: '{{browser}}-mv{{manifestVersion}}-e2e' } : {}),
   imports: false, // explicit imports only; keeps ESLint/TS honest and content-script bundles small
   alias,
+  vite: () => ({ define: { __SV_E2E__: JSON.stringify(E2E) } }),
   manifest: {
     name: 'StudyVault AI',
     description:
@@ -40,13 +49,11 @@ export default defineConfig({
   hooks: {
     // registration:'runtime' makes WXT copy content-script `matches` into host_permissions.
     // We register scripts ourselves from optional permissions, so install-time hosts must stay empty.
-    'build:manifestGenerated': (wxt, manifest) => {
+    'build:manifestGenerated': (_wxt, manifest) => {
       delete manifest.host_permissions;
-      // `wxt build --mode e2e` only: the native chrome.permissions.request prompt cannot be driven
-      // by Playwright, so the test build is granted loopback origins up front. Never shipped.
-      if (wxt.config.mode === 'e2e') {
-        manifest.host_permissions = ['http://127.0.0.1/*', 'http://localhost/*'];
-      }
+      // e2e variant only: the native chrome.permissions.request prompt cannot be driven by
+      // Playwright, so the test build is granted loopback origins up front. Never shipped.
+      if (E2E) manifest.host_permissions = ['http://127.0.0.1/*', 'http://localhost/*'];
     },
   },
   zip: { name: 'studyvault-ai' },

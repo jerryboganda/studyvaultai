@@ -5,9 +5,10 @@ import path from 'node:path';
 import { startFixtureServer, type FixtureServer } from './server';
 
 /** Production build: asserted for least-privilege manifest shape. */
-export const PROD_EXTENSION_PATH = path.resolve('.output/chrome-mv3');
-/** `wxt build --mode e2e`: identical code, plus loopback host permissions (see wxt.config.ts). */
-export const E2E_EXTENSION_PATH = path.resolve('.output/chrome-mv3-e2e');
+const OUT_DIR = process.env.SV_OUT_DIR ?? '.output';
+export const PROD_EXTENSION_PATH = path.resolve(OUT_DIR, 'chrome-mv3');
+/** `pnpm build:e2e` (SV_E2E=1): identical code, plus loopback host permissions (see wxt.config.ts). */
+export const E2E_EXTENSION_PATH = path.resolve(OUT_DIR, 'chrome-mv3-e2e');
 
 type Fixtures = {
   context: BrowserContext;

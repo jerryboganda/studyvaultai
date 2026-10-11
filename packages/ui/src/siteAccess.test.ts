@@ -34,10 +34,13 @@ describe('grantSiteAccess', () => {
     });
     rpc.background['site.sync'] = () => {
       order.push('sync');
-      return { registeredMatches: [] };
+      return { registeredMatches: ['https://a.org/*', 'https://b.org/*'] };
     };
 
-    expect(await grantSiteAccess(['https://a.org/*', 'https://b.org/*'])).toBe(true);
+    expect(await grantSiteAccess(['https://a.org/*', 'https://b.org/*'])).toEqual({
+      granted: true,
+      notRegistered: [],
+    });
 
     expect(order).toEqual(['request', 'sync']);
     expect((await getSettings()).persistentOrigins).toEqual(['https://a.org/*', 'https://b.org/*']);
@@ -45,7 +48,34 @@ describe('grantSiteAccess', () => {
 
   it('does nothing when the user declines', async () => {
     chrome.permissions.request.mockResolvedValue(false);
-    expect(await grantSiteAccess(['https://a.org/*'])).toBe(false);
+    expect(await grantSiteAccess(['https://a.org/*'])).toEqual({
+      granted: false,
+      notRegistered: [],
+    });
+    expect((await getSettings()).persistentOrigins).toEqual([]);
+    expect(rpc.calls).toHaveLength(0);
+  });
+
+  it('says which patterns the worker did not register after the sync', async () => {
+    rpc.background['site.sync'] = () => ({ registeredMatches: ['https://a.org/*'] });
+    expect(await grantSiteAccess(['https://a.org/*', 'https://b.org/*'])).toEqual({
+      granted: true,
+      notRegistered: ['https://b.org/*'],
+    });
+  });
+
+  it('accepts hosts with underscores and bracketed IPv6 literals', async () => {
+    const patterns = ['https://my_host.example/*', 'http://[::1]:3000/*'];
+    rpc.background['site.sync'] = () => ({ registeredMatches: patterns });
+    expect(await grantSiteAccess(patterns)).toEqual({ granted: true, notRegistered: [] });
+    expect(chrome.permissions.request).toHaveBeenCalledWith({ origins: patterns });
+  });
+
+  it('refuses a pattern the worker could not register, before the prompt and before storing', async () => {
+    await expect(grantSiteAccess(['https://exa$mple.com/*'])).rejects.toThrow(
+      /cannot keep itself switched on for exa\$mple\.com/,
+    );
+    expect(chrome.permissions.request).not.toHaveBeenCalled();
     expect((await getSettings()).persistentOrigins).toEqual([]);
     expect(rpc.calls).toHaveLength(0);
   });

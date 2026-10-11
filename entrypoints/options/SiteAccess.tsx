@@ -37,7 +37,7 @@ export function SiteAccess({ settings }: { settings: Settings }) {
   const changes = usePermissionChanges();
   const { allSites: listedAll, sites } = splitOrigins(settings.persistentOrigins);
   const listKey = settings.persistentOrigins.join('\n');
-  const [declined, setDeclined] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
 
   const grants = useAsync(
     async () => {
@@ -52,14 +52,18 @@ export function SiteAccess({ settings }: { settings: Settings }) {
   );
 
   const act = useAction(async (op: Op) => {
-    setDeclined(null);
+    setWarning(null);
     switch (op.t) {
       case 'enable-all': {
         // First await in the click: Chrome needs the user gesture for the permission prompt.
-        const granted = await grantSiteAccess(ALL_SITES_ORIGINS);
+        const { granted, notRegistered } = await grantSiteAccess(ALL_SITES_ORIGINS);
         if (!granted) {
-          setDeclined(
+          setWarning(
             'Chrome did not grant access to all sites. Nothing was changed; StudyVault keeps working on the tabs and sites you enable one by one.',
+          );
+        } else if (notRegistered.length > 0) {
+          setWarning(
+            'Chrome granted access to all sites, but StudyVault could not set itself to start there automatically. Reload the extension or try again.',
           );
         }
         break;
@@ -108,9 +112,9 @@ export function SiteAccess({ settings }: { settings: Settings }) {
         </div>
       </dl>
 
-      {declined ? (
+      {warning ? (
         <InlineNotice tone="warning" live>
-          {declined}
+          {warning}
         </InlineNotice>
       ) : null}
       {act.error || grants.error ? (

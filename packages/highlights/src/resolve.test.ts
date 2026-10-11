@@ -391,23 +391,23 @@ describe('conflicting evidence: deterministic regressions found by the property 
   });
 });
 
-describe('occurrence cap', () => {
-  it('a word that occurs thousands of times is bounded to 200 candidates and never guessed', () => {
+describe('occurrence scan', () => {
+  it('a word that occurs thousands of times is fully scored and never guessed', () => {
     setBody(`<p>${'word '.repeat(5000)}</p>`);
     const { anchorSet } = capture('word', 2500);
     // Unchanged page: the stored offset is authoritative even among 5000 identical copies.
     const same = resolveFresh(anchorSet);
     expect(same.status).toBe('resolved');
     expect(same.method).toBe('position');
-    expect(same.candidateCount).toBe(200);
+    expect(same.candidateCount).toBe(5000);
     // Changed page: nothing separates the copies.
     setBody(`<p>Banner. ${'word '.repeat(5000)}</p>`);
     const t0 = performance.now();
     const res = resolveFresh(anchorSet);
-    expect(performance.now() - t0).toBeLessThan(500);
+    expect(performance.now() - t0).toBeLessThan(2000);
     expect(res.status).toBe('ambiguous');
     expect(res.range).toBeNull();
-    expect(res.candidateCount).toBe(200);
+    expect(res.candidateCount).toBe(5000);
   });
 });
 

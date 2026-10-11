@@ -3,7 +3,13 @@ import { act, cleanup, render, screen, waitFor, within } from '@testing-library/
 import userEvent from '@testing-library/user-event';
 import { browser } from 'wxt/browser';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
-import { StudyVaultError, defaultSettings, type PageStatus, type Settings } from '@shared';
+import {
+  PENDING_FOCUS_KEY,
+  StudyVaultError,
+  defaultSettings,
+  type PageStatus,
+  type Settings,
+} from '@shared';
 import { INBOX, BIOLOGY, makeChromeFakes, makeItem, rpc, store } from '@ui/testing/fakes';
 import { SidePanel } from './SidePanel';
 
@@ -378,6 +384,195 @@ describe('Recent', () => {
   });
 });
 
+const sessionEntry = async (value: unknown) =>
+  browser.storage.session.set({ [PENDING_FOCUS_KEY]: value });
+const storedEntry = async () =>
+  (await browser.storage.session.get(PENDING_FOCUS_KEY))[PENDING_FOCUS_KEY];
+
+describe('Note hand-over from the page overlay', () => {
+  it('opens on the requested highlight: scrolls to it, focuses its note, clears the request', async () => {
+    live();
+    store.reset([makeItem({ start: 5 }), makeItem({ start: 50 })]);
+    const target = store.items[1]!.highlight.id;
+    await sessionEntry({ highlightId: target, at: Date.now() });
+    await open();
+
+    await waitFor(() => {
+      const notes = screen.getAllByLabelText('Your note');
+      expect(notes).toHaveLength(2);
+      expect(document.activeElement).toBe(notes[1]);
+    });
+    await waitFor(async () => expect(await storedEntry()).toBeUndefined());
+  });
+
+  it('follows a request that arrives while the panel is already open', async () => {
+    live();
+    store.reset([makeItem({ start: 5 }), makeItem({ start: 50 })]);
+    const target = store.items[0]!.highlight.id;
+    await open();
+    await screen.findAllByLabelText('Your note');
+    expect(document.activeElement).toBe(document.body);
+
+    await act(async () => {
+      await sessionEntry({ highlightId: target, at: Date.now() });
+    });
+
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getAllByLabelText('Your note')[0]),
+    );
+    await waitFor(async () => expect(await storedEntry()).toBeUndefined());
+  });
+
+  it('waits for the card to appear before focusing', async () => {
+    live();
+    store.reset([]);
+    await sessionEntry({ highlightId: 'hl-late0001', at: Date.now() });
+    await open();
+    await screen.findByText('No highlights on this page yet');
+    expect(document.activeElement).toBe(document.body);
+    expect(await storedEntry()).toBeDefined(); // still waiting
+
+    const late = makeItem();
+    late.highlight.id = 'hl-late0001';
+    store.items.push(late);
+    store.pageIds.add('hl-late0001');
+    act(() => store.notify());
+
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Your note')));
+  });
+
+  it('switches from another tab to "This page" so the card exists', async () => {
+    live();
+    store.reset([makeItem()]);
+    const target = store.items[0]!.highlight.id;
+    await open();
+    await userEvent.click(await screen.findByRole('tab', { name: 'Banks' }));
+    expect(screen.queryByLabelText('Your note')).toBeNull();
+
+    await act(async () => {
+      await sessionEntry({ highlightId: target, at: Date.now() });
+    });
+
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Your note')));
+    expect(screen.getByRole('tab', { name: /This page/ }).getAttribute('aria-selected')).toBe(
+      'true',
+    );
+  });
+
+  it('ignores and removes a request older than 30 seconds, or a malformed one', async () => {
+    live();
+    store.reset([makeItem()]);
+    const id = store.items[0]!.highlight.id;
+    await sessionEntry({ highlightId: id, at: Date.now() - 60_000 });
+    await open();
+    await screen.findByLabelText('Your note');
+    await waitFor(async () => expect(await storedEntry()).toBeUndefined());
+    expect(document.activeElement).toBe(document.body);
+
+    await act(async () => {
+      await sessionEntry({ highlightId: 42, at: 'now' });
+    });
+    await waitFor(async () => expect(await storedEntry()).toBeUndefined());
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it('does not take the cursor again after the user has moved on', async () => {
+    live();
+    store.reset([makeItem({ start: 5 }), makeItem({ start: 50 })]);
+    const first = store.items[0]!.highlight.id;
+    await sessionEntry({ highlightId: first, at: Date.now() });
+    await open();
+    const notes = await screen.findAllByLabelText('Your note');
+    await waitFor(() => expect(document.activeElement).toBe(notes[0]));
+
+    await userEvent.click(notes[1]!);
+    await userEvent.type(notes[1]!, 'mine');
+    expect(document.activeElement).toBe(notes[1]);
+  });
+});
+
+describe('Banks tab', () => {
+  async function openBanks() {
+    live();
+    await open();
+    await userEvent.click(await screen.findByRole('tab', { name: 'Banks' }));
+  }
+
+  it('lists banks with their highlight counts', async () => {
+    store.reset([makeItem({ banks: [INBOX, BIOLOGY] }), makeItem({ banks: [INBOX] })]);
+    store.banks = [INBOX, BIOLOGY];
+    await openBanks();
+
+    const list = await screen.findByRole('list', { name: 'Your banks' });
+    const rows = within(list).getAllByRole('listitem');
+    expect(rows[0]!.textContent).toContain('Inbox');
+    expect(rows[0]!.textContent).toContain('2 highlights');
+    expect(rows[1]!.textContent).toContain('Biology');
+    expect(rows[1]!.textContent).toContain('1 highlight');
+  });
+
+  it('creates a bank from a labelled field, shows it in the list and clears the field', async () => {
+    await openBanks();
+    const field = await screen.findByLabelText('New bank');
+
+    await userEvent.type(field, '  Cardiology  ');
+    await userEvent.click(screen.getByRole('button', { name: 'Create bank' }));
+
+    expect(await screen.findByText('Bank "Cardiology" created.')).toBeTruthy();
+    expect(store.calls.filter((c) => c.fn === 'createBank').map((c) => c.args)).toEqual([
+      ['Cardiology'],
+    ]);
+    const list = screen.getByRole('list', { name: 'Your banks' });
+    expect(within(list).getByText('Cardiology')).toBeTruthy();
+    expect((field as HTMLInputElement).value).toBe('');
+  });
+
+  it('submits with Enter', async () => {
+    await openBanks();
+    await userEvent.type(await screen.findByLabelText('New bank'), 'Renal{Enter}');
+    await waitFor(() => expect(store.calls.some((c) => c.fn === 'createBank')).toBe(true));
+  });
+
+  it('explains an empty or over-long name and creates nothing', async () => {
+    await openBanks();
+    const field = await screen.findByLabelText('New bank');
+
+    await userEvent.type(field, '   ');
+    await userEvent.click(screen.getByRole('button', { name: 'Create bank' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Enter a name for the bank.');
+    expect(field.getAttribute('aria-invalid')).toBe('true');
+    expect(field.getAttribute('aria-describedby')).toBe(alert.id);
+
+    await userEvent.clear(field);
+    await userEvent.click(field);
+    await userEvent.paste('x'.repeat(81));
+    await userEvent.click(screen.getByRole('button', { name: 'Create bank' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('80 characters or fewer');
+
+    await userEvent.type(field, 'y'); // typing clears the message
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(store.calls.some((c) => c.fn === 'createBank')).toBe(false);
+  });
+
+  it('shows the real storage error, keeps the name and retries', async () => {
+    store.failNext.createBank = new StudyVaultError(
+      'storage_unavailable',
+      'IndexedDB is unavailable',
+    );
+    await openBanks();
+    const field = await screen.findByLabelText('New bank');
+    await userEvent.type(field, 'Neurology');
+    await userEvent.click(screen.getByRole('button', { name: 'Create bank' }));
+
+    expect(await screen.findByText('IndexedDB is unavailable')).toBeTruthy();
+    expect((field as HTMLInputElement).value).toBe('Neurology');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Bank "Neurology" created.')).toBeTruthy();
+  });
+});
+
 describe('Tabs and safety', () => {
   it('uses roving tabindex and arrow keys', async () => {
     live();
@@ -394,6 +589,8 @@ describe('Tabs and safety', () => {
     await userEvent.keyboard('{Home}');
     expect(pageTab.getAttribute('aria-selected')).toBe('true');
     await userEvent.keyboard('{End}');
+    expect(screen.getByRole('tab', { name: 'Banks' }).getAttribute('aria-selected')).toBe('true');
+    await userEvent.keyboard('{ArrowLeft}');
     expect(recentTab.getAttribute('aria-selected')).toBe('true');
   });
 

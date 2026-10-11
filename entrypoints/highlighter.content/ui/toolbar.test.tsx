@@ -18,10 +18,10 @@ import {
   mountUi,
   pressFocusShortcut,
   rect,
-  typeInto,
 } from './testHarness';
 
 const SELECTION = { text: 'Mitochondria are the powerhouse', rect: rect(100, 200, 120, 20) };
+const NOTE = 'Save and add a note in the side panel';
 
 function show(ui: ReturnType<typeof mountUi>['ui'], selection = SELECTION): void {
   act(() => ui.showToolbar(selection));
@@ -42,7 +42,7 @@ describe('toolbar rendering', () => {
     for (const kind of HIGHLIGHT_KINDS) {
       expect(q.getByRole('button', { name: `Save as ${KIND_LABELS[kind].label}` })).toBeTruthy();
     }
-    expect(q.getByRole('button', { name: 'Add a note' })).toBeTruthy();
+    expect(q.getByRole('button', { name: NOTE })).toBeTruthy();
     expect(q.getByRole('button', { name: 'More options' })).toBeTruthy();
     expect(q.getAllByRole('button')).toHaveLength(HIGHLIGHT_KINDS.length + 3);
   });
@@ -81,11 +81,11 @@ describe('toolbar rendering', () => {
     const { ui, container } = mountUi();
     show(ui, { text: 'abc', rect: rect(100, 200, 50, 20) });
     const unit = container.querySelector('.sv-unit') as HTMLElement;
-    // jsdom has no layout (0x0 toolbar): centred on x = 125, above y = 200 - 8.
-    expect(unit.style.transform).toBe('translate(125px, 192px)');
+    // jsdom has no layout (0x0 toolbar): centred on x = 125, above y = 200 - 12 (the gap).
+    expect(unit.style.transform).toBe('translate(125px, 188px)');
     expect(unit.dataset.placement).toBe('above');
     show(ui, { text: 'abc', rect: rect(300, 400, 50, 20) });
-    expect(unit.style.transform).toBe('translate(325px, 392px)');
+    expect(unit.style.transform).toBe('translate(325px, 388px)');
   });
 
   it('hideToolbar removes it', () => {
@@ -111,14 +111,16 @@ describe('page selection protection', () => {
     }
   });
 
-  it('lets text fields take the press so the caret and typing work', async () => {
+  it('lets a native select take the press so its list can open', async () => {
     const { ui, q } = mountUi();
     show(ui);
-    await userEvent.setup().click(q.getByRole('button', { name: 'Add a note' }));
-    const field = q.getByRole('textbox');
-    const event = createEvent.mouseDown(field);
-    fireEvent(field, event);
-    expect(event.defaultPrevented).toBe(false);
+    await userEvent.setup().click(q.getByRole('button', { name: 'More options' }));
+    const select = q.getByRole('combobox', { name: 'Type' });
+    for (const type of ['pointerDown', 'mouseDown'] as const) {
+      const event = createEvent[type](select);
+      fireEvent(select, event);
+      expect(event.defaultPrevented, type).toBe(false);
+    }
   });
 
   it('does not move focus into the overlay when the toolbar appears', () => {
@@ -259,6 +261,194 @@ describe('saving', () => {
     expect(q.getByRole('toolbar').getAttribute('aria-busy')).toBe('true');
     await act(async () => release?.());
     expect(await q.findByText('Saved to Inbox')).toBeTruthy();
+  });
+});
+
+describe('Note (the note itself is typed in the side panel)', () => {
+  it('saves first, then opens the side panel on the new highlight', async () => {
+    const settings = { ...defaultSettings(), defaultKind: 'formula' as const };
+    const { ui, host, q } = mountUi({ settings });
+    let release: (() => void) | undefined;
+    host.save.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(makeResult({ highlight: makeHighlight({ id: 'hl-new00001' }) }));
+        }),
+    );
+    show(ui);
+    act(() => {
+      fireEvent.click(q.getByRole('button', { name: NOTE }));
+    });
+    // The highlight does not exist yet, so there is nothing to point the panel at.
+    expect(host.openInSidePanel).not.toHaveBeenCalled();
+    expect(host.save).toHaveBeenCalledWith({
+      kind: 'formula',
+      color: settings.palette.formula,
+      bankId: null,
+      comment: '',
+      priority: 3,
+    });
+
+    await act(async () => release?.());
+    expect(await q.findByText('Saved - write your note in the side panel')).toBeTruthy();
+    expect(host.openInSidePanel).toHaveBeenCalledTimes(1);
+    expect(host.openInSidePanel).toHaveBeenCalledWith('hl-new00001');
+    expect(host.dismissSelection).toHaveBeenCalledTimes(1);
+    expect(q.queryByRole('toolbar')).toBeNull();
+    expect(q.queryByRole('textbox')).toBeNull();
+  });
+
+  it('keeps Undo for a new highlight and says so for a duplicate without it', async () => {
+    const { ui, host, q } = mountUi();
+    show(ui);
+    const user = userEvent.setup();
+    await user.click(q.getByRole('button', { name: NOTE }));
+    await user.click(await q.findByRole('button', { name: 'Undo' }));
+    expect(host.undo).toHaveBeenCalledWith('hl-00000001');
+
+    host.save.mockResolvedValueOnce(makeResult({ status: 'duplicate' }));
+    show(ui, { text: 'another', rect: rect(100, 200, 120, 20) });
+    await user.click(q.getByRole('button', { name: NOTE }));
+    expect(await q.findByText('Already saved - write your note in the side panel')).toBeTruthy();
+    expect(q.queryByRole('button', { name: 'Undo' })).toBeNull();
+  });
+
+  it('says why when the side panel cannot be opened, and keeps the plain saved notice', async () => {
+    const { ui, host, q } = mountUi();
+    host.openInSidePanel.mockResolvedValue(false);
+    show(ui);
+    await userEvent.setup().click(q.getByRole('button', { name: NOTE }));
+    expect(await q.findByText(/Could not open the side panel/)).toBeTruthy();
+    expect(q.getAllByRole('alert').length).toBeGreaterThan(0);
+    // Saved all the same: no claim that the note can be written in a panel that is not there.
+    expect(await q.findByText('Saved to Inbox')).toBeTruthy();
+    expect(q.queryByText(/write your note/)).toBeNull();
+    expect(q.getByRole('button', { name: 'Undo' })).toBeTruthy();
+    expect(host.dismissSelection).toHaveBeenCalledTimes(1);
+  });
+
+  it('survives a host that rejects instead of resolving false', async () => {
+    const { ui, host, q } = mountUi();
+    host.openInSidePanel.mockRejectedValue(new Error('Extension context invalidated'));
+    show(ui);
+    await userEvent.setup().click(q.getByRole('button', { name: NOTE }));
+    expect(await q.findByText(/Could not open the side panel/)).toBeTruthy();
+    expect(await q.findByText('Saved to Inbox')).toBeTruthy();
+  });
+
+  it('does not repeat an error the host already reported', async () => {
+    const { ui, host, q } = mountUi();
+    host.openInSidePanel.mockImplementationOnce(async () => {
+      ui.toast({ text: 'The side panel is not available here.', tone: 'error' });
+      return false;
+    });
+    show(ui);
+    await userEvent.setup().click(q.getByRole('button', { name: NOTE }));
+    expect(await q.findByText('The side panel is not available here.')).toBeTruthy();
+    expect(q.queryByText(/Could not open the side panel/)).toBeNull();
+  });
+
+  it('still opens the panel for its own highlight when a newer selection arrived meanwhile', async () => {
+    const { ui, host, q } = mountUi();
+    let release!: () => void;
+    host.save.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(makeResult({ highlight: makeHighlight({ id: 'hl-first001' }) }));
+        }),
+    );
+    show(ui);
+    await userEvent.setup().click(q.getByRole('button', { name: NOTE }));
+    show(ui, { text: 'Ribosomes make protein', rect: rect(100, 300, 120, 20) });
+    await act(async () => release());
+
+    expect(await q.findByText('Saved - write your note in the side panel')).toBeTruthy();
+    expect(host.openInSidePanel).toHaveBeenCalledWith('hl-first001');
+    expect(host.dismissSelection).not.toHaveBeenCalled();
+    expect(q.getByRole('toolbar')).toBeTruthy();
+  });
+
+  it('keeps the toolbar and the selection when the save failed', async () => {
+    const { ui, host, q } = mountUi();
+    host.save.mockRejectedValueOnce(new StudyVaultError('quota_exceeded', 'Disk is full.'));
+    show(ui);
+    await userEvent.setup().click(q.getByRole('button', { name: NOTE }));
+    expect(await q.findByText('Disk is full.')).toBeTruthy();
+    // Nothing was saved, so there is no note to write: the panel is not opened.
+    expect(host.openInSidePanel).not.toHaveBeenCalled();
+    expect(host.dismissSelection).not.toHaveBeenCalled();
+    expect(q.getByRole('toolbar')).toBeTruthy();
+  });
+});
+
+describe('a newer selection while a save is in flight', () => {
+  function inFlight(host: ReturnType<typeof mountUi>['host']): () => void {
+    let release!: () => void;
+    host.save.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(makeResult());
+        }),
+    );
+    return () => release();
+  }
+
+  it('is not dismissed or closed when the earlier save completes', async () => {
+    const { ui, host, q } = mountUi();
+    const release = inFlight(host);
+    show(ui);
+    await userEvent.setup().click(q.getByRole('button', { name: 'Save selection' }));
+
+    show(ui, { text: 'Ribosomes make protein', rect: rect(100, 300, 120, 20) });
+    await act(async () => release());
+
+    expect(await q.findByText('Saved to Inbox')).toBeTruthy();
+    expect(host.dismissSelection).not.toHaveBeenCalled();
+    expect(q.getByRole('toolbar')).toBeTruthy();
+    expect(q.getByRole('button', { name: 'Save selection' }).getAttribute('aria-disabled')).toBe(
+      'false',
+    );
+  });
+
+  it('keeps the newer selection usable: its own save is dismissed normally', async () => {
+    const { ui, host, q } = mountUi();
+    const release = inFlight(host);
+    show(ui);
+    const user = userEvent.setup();
+    await user.click(q.getByRole('button', { name: 'Save selection' }));
+    show(ui, { text: 'Ribosomes make protein', rect: rect(100, 300, 120, 20) });
+    await act(async () => release());
+    await q.findByText('Saved to Inbox');
+
+    await user.click(q.getByRole('button', { name: 'Save selection' }));
+    expect(host.save).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(host.dismissSelection).toHaveBeenCalledTimes(1));
+    expect(q.queryByRole('toolbar')).toBeNull();
+  });
+
+  it('does not treat a scroll (same text, new rect) as a different selection', async () => {
+    const { ui, host, q } = mountUi();
+    const release = inFlight(host);
+    show(ui);
+    await userEvent.setup().click(q.getByRole('button', { name: 'Save selection' }));
+    show(ui, { ...SELECTION, rect: rect(100, 150, 120, 20) });
+    await act(async () => release());
+
+    expect(await q.findByText('Saved to Inbox')).toBeTruthy();
+    expect(host.dismissSelection).toHaveBeenCalledTimes(1);
+    expect(q.queryByRole('toolbar')).toBeNull();
+  });
+
+  it('leaves a toolbar that was already hidden alone', async () => {
+    const { ui, host, q } = mountUi();
+    const release = inFlight(host);
+    show(ui);
+    await userEvent.setup().click(q.getByRole('button', { name: 'Save selection' }));
+    act(() => ui.hideToolbar());
+    await act(async () => release());
+
+    expect(await q.findByText('Saved to Inbox')).toBeTruthy();
+    expect(host.dismissSelection).not.toHaveBeenCalled();
   });
 });
 
@@ -427,18 +617,18 @@ describe('toasts', () => {
 });
 
 describe('selection changes and settings', () => {
-  it('a new selection text resets an open composer; the same text keeps it', async () => {
+  it('a new selection text resets an open panel; the same text keeps it', async () => {
     const { ui, q } = mountUi();
     show(ui);
     const user = userEvent.setup();
-    await user.click(q.getByRole('button', { name: 'Add a note' }));
-    typeInto(q.getByRole('textbox'), 'draft');
+    await user.click(q.getByRole('button', { name: 'More options' }));
+    fireEvent.change(q.getByRole('combobox', { name: 'Priority' }), { target: { value: '5' } });
 
     show(ui, { ...SELECTION, rect: rect(100, 150, 120, 20) }); // scrolled: same text
-    expect((q.getByRole('textbox') as HTMLTextAreaElement).value).toBe('draft');
+    expect((q.getByRole('combobox', { name: 'Priority' }) as HTMLSelectElement).value).toBe('5');
 
     show(ui, { text: 'something else', rect: rect(100, 150, 120, 20) });
-    expect(q.queryByRole('textbox')).toBeNull();
+    expect(q.queryByRole('dialog')).toBeNull();
     expect(q.getByRole('toolbar')).toBeTruthy();
   });
 

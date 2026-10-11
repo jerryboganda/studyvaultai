@@ -79,8 +79,8 @@ describe('floating surfaces are capped to the layout viewport', () => {
     act(() => ui.showToolbar({ text: 'abc', rect: rect(200, 150, 160, 20) }));
     const unit = unitOf(container);
     expect(unit.dataset.placement).toBe('above');
-    // centre 280 - 212 = 68; 150 - 8 - 42 = 100
-    expect(unit.style.transform).toBe('translate(68px, 100px)');
+    // centre 280 - 212 = 68; 150 - 12 - 42 = 96
+    expect(unit.style.transform).toBe('translate(68px, 96px)');
   });
 
   it('re-places the unit when a panel makes it too tall for where it was', async () => {
@@ -112,7 +112,8 @@ describe('floating surfaces are capped to the layout viewport', () => {
     act(() => ui.showToolbar({ text: 'abc', rect: rect(200, 10, 160, 20) }));
     const unit = unitOf(container);
     expect(unit.dataset.placement).toBe('below');
-    expect(unit.style.transform).toBe('translate(68px, 38px)');
+    // 10 + 20 + 12
+    expect(unit.style.transform).toBe('translate(68px, 42px)');
   });
 
   it('limits the highlight popover the same way and keeps it inside the margins', () => {
@@ -148,7 +149,7 @@ describe('floating surfaces are capped to the layout viewport', () => {
   });
 });
 
-describe('the composer markup matches the two-column layout', () => {
+describe('the More options markup matches the two-column layout', () => {
   const styles = parseCss(readCss(STYLES_CSS));
   const wide = '(max-height: 520px) and (min-width: 480px)';
   const areaClasses = new Set(
@@ -165,20 +166,19 @@ describe('the composer markup matches the two-column layout', () => {
     await userEvent.setup().click(q.getByRole('button', { name: 'More options' }));
     const panel = q.getByRole('dialog', { name: 'Save with details' });
     await within(panel).findByRole('combobox', { name: 'Bank' });
-    expect(panel.dataset.mode).toBe('advanced');
-    expect(areaClasses.size).toBeGreaterThanOrEqual(5);
+    expect(areaClasses.size).toBeGreaterThanOrEqual(4);
     const orphans = Array.from(panel.children)
       .filter((child) => !Array.from(child.classList).some((c) => areaClasses.has(c)))
       .map((child) => child.outerHTML.slice(0, 80));
     expect(orphans, 'children without a grid-area would be auto-placed').toEqual([]);
   });
 
-  it('declares the area for each class the composer uses', () => {
-    for (const cls of ['sv-quote', 'sv-area-bank', 'sv-area-kind', 'sv-area-note', 'sv-actions']) {
+  it('declares the area for each class the panel uses', () => {
+    for (const cls of ['sv-quote', 'sv-area-bank', 'sv-area-kind', 'sv-actions']) {
       expect(areaClasses.has(cls), cls).toBe(true);
     }
-    expect(
-      declsFor(styles, ".sv-panel[data-mode='advanced'] > .sv-area-note", wide).get('align-self'),
-    ).toBe('stretch');
+    expect(declsFor(styles, '.sv-panel', wide).get('grid-template-areas')).toBe(
+      "'quote quote' 'bank kind' 'actions actions'",
+    );
   });
 });

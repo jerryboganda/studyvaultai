@@ -3,29 +3,32 @@ import {
   COLOR_SWATCH,
   HIGHLIGHT_KINDS,
   KIND_LABELS,
-  MAX_COMMENT_CHARS,
   type HighlightKind,
   type HighlightPatch,
   type HighlightView,
 } from '@shared';
-import { errorMessage, truncate, useUi } from './context';
+import { errorMessage, openSidePanel, truncate, useUi } from './context';
 import { pushToast } from './store';
 import { floatingStyle, useFloating } from './useFloating';
 
-const COMMENT_DEBOUNCE_MS = 600;
 const QUOTE_PREVIEW_CHARS = 400;
+/** The note is read-only here; the side panel shows and edits all of it. */
+const NOTE_PREVIEW_CHARS = 500;
 
 type Status =
   | { state: 'idle' }
   | { state: 'saving' }
   | { state: 'saved' }
-  | { state: 'error'; message: string; retryable: boolean };
+  | { state: 'error'; message: string };
 
 /**
  * Non-modal dialog (WAI-ARIA APG): focus moves to the dialog when it opens and Escape closes it and
  * returns focus to the page element that had it. Nothing traps Tab: it walks the popover controls in
  * reading order and then leaves for the rest of the page, which the user can keep working in; the
  * popover closes on a press outside, Escape or its own buttons, not on focus loss.
+ *
+ * It has no text fields: page scripts can observe keystrokes typed inside the page document, so the
+ * note is shown as text and edited in the side panel.
  */
 export function HighlightPopover({
   highlight,
@@ -40,15 +43,11 @@ export function HighlightPopover({
   const id = highlight.id;
 
   const [view, setView] = useState(highlight);
-  const [comment, setComment] = useState(highlight.userComment);
   const [status, setStatus] = useState<Status>({ state: 'idle' });
   const [deleting, setDeleting] = useState(false);
 
   const dialogRef = useRef<HTMLDivElement>(null);
   const alive = useRef(true);
-  /** A comment typed but not yet persisted. Kept after a failure so Retry can resend it. */
-  const pending = useRef<string | null>(null);
-  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   /** Writes are serialised so a slow earlier response can never overwrite a newer one. */
   const queue = useRef<Promise<void>>(Promise.resolve());
   const placement = useFloating(dialogRef, anchor);
@@ -62,12 +61,11 @@ export function HighlightPopover({
           const next = await host.update(id, patch);
           if (!alive.current) return;
           setView(next);
-          setStatus({ state: pending.current === null ? 'saved' : 'saving' });
+          setStatus({ state: 'saved' });
         } catch (err) {
           const message = errorMessage(err, 'Could not save the change.');
-          if (patch.userComment !== undefined) pending.current ??= patch.userComment;
           if (!alive.current) pushToast(store, { text: message, tone: 'error' });
-          else setStatus({ state: 'error', message, retryable: pending.current !== null });
+          else setStatus({ state: 'error', message });
         }
       };
       queue.current = queue.current.then(run);
@@ -76,23 +74,13 @@ export function HighlightPopover({
     [host, id, store],
   );
 
-  const flushComment = useCallback((): Promise<void> => {
-    clearTimeout(timer.current);
-    const value = pending.current;
-    if (value === null) return queue.current;
-    pending.current = null;
-    return commit({ userComment: value });
-  }, [commit]);
-
   useEffect(() => {
     alive.current = true;
     ui.rememberFocus();
     return () => {
       alive.current = false;
-      // Closing must not lose a note the user just typed.
-      void flushComment();
     };
-  }, [ui, flushComment]);
+  }, [ui]);
 
   // The dialog is visibility:hidden until useFloating has measured it, and a hidden element cannot
   // take focus: focusing at mount was a silent no-op in a real browser (jsdom does not check).
@@ -103,8 +91,6 @@ export function HighlightPopover({
   const onDelete = async (): Promise<void> => {
     if (deleting) return;
     setDeleting(true);
-    clearTimeout(timer.current);
-    pending.current = null;
     try {
       await queue.current;
       await host.remove(id);
@@ -114,7 +100,6 @@ export function HighlightPopover({
         setStatus({
           state: 'error',
           message: errorMessage(err, 'Could not delete the highlight.'),
-          retryable: false,
         });
       }
       return;
@@ -137,6 +122,14 @@ export function HighlightPopover({
       },
     });
     ui.closePopover(true);
+  };
+
+  // Called inside the click: sidePanel.open needs the user gesture. The note shown here would be
+  // stale after an edit there, so the popover closes once the panel is open.
+  const editNote = (): void => {
+    void openSidePanel(ui, id).then((opened) => {
+      if (opened && alive.current) ui.closePopover(true);
+    });
   };
 
   const kindMeta = KIND_LABELS[view.kind];
@@ -181,41 +174,19 @@ export function HighlightPopover({
       {view.headingContext ? <p className="sv-muted">{view.headingContext}</p> : null}
 
       <div className="sv-field">
-        <label htmlFor={`${uid}-comment`}>Note</label>
-        <textarea
-          id={`${uid}-comment`}
-          className="sv-control sv-textarea"
-          rows={3}
-          value={comment}
-          maxLength={MAX_COMMENT_CHARS}
-          placeholder="Your own words (optional)"
-          onChange={(e) => {
-            const value = e.target.value;
-            setComment(value);
-            pending.current = value;
-            setStatus({ state: 'saving' });
-            clearTimeout(timer.current);
-            timer.current = setTimeout(() => void flushComment(), COMMENT_DEBOUNCE_MS);
-          }}
-        />
-        <div className="sv-status" role="status" aria-live="polite">
-          {status.state === 'saving' ? 'Saving…' : null}
-          {status.state === 'saved' ? 'Saved' : null}
-          {status.state === 'error' ? (
-            <span className="sv-inline-error">
-              {`Could not save: ${status.message}`}
-              {status.retryable ? (
-                <button
-                  type="button"
-                  className="sv-btn sv-btn-text"
-                  onClick={() => void flushComment()}
-                >
-                  Retry
-                </button>
-              ) : null}
-            </span>
-          ) : null}
-        </div>
+        <span className="sv-label" id={`${uid}-note`}>
+          Note
+        </span>
+        {view.userComment ? (
+          <p className="sv-note-text" aria-labelledby={`${uid}-note`}>
+            {truncate(view.userComment, NOTE_PREVIEW_CHARS)}
+          </p>
+        ) : (
+          <p className="sv-muted">No note yet.</p>
+        )}
+        <button type="button" className="sv-btn sv-btn-text sv-btn-start" onClick={editNote}>
+          Edit note in side panel
+        </button>
       </div>
 
       <div className="sv-row sv-row-split">
@@ -252,6 +223,14 @@ export function HighlightPopover({
             <option value={5}>5 (highest)</option>
           </select>
         </div>
+      </div>
+
+      <div className="sv-status" role="status" aria-live="polite">
+        {status.state === 'saving' ? 'Saving…' : null}
+        {status.state === 'saved' ? 'Saved' : null}
+        {status.state === 'error' ? (
+          <span className="sv-inline-error">{`Could not save: ${status.message}`}</span>
+        ) : null}
       </div>
 
       <div className="sv-actions">

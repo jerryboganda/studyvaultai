@@ -9,6 +9,7 @@ import { createHandlers } from './handlers';
 import {
   browserCommandDeps,
   browserMenuPort,
+  browserOpenSidePanel,
   browserSessionArea,
   browserSiteDeps,
 } from './platform';
@@ -31,6 +32,8 @@ export default defineBackground(() => {
       site,
       ledger: createDeleteLedger(browserSessionArea()),
       extensionBaseUrl: browser.runtime.getURL('/'),
+      openSidePanel: browserOpenSidePanel,
+      session: browserSessionArea(),
     }),
   );
 

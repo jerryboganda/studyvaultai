@@ -2,7 +2,7 @@ import { act, createEvent, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defaultSettings } from '@shared';
-import { cleanupUi, makeHighlight, mountUi, rect, typeInto } from './testHarness';
+import { cleanupUi, makeHighlight, mountUi, rect } from './testHarness';
 
 const ANCHOR = rect(100, 300, 160, 20);
 
@@ -26,8 +26,8 @@ describe('highlight popover', () => {
     expect(chip.textContent).toContain('ƒ');
     expect(chip.textContent).toContain('Formula');
     expect(m.q.getByText('Cell biology')).toBeTruthy();
-    // jsdom has no layout: 0x0, above the anchor.
-    expect(dialog.style.transform).toBe('translate(180px, 292px)');
+    // jsdom has no layout: 0x0, above the anchor by the 12px gap.
+    expect(dialog.style.transform).toBe('translate(180px, 288px)');
   });
 
   it('renders quote, note and heading as plain text, never as markup', () => {
@@ -40,9 +40,7 @@ describe('highlight popover', () => {
     });
     expect(m.q.getByText(quote)).toBeTruthy();
     expect(m.q.getByText('<i>Heading</i>')).toBeTruthy();
-    expect((m.q.getByRole('textbox') as HTMLTextAreaElement).value).toBe(
-      '<script>window.__svXss = 2</script>',
-    );
+    expect(m.q.getByText('<script>window.__svXss = 2</script>')).toBeTruthy();
     expect(dialog.querySelector('img, b, i, script')).toBeNull();
     expect((window as unknown as { __svXss?: number }).__svXss).toBeUndefined();
   });
@@ -131,50 +129,71 @@ describe('highlight popover', () => {
   });
 });
 
-describe('editing', () => {
-  it('saves the note after a pause and reports the status', async () => {
-    vi.useFakeTimers();
+describe('the note', () => {
+  it('is read-only text with a button that edits it in the side panel', () => {
     const m = mountUi();
-    open(m);
-    typeInto(m.q.getByRole('textbox', { name: 'Note' }), 'my own words');
-    expect(m.q.getByText('Saving…')).toBeTruthy();
-    expect(m.host.update).not.toHaveBeenCalled();
-
-    await act(async () => void vi.advanceTimersByTime(599));
-    expect(m.host.update).not.toHaveBeenCalled();
-    await act(async () => void vi.advanceTimersByTime(1));
-    expect(m.host.update).toHaveBeenCalledTimes(1);
-    expect(m.host.update).toHaveBeenCalledWith('hl-00000001', { userComment: 'my own words' });
-    expect(m.q.getByText('Saved')).toBeTruthy();
+    const { dialog } = open(m, { userComment: 'in my own words' });
+    expect(within(dialog).getByText('in my own words')).toBeTruthy();
+    expect(within(dialog).getByText('Note')).toBeTruthy();
+    expect(within(dialog).queryByRole('textbox')).toBeNull();
+    expect(within(dialog).getByRole('button', { name: 'Edit note in side panel' })).toBeTruthy();
   });
 
-  it('collapses rapid typing into one save', async () => {
-    vi.useFakeTimers();
+  it('says so when there is none, and still offers the side panel', () => {
     const m = mountUi();
-    open(m);
-    const field = m.q.getByRole('textbox', { name: 'Note' });
-    typeInto(field, 'a');
-    await act(async () => void vi.advanceTimersByTime(300));
-    typeInto(field, 'ab');
-    await act(async () => void vi.advanceTimersByTime(300));
-    typeInto(field, 'abc');
-    await act(async () => void vi.advanceTimersByTime(600));
-    expect(m.host.update).toHaveBeenCalledTimes(1);
-    expect(m.host.update).toHaveBeenCalledWith('hl-00000001', { userComment: 'abc' });
+    const { dialog } = open(m, { userComment: '' });
+    expect(within(dialog).getByText('No note yet.')).toBeTruthy();
+    expect(within(dialog).getByRole('button', { name: 'Edit note in side panel' })).toBeTruthy();
   });
 
-  it('flushes an unsaved note immediately when the popover closes', async () => {
-    vi.useFakeTimers();
+  it('shows only the start of a very long note', () => {
     const m = mountUi();
-    const { dialog } = open(m);
-    typeInto(m.q.getByRole('textbox', { name: 'Note' }), 'do not lose me');
-    await act(async () => {
-      fireEvent.keyDown(dialog, { key: 'Escape' });
+    open(m, { userComment: `${'a'.repeat(499)}b${'c'.repeat(5000)}` });
+    const shown = m.container.querySelector('.sv-note-text') as HTMLElement;
+    expect(shown.textContent?.length).toBe(500);
+    expect(shown.textContent?.endsWith('…')).toBe(true);
+  });
+
+  it('opens the side panel on this highlight inside the click, then closes the popover', async () => {
+    const m = mountUi();
+    let resolve!: (opened: boolean) => void;
+    m.host.openInSidePanel.mockImplementationOnce(
+      () =>
+        new Promise<boolean>((r) => {
+          resolve = r;
+        }),
+    );
+    open(m, { id: 'hl-note0001', userComment: 'old note' });
+    act(() => {
+      fireEvent.click(m.q.getByRole('button', { name: 'Edit note in side panel' }));
     });
+    expect(m.host.openInSidePanel).toHaveBeenCalledTimes(1);
+    expect(m.host.openInSidePanel).toHaveBeenCalledWith('hl-note0001');
+    // Not closed before the panel is really open.
+    expect(m.q.queryByRole('dialog')).toBeTruthy();
+
+    await act(async () => resolve(true));
     expect(m.q.queryByRole('dialog')).toBeNull();
-    expect(m.host.update).toHaveBeenCalledWith('hl-00000001', { userComment: 'do not lose me' });
+    expect(m.host.update).not.toHaveBeenCalled();
   });
 
+  it('stays open and says why when the side panel cannot be opened', async () => {
+    const m = mountUi();
+    m.host.openInSidePanel.mockResolvedValueOnce(false);
+    open(m, { userComment: 'old note' });
+    await userEvent.setup().click(m.q.getByRole('button', { name: 'Edit note in side panel' }));
+    expect(await m.q.findByText(/Could not open the side panel/)).toBeTruthy();
+    expect(m.q.getByRole('dialog', { name: 'Highlight details' })).toBeTruthy();
+  });
+
+  it('is not the page document: there is no text field for a page script to observe', () => {
+    const m = mountUi();
+    const { dialog } = open(m, { userComment: 'x' });
+    expect(dialog.querySelector('input, textarea, [contenteditable]')).toBeNull();
+  });
+});
+
+describe('editing', () => {
   it('changing the type sends the kind with its palette colour and updates the chip', async () => {
     const settings = defaultSettings();
     settings.palette = { ...settings.palette, question: 'purple' };
@@ -192,6 +211,7 @@ describe('editing', () => {
     await vi.waitFor(() =>
       expect((dialog.querySelector('.sv-chip') as HTMLElement).textContent).toContain('Question'),
     );
+    expect(m.q.getByText('Saved')).toBeTruthy();
   });
 
   it('changing the priority sends only the priority', async () => {
@@ -203,32 +223,40 @@ describe('editing', () => {
     );
   });
 
-  it('reports a failed save and retries with the same text', async () => {
-    vi.useFakeTimers();
+  it('a change keeps the note shown in step with what the host returns', async () => {
     const m = mountUi();
-    m.host.update.mockRejectedValueOnce(new Error('Service worker is restarting'));
-    open(m);
-    typeInto(m.q.getByRole('textbox', { name: 'Note' }), 'draft');
-    await act(async () => void vi.advanceTimersByTime(600));
-    expect(m.q.getByText(/Could not save: Service worker is restarting/)).toBeTruthy();
-
-    await act(async () => {
-      fireEvent.click(m.q.getByRole('button', { name: 'Retry' }));
-    });
-    expect(m.host.update).toHaveBeenCalledTimes(2);
-    expect(m.host.update).toHaveBeenLastCalledWith('hl-00000001', { userComment: 'draft' });
-    expect(m.q.getByText('Saved')).toBeTruthy();
+    m.host.update.mockResolvedValueOnce(
+      makeHighlight({ priority: 5, userComment: 'edited elsewhere' }),
+    );
+    open(m, { userComment: 'old note' });
+    fireEvent.change(m.q.getByRole('combobox', { name: 'Priority' }), { target: { value: '5' } });
+    expect(await m.q.findByText('edited elsewhere')).toBeTruthy();
   });
 
-  it('a failed save during close is reported through a toast, not lost silently', async () => {
-    vi.useFakeTimers();
+  it('reports a failed change and keeps showing the stored value', async () => {
     const m = mountUi();
-    m.host.update.mockRejectedValueOnce(new Error('No connection'));
+    m.host.update.mockRejectedValueOnce(new Error('Service worker is restarting'));
+    open(m, { priority: 2 });
+    fireEvent.change(m.q.getByRole('combobox', { name: 'Priority' }), { target: { value: '5' } });
+    expect(await m.q.findByText(/Could not save: Service worker is restarting/)).toBeTruthy();
+    expect((m.q.getByRole('combobox', { name: 'Priority' }) as HTMLSelectElement).value).toBe('2');
+  });
+
+  it('a change that fails after the popover closed is reported through a toast', async () => {
+    let fail!: (e: Error) => void;
+    const m = mountUi();
+    m.host.update.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          fail = reject;
+        }),
+    );
     const { dialog } = open(m);
-    typeInto(m.q.getByRole('textbox', { name: 'Note' }), 'unsent');
-    await act(async () => {
-      fireEvent.keyDown(dialog, { key: 'Escape' });
-    });
+    fireEvent.change(m.q.getByRole('combobox', { name: 'Priority' }), { target: { value: '4' } });
+    await vi.waitFor(() => expect(m.host.update).toHaveBeenCalledTimes(1));
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(m.q.queryByRole('dialog')).toBeNull();
+    await act(async () => fail(new Error('No connection')));
     expect(m.q.getByRole('alert').textContent).toContain('No connection');
   });
 });
@@ -259,17 +287,25 @@ describe('deleting', () => {
     expect(m.q.queryByText('Highlight deleted')).toBeNull();
   });
 
-  it('does not write a pending note for a highlight that was just deleted', async () => {
-    vi.useFakeTimers();
+  it('waits for a change that is still being written before it deletes', async () => {
     const m = mountUi();
+    let finish!: () => void;
+    m.host.update.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = () => resolve(makeHighlight({ priority: 5 }));
+        }),
+    );
     open(m);
-    typeInto(m.q.getByRole('textbox', { name: 'Note' }), 'about to vanish');
-    await act(async () => {
+    fireEvent.change(m.q.getByRole('combobox', { name: 'Priority' }), { target: { value: '5' } });
+    act(() => {
       fireEvent.click(m.q.getByRole('button', { name: 'Delete' }));
     });
-    await act(async () => void vi.advanceTimersByTime(2000));
-    expect(m.host.remove).toHaveBeenCalledTimes(1);
-    expect(m.host.update).not.toHaveBeenCalled();
+    await act(async () => undefined);
+    expect(m.host.remove).not.toHaveBeenCalled();
+
+    await act(async () => finish());
+    await vi.waitFor(() => expect(m.host.remove).toHaveBeenCalledTimes(1));
   });
 
   it('reports a failed restore', async () => {

@@ -179,6 +179,43 @@ describe('popup state matrix', () => {
     expect(rpc.called('tab.activate')).toHaveLength(0);
   });
 
+  it('Always enable: warns when the worker did not register the site, and still activates the tab', async () => {
+    let active = false;
+    rpc.background['site.status'] = () => siteStatus({ active });
+    rpc.background['site.sync'] = () => ({ registeredMatches: [] }); // pattern was discarded
+    rpc.background['tab.activate'] = () => {
+      active = true;
+      return { ok: true };
+    };
+    rpc.tab['content.pageStatus'] = () => pageStatus();
+    await openOn('https://example.com/notes');
+
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Always enable on example.com' }),
+    );
+
+    expect(
+      await screen.findByText(/could not set it to start by itself on every visit/),
+    ).toBeTruthy();
+    expect(rpc.called('tab.activate')).toHaveLength(1);
+    expect(await screen.findByText(/Active on this tab only/)).toBeTruthy();
+  });
+
+  it('Always enable on an address that cannot be registered: explains, asks Chrome for nothing', async () => {
+    rpc.background['site.status'] = () => siteStatus({ pattern: 'https://exa$mple.com/*' });
+    await openOn('https://exa$mple.com/notes');
+
+    await userEvent.click(
+      await screen.findByRole('button', { name: 'Always enable on exa$mple.com' }),
+    );
+
+    expect((await screen.findByRole('alert')).textContent).toMatch(
+      /cannot keep itself switched on/,
+    );
+    expect(chrome.permissions.request).not.toHaveBeenCalled();
+    expect((await getSettings()).persistentOrigins).toEqual([]);
+  });
+
   it('calls sidePanel.open synchronously inside the click (user gesture)', async () => {
     rpc.background['site.status'] = () => siteStatus({ active: true });
     rpc.tab['content.pageStatus'] = () => pageStatus();

@@ -46,6 +46,11 @@ export function browserSessionArea(): SessionArea {
   return browser.storage.session;
 }
 
+/** Open the side panel for one tab. Call it before awaiting anything: it needs the user gesture. */
+export function browserOpenSidePanel(tabId: number): Promise<void> {
+  return browser.sidePanel.open({ tabId });
+}
+
 /** Tab-scoped badge text, colour and tooltip; navigation also resets tab-scoped values. */
 export function createBadgePort(defaultTitle: string, ms = BADGE_MS) {
   return async (tabId: number, badge: Badge): Promise<void> => {

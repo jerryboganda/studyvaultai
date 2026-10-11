@@ -11,7 +11,13 @@ export interface PlaceInput {
   /** Measured size of the floating element. */
   toolbar: { w: number; h: number };
   viewport: { w: number; h: number };
-  /** Space between the anchor and the floating element. */
+  /**
+   * Space between the anchor and the floating element. The anchor is the glyph box of the selected
+   * text; the line box around it is taller by the half-leading on each side, and a click lands
+   * anywhere in the line box. 12px keeps the element off the seam to the neighbouring wrapped line
+   * for line heights up to about 2.3 (a double click puts the toolbar next to the word that the
+   * third click of a triple click still has to reach).
+   */
   gap?: number;
   /** Minimum distance from the viewport edges. */
   margin?: number;
@@ -45,7 +51,7 @@ export function placeToolbar({
   selection,
   toolbar,
   viewport,
-  gap = 8,
+  gap = 12,
   margin = 8,
 }: PlaceInput): Placement {
   const maxWidth = Math.max(0, viewport.w - 2 * margin);

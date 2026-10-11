@@ -118,6 +118,25 @@ export class Rehydrator {
     return range && !range.collapsed && range.startContainer.isConnected ? range : null;
   }
 
+  /** Painted highlights in document order (nested ones: the outer one first). */
+  painted(): Array<{ id: string; range: Range }> {
+    const list: Array<{ id: string; range: Range }> = [];
+    for (const id of this.entries.keys()) {
+      const range = this.rangeOf(id);
+      if (range) list.push({ id, range });
+    }
+    return list.sort((a, b) => {
+      try {
+        return (
+          a.range.compareBoundaryPoints(a.range.START_TO_START, b.range) ||
+          b.range.compareBoundaryPoints(b.range.END_TO_END, a.range)
+        );
+      } catch {
+        return 0; // a range left the document between rangeOf() and here
+      }
+    });
+  }
+
   // -------------------------------------------------------------------------------------------
   // Loading
   // -------------------------------------------------------------------------------------------

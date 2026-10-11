@@ -1,6 +1,9 @@
 import {
+  DENY_HOST,
+  MATCH_PATTERN,
   StudyVaultError,
   isHostDenied,
+  normalizeHost,
   originPattern,
   parseHttpUrl,
   type Settings,
@@ -57,14 +60,9 @@ export interface SiteAccess {
   activate(tabId: number): Promise<void>;
 }
 
-// scheme://host[:port]/*  (scheme may be *, host may be * or *.name). We only ever register origin-wide patterns.
-const PATTERN = /^(\*|https?):\/\/(\*|(?:\*\.)?[a-z0-9.-]+)(?::(\*|\d{1,5}))?\/\*$/i;
-// Deny entries become `*://*.host/*`; anything with wildcards, ports or paths cannot be expressed.
-const DENY_HOST = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/;
-
 /** Does match pattern `pattern` cover `url`? Pattern host without a port matches every port. */
 export function patternCovers(pattern: string, url: URL): boolean {
-  const m = PATTERN.exec(pattern);
+  const m = MATCH_PATTERN.exec(pattern);
   if (!m) return false;
   const [, scheme = '', host = '', port] = m;
   const urlScheme = url.protocol.slice(0, -1);
@@ -231,7 +229,9 @@ export function createSiteAccess(deps: SiteAccessDeps): SiteAccess {
     sync() {
       return exclusive(async () => {
         const settings = await deps.getSettings();
-        const candidates = [...new Set(settings.persistentOrigins)].filter((p) => PATTERN.test(p));
+        const candidates = [...new Set(settings.persistentOrigins)].filter((p) =>
+          MATCH_PATTERN.test(p),
+        );
         const granted = await Promise.all(candidates.map((p) => deps.hasPermission(p)));
         const matches = candidates.filter((_, i) => granted[i]);
         const registered = await deps.registeredMatches();
@@ -242,7 +242,7 @@ export function createSiteAccess(deps: SiteAccessDeps): SiteAccess {
         const excludeMatches = [
           ...new Set(
             settings.denyList
-              .map((h) => h.trim().toLowerCase())
+              .map(normalizeHost)
               .filter((h) => DENY_HOST.test(h))
               .map((h) => `*://*.${h}/*`),
           ),

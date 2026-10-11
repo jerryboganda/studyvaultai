@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
 import type { CaptureHost } from '../contract';
-import type { Store, UiState } from './store';
+import { pushToast, type Store, type UiState } from './store';
 
 /** What the overlay components may do. Built once by mount.tsx. */
 export interface UiContext {
@@ -33,4 +33,27 @@ export function errorMessage(err: unknown, fallback: string): string {
 
 export function truncate(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
+
+const SIDE_PANEL_FAILED =
+  'Could not open the side panel. Open it from the StudyVault toolbar button instead.';
+
+/**
+ * Opens the side panel, where all free text is typed: page scripts can observe keystrokes typed
+ * inside the page document, so the overlay has no text fields. Call it straight from the click
+ * handler, before any await: chrome.sidePanel.open needs the user gesture. A failure is reported
+ * once, unless the host already did.
+ */
+export async function openSidePanel(ui: UiContext, highlightId: string | null): Promise<boolean> {
+  const errorsBefore = ui.store.get().errorSeq;
+  let opened: boolean;
+  try {
+    opened = await ui.host.openInSidePanel(highlightId);
+  } catch {
+    opened = false;
+  }
+  if (!opened && ui.store.get().errorSeq === errorsBefore) {
+    pushToast(ui.store, { text: SIDE_PANEL_FAILED, tone: 'error' });
+  }
+  return opened;
 }

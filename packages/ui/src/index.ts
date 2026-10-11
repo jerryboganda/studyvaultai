@@ -16,7 +16,7 @@ export {
   type Loadable,
 } from './hooks';
 export { describeResolveState, type ResolveDescriptor } from './resolveState';
-export { editDenyList, grantSiteAccess, revokeSiteAccess } from './siteAccess';
+export { editDenyList, grantSiteAccess, revokeSiteAccess, type GrantResult } from './siteAccess';
 export {
   ALL_SITES_ORIGINS,
   classifyAddress,

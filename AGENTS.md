@@ -38,6 +38,9 @@ local-only script.
   e2e bundle must be rebuilt first with `pnpm build:e2e` (about 2 s) - that single build is allowed for
   this purpose only. Prefer downloading the CI trace/screenshots instead (`gh run download`).
   Never loop the full suite locally.
+- **Parallel agents build into a private output folder** so bundles never clobber each other:
+  `cmd /c "set SV_OUT_DIR=.output-<role>&& pnpm build:e2e&& pnpm exec playwright test <spec> --workers=1"`
+  (the Playwright fixtures read the same variable). Delete your folder when done. `.output*/` is ignored.
 - Interactive, exploratory verification in a real browser that Actions cannot give you.
 
 ### The loop

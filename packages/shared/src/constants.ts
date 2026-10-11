@@ -49,6 +49,9 @@ export const DEFAULT_PALETTE: Record<(typeof HIGHLIGHT_KINDS)[number], (typeof C
     question: 'teal',
   };
 
+/** chrome.storage.session key: {highlightId, at} handed from the service worker to the side panel. */
+export const PENDING_FOCUS_KEY = 'sv.pendingFocus';
+
 /** Name of the always-present default bank that quick-save falls back to. */
 export const INBOX_BANK_NAME = 'Inbox';
 /** Fixed id so concurrent first-run creation, restores and imports can never produce two Inboxes. */

@@ -91,7 +91,7 @@ describe('createCaptureUi', () => {
     const { call } = await create();
     expect(call.options.position).toBe('inline');
     expect(call.options.isolateEvents).toBe(true);
-    // Closed in every build except `--mode e2e`, where Playwright needs to pierce it.
+    // Closed in every build except the SV_E2E variant, where Playwright needs to pierce it.
     expect(call.options.mode).toBe('closed');
   });
 

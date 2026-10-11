@@ -15,6 +15,15 @@ export const Settings = z.object({
   denyList: z.array(z.string().trim().toLowerCase().min(1).max(253)).max(500),
   /** Origin match patterns the user enabled persistently (per-site mode). */
   persistentOrigins: z.array(z.string().max(300)).max(500),
+  /**
+   * Paint saved highlights on pages. Off = "quiet mode": captures still save and the side panel still
+   * lists them, but nothing is published to the page's CSS.highlights registry (SECURITY_PRIVACY).
+   */
+  paintHighlights: z.boolean(),
+  /** 'strong' adds a thicker underline per kind and a heavier fill for low-contrast displays. */
+  highlightStyle: z.enum(['normal', 'strong']),
+  /** Save from private (incognito) windows. Off by default: the database is shared with normal windows. */
+  allowIncognitoCapture: z.boolean(),
 });
 export type Settings = z.infer<typeof Settings>;
 
@@ -29,6 +38,9 @@ export function defaultSettings(): Settings {
     lastBankId: null,
     denyList: [...DEFAULT_DENY_HOSTS],
     persistentOrigins: [],
+    paintHighlights: true,
+    highlightStyle: 'normal',
+    allowIncognitoCapture: false,
   };
 }
 
@@ -56,5 +68,8 @@ export function parseSettings(raw: unknown): Settings {
     lastBankId: pick('lastBankId'),
     denyList: pick('denyList'),
     persistentOrigins: pick('persistentOrigins'),
+    paintHighlights: pick('paintHighlights'),
+    highlightStyle: pick('highlightStyle'),
+    allowIncognitoCapture: pick('allowIncognitoCapture'),
   };
 }
