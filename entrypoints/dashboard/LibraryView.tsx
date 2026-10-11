@@ -1,5 +1,5 @@
-import { useId, useState, type KeyboardEvent, type Ref } from 'react';
-import { Button, EmptyState, InlineNotice } from '@ui';
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type Ref } from 'react';
+import { Button, EmptyState, InlineNotice, useToast } from '@ui';
 import { countLabel as plural } from './format';
 import { VirtualList } from '@ui/vault';
 import type { TagWithCount } from '@storage';
@@ -27,6 +27,7 @@ export function LibraryView({
   density,
   listRef,
   onOpenPreview,
+  onDismissPreview,
   queryText,
   onClearQuery,
 }: {
@@ -40,14 +41,29 @@ export function LibraryView({
   listRef: Ref<HTMLDivElement>;
   /** Enter on a row: move keyboard focus to the preview. */
   onOpenPreview(): void;
+  /** Escape in the list: close the preview if it is a panel over the list. True when it did. */
+  onDismissPreview(): boolean;
   queryText: string;
   onClearQuery(): void;
 }) {
   const data = useTreeData();
   const bump = useBump();
+  const { announce } = useToast();
   const descId = useId();
   const searching = lib.mode === 'search';
   const total = lib.total;
+
+  // Choosing a bank or a filter changes the list under a control that keeps focus: say how many
+  // highlights it holds now (WCAG 4.1.3). A search says it itself, in the search box's status.
+  const countFor = useRef<string | null>(null);
+  const scopeAndFilters = JSON.stringify([scope, filters]);
+  const settled = !searching && !lib.loading && !lib.waitingForIndex;
+  useEffect(() => {
+    if (!settled || total === null) return;
+    const previous = countFor.current;
+    countFor.current = scopeAndFilters;
+    if (previous !== null && previous !== scopeAndFilters) announce(plural(total, 'highlight'));
+  }, [settled, scopeAndFilters, total, announce]);
 
   const requestDelete = () => {
     if (lib.selectedCount === 0) return;
@@ -67,6 +83,8 @@ export function LibraryView({
     } else if (e.key === 'Escape' && lib.selectedCount > 0) {
       e.preventDefault();
       lib.clearSelection();
+    } else if (e.key === 'Escape' && onDismissPreview()) {
+      e.preventDefault();
     }
   };
 

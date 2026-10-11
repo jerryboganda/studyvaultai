@@ -21,7 +21,7 @@ Workflow: `.github/workflows/ci.yml`.
 | Full unit suite | `pnpm test` | `unit` |
 | Production + e2e builds, zip | `pnpm build`, `pnpm build:e2e`, `pnpm zip` | `build` |
 | Browser E2E (Playwright, loaded MV3 extension), Linux + Windows | `pnpm test:e2e`, `playwright test` (full) | `e2e` |
-| Stress / performance / large-corpus suites | any | dedicated jobs (add them to `ci.yml`) |
+| Stress / performance / large-corpus suites | `node scripts/run-perf.mjs`, `SV_PERF=1 ...` | `stress` (also `stress.yml`, nightly) |
 | Dependency audit, license check, bundle-size report | `pnpm audit` etc. | `audit`, `build` |
 | Anything else that takes more than ~30 s or saturates the CPU | | add a job |
 

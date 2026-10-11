@@ -7,6 +7,7 @@ import {
   ToastProvider,
   useAction,
   useApplyTheme,
+  useFocusRescue,
   useSettings,
 } from '@ui';
 import { AiSettingsSection } from '@ui/ai';
@@ -30,9 +31,12 @@ import { SiteAccess } from './SiteAccess';
 import { Storage } from './Storage';
 import { sectionFromHash } from './model';
 
+/** Where focus goes when a toast that held it closes: the settings, never <body>. */
+const content = () => document.querySelector<HTMLElement>('.opt__main');
+
 export function Options() {
   return (
-    <ToastProvider>
+    <ToastProvider returnFocus={content}>
       <OptionsBody />
     </ToastProvider>
   );
@@ -112,6 +116,8 @@ function useDataSections(ready: boolean): boolean {
 function OptionsBody() {
   const { settings, error, retry, update } = useSettings();
   useApplyTheme(settings?.theme);
+  // A row or a notice that goes away with its own button must not leave focus on <body>.
+  const rescueRef = useFocusRescue();
   const ready = settings !== null;
   const dataReady = useDataSections(ready);
 
@@ -124,7 +130,7 @@ function OptionsBody() {
   }, [dataReady]);
 
   return (
-    <div className="opt">
+    <div ref={rescueRef} className="opt">
       <header className="opt__head">
         <h1>StudyVault settings</h1>
         {settings ? <QuickActions reviewOn={settings.features.review} /> : null}
@@ -132,7 +138,7 @@ function OptionsBody() {
 
       <div className="opt__layout">
         {settings ? <SectionNav /> : null}
-        <main className="opt__main">
+        <main className="opt__main" tabIndex={-1}>
           {error ? (
             <InlineNotice
               tone="error"

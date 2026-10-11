@@ -173,6 +173,7 @@ function Card({
     <article
       ref={card}
       className={`sv-card${selected ? ' sv-card--selected' : ''}`}
+      aria-current={selected ? 'true' : undefined}
       data-highlight-id={view.id}
       data-testid="pdf-highlight-card"
       aria-label={`Page ${pageNumber}, ${KIND_LABELS[view.kind].label}: ${truncate(view.exactQuote, 60)}`}

@@ -381,6 +381,13 @@ textarea.sv-control {
 }
 
 /* Toasts ----------------------------------------------------------------------------------- */
+/*
+ * The stack is fixed to the bottom edge. A control that scrolls into view for keyboard focus must come
+ * to rest above it (WCAG 2.4.11 Focus Not Obscured); panes that scroll on their own repeat this.
+ */
+html {
+  scroll-padding-bottom: 6rem;
+}
 .sv-toasts {
   position: fixed;
   inset: auto var(--sv-space-2) var(--sv-space-2) var(--sv-space-2);
@@ -427,6 +434,17 @@ textarea.sv-control {
 }
 .sv-toast__close {
   border-color: transparent;
+}
+/*
+ * The toast is the inverse of the page, so the blue focus ring (2.7:1 on it in light, 1.8:1 in dark)
+ * is too faint against it. The page colour is what reads on that surface (WCAG 1.4.11). The error
+ * toast keeps the blue: it sits on a tinted surface where blue has 5:1 or more.
+ */
+.sv-toast :focus-visible {
+  outline-color: var(--sv-bg);
+}
+.sv-toast--error :focus-visible {
+  outline-color: var(--sv-focus);
 }
 /* Errors do not use the inverse "snackbar" look: tinted surface, danger edge, glyph, text prefix. */
 .sv-toast--error {

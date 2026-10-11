@@ -11,7 +11,15 @@ import {
 } from '@pdf';
 import { getSettings } from '@runtime';
 import { defaultSettings } from '@shared';
-import { Button, InlineNotice, ToastProvider, errorMessage, useApplyTheme, useSettings } from '@ui';
+import {
+  Button,
+  InlineNotice,
+  ToastProvider,
+  errorMessage,
+  useApplyTheme,
+  useFocusRescue,
+  useSettings,
+} from '@ui';
 import { DocumentView } from './DocumentView';
 import { openSession, readLocalFile, type Session } from './loader';
 import type { OcrService } from './ocr';
@@ -50,9 +58,12 @@ interface ReaderProps {
   privacy: () => Promise<WindowPrivacy>;
 }
 
+/** Where focus goes when a toast that held it closes: the pages, never <body>. */
+const pages = () => document.querySelector<HTMLElement>('.sv-viewer');
+
 export function Reader(props: ReaderProps) {
   return (
-    <ToastProvider>
+    <ToastProvider returnFocus={pages}>
       <ReaderBody {...props} />
     </ToastProvider>
   );
@@ -61,6 +72,8 @@ export function Reader(props: ReaderProps) {
 function ReaderBody({ store, ocr, params, privacy: askWindow }: ReaderProps) {
   const { settings } = useSettings();
   useApplyTheme(settings?.theme);
+  // A control that goes away with its own action (Cancel, a saved line) must not drop focus on <body>.
+  const rescueRef = useFocusRescue();
   // Same rule as web capture: the database is shared with normal windows, so a private window
   // stores nothing unless the person said it may (SECURITY_PRIVACY, ADR-003). The window is asked,
   // not assumed (privacy.ts); the storage write path enforces the same rule, so this state is what
@@ -341,7 +354,7 @@ function ReaderBody({ store, ocr, params, privacy: askWindow }: ReaderProps) {
   };
 
   return (
-    <div className="sv-app" data-testid="pdf-reader">
+    <div ref={rescueRef} className="sv-app" data-testid="pdf-reader">
       {phase.t === 'ready' ? (
         <DocumentView
           key={phase.session.id}

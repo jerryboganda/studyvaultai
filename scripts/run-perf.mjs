@@ -18,6 +18,12 @@ import { fileURLToPath } from 'node:url';
 
 /** Packages that must ship a seeded perf suite (ROADMAP Phase 2/4 gates, TEST_PLAN budgets). */
 const EXPECTED_AREAS = ['storage', 'search', 'study', 'backup'];
+/**
+ * Expected areas that still have no seeded suite, area -> why. Reported as a warning in the summary,
+ * never dropped silently, and never a failure; delete the entry when the suite lands (it is then
+ * picked up by name). Empty: packages/study/src/perf.test.ts (10k cards, 100k review logs) landed.
+ */
+const KNOWN_GAPS = {};
 const SUITE =
   /(?:^|\/)(?:perf[\w.-]*|[\w.-]*\.perf|stress[\w.-]*|[\w.-]*round-?trip[\w.-]*)\.test\.tsx?$/;
 const DOM_AREAS = new Set(['highlights', 'ui']);
@@ -52,10 +58,11 @@ function environmentOf(file, root = '.') {
   return DOM_AREAS.has(areaOf(file)) || file.endsWith('.tsx') ? 'jsdom' : 'node';
 }
 
-/** Turns Vitest JSON reports into rows and a list of problems. Pure, so it can be self-tested. */
-function analyse(reports, files) {
+/** Turns Vitest JSON reports into rows, problems (fail) and warnings. Pure, so it can be self-tested. */
+function analyse(reports, files, knownGaps = {}) {
   const rows = [];
   const problems = [];
+  const warnings = [];
   for (const report of reports) {
     for (const suite of report.testResults ?? []) {
       const file = relative(process.cwd(), suite.name).split('\\').join('/');
@@ -96,11 +103,11 @@ function analyse(reports, files) {
     if (!seen.has(file)) problems.push(`${file}: Vitest produced no result for this file`);
   }
   for (const area of EXPECTED_AREAS) {
-    if (!files.some((f) => areaOf(f) === area)) {
-      problems.push(`no perf / stress / round-trip suite found for packages/${area}`);
-    }
+    if (files.some((f) => areaOf(f) === area)) continue;
+    if (knownGaps[area]) warnings.push(`packages/${area}: ${knownGaps[area]}`);
+    else problems.push(`no perf / stress / round-trip suite found for packages/${area}`);
   }
-  return { rows, problems };
+  return { rows, problems, warnings };
 }
 
 function selfTest() {
@@ -153,6 +160,11 @@ function selfTest() {
     problems.some((p) => p.includes('packages/backup')),
     'missing area reported',
   );
+  const gap = analyse([report], ['packages/storage/src/perf.test.ts'], { study: 'known' });
+  expect(
+    gap.warnings.length === 1 && !gap.problems.some((p) => p.includes('packages/study')),
+    'known gap is a warning, not a failure',
+  );
   expect(areaOf('packages/highlights/src/perf.test.ts') === 'highlights', 'area');
   expect(SUITE.test('packages/storage/src/perf.test.ts'), 'pattern perf');
   expect(SUITE.test('packages/backup/src/roundtrip.test.ts'), 'pattern round trip');
@@ -200,7 +212,7 @@ function main() {
     }
   }
 
-  const { rows, problems } = analyse(reports, files);
+  const { rows, problems, warnings } = analyse(reports, files, KNOWN_GAPS);
   problems.push(...crashed);
   const summary = {
     generatedAt: new Date().toISOString(),
@@ -213,6 +225,7 @@ function main() {
     expectedAreas: EXPECTED_AREAS,
     results: rows,
     problems,
+    warnings,
   };
   writeFileSync(join(out, 'timings.json'), `${JSON.stringify(summary, null, 2)}\n`);
 
@@ -232,6 +245,14 @@ function main() {
       ? '**All suites ran and passed.**'
       : `**${problems.length} problem(s):**\n\n${problems.map((p) => `- ${p}`).join('\n')}`,
     '',
+    ...(warnings.length === 0
+      ? []
+      : [
+          `**${warnings.length} known gap(s), not failing:**`,
+          '',
+          ...warnings.map((w) => `- ${w}`),
+          '',
+        ]),
   ].join('\n');
   writeFileSync(join(out, 'summary.md'), table);
   if (env.GITHUB_STEP_SUMMARY) appendFileSync(env.GITHUB_STEP_SUMMARY, `${table}\n`);

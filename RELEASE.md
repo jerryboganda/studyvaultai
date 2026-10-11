@@ -20,10 +20,10 @@ owner's developer account and stays a manual step by design.
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| `ci.yml` | every push, PR to `main`, manual | Required gate: lint, typecheck, format, unit tests, production and e2e builds, zip, `scripts/check-build.mjs`, `scripts/check-release-docs.mjs`, Playwright on Linux and Windows. Uploads traces and the screenshot set. Advisory: `pnpm audit`, licence allow-list |
+| `ci.yml` | every push, PR to `main`, manual | Required gate: lint, typecheck, format, unit tests, production and e2e builds, zip, `scripts/check-build.mjs`, `scripts/check-release-docs.mjs`, Playwright on Linux and Windows, and (on `main` only) the `stress` job. Uploads traces, the screenshot set and the perf timings; writes a bundle-size table to the job summary. Advisory: `pnpm audit`, licence allow-list, `stress` off `main`. Job-by-job detail: "CI map" at the end of this file |
 | `release.yml` | tag `v*`, manual (dry run) | Requires a green `ci.yml` run for the same commit, checks the tag against `package.json`, builds, runs the build gate and the licence audit, checks the store documents, zips, writes `SHA256SUMS` and a CycloneDX SBOM, runs the reproducible-build check, uploads everything as the `release` artifact and, for a tag, creates a **draft** GitHub release |
 | `reproducible-build.yml` | called by `release.yml`, weekly, manual | Builds twice (workspace, and a clean `git archive` export at another path) and compares every file by hash |
-| `stress.yml` | nightly, manual | Seeded 10k-row suites with `SV_PERF=1`; timings JSON and a summary table; fails on a broken budget, a skipped or missing suite |
+| `stress.yml` | nightly, manual | The same steps as the `stress` job of `ci.yml`, for runs no push triggered: seeded 10k-row suites with `SV_PERF=1`; timings JSON and a summary table; fails on a broken budget, a skipped or missing suite |
 
 Scripts (all plain Node, no remote code): `scripts/check-build.mjs`, `scripts/check-release-docs.mjs`,
 `scripts/license-report.mjs`, `scripts/sbom.mjs`, `scripts/repro-compare.mjs`,
@@ -249,3 +249,57 @@ them in a store listing until its row there says `verified`.
 The second-pass hardening changes are in the same position: unit and integration tests, no CI run,
 no loaded-Chrome run. docs/PRIVACY_CLAIMS.md lists each as `unit-only` or `open`, and
 THREAT_MODEL.md section 7 lists the findings and the accepted limitations.
+
+## CI map
+
+Every job, what a green result proves, and how to run it again. Rule 1 of `AGENTS.md` applies: the
+heavy ones run on Actions, not on the developer machine. Status on 2026-10-11: the `stress` job and
+`stress.yml` have never executed (the job was added to `ci.yml` after the last run), and the changes to
+`ci.yml`, `release.yml` and `reproducible-build.yml` that introduced this map (concurrency groups, the
+`ci-ok` aggregate, the bundle-size summary) have had no Actions run either. The earlier `ci.yml` runs
+that were inspected failed in `unit`, `static (format)` and `e2e` test steps, not in the workflow wiring.
+
+### `ci.yml`
+
+| Job | Runs on | Gate | What a green result proves | What it does not prove |
+| --- | --- | --- | --- | --- |
+| `static (lint)`, `static (typecheck)`, `static (format)` | push, PR, manual | required | ESLint, `tsc --noEmit` and Prettier are clean for the whole tree | behaviour |
+| `unit (vitest)` | push, PR, manual | required | every `*.test.ts(x)` under `packages/`, `entrypoints/`, `server/` passes in jsdom/node with `SV_PERF` unset (the 10k-row suite in `packages/storage` skips itself) | a loaded extension, a real browser, IndexedDB outside `fake-indexeddb` |
+| `build (prod + e2e + zip)` | push, PR, manual | required | production and e2e builds succeed, the zip is produced, `scripts/check-build.mjs` (manifest, permissions, CSP, remote code, size budgets, test hooks) and `scripts/check-release-docs.mjs` pass. Uploads `extension-builds`; the size table is in the job summary | that the build is reproducible (`reproducible-build.yml`) |
+| `e2e (<os>, shard <n>/4)` | push, PR, manual, after `build` | required, 2 OSes x 4 shards | the Playwright suite passes against the built MV3 extension in Playwright's bundled Chromium (headless) on Ubuntu and Windows; a test that needed its retry fails the run. Uploads `e2e-report-<os>-<n>` and `screenshots-<os>-<n>` | branded Chrome or Edge, macOS, permission prompts, screen readers (manual checklist) |
+| `stress (perf suites, SV_PERF=1)` | push, PR, manual | required on `main`; advisory elsewhere | the seeded 10k-row and round-trip suites (`scripts/run-perf.mjs`: storage, search, highlights, backup, study: 10k-card queue and 100k review-log analytics) ran, none was skipped, and their budgets held on a CI runner. Uploads `perf-results` (`timings.json`, `summary.md`) | the study suite is pure functions (no IndexedDB), so the Zod parse of due cards in `getDueSummary` is not in it; numbers on a shared runner are regression guards, not user hardware. The 10k dashboard spec is not here: it is `perf: 10,000 highlights` in `tests/e2e/dashboard.spec.ts` and runs in `e2e` |
+| `audit (advisory)` | push, PR, manual | advisory | nothing is promised: `pnpm audit --prod --audit-level=high` and the licence allow-list report | `release.yml` enforces the licence allow-list |
+| `ci-ok (required checks)` | always | the only check to require in branch protection | `static`, `unit`, `build`, `e2e` (and `stress` on `main`) all concluded `success`; failed, cancelled and skipped all count as failure | |
+
+Concurrency: a newer run for the same branch or pull request cancels the older one; `main` is never
+cancelled and every `main` run has its own group, so every commit on `main` gets a full run. A pull
+request from a branch of this repository triggers both a `push` and a `pull_request` run; they are
+separate groups on purpose, so both complete.
+
+### Other workflows
+
+| Workflow / job | Trigger | What a green result proves |
+| --- | --- | --- |
+| `stress.yml` / `perf` | nightly 02:23 UTC (default branch only), manual | the `stress` job's steps, on the default branch, with no push needed |
+| `reproducible-build.yml` / `reproducible` | `release.yml`, weekly (default branch only), manual | two builds of one commit, one in the workspace and one from `git archive` at another path, are identical file by file, and so are the zip entries |
+| `release.yml` / `ci-green` | tag `v*`, manual | `ci.yml` concluded `success` for this exact commit |
+| `release.yml` / `build` | tag `v*`, manual | tag equals `package.json` version, gates and licence audit pass, store documents match the manifest, zip, `SHA256SUMS` and SBOM verify |
+| `release.yml` / `reproducible` | after `ci-green` | `reproducible-build.yml` passed for this ref |
+| `release.yml` / `draft-release` | tag `v*` only | a **draft** GitHub release exists with the artifacts; nothing is published to the store |
+
+### Re-running
+
+```bash
+gh workflow run ci.yml --ref <branch>             # whole pipeline, any branch
+gh workflow run stress.yml --ref <branch>         # perf suites only
+gh workflow run release.yml --ref main            # release dry run (no draft release)
+gh run list --branch <branch> --limit 3           # find the run
+gh run rerun <run-id> --failed                    # only the failed jobs
+gh run view <run-id> --log-failed                 # why they failed
+gh run download <run-id> -D .ci-artifacts         # reports, traces, screenshots, perf-results
+```
+
+Scoped local checks that are cheap enough to run first: `pnpm exec vitest run <file>`,
+`pnpm exec eslint <files>`, `pnpm exec prettier --check <files>`, `node scripts/run-perf.mjs --self-test`.
+`node scripts/run-perf.mjs --list` shows which suites the stress runner would pick up (it starts no
+tests). Do not run `pnpm test`, `pnpm build` or `pnpm test:e2e` in full locally.

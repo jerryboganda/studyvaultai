@@ -74,6 +74,8 @@ export function VirtualList({
   const base = useId();
   const element = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
+  // What `scrollTop` state holds: an update to the same value still costs React one more render.
+  const shownTop = useRef(0);
   const [measured, setMeasured] = useState(0);
   const viewportHeight = measured > 0 ? measured : fallbackViewportHeight;
 
@@ -203,7 +205,15 @@ export function VirtualList({
           : undefined
       }
       className={`sv-vlist${className ? ` ${className}` : ''}`}
-      onScroll={(e: { currentTarget: HTMLDivElement }) => setScrollTop(e.currentTarget.scrollTop)}
+      // Rounded down to a row boundary: the window only changes when the first visible row does, so
+      // the scroll events inside one row (most of them) no longer re-render every visible row.
+      onScroll={(e: { currentTarget: HTMLDivElement }) => {
+        const top = e.currentTarget.scrollTop;
+        const next = rowHeight > 0 ? Math.floor(top / rowHeight) * rowHeight : top;
+        if (next === shownTop.current) return;
+        shownTop.current = next;
+        setScrollTop(next);
+      }}
       onKeyDown={handleKey}
     >
       <div className="sv-vlist__spacer" style={{ height: win.totalHeight }}>

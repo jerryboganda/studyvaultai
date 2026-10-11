@@ -79,6 +79,15 @@
   text-align: center;
   color: var(--sv-text-muted);
 }
+/* The clickable twist is a pointer target of its own (keys use the arrows): 24 x 24 px, WCAG 2.5.8. */
+.sv-treeitem__twist--btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  min-height: 24px;
+  margin-inline: -4px;
+}
 
 /* Dialog size ------------------------------------------------------------------------------- */
 .sv-dialog--wide {

@@ -24,6 +24,7 @@ import {
   parseInput,
   parseRow,
   readBanks,
+  readFolderChains,
   readSources,
   requireId,
   samePlace,
@@ -412,14 +413,12 @@ export async function toDashboardItems(
     const tag = row ? parseRow(Tag, row, 'tag') : null;
     if (tag && tag.deletedAt === null) tags.set(tag.id, tag);
   }
-  const bankIds = unique(memberships.map((m) => m.bankId).filter((id) => banks.has(id)));
-  const folders = new Map<string, Folder>();
-  if (bankIds.length > 0) {
-    for (const row of await rowsWhereIn(db.folders, 'bankId', bankIds)) {
-      const f = isDeleted(row) ? null : parseRow(Folder, row, 'folder');
-      if (f) folders.set(f.id, f);
-    }
-  }
+  // Only the folders these memberships name and their parents, not every folder of every bank
+  // that appears on the page (a 50-row page of a bank with 5,000 folders read 5,000).
+  const folders = await readFolderChains(
+    db,
+    memberships.filter((m) => banks.has(m.bankId)).map((m) => m.folderId),
+  );
   const pathOf = (folderId: string | null): FolderRef[] => {
     const out: FolderRef[] = [];
     let cursor = folderId;

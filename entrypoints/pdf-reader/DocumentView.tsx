@@ -811,12 +811,22 @@ export function DocumentView({
             </Button>
           }
         >
-          <p role="status" data-testid="pdf-ocr-status">
-            {ocr.run.finding
-              ? `Finding pages without text… ${ocr.run.finding.checked} of ${ocr.run.finding.total} checked.`
-              : ocr.run.progress
-                ? describeProgress(ocr.run.progress)
-                : 'Starting…'}
+          <p data-testid="pdf-ocr-status">
+            {/* The eye gets every step; a screen reader gets one sentence per finished page. */}
+            <span aria-hidden="true">
+              {ocr.run.finding
+                ? `Finding pages without text… ${ocr.run.finding.checked} of ${ocr.run.finding.total} checked.`
+                : ocr.run.progress
+                  ? describeProgress(ocr.run.progress)
+                  : 'Starting…'}
+            </span>
+            <span className="sv-sr" role="status">
+              {ocr.run.finding
+                ? 'Finding pages without text…'
+                : ocr.run.progress
+                  ? `Recognising text: ${ocr.run.progress.completed} of ${ocr.run.progress.total} pages done.`
+                  : 'Starting…'}
+            </span>
           </p>
           <progress
             max={1}

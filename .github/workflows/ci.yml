@@ -1,6 +1,7 @@
 name: CI
 
 # Every compute-intensive task for this repository runs here (AGENTS.md Rule 1).
+# What each job proves and how to re-run it: RELEASE.md, "CI map".
 
 on:
   push:
@@ -12,9 +13,12 @@ on:
 permissions:
   contents: read
 
+# A newer run on the same branch or pull request supersedes the older one. main is never cancelled,
+# and each main run gets a group of its own: with a shared group a queued run would silently replace
+# the run waiting before it, and that commit would never be tested.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   NODE_VERSION: 24
@@ -30,6 +34,8 @@ jobs:
         task: [lint, typecheck, format]
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
@@ -39,11 +45,14 @@ jobs:
       - run: pnpm ${{ matrix.task }}
 
   unit:
+    # SV_PERF is deliberately unset here: the 10k-row suites skip themselves and run in `stress`.
     name: unit (vitest)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
@@ -58,6 +67,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
@@ -67,39 +78,62 @@ jobs:
       - run: pnpm build
       - run: pnpm build:e2e
       - run: pnpm zip
-      - name: Bundle size report
-        run: |
-          {
-            echo '### Bundle sizes (production build)'
-            echo '```'
-            find .output/chrome-mv3 -type f -printf '%s\t%p\n' | sort -rn | head -15
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
       - name: Release gate (manifest, CSP, commands, remote code, size budgets, prod React in e2e)
         run: node scripts/check-build.mjs
       - name: Store documents name every manifest permission (PRIVACY_POLICY.md, STORE_LISTING.md)
         run: node scripts/check-release-docs.mjs
+      # Summary only. The budgets themselves are enforced by check-build.mjs above, so this step never
+      # fails the build and still runs when that gate is red (that is when the numbers matter).
+      - name: Bundle size summary
+        if: ${{ !cancelled() && hashFiles('.output/chrome-mv3/manifest.json') != '' }}
+        continue-on-error: true
+        run: |
+          prod=.output/chrome-mv3
+          bytes() { find "$@" -type f -printf '%s\n' | awk '{ s += $1 } END { print s + 0 }'; }
+          kib() { awk -v n="$1" 'BEGIN { printf "%.1f", n / 1024 }'; }
+          {
+            echo '### Bundle sizes (production build)'
+            echo
+            echo '| Measure | KiB |'
+            echo '| --- | ---: |'
+            echo "| Extension, without ocr/ | $(kib "$(bytes "$prod" -not -path "$prod/ocr/*")") |"
+            echo "| ocr/ (separate budget) | $(kib "$(bytes "$prod/ocr")") |"
+            echo "| e2e variant, all files | $(kib "$(bytes .output/chrome-mv3-e2e)") |"
+            echo
+            echo '| Largest files | KiB |'
+            echo '| --- | ---: |'
+            find "$prod" -type f -printf '%s\t%P\n' | sort -rn | head -15 |
+              awk -F'\t' '{ printf "| `%s` | %.1f |\n", $2, $1 / 1024 }'
+            echo
+            echo 'Budgets (content script, worker, total, OCR) are asserted by `scripts/check-build.mjs`.'
+          } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v7
         with:
           name: extension-builds
           path: .output
           include-hidden-files: true
           if-no-files-found: error
+          retention-days: 7
 
   e2e:
     # Sharded: the suite is large (PDF + OCR specs alone take minutes) and runners are cheap, so the
-    # wall-clock is the slowest shard, not the sum. Each shard is a separate required job.
-    name: e2e (${{ matrix.os }}, shard ${{ matrix.shard }}/4)
+    # wall-clock is the slowest shard, not the sum. Each shard is a separate required job. 60 minutes
+    # because a failing 10k-row spec burns its 15-minute budget twice (one CI retry) before the shard
+    # moves on; the artifacts below must still be uploaded in that case.
+    name: e2e (${{ matrix.os }}, shard ${{ matrix.shard }}/${{ matrix.shardTotal }})
     needs: build
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
         shard: [1, 2, 3, 4]
+        shardTotal: [4]
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
@@ -112,7 +146,7 @@ jobs:
           name: extension-builds
           path: .output
       - name: Playwright (real Chromium, loaded MV3 extension)
-        run: pnpm exec playwright test --shard=${{ matrix.shard }}/4
+        run: pnpm exec playwright test --shard=${{ matrix.shard }}/${{ matrix.shardTotal }}
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -121,14 +155,48 @@ jobs:
             playwright-report
             test-results
           if-no-files-found: ignore
+          retention-days: 14
       # tests/e2e/screenshots.spec.ts writes the review pictures here; a separate artifact so they
-      # can be downloaded without the traces (`gh run download <id> -n screenshots-ubuntu-latest`).
+      # can be downloaded without the traces (`gh run download <id> -n screenshots-ubuntu-latest-1`).
       - uses: actions/upload-artifact@v7
         if: always() && hashFiles('test-results/screenshots/manifest.json') != ''
         with:
           name: screenshots-${{ matrix.os }}-${{ matrix.shard }}
           path: test-results/screenshots
           if-no-files-found: ignore
+          retention-days: 14
+
+  stress:
+    # Seeded 10k-row perf and round-trip suites, run by scripts/run-perf.mjs with SV_PERF=1 (AGENTS.md
+    # Rule 1). Advisory (reported, never gating ci-ok) until it has a few green runs on a runner; then
+    # add "stress" to REQUIRED in ci-ok. stress.yml runs the same steps nightly: keep the two in step.
+    name: stress (perf suites, SV_PERF=1)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Runner self-test
+        run: node scripts/run-perf.mjs --self-test
+      - name: Seeded perf and round-trip suites
+        env:
+          SV_PERF: '1'
+        run: node scripts/run-perf.mjs --out perf-results
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: perf-results
+          path: perf-results
+          if-no-files-found: ignore
+          retention-days: 30
 
   audit:
     name: audit (advisory)
@@ -137,6 +205,8 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
@@ -149,12 +219,29 @@ jobs:
         run: node scripts/license-report.mjs
 
   ci-ok:
+    # The one required check. A failed, cancelled or skipped dependency is a failure (AGENTS.md).
+    # `stress` is listed so its result is printed, but it does not decide until it is proven (see REQUIRED).
     name: ci-ok (required checks)
     if: always()
-    needs: [static, unit, build, e2e]
+    needs: [static, unit, build, e2e, stress]
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    env:
+      NEEDS: ${{ toJSON(needs) }}
+      REQUIRED: '["static","unit","build","e2e"]'
     steps:
       - name: Fail unless every required job succeeded
         run: |
-          echo '${{ toJSON(needs) }}'
-          test "${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped') }}" = "false"
+          node -e '
+            const needs = JSON.parse(process.env.NEEDS);
+            const required = JSON.parse(process.env.REQUIRED);
+            for (const [job, { result }] of Object.entries(needs)) {
+              console.log(`${job}: ${result}${required.includes(job) ? "" : " (advisory)"}`);
+            }
+            const bad = required.filter((job) => needs[job]?.result !== "success");
+            if (bad.length) {
+              console.log(`::error::Required job(s) did not succeed (failure, cancelled and skipped all count): ${bad.join(", ")}`);
+              process.exit(1);
+            }
+          '

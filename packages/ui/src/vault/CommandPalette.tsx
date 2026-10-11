@@ -14,6 +14,8 @@ export interface Command {
   run(): void;
 }
 
+const KEY_HINT = 'Arrow keys choose, Enter runs, Escape closes.';
+
 const fold = (text: string) => text.toLocaleLowerCase().normalize('NFKD').replace(/\p{M}/gu, '');
 
 /**
@@ -69,6 +71,12 @@ export function CommandPalette({
   const index = Math.min(active, Math.max(0, results.length - 1));
   const current = results[index];
   const optionId = (id: string) => `${uid}-${id}`;
+  // What a screen-reader user needs after each keystroke: how many commands are left (WCAG 4.1.3).
+  const status =
+    note ||
+    (query.trim() === ''
+      ? KEY_HINT
+      : `${results.length} ${results.length === 1 ? 'command' : 'commands'}. ${KEY_HINT}`);
 
   const run = (command: Command | undefined) => {
     if (!command) return;
@@ -168,7 +176,7 @@ export function CommandPalette({
           )}
         </div>
         <p role="status" className="sv-small sv-muted">
-          {note || 'Arrow keys choose, Enter runs, Escape closes.'}
+          {status}
         </p>
       </div>
     </dialog>

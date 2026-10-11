@@ -152,6 +152,13 @@ export async function listDocuments(): Promise<DocumentListItem[]> {
         .map((r) => parseRow(PdfDocument, r, 'document'))
         .filter(notNull)
         .filter((d) => d.deletedAt === null);
+      // Counted from the index (no highlight row is read to be counted): every highlight of a
+      // source, minus its few trashed ones, which the deletedAt index lists and which carry their
+      // sourceId.
+      const trashedIn = new Map<string, number>();
+      for (const h of await db.highlights.where('deletedAt').above('').toArray()) {
+        trashedIn.set(h.sourceId, (trashedIn.get(h.sourceId) ?? 0) + 1);
+      }
       const out: DocumentListItem[] = [];
       for (const document of docs) {
         const sourceIds = (await db.sources
@@ -160,12 +167,8 @@ export async function listDocuments(): Promise<DocumentListItem[]> {
           .primaryKeys()) as string[];
         let highlightCount = 0;
         for (const sourceId of sourceIds) {
-          await db.highlights
-            .where('sourceId')
-            .equals(sourceId)
-            .each((h) => {
-              if (!isDeleted(h)) highlightCount++;
-            });
+          const all = await db.highlights.where('sourceId').equals(sourceId).count();
+          highlightCount += Math.max(0, all - (trashedIn.get(sourceId) ?? 0));
         }
         const cached = await db.attachments.where('documentId').equals(document.id).first();
         out.push({ document, highlightCount, cachedBytes: cached ? cached.byteLength : null });

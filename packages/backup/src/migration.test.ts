@@ -2,10 +2,12 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import type { TableRegistry } from '@shared';
 import { LEGACY_MIGRATIONS, legacyRegistry } from './legacyModel';
 import { buildMigrationChain, migrateRow } from './migrate';
 import { inspectBackup, restoreBackup } from './restore';
-import { MemoryVault, subtle } from './testkit';
+import { exportBackup } from './export';
+import { MemoryVault, TEST_REGISTRY, seedVault, subtle } from './testkit';
 import { BackupError } from './errors';
 import type { Row } from './types';
 
@@ -217,5 +219,35 @@ describe('migration chain', () => {
       userComment: 'c',
       priority: 3,
     });
+  });
+});
+
+describe('checksum verification of an older backup', () => {
+  it('uses the derived fields the archive recorded, not the list this build derives', async () => {
+    // Written by a build that left resolveStatus, resolveConfidence, lastResolvedAt and wordCount
+    // out of the checksums (TEST_REGISTRY) ...
+    const written = await exportBackup(seedVault(40), { subtle, appVersion: 'older-build' });
+    expect(written.manifest.tables.find((t) => t.name === 'highlights')?.derivedFields).toEqual([
+      'resolveStatus',
+      'resolveConfidence',
+      'lastResolvedAt',
+    ]);
+    // ... read by a build that derives a different set: one field of highlights, none of notes.
+    const registry: TableRegistry = {
+      ...TEST_REGISTRY,
+      tables: TEST_REGISTRY.tables.map((t) => {
+        if (t.name === 'highlights') return { ...t, derivedFields: ['resolveStatus'] };
+        if (t.name === 'notes') {
+          const { derivedFields: _dropped, ...rest } = t;
+          return rest;
+        }
+        return t;
+      }),
+    };
+    const target = new MemoryVault({}, { registry });
+    const { report } = await restoreBackup(written.bytes, { target, mode: 'replace', subtle });
+    expect(report.totals.invalid).toBe(0);
+    expect(target.rows('highlights').length).toBeGreaterThan(0);
+    expect(target.rows('notes').length).toBeGreaterThan(0);
   });
 });

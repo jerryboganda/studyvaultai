@@ -213,3 +213,55 @@ describe('review page: navigation', () => {
     ).toEqual(['Study', 'Create cards', 'Cards', 'Analytics', 'Settings']);
   });
 });
+
+describe('review page: keyboard rules', () => {
+  beforeEach(() => window.localStorage.removeItem('sv.review.keys'));
+
+  it('Enter on a focused button presses that button instead of revealing the card', async () => {
+    const user = userEvent.setup();
+    await seed(1);
+    render(<Review />);
+    await startAll(user);
+
+    screen.getByTestId(TID.edit).focus();
+    await user.keyboard('{Enter}');
+    // The editor opened (the button's own action) and the answer stayed hidden.
+    expect(await screen.findByRole('form', { name: 'Edit card' })).toBeTruthy();
+    expect(screen.queryByTestId(TID.ratings)).toBeNull();
+  });
+
+  it('single-key shortcuts can be turned off, and stay off (WCAG 2.1.4)', async () => {
+    const user = userEvent.setup();
+    await seed(1);
+    const first = render(<Review />);
+    await startAll(user);
+
+    await user.click(screen.getByTestId(TID.keysToggle));
+    expect(window.localStorage.getItem('sv.review.keys')).toBe('off');
+    expect(screen.queryByLabelText('Keyboard shortcuts')).toBeNull();
+    expect(screen.getByTestId(TID.keysToggle).textContent).toBe('Turn single-key shortcuts on');
+
+    // The card does not react to keys any more; the buttons still do everything.
+    screen.getByTestId(TID.card).focus();
+    await user.keyboard(' ');
+    expect(screen.queryByTestId(TID.ratings)).toBeNull();
+    await user.click(screen.getByTestId(TID.reveal));
+    expect(await screen.findByTestId(TID.ratings)).toBeTruthy();
+    await user.keyboard('4');
+    expect(screen.getByTestId(TID.ratings)).toBeTruthy();
+    expect(await listReviewLogs()).toHaveLength(0);
+
+    // A later visit starts with the keys off, and they can be turned back on.
+    first.unmount();
+    closeDb();
+    render(<Review />);
+    await user.click(await screen.findByTestId(TID.deckContinue));
+    await screen.findByTestId(TID.card);
+    expect(screen.getByTestId(TID.keysToggle).textContent).toBe('Turn single-key shortcuts on');
+    await user.click(screen.getByTestId(TID.keysToggle));
+    expect(window.localStorage.getItem('sv.review.keys')).toBe('on');
+    screen.getByTestId(TID.card).focus();
+    await user.keyboard(' ');
+    expect(await screen.findByTestId(TID.ratings)).toBeTruthy();
+  });
+});

@@ -49,6 +49,7 @@ export const TID = {
   explainPanel: 'rv-explain-panel',
   explainQuote: 'rv-explain-quote',
   explainNote: 'rv-explain-note',
+  keysToggle: 'rv-keys-toggle',
   notice: 'rv-notice',
   waiting: 'rv-waiting',
   waitNow: 'rv-wait-now',

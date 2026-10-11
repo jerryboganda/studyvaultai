@@ -1,6 +1,5 @@
 import {
   BankRecord,
-  Folder,
   Highlight,
   IsoDate,
   Note,
@@ -16,6 +15,7 @@ import {
   notNull,
   parseInput,
   parseRow,
+  readFolderChains,
   readSources,
   unique,
 } from './core';
@@ -67,16 +67,21 @@ async function buildDocuments(
     ...notes.map((n) => n.sourceId).filter((id): id is string => id !== null),
   ]);
 
+  const memberships = await rowsWhereIn(db.highlightBanks, 'highlightId', hIds);
+  const links = await rowsWhereIn(db.highlightTags, 'highlightId', hIds);
+
+  // Only the banks and folders this page's memberships name (and the parents of those folders):
+  // this runs once per page of 500 documents and once per catch-up, so reading every bank and
+  // folder of the vault each time made a full build cost pages x folders row parses.
   const bankNames = new Map<string, string>();
-  for (const row of await db.banks.toArray()) {
-    const bank = isDeleted(row) ? null : parseRow(BankRecord, row, 'bank');
+  for (const row of await db.banks.bulkGet(unique(memberships.map((m) => m.bankId)))) {
+    const bank = !row || isDeleted(row) ? null : parseRow(BankRecord, row, 'bank');
     if (bank) bankNames.set(bank.id, bank.name);
   }
-  const folders = new Map<string, Folder>();
-  for (const row of await db.folders.toArray()) {
-    const f = isDeleted(row) ? null : parseRow(Folder, row, 'folder');
-    if (f) folders.set(f.id, f);
-  }
+  const folders = await readFolderChains(
+    db,
+    memberships.map((m) => m.folderId),
+  );
   const folderPath = (id: string | null): string[] => {
     const names: string[] = [];
     let cursor = id;
@@ -89,27 +94,36 @@ async function buildDocuments(
     return names;
   };
 
-  const memberships = await rowsWhereIn(db.highlightBanks, 'highlightId', hIds);
-  const links = await rowsWhereIn(db.highlightTags, 'highlightId', hIds);
   const tags = new Map<string, Tag>();
   for (const row of await db.tags.bulkGet(unique(links.map((l) => l.tagId)))) {
     const tag = row ? parseRow(Tag, row, 'tag') : null;
     if (tag && tag.deletedAt === null) tags.set(tag.id, tag);
   }
 
+  // Grouped once: filtering both lists for every highlight made a page quadratic in its size.
+  const group = <T extends { highlightId: string }>(rows: readonly T[]): Map<string, T[]> => {
+    const out = new Map<string, T[]>();
+    for (const r of rows) {
+      const list = out.get(r.highlightId);
+      if (list) list.push(r);
+      else out.set(r.highlightId, [r]);
+    }
+    return out;
+  };
+  const membershipsOf = group(memberships);
+  const linksOf = group(links);
+
   const facets = (highlightId: string) => {
-    const mine = memberships.filter((m) => m.highlightId === highlightId);
+    const mine = membershipsOf.get(highlightId) ?? [];
     const bankList = unique(
       mine.map((m) => bankNames.get(m.bankId)).filter((n): n is string => n !== undefined),
     );
     const paths = unique(mine.flatMap((m) => folderPath(m.folderId)));
     const tagNames = unique(
-      links
-        .filter((l) => l.highlightId === highlightId)
-        .flatMap((l) => {
-          const t = tags.get(l.tagId);
-          return t ? [t.name, ...t.aliases] : [];
-        }),
+      (linksOf.get(highlightId) ?? []).flatMap((l) => {
+        const t = tags.get(l.tagId);
+        return t ? [t.name, ...t.aliases] : [];
+      }),
     );
     return { tags: tagNames, banks: bankList, folderPath: paths };
   };

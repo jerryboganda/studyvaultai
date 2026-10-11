@@ -42,6 +42,15 @@ const PAGE = 500;
  */
 export const SKEW_MS = 5_000;
 export const PERSIST_DELAY_MS = 3_000;
+/**
+ * Writing the cache serialises the whole index on the page's main thread (about 1 s for 10,000
+ * documents on a shared dev machine, docs/PERF_REVIEW.md), so a quiet 3 s is not enough on a large
+ * vault: the next timed write waits this many times as long as the last one took, which bounds the
+ * share of the page's time the cache can take to about 1 / (1 + factor). Hiding the page still
+ * writes at once.
+ */
+export const PERSIST_COST_FACTOR = 20;
+const PERSIST_DELAY_MAX_MS = 120_000;
 export const RECONCILE_DELAY_MS = 250;
 
 export type RebuildReason =
@@ -134,6 +143,8 @@ export class SearchHost {
   private rejected = 0;
   private rev = 0;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
+  /** How long the last write of the cache took (serialise + put); 0 before the first one. */
+  private persistCostMs = 0;
   private reconcileTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
 
@@ -346,15 +357,20 @@ export class SearchHost {
   private persistSoon(): void {
     if (this.disposed) return;
     if (this.persistTimer) clearTimeout(this.persistTimer);
+    const wait = Math.min(
+      PERSIST_DELAY_MAX_MS,
+      Math.max(PERSIST_DELAY_MS, this.persistCostMs * PERSIST_COST_FACTOR),
+    );
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null;
       void this.flush();
-    }, PERSIST_DELAY_MS);
+    }, wait);
   }
 
   private async persist(): Promise<void> {
     const index = this.current;
     if (!index || !this.dirty) return;
+    const startedAt = this.now().getTime();
     // The vault was restored or wiped since this index was built (another page did it): writing
     // this index, with its `since`, would put rows that are gone over a cache that is right. Drop
     // the write and let the next catch-up rebuild. (A write that still slips in between this read
@@ -381,5 +397,6 @@ export class SearchHost {
     if (this.ports.meta.putMany) await this.ports.meta.putMany(entries);
     else for (const e of entries) await this.ports.meta.put(e.key, e.value);
     this.dirty = false;
+    this.persistCostMs = Math.max(0, this.now().getTime() - startedAt);
   }
 }

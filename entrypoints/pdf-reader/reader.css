@@ -408,6 +408,14 @@ body,
   }
 }
 
+/* Panes that scroll on their own keep focused controls clear of the toasts fixed to the bottom edge. */
+.sv-viewer,
+.sv-companion,
+.sv-sidepane,
+.sv-rightpane > .sv-tabpanel {
+  scroll-padding-bottom: 6rem;
+}
+
 /* Open screen extras ----------------------------------------------------------------------- */
 .sv-open__about {
   border: 1px solid var(--sv-border);
@@ -602,6 +610,11 @@ body,
   border-radius: 2px;
 }
 @media (forced-colors: active) {
+  /* The selected card is told apart by a border colour and a halo, which this mode removes. */
+  .sv-card--selected {
+    outline: 3px solid Highlight;
+    outline-offset: 0;
+  }
   .sv-ocr-word[data-band='medium'] {
     outline: 1px dotted CanvasText;
   }

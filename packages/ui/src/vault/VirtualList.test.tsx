@@ -49,6 +49,24 @@ describe('VirtualList windowing', () => {
     expect(screen.queryByText('Row 0')).toBeNull();
   });
 
+  it('does not render the rows again for a scroll that stays inside the same row', () => {
+    const renderRow = vi.fn((i: number) => <span>Row {i}</span>);
+    const { list } = setup({ renderRow });
+    list.scrollTop = 1_000; // row 20
+    fireEvent.scroll(list);
+    const calls = renderRow.mock.calls.length;
+    list.scrollTop = 1_001;
+    fireEvent.scroll(list);
+    list.scrollTop = 1_049;
+    fireEvent.scroll(list);
+    expect(renderRow.mock.calls.length).toBe(calls);
+    // Crossing into the next row moves the window.
+    list.scrollTop = 1_050;
+    fireEvent.scroll(list);
+    expect(renderRow.mock.calls.length).toBeGreaterThan(calls);
+    expect(screen.getAllByRole('option')[0]?.textContent).toContain('Row 16');
+  });
+
   it('stays small at the very end', () => {
     const { list } = setup();
     list.scrollTop = 10_000_000;

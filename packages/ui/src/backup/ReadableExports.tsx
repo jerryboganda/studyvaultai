@@ -186,7 +186,7 @@ export function ReadableExports({ deps }: { deps: BackupDeps }) {
           <label htmlFor="bk-scope-banks">Selected banks</label>
         </div>
         {scope === 'banks' ? (
-          <div className="bk-indent" data-testid="readable-banks">
+          <div className="bk-indent bk-choices" data-testid="readable-banks">
             {banks.loading ? <p className="sv-muted">Loading banks…</p> : null}
             {banks.error ? <p className="bk-error">{banks.error}</p> : null}
             {banks.data?.map((b) => (

@@ -7,6 +7,7 @@ import {
   ToastProvider,
   useAction,
   useApplyTheme,
+  useFocusRescue,
   useSettings,
 } from '@ui';
 import {
@@ -44,6 +45,8 @@ function Page() {
   );
   const [focusMode, setFocusMode] = useState(false);
   const due = useDueCount();
+  // Edit, Delete and Cancel buttons leave the page with their own action: focus stays on the panel.
+  const rescueRef = useFocusRescue();
 
   const select = useCallback((next: ReviewView) => {
     setView(next);
@@ -82,7 +85,11 @@ function Page() {
   const focused = focusMode && view === 'study';
 
   return (
-    <div className={`rv-page${focused ? ' rv-page--focus' : ''}`} data-testid={TID.page}>
+    <div
+      ref={rescueRef}
+      className={`rv-page${focused ? ' rv-page--focus' : ''}`}
+      data-testid={TID.page}
+    >
       <header className="rv-head">
         <h1>Review</h1>
         <p className="sv-muted" aria-live="polite">

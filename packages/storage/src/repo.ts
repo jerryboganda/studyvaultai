@@ -399,11 +399,13 @@ export async function listBanksWithCounts(): Promise<BankWithCount[]> {
       const gone = (await keysWhereIn(db.highlightBanks, 'highlightId', trashed)) as Array<
         [string, string]
       >;
+      // Counted once per bank, not by filtering every trashed membership for every bank.
+      const trashedIn = new Map<string, number>();
+      for (const [, bankId] of gone) trashedIn.set(bankId, (trashedIn.get(bankId) ?? 0) + 1);
       const out: BankWithCount[] = [];
       for (const bank of banks) {
         const all = await db.highlightBanks.where('bankId').equals(bank.id).count();
-        const trashedHere = gone.filter((k) => k[1] === bank.id).length;
-        out.push({ bank: toLite(bank), count: Math.max(0, all - trashedHere) });
+        out.push({ bank: toLite(bank), count: Math.max(0, all - (trashedIn.get(bank.id) ?? 0)) });
       }
       return out;
     }),

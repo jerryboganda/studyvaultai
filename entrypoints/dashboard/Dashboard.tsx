@@ -16,6 +16,7 @@ import {
   ToastProvider,
   errorMessage,
   useApplyTheme,
+  useFocusRescue,
   useSettings,
   useToast,
 } from '@ui';
@@ -61,6 +62,9 @@ const VIEW_LABELS: Record<View, string> = {
   storage: 'Storage',
 };
 
+/** Where focus goes when a toast that held it closes: the main pane, never <body>. */
+const mainPane = () => document.getElementById('dash-center');
+
 export function portsFor(api: DashboardApi): SearchHostPorts {
   return {
     listAll: (o) => api.listSearchDocuments(o),
@@ -81,7 +85,7 @@ export function Dashboard({ api = realApi }: { api?: DashboardApi }) {
   const versioning = useMemo(() => ({ local: version, bump }), [version, bump]);
   return (
     <ApiProvider value={api}>
-      <ToastProvider>
+      <ToastProvider returnFocus={mainPane}>
         <VersionProvider value={versioning}>
           <ErrorBoundary surface="dashboard">
             <Workspace />
@@ -103,6 +107,11 @@ function Workspace() {
   const [contrast, setContrast] = useLocalPref<'auto' | 'high'>('sv.dashboard.contrast', 'auto', [
     'auto',
     'high',
+  ]);
+  // WCAG 2.1.4: the "/" and "?" keys act without a modifier, so they can be turned off.
+  const [singleKeys, setSingleKeys] = useLocalPref<'on' | 'off'>('sv.dashboard.singleKeys', 'on', [
+    'on',
+    'off',
   ]);
   const link = useMemo(() => parseDeepLink(window.location.search), []);
 
@@ -208,6 +217,18 @@ function Workspace() {
   const topRef = useRef<HTMLElement>(null);
   useDismissibleDetails(topRef);
   const bankRef = useRef<BankPaneHandle>(null);
+  // A closed bulk bar or dialog takes its focused button with it: the list is where work continues.
+  const rescueRef = useFocusRescue((lost) =>
+    lost.closest('.dash-bulk, dialog') ? listRef.current : null,
+  );
+
+  // The view is replaced under a nav button that keeps focus: say which one is showing now.
+  const shownView = useRef(view);
+  useEffect(() => {
+    if (shownView.current === view) return;
+    shownView.current = view;
+    toast.announce(VIEW_LABELS[view]);
+  }, [view, toast]);
 
   const focusPane = useCallback((pane: 'tree' | 'search' | 'list' | 'preview') => {
     if (pane === 'tree') {
@@ -252,7 +273,7 @@ function Workspace() {
       }
       const t = e.target as HTMLElement | null;
       const typing = !!t?.closest('input, textarea, select, [contenteditable="true"]');
-      if (typing || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (typing || e.ctrlKey || e.metaKey || e.altKey || singleKeys === 'off') return;
       if (e.key === '/') {
         e.preventDefault();
         searchRef.current?.focus();
@@ -263,7 +284,7 @@ function Workspace() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [cyclePane]);
+  }, [cyclePane, singleKeys]);
 
   // --- saved searches -----------------------------------------------------------------------
   const saved = useSavedSearches(api.meta);
@@ -484,6 +505,16 @@ function Workspace() {
         run: () => setContrast(contrast === 'high' ? 'auto' : 'high'),
       },
       {
+        id: 'single-keys-toggle',
+        label:
+          singleKeys === 'on'
+            ? 'Turn the / and ? shortcut keys off'
+            : 'Turn the / and ? shortcut keys on',
+        group: 'Appearance',
+        keywords: 'single key shortcuts',
+        run: () => setSingleKeys(singleKeys === 'on' ? 'off' : 'on'),
+      },
+      {
         id: 'shortcuts',
         label: 'Show keyboard shortcuts',
         group: 'Help',
@@ -525,6 +556,8 @@ function Workspace() {
     update,
     contrast,
     setContrast,
+    singleKeys,
+    setSingleKeys,
     goLibrary,
     focusPane,
     toast,
@@ -589,6 +622,21 @@ function Workspace() {
             <option value="high">High contrast</option>
           </select>
         </div>
+        <div className="sv-field">
+          <label className="sv-label" htmlFor="opt-singlekeys">
+            The / and ? keys
+          </label>
+          <select
+            id="opt-singlekeys"
+            className="sv-control"
+            value={singleKeys}
+            data-testid="opt-singlekeys"
+            onChange={(e) => setSingleKeys(e.target.value as 'on' | 'off')}
+          >
+            <option value="on">Search and help shortcuts on</option>
+            <option value="off">Shortcuts off</option>
+          </select>
+        </div>
       </div>
     </details>
   );
@@ -613,6 +661,17 @@ function Workspace() {
             density={density}
             listRef={listRef}
             onOpenPreview={() => focusPane('preview')}
+            onDismissPreview={() => {
+              // Narrow widths: the preview is a panel over the list; Escape in the list closes it.
+              if (
+                shown === null ||
+                !(window.matchMedia?.('(max-width: 1199px)').matches ?? false)
+              ) {
+                return false;
+              }
+              setShown(null);
+              return true;
+            }}
             queryText={text}
             onClearQuery={() => setText('')}
           />
@@ -623,6 +682,7 @@ function Workspace() {
   return (
     <TreeDataContext.Provider value={treeData}>
       <div
+        ref={rescueRef}
         className="dash"
         data-density={density}
         data-tree-open={treeOpen ? 'true' : 'false'}
@@ -639,7 +699,9 @@ function Workspace() {
               className="dash-tree-toggle"
               aria-expanded={treeOpen}
               aria-controls="dash-left"
-              onClick={() => setTreeOpen((v) => !v)}
+              id="dash-tree-toggle"
+              // Opening takes focus into the tree: at narrow widths the panel covers this button.
+              onClick={() => (treeOpen ? setTreeOpen(false) : focusPane('tree'))}
               data-testid="toggle-tree"
             >
               Banks
@@ -667,7 +729,19 @@ function Workspace() {
           </div>
         </header>
 
-        <nav id="dash-left" className="dash-left" aria-label="Banks, views and saved searches">
+        <nav
+          id="dash-left"
+          className="dash-left"
+          aria-label="Banks, views and saved searches"
+          onKeyDown={(e) => {
+            // Narrow widths: the tree is a panel over the page. Escape closes it, back to its button.
+            if (e.key !== 'Escape' || e.defaultPrevented || !treeOpen) return;
+            if ((e.target as Element).closest('dialog')) return;
+            if (!(window.matchMedia?.('(max-width: 899px)').matches ?? false)) return;
+            setTreeOpen(false);
+            document.getElementById('dash-tree-toggle')?.focus();
+          }}
+        >
           <ul className="dash-views">
             {(Object.keys(VIEW_LABELS) as View[]).map((v) => (
               <li key={v}>
@@ -677,7 +751,13 @@ function Workspace() {
                   aria-current={
                     view === v && (v !== 'library' || scope.bankId === null) ? 'page' : undefined
                   }
-                  onClick={() => (v === 'library' ? goLibrary(ALL_SCOPE) : setView(v))}
+                  onClick={() => {
+                    if (v === 'library') goLibrary(ALL_SCOPE);
+                    else {
+                      setView(v);
+                      setTreeOpen(false); // the panel would otherwise stay over the view just chosen
+                    }
+                  }}
                   data-testid={`view-${v}`}
                 >
                   {VIEW_LABELS[v]}
@@ -793,6 +873,9 @@ function Workspace() {
         {legend ? (
           <Modal title="Keyboard shortcuts" onClose={() => setLegend(false)}>
             <ShortcutLegend />
+            <p className="sv-small sv-muted">
+              The / and ? keys work without Ctrl or Alt; turn them off under View options.
+            </p>
             <div className="sv-row">
               <Button variant="primary" onClick={() => setLegend(false)} data-autofocus="">
                 Close

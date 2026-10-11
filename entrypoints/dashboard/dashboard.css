@@ -144,6 +144,22 @@ body {
 .dash-center:focus {
   outline: none;
 }
+/* Panes that scroll on their own keep focused controls clear of the toasts fixed to the bottom edge. */
+.dash-left,
+.dash-center,
+.dash-right,
+.sv-vlist {
+  scroll-padding-bottom: 6rem;
+}
+/*
+ * Dialogs opened from the bank tree (also by a palette command) are DOM children of the side panel,
+ * which narrow layouts hide with visibility. A modal dialog inherits that: without this it would be
+ * invisible while it holds focus and makes the page inert.
+ */
+.dash-left dialog,
+.dash-right dialog {
+  visibility: visible;
+}
 .dash-right {
   grid-area: right;
   overflow: auto;
@@ -645,5 +661,18 @@ body {
   }
   .rrow__check {
     border-color: ButtonText;
+  }
+  /* The current view and the duplicate group in focus are marked with a background and a box-shadow
+     bar, both of which this mode removes: mark them with the selection colours instead. */
+  .dash-viewbtn[aria-current='page'] {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+  }
+  .dash-viewbtn[aria-current='page'] .sv-muted {
+    color: inherit;
+  }
+  .dash-cluster[aria-current='true'] {
+    outline: 3px solid Highlight;
   }
 }

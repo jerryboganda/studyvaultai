@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
 import { callBackground } from '@runtime';
 import { getStorageUsage, getWipeState, wipeAllData, type WipeState } from '@storage';
@@ -113,6 +113,15 @@ export function DeleteData({ syncOn }: { syncOn: boolean }) {
   const stopWaiting = () => controller.current?.abort();
   const busy = wipe.busy || check.busy;
   const waiting = state !== null || stopped;
+
+  // These notices appear long after the click that started the wipe, and they are the only way to
+  // learn that something outside this page is holding it up (WCAG 4.1.3).
+  useEffect(() => {
+    if (state === 'blocked') announce('Deleting is held up: another StudyVault window is open.');
+  }, [state, announce]);
+  useEffect(() => {
+    if (stopped) announce('Deleting is still queued. It finishes when the other window closes.');
+  }, [stopped, announce]);
 
   return (
     <div className="sv-stack sv-stack--tight">

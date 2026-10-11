@@ -100,6 +100,8 @@ export function SaveBar({
       setBankId(bank.id);
       setNewBank(null);
       setState({ busy: false, error: null, done: null });
+      // The name field and its Create button are gone: the bank choice is where the person was.
+      document.getElementById(`${uid}-bank`)?.focus();
     } catch (err) {
       setState({
         busy: false,

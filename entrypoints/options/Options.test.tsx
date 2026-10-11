@@ -757,6 +757,8 @@ describe('delete all data: waiting for another window', () => {
     expect(screen.getByRole('button', { name: 'Stop waiting' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Check again' })).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull(); // waiting is not an error
+    // Said through the one polite region (an effect later than the notice itself).
+    await waitFor(() => expect(spoken()).toContain('Deleting is held up'));
     expect(rpc.called('site.sync')).toHaveLength(0);
 
     // The other window closes: the same call finishes, the worker is told, the page reports it.
@@ -786,6 +788,7 @@ describe('delete all data: waiting for another window', () => {
     ).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.queryByText('Deleting your data did not finish')).toBeNull();
+    await waitFor(() => expect(spoken()).toContain('Deleting is still queued'));
     expect(rpc.called('site.sync')).toHaveLength(0);
     // Not offered again while it is pending.
     expect(

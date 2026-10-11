@@ -73,14 +73,14 @@ export function Toolbar({
   const customIsPreset =
     zoom.kind !== 'custom' || PRESETS.includes(Math.round(zoom.zoom * 100) / 100);
 
-  const found =
-    search.status === 'searching'
-      ? `Searching… page ${search.pagesDone} of ${search.pageCount}${search.total > 0 ? `, ${search.total} found` : ''}`
-      : search.query.trim() === ''
-        ? ''
-        : search.total === 0
-          ? 'No matches'
-          : `${search.current + 1} of ${search.total}${search.truncated ? '+' : ''}`;
+  const searching = search.status === 'searching';
+  const found = searching
+    ? ''
+    : search.query.trim() === ''
+      ? ''
+      : search.total === 0
+        ? 'No matches'
+        : `${search.current + 1} of ${search.total}${search.truncated ? '+' : ''}`;
 
   return (
     <header className="sv-toolbar" aria-label="PDF toolbar">
@@ -236,7 +236,17 @@ export function Toolbar({
           role="status"
           data-testid="pdf-find-count"
         >
-          {found}
+          {searching ? (
+            <>
+              {/* One steady word is announced; the page counter ticks for the eye only. */}
+              <span>Searching…</span>
+              <span aria-hidden="true">
+                {` page ${search.pagesDone} of ${search.pageCount}${search.total > 0 ? `, ${search.total} found` : ''}`}
+              </span>
+            </>
+          ) : (
+            found
+          )}
         </span>
       </form>
 

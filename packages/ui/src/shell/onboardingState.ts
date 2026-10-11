@@ -91,6 +91,18 @@ export async function getOnboardingState(): Promise<OnboardingState> {
   return parseOnboardingState(stored[ONBOARDING_KEY]);
 }
 
+/**
+ * Store a whole state. Not a read-modify-write: it makes exactly one `storage.local.set` call and
+ * makes it synchronously, so called from an event handler the write is already on its way to the
+ * browser process when the handler returns. A tour tab that is closed right after a click (or a
+ * navigation) therefore does not lose the click; a read first would leave that to two round trips.
+ * The tour page is the one writer of its own sequence of choices, so last write wins.
+ */
+export function writeOnboardingState(state: OnboardingState): Promise<void> {
+  const next = parseOnboardingState({ ...state, updatedAt: new Date().toISOString() });
+  return browser.storage.local.set({ [ONBOARDING_KEY]: next });
+}
+
 /** Read-modify-write under a cross-context lock (two tour tabs cannot overwrite each other). */
 export async function updateOnboardingState(
   mutate: (current: OnboardingState) => OnboardingState,

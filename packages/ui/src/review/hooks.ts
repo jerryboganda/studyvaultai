@@ -51,13 +51,24 @@ export function useStudySettings() {
 
 /**
  * A number that changes every `ms`: queries that depend on "now" (what is due today) re-run when
- * the study day may have rolled over, even if no row changed.
+ * the study day may have rolled over, even if no row changed. A hidden page has no one to show a
+ * count to (and these queries read every card that can be due), so it does not tick; it ticks once
+ * when the page is shown again.
  */
 export function useTick(ms = 60_000): number {
   const [tick, setTick] = useState(0);
   useEffect(() => {
-    const id = setInterval(() => setTick((n) => n + 1), ms);
-    return () => clearInterval(id);
+    const id = setInterval(() => {
+      if (document.visibilityState !== 'hidden') setTick((n) => n + 1);
+    }, ms);
+    const onShown = () => {
+      if (document.visibilityState === 'visible') setTick((n) => n + 1);
+    };
+    document.addEventListener('visibilitychange', onShown);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', onShown);
+    };
   }, [ms]);
   return tick;
 }

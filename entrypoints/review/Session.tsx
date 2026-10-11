@@ -43,6 +43,16 @@ const STATE_LABEL = {
   relearning: 'Relearning',
 } as const;
 
+/** Per-viewer convenience (localStorage): whether the single-key shortcuts act (WCAG 2.1.4). */
+const KEYS_PREF = 'sv.review.keys';
+function readKeysPref(): boolean {
+  try {
+    return window.localStorage.getItem(KEYS_PREF) !== 'off';
+  } catch {
+    return true;
+  }
+}
+
 const RATING_HINT: Record<Rating, string> = {
   1: 'Forgot it',
   2: 'Hard to recall',
@@ -77,7 +87,16 @@ export function Session({
     setJump(null);
   }
 
-  const latest = useLatest({ state, editing, explaining });
+  const [keysOn, setKeysOn] = useState(readKeysPref);
+  const setKeys = (on: boolean) => {
+    setKeysOn(on);
+    try {
+      window.localStorage.setItem(KEYS_PREF, on ? 'on' : 'off');
+    } catch {
+      /* a convenience: the choice then lasts until the page closes */
+    }
+  };
+  const latest = useLatest({ state, editing, explaining, keysOn });
   const article = useRef<HTMLElement>(null);
   const waitUntil = state.waitUntil;
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -105,7 +124,17 @@ export function Session({
   // Keyboard: one listener for the whole session surface.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const { state: s, editing: ed } = latest.current;
+      const { state: s, editing: ed, keysOn: on } = latest.current;
+      // WCAG 2.1.4: single keys can be turned off.
+      if (!on) return;
+      // Space and Enter press the control that has focus; they must not also reveal the card.
+      if (
+        (e.key === ' ' || e.key === 'Enter') &&
+        e.target instanceof Element &&
+        e.target.closest('button, a[href], summary, [role="button"]')
+      ) {
+        return;
+      }
       const action = keyAction(e, isFieldTarget(e.target), {
         phase: s.phase,
         choosing: s.current?.card.cardType === 'mcq' && s.current.choiceId === null,
@@ -442,12 +471,23 @@ export function Session({
 
           {explaining && phase === 'answer' ? <ExplainSection card={current.card} /> : null}
 
-          <p className="sv-small sv-muted rv-keys" aria-label="Keyboard shortcuts">
-            Keys: <Kbd shortcut="Space" /> show answer, <kbd className="sv-kbd">1</kbd>{' '}
-            <kbd className="sv-kbd">2</kbd> <kbd className="sv-kbd">3</kbd>{' '}
-            <kbd className="sv-kbd">4</kbd> grade, <Kbd shortcut="Z" /> undo, <Kbd shortcut="E" />{' '}
-            edit, <Kbd shortcut="X" /> explain, <Kbd shortcut="J" /> source.
-          </p>
+          {keysOn ? (
+            <p className="sv-small sv-muted rv-keys" aria-label="Keyboard shortcuts">
+              Keys: <Kbd shortcut="Space" /> show answer, <kbd className="sv-kbd">1</kbd>{' '}
+              <kbd className="sv-kbd">2</kbd> <kbd className="sv-kbd">3</kbd>{' '}
+              <kbd className="sv-kbd">4</kbd> grade, <Kbd shortcut="Z" /> undo, <Kbd shortcut="E" />{' '}
+              edit, <Kbd shortcut="X" /> explain, <Kbd shortcut="J" /> source.
+            </p>
+          ) : (
+            <p className="sv-small sv-muted">
+              Single-key shortcuts are off. Every action above is a button.
+            </p>
+          )}
+          <div>
+            <Button variant="ghost" data-testid={TID.keysToggle} onClick={() => setKeys(!keysOn)}>
+              {keysOn ? 'Turn single-key shortcuts off' : 'Turn single-key shortcuts on'}
+            </Button>
+          </div>
         </>
       ) : null}
 

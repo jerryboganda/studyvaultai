@@ -157,6 +157,22 @@ describe('documents', () => {
     expect(first).toMatchObject({ highlightCount: 2, cachedBytes: 13 });
     expect(second).toMatchObject({ highlightCount: 0, cachedBytes: null });
   });
+
+  it('does not count a trashed highlight, and counts what is restored again', async () => {
+    const { softDeleteHighlight, restoreHighlight } = await import('./repo');
+    await upsertDocument(doc());
+    await savePdfHighlight(highlightInput(1, 'Cardiac output is stroke volume times rate.', 40));
+    const second = await savePdfHighlight(
+      highlightInput(2, 'Preload is end-diastolic volume.', 80),
+    );
+    const count = async () => (await listDocuments()).find((l) => l.document.id === DOC)!;
+
+    expect((await count()).highlightCount).toBe(2);
+    await softDeleteHighlight(second.highlight.id);
+    expect((await count()).highlightCount).toBe(1);
+    await restoreHighlight(second.highlight.id);
+    expect((await count()).highlightCount).toBe(2);
+  });
 });
 
 describe('PDF highlights', () => {

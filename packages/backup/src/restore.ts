@@ -584,6 +584,10 @@ async function scanTable(
 ): Promise<TableScan> {
   const enc = new TextEncoder();
   const derived = spec.derivedFields;
+  // The checksum is the exporter's statement about its own file, so it is checked with the fields
+  // the MANIFEST says were left out of it, not with this build's list: a later build may derive a
+  // different set of fields, and that must not turn an untouched older backup into "damaged".
+  const leftOutOfChecksum = entry.derivedFields;
   const immutable = ctx.immutable[spec.name];
   const hashChunks: Uint8Array[] = [];
   let hashPart: string[] = [];
@@ -621,7 +625,7 @@ async function scanTable(
     // line counts, well-formed or not, so the checksum is a statement about the file.
     let text: string;
     try {
-      text = canonicalJson(isObject ? omitFields(value as Row, derived) : value);
+      text = canonicalJson(isObject ? omitFields(value as Row, leftOutOfChecksum) : value);
     } catch (cause) {
       // Never produced by the exporter (too deep, or a type JSON cannot hold): not verifiable.
       throw new BackupError(

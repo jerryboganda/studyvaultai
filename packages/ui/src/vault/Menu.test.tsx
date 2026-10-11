@@ -137,4 +137,21 @@ describe('CommandPalette', () => {
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'qqqq' } });
     expect(screen.getByText(/No command matches/)).toBeTruthy();
   });
+
+  it('keeps one polite status that says how many commands are left (WCAG 4.1.3)', () => {
+    render(<CommandPalette commands={commands()} onClose={() => undefined} />);
+    const status = screen.getByRole('status');
+    const before = status.textContent;
+    const input = screen.getByRole('combobox');
+    fireEvent.change(input, { target: { value: 'trash' } });
+    // The same element changes text, so a screen reader announces it.
+    expect(screen.getByRole('status')).toBe(status);
+    expect(status.textContent).toMatch(/^2 commands\. /);
+    fireEvent.change(input, { target: { value: 'restore' } });
+    expect(status.textContent).toMatch(/^1 command\. /);
+    fireEvent.change(input, { target: { value: 'qqqq' } });
+    expect(status.textContent).toMatch(/^0 commands\. /);
+    fireEvent.change(input, { target: { value: '' } });
+    expect(status.textContent).toBe(before);
+  });
 });

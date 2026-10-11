@@ -2,6 +2,7 @@ export { Button, type ButtonProps } from './Button';
 export { Badge, KindChip, ResolveBadge, type Tone } from './Badge';
 export { ConfirmDialog } from './ConfirmDialog';
 export { ErrorBoundary } from './ErrorBoundary';
+export { useFocusRescue } from './focus';
 export { Kbd, ShortcutHints } from './Kbd';
 export { EmptyState, InlineNotice } from './Notice';
 export { Tabs, type TabDef } from './Tabs';

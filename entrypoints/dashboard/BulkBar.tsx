@@ -85,15 +85,28 @@ export function BulkBar(props: BulkBarProps) {
       <Button busy={busy} onClick={props.onTags} data-testid="bulk-tags">
         Tags…
       </Button>
-      <Button busy={busy} aria-haspopup="menu" onClick={open('kind')} data-testid="bulk-kind">
+      <Button
+        busy={busy}
+        aria-haspopup="menu"
+        aria-expanded={menu?.which === 'kind'}
+        onClick={open('kind')}
+        data-testid="bulk-kind"
+      >
         Kind ▾
       </Button>
-      <Button busy={busy} aria-haspopup="menu" onClick={open('color')} data-testid="bulk-color">
+      <Button
+        busy={busy}
+        aria-haspopup="menu"
+        aria-expanded={menu?.which === 'color'}
+        onClick={open('color')}
+        data-testid="bulk-color"
+      >
         Colour ▾
       </Button>
       <Button
         busy={busy}
         aria-haspopup="menu"
+        aria-expanded={menu?.which === 'priority'}
         onClick={open('priority')}
         data-testid="bulk-priority"
       >

@@ -352,11 +352,14 @@ export async function listTags(): Promise<TagWithCount[]> {
       const trashedLinks = (await keysWhereIn(db.highlightTags, 'highlightId', trashed)) as Array<
         [string, string]
       >;
+      // Counted once per tag, not by filtering every trashed link for every tag.
+      const trashedWith = new Map<string, number>();
+      for (const [, tagId] of trashedLinks)
+        trashedWith.set(tagId, (trashedWith.get(tagId) ?? 0) + 1);
       const out: TagWithCount[] = [];
       for (const tag of tags) {
         const all = await db.highlightTags.where('tagId').equals(tag.id).count();
-        const gone = trashedLinks.filter((k) => k[1] === tag.id).length;
-        out.push({ tag, count: Math.max(0, all - gone) });
+        out.push({ tag, count: Math.max(0, all - (trashedWith.get(tag.id) ?? 0)) });
       }
       return out.sort((a, b) => cmp(a.tag.nameKey, b.tag.nameKey) || cmp(a.tag.id, b.tag.id));
     }),

@@ -387,8 +387,13 @@ export async function stopWorker(
     if (!target) throw new Error('no running extension service worker to stop');
     const started = Date.now();
     await cdp.send('ServiceWorker.stopWorker', { versionId: target[0] });
-    for (let i = 0; i < 100; i++) {
+    // A worker with a transaction or an event handler still in flight finishes it before it stops, and
+    // a loaded CI runner can take several seconds; ask again every 5 s rather than give up early.
+    for (let i = 0; i < 600; i++) {
       if (versions.get(target[0])?.runningStatus === 'stopped') return Date.now() - started;
+      if (i > 0 && i % 100 === 0) {
+        await cdp.send('ServiceWorker.stopWorker', { versionId: target[0] }).catch(() => undefined);
+      }
       await new Promise((r) => setTimeout(r, 50));
     }
     throw new Error('the service worker did not stop');

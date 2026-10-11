@@ -670,7 +670,8 @@ describe('AI actions', () => {
     const error = await screen.findByTestId('ai-error');
     expect(error.textContent).toMatch(/rate limiting/i);
     expect(error.textContent).toMatch(/25 seconds/);
-    expect(screen.getByTestId('ai-outbound')).toBeTruthy();
+    // The ledger update re-estimates the preview for a moment; it must come back, not disappear.
+    expect(await screen.findByTestId('ai-outbound')).toBeTruthy();
     expect(await listAiResults()).toEqual([]);
     // The failed attempt still counts against today's ledger.
     expect((await getAiBudget()).requests).toBe(1);

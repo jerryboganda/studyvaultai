@@ -3,8 +3,10 @@ import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getDb } from './db';
-import { renameTag, createTag } from './tags';
-import { saveCapture } from './repo';
+import { createFolder } from './hierarchy';
+import { addToBank } from './membership';
+import { attachTags, renameTag, createTag } from './tags';
+import { createBank, saveCapture } from './repo';
 import { listSearchDocuments, listSearchDocumentsChangedSince } from './search';
 import { cap } from './test-fixtures';
 import { freshDatabase, save } from './test-vault';
@@ -187,5 +189,49 @@ describe('writers stamp when their transaction holds its lock', () => {
     // so a catch-up that started at 10:00:20 (since = 10:00:15) still sees it
     const changed = await listSearchDocumentsChangedSince({ since: '2026-10-11T10:00:15.000Z' });
     expect(changed.map((d) => d.id)).toContain(saved.highlight.id);
+  });
+});
+
+describe('listSearchDocuments: bank, folder and tag facets', () => {
+  it('names a deep folder chain, several banks and tags; a trashed parent cuts the path', async () => {
+    const cardio = await createBank('Cardiology');
+    const neuro = await createBank('Neurology');
+    const a = await createFolder({ bankId: cardio.id, name: 'A' });
+    const b = await createFolder({ bankId: cardio.id, name: 'B', parentFolderId: a.id });
+    const c = await createFolder({ bankId: cardio.id, name: 'C', parentFolderId: b.id });
+    const lone = await createFolder({ bankId: neuro.id, name: 'Lone' });
+    const tag = (await createTag('exam')).tag;
+
+    const deep = await save('Deep quote', { bankId: cardio.id });
+    await addToBank({ highlightId: deep.id, bankId: cardio.id, folderId: c.id });
+    await addToBank({ highlightId: deep.id, bankId: neuro.id, folderId: lone.id });
+    await attachTags({ highlightIds: [deep.id], tagIds: [tag.id] });
+    const plain = await save('Plain quote');
+
+    const read = async () => {
+      const docs = await listSearchDocuments();
+      return {
+        deep: docs.find((d) => d.id === deep.id)!,
+        plain: docs.find((d) => d.id === plain.id)!,
+      };
+    };
+
+    let docs = await read();
+    expect([...docs.deep.banks].sort()).toEqual(['Cardiology', 'Neurology']);
+    expect([...docs.deep.folderPath].sort()).toEqual(['A', 'B', 'C', 'Lone']);
+    const at = docs.deep.folderPath.indexOf('A');
+    expect(docs.deep.folderPath.slice(at, at + 3)).toEqual(['A', 'B', 'C']);
+    expect(docs.deep.tags).toEqual(['exam']);
+    expect(docs.plain.folderPath).toEqual([]);
+    expect(docs.plain.tags).toEqual([]);
+
+    // A trashed parent ends the path at the folder below it; a trashed bank is no facet.
+    const db = getDb();
+    const ts = new Date().toISOString();
+    await db.folders.update(b.id, { deletedAt: ts });
+    await db.banks.update(neuro.id, { deletedAt: ts });
+    docs = await read();
+    expect(docs.deep.banks).toEqual(['Cardiology']);
+    expect([...docs.deep.folderPath].sort()).toEqual(['C', 'Lone']);
   });
 });

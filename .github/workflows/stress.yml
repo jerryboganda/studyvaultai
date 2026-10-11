@@ -1,13 +1,16 @@
 name: Stress
 
 # Seeded 10k-row performance and round-trip suites (TEST_PLAN.md "Performance targets").
-# Heavy by design, so it is not part of the required CI gate (AGENTS.md Rule 1): it runs nightly on
-# the default branch and on demand (`gh workflow run stress.yml --ref <branch>`).
+# The same suites run as the `stress` job of ci.yml on every push and pull request (required on main,
+# advisory elsewhere). This workflow is the nightly and on-demand copy
+# (`gh workflow run stress.yml --ref <branch>`): it catches drift that no push triggered, such as a
+# runner image or dependency change, and is the quick way to re-run only the perf suites. Its steps
+# are the ci.yml job's steps; change both together.
 #
 # What fails the job: any failed budget assertion inside a suite, a suite that was skipped or never
-# ran, an expected area (storage, search, study, backup) without a suite, and the coarse wall-time
-# ceilings in scripts/run-perf.mjs. Timings are uploaded as perf-results/timings.json and shown as a
-# table in the job summary.
+# ran, an expected area (storage, search, study, backup) with neither a suite nor a recorded known gap
+# (scripts/run-perf.mjs KNOWN_GAPS), and the coarse wall-time ceilings in the same script. Timings are
+# uploaded as perf-results/timings.json and shown as a table in the job summary.
 
 on:
   workflow_dispatch:
@@ -17,9 +20,10 @@ on:
 permissions:
   contents: read
 
+# A newer manual run on a branch supersedes the older one; a run on main is never cancelled.
 concurrency:
   group: stress-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   NODE_VERSION: 24
@@ -28,9 +32,11 @@ jobs:
   perf:
     name: perf (seeded suites, SV_PERF=1)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
@@ -49,3 +55,4 @@ jobs:
           name: perf-results
           path: perf-results
           if-no-files-found: ignore
+          retention-days: 30

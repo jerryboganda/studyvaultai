@@ -462,3 +462,40 @@ describe('Preview: filing and duplicates', () => {
     });
   });
 });
+
+describe('Preview: focus follows the note editor', () => {
+  it('puts the cursor in a new note, and gives focus back to "Add a note" when it closes', async () => {
+    await open();
+    const add = screen.getByTestId('note-add');
+    add.focus();
+    fireEvent.click(add);
+    const body = screen.getByTestId('note-body');
+    expect(document.activeElement).toBe(body);
+
+    fireEvent.click(screen.getByTestId('note-cancel'));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('note-add')));
+  });
+
+  it('puts the cursor in the editor of an existing note and returns to its Edit button', async () => {
+    await open(undefined, (v) => {
+      void v.api().createNote({ highlightId: 'hl-00000001', body: 'first draft' });
+    });
+    await screen.findByTestId('note');
+    fireEvent.click(screen.getByTestId('note-edit'));
+    expect(document.activeElement).toBe(screen.getByTestId('note-body'));
+
+    fireEvent.click(screen.getByTestId('note-cancel'));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('note-edit')));
+  });
+
+  it('does not take focus for a draft restored when the preview opens', async () => {
+    const first = await open();
+    fireEvent.click(screen.getByTestId('note-add'));
+    fireEvent.change(screen.getByTestId('note-body'), { target: { value: 'unsaved words' } });
+    cleanup();
+    expect(first.vault).toBeTruthy();
+    await open();
+    expect(screen.getByTestId('note-body')).toBeTruthy();
+    expect(document.activeElement).not.toBe(screen.getByTestId('note-body'));
+  });
+});

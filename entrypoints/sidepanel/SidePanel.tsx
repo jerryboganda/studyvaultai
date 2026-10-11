@@ -35,6 +35,7 @@ import {
   useApplyTheme,
   useAsync,
   useDataEpoch,
+  useFocusRescue,
   useObserved,
   useSettings,
   useShortcuts,
@@ -93,6 +94,8 @@ function Panel() {
   const { tab, loading: tabLoading, error: tabError } = tabState;
   const epoch = useDataEpoch();
   const toast = useToast();
+  // A removed tag chip or a deleted card takes its focused button with it: focus stays on the card/tab.
+  const rescueRef = useFocusRescue();
   const [view, setViewState] = useState<View>(initialView);
   const [scope, setScope] = useState<BankScope | null>(null);
   const [searchText, setSearchText] = useState('');
@@ -240,7 +243,7 @@ function Panel() {
   const dueCount = reviewOn && due.count !== null && due.count > 0 ? due.count : undefined;
 
   return (
-    <div className="panel">
+    <div ref={rescueRef} className="panel">
       <header className="panel__head">
         <div className="panel__bar">
           <h1>StudyVault</h1>

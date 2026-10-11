@@ -552,6 +552,9 @@ button.rv-choice:hover {
 }
 .rv-chart__bar {
   fill: var(--sv-accent);
+  /* A hairline in the page colour keeps stacked series apart where their lightness is close (1.4.11). */
+  stroke: var(--sv-bg);
+  stroke-width: 1;
 }
 .rv-chart__bar--extra {
   fill: var(--sv-warning);
@@ -614,5 +617,18 @@ button.rv-choice:hover {
   .rv-share__fill {
     fill: Highlight;
     background: Highlight;
+  }
+  /* Hue is gone in this mode: the second series becomes a hollow bar with a heavy edge. */
+  .rv-chart__bar--extra {
+    fill: Canvas;
+    stroke: Highlight;
+    stroke-width: 2;
+  }
+  .rv-swatch {
+    background: Highlight;
+  }
+  .rv-swatch--extra {
+    border: 2px solid Highlight;
+    background: Canvas;
   }
 }

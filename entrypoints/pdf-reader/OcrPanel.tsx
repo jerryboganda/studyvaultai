@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { Button, InlineNotice, errorMessage, plural } from '@ui';
 import {
   BAND_TEXT,
@@ -113,6 +113,13 @@ function RecognisedLines({
   const [editing, setEditing] = useState<number | null>(null);
   const [draft, setDraft] = useState('');
   const uid = useId();
+  // The line's Edit button is replaced by the field: when the field closes, focus goes back to it.
+  const editedFrom = useRef<number | null>(null);
+  useEffect(() => {
+    if (editing !== null || editedFrom.current === null) return;
+    document.getElementById(`${uid}-edit-${editedFrom.current}`)?.focus();
+    editedFrom.current = null;
+  }, [editing, uid]);
   const edited = correctedLines(ocr);
   const changed =
     Object.keys(ocr.corrections.lines).length + Object.keys(ocr.corrections.words).length;
@@ -249,8 +256,10 @@ function RecognisedLines({
                     ) : null}
                     <div className="sv-row">
                       <Button
+                        id={`${uid}-edit-${index}`}
                         onClick={() => {
                           setDraft(current);
+                          editedFrom.current = index;
                           setEditing(index);
                         }}
                         data-testid="pdf-ocr-edit"

@@ -1,7 +1,15 @@
 import 'fake-indexeddb/auto';
 import { createRef } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, configure, render, screen, waitFor, within } from '@testing-library/react';
+import {
+  cleanup,
+  configure,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { browser } from 'wxt/browser';
 import { getSettings } from '@runtime';
@@ -388,5 +396,147 @@ describe('theme, shortcuts and the end', () => {
     expect((await screen.findByTestId(TID.summary)).textContent).toBe(
       'Your bank "General study" is ready with 7 folders.',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Durability: what the page says is what is stored, at the moment it says it
+// ---------------------------------------------------------------------------------------------
+
+describe('state is stored when the page says so', () => {
+  /** `storage.local.set` that holds back (or fails) writes of the tour's state that match. */
+  function interceptTourWrites(match: (state: Record<string, unknown>) => boolean) {
+    const real = browser.storage.local.set.bind(browser.storage.local);
+    const held: { release(): void; fail(e: Error): void } = {
+      release: () => undefined,
+      fail: () => undefined,
+    };
+    let settle: { ok(): void; fail(e: Error): void } | null = null;
+    const gate = new Promise<void>((resolve, reject) => {
+      settle = { ok: resolve, fail: reject };
+    });
+    gate.catch(() => undefined);
+    held.release = () => settle?.ok();
+    held.fail = (e) => settle?.fail(e);
+    vi.spyOn(browser.storage.local, 'set').mockImplementation(async (items) => {
+      const state = (items as Record<string, unknown> | undefined)?.[ONBOARDING_KEY] as
+        Record<string, unknown> | undefined;
+      if (state && match(state)) await gate;
+      return real(items as never);
+    });
+    return held;
+  }
+
+  it('skipping: the skipped screen waits for the write, and the state read right then says skipped', async () => {
+    render(<Onboarding />);
+    await walkTo('privacy');
+    const held = interceptTourWrites((s) => s.status === 'skipped');
+
+    await userEvent.click(screen.getByTestId(TID.skip));
+    // The write is still in flight: the tour has not claimed to be skipped.
+    expect(screen.queryByTestId(TID.skipped)).toBeNull();
+    expect(screen.getByTestId(TID.step('privacy'))).toBeTruthy();
+    expect((await getOnboardingState()).status).toBe('pending');
+
+    held.release();
+    await screen.findByTestId(TID.skipped);
+    // No waitFor: the moment the screen is there, the store already agrees.
+    expect((await getOnboardingState()).status).toBe('skipped');
+  });
+
+  it('finishing: the finished screen waits for the write, and the state read right then says completed', async () => {
+    render(<Onboarding />);
+    await walkTo('done');
+    const held = interceptTourWrites((s) => s.status === 'completed');
+
+    await userEvent.click(screen.getByTestId(TID.finish));
+    expect(screen.queryByTestId(TID.finished)).toBeNull();
+    expect((await getOnboardingState()).status).toBe('pending');
+
+    held.release();
+    await screen.findByTestId(TID.finished);
+    expect(await getOnboardingState()).toMatchObject({ status: 'completed', step: 'done' });
+  });
+
+  it('a write that fails keeps the tour on screen with the reason, and Skip works again', async () => {
+    render(<Onboarding />);
+    await walkTo('privacy');
+    vi.spyOn(browser.storage.local, 'set').mockRejectedValueOnce(new Error('Quota exceeded'));
+
+    await userEvent.click(screen.getByTestId(TID.skip));
+    expect(await screen.findByText(/Your place was not saved/)).toBeTruthy();
+    expect(screen.getByText(/Quota exceeded/)).toBeTruthy();
+    expect(screen.queryByTestId(TID.skipped)).toBeNull();
+    expect(screen.getByTestId(TID.step('privacy'))).toBeTruthy();
+
+    await userEvent.click(screen.getByTestId(TID.skip));
+    await screen.findByTestId(TID.skipped);
+    expect((await getOnboardingState()).status).toBe('skipped');
+  });
+
+  it('a choice is written in the same turn as the click, before the handler returns', async () => {
+    render(<Onboarding />);
+    await walkTo('banks');
+    const set = vi.spyOn(browser.storage.local, 'set');
+
+    // fireEvent does not wait: whatever is stored must already have been handed over.
+    fireEvent.click(screen.getByTestId(TID.preset('radiology')));
+    const written = set.mock.calls
+      .map((c) => (c[0] as Record<string, unknown>)[ONBOARDING_KEY])
+      .filter(Boolean);
+    expect(written.at(-1)).toMatchObject({
+      status: 'pending',
+      step: 'banks',
+      preset: { id: 'radiology', excluded: [] },
+    });
+
+    fireEvent.click(screen.getByTestId(TID.node('Diagnostic Radiology/Breast')));
+    const after = set.mock.calls
+      .map((c) => (c[0] as Record<string, unknown>)[ONBOARDING_KEY])
+      .filter(Boolean);
+    expect(after.at(-1)).toMatchObject({
+      preset: { id: 'radiology', excluded: ['Diagnostic Radiology/Breast'] },
+    });
+  });
+
+  it('closing the tab right after a click and opening the tour again restores step and choice', async () => {
+    render(<Onboarding />);
+    await walkTo('banks');
+    fireEvent.click(screen.getByTestId(TID.preset('general')));
+    fireEvent.click(screen.getByTestId(TID.node('General study/Readings')));
+    cleanup(); // the tab is gone before anything had time to settle
+
+    render(<Onboarding />);
+    expect(await screen.findByTestId(TID.step('banks'))).toBeTruthy();
+    expect((screen.getByTestId(TID.preset('general')) as HTMLInputElement).checked).toBe(true);
+    expect(
+      (screen.getByTestId(TID.node('General study/Readings')) as HTMLInputElement).checked,
+    ).toBe(false);
+  });
+
+  it('writes again when the page is hidden or put away, if a write was lost', async () => {
+    render(<Onboarding />);
+    await walkTo('banks');
+    vi.spyOn(browser.storage.local, 'set').mockRejectedValueOnce(new Error('Disk busy'));
+    fireEvent.click(screen.getByTestId(TID.preset('radiology')));
+    await screen.findByText(/Your place was not saved/);
+    expect((await getOnboardingState()).preset.id).toBe('blank'); // the first write was lost
+
+    window.dispatchEvent(new Event('pagehide'));
+    await waitFor(async () =>
+      expect(await getOnboardingState()).toMatchObject({
+        step: 'banks',
+        preset: { id: 'radiology' },
+      }),
+    );
+  });
+
+  it('writes nothing on the way out when nothing was changed here', async () => {
+    render(<Onboarding />);
+    await screen.findByTestId(TID.step('welcome'));
+    window.dispatchEvent(new Event('pagehide'));
+    document.dispatchEvent(new Event('visibilitychange'));
+    await new Promise((r) => setTimeout(r, 50));
+    expect((await browser.storage.local.get(ONBOARDING_KEY))[ONBOARDING_KEY]).toBeUndefined();
   });
 });

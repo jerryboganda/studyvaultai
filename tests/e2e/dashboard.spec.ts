@@ -1352,11 +1352,11 @@ test.describe('perf: 10,000 highlights', () => {
     await page.getByTestId('clear-filters').click();
     const indexStart = Date.now();
     await page.getByTestId('view-storage').click();
-    await expect(page.getByTestId('index-summary')).toHaveText(/^[d,]+ documents indexed.$/, {
+    await expect(page.getByTestId('index-summary')).toHaveText(/^[\d,]+ documents indexed\.$/, {
       timeout: 240_000,
     });
     const indexed = Number(
-      ((await page.getByTestId('index-summary').textContent()) ?? '').replace(/[^d]/g, ''),
+      ((await page.getByTestId('index-summary').textContent()) ?? '').replace(/\D/g, ''),
     );
     // Every live highlight is indexed, plus the notes (10% have one); trashed highlights stay in
     // the index as tombstones until a rebuild, so the count may go up to every row.

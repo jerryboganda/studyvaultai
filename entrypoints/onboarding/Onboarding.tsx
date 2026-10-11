@@ -12,7 +12,7 @@ import {
 import { settingsPath } from '@ui/shell/paths';
 import {
   getOnboardingState,
-  updateOnboardingState,
+  writeOnboardingState,
   type OnboardingState,
   type OnboardingStep,
 } from '@ui/shell/onboardingState';
@@ -39,21 +39,31 @@ export function Onboarding() {
 }
 
 /**
- * The tour's persisted state. The in-memory copy is what the page shows; every change is written
- * through to storage right away (read-modify-write, so two tabs cannot clobber each other) and a
- * failed write is reported, never swallowed: the person would otherwise lose their place silently.
+ * The tour's persisted state. The in-memory copy is what the page shows, and `latest` is the same
+ * value readable synchronously (React state is not, inside a handler that commits twice).
+ *
+ * Every change is written at once, in the handler that made it, as the whole state: no debounce, no
+ * read first (see `writeOnboardingState`). The page also writes again when it is hidden or put
+ * away (`pagehide`, `visibilitychange`), in case a write was lost. `commit` resolves to whether the
+ * write was stored, so a caller that must not move on before that (skip, finish) can wait for it;
+ * a failed write is reported on the page, never swallowed.
  */
 function useTourState() {
   const [state, setState] = useState<OnboardingState | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const latest = useRef<OnboardingState | null>(null);
+  /** Something was changed on this page: only then is there anything to write on the way out. */
+  const dirty = useRef(false);
 
   useEffect(() => {
     let live = true;
     getOnboardingState().then(
       (s) => {
-        if (live) setState(s);
+        if (!live) return;
+        latest.current = s;
+        setState(s);
       },
       (err: unknown) => {
         if (live) setError(errorMessage(err, 'Could not read where you left off.'));
@@ -64,11 +74,40 @@ function useTourState() {
     };
   }, [attempt]);
 
-  const commit = useCallback((patch: Partial<OnboardingState>) => {
-    setState((cur) => (cur ? { ...cur, ...patch } : cur));
-    updateOnboardingState((cur) => ({ ...cur, ...patch })).then(
-      () => setSaveError(null),
-      (err: unknown) => setSaveError(errorMessage(err, 'Your progress could not be saved.')),
+  useEffect(() => {
+    const flush = () => {
+      if (dirty.current && latest.current) {
+        writeOnboardingState(latest.current).catch(() => undefined);
+      }
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') flush();
+    };
+    window.addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, []);
+
+  const commit = useCallback((patch: Partial<OnboardingState>): Promise<boolean> => {
+    const current = latest.current;
+    if (!current) return Promise.resolve(false);
+    const next = { ...current, ...patch };
+    latest.current = next;
+    dirty.current = true;
+    setState(next);
+    // Called here, synchronously: the write is sent before this handler returns.
+    return writeOnboardingState(next).then(
+      () => {
+        setSaveError(null);
+        return true;
+      },
+      (err: unknown) => {
+        setSaveError(errorMessage(err, 'Your progress could not be saved.'));
+        return false;
+      },
     );
   }, []);
 
@@ -101,17 +140,24 @@ function Tour() {
 
   const go = (to: OnboardingStep) => {
     setMoved(to);
-    tour.commit({ status: 'pending', step: to });
+    void tour.commit({ status: 'pending', step: to });
   };
 
-  const skip = () => {
-    tour.commit({ status: 'skipped' });
-    setOver('skipped');
+  // The "over" screen says the tour is skipped or finished, so it appears only once that is stored:
+  // a person who closes the tab the moment they see it must not find the tour back. A write that
+  // fails leaves the tour where it is, with the reason on the page and the button usable again.
+  const [closing, setClosing] = useState(false);
+  const end = async (kind: 'skipped' | 'completed') => {
+    if (closing) return;
+    setClosing(true);
+    const stored = await tour.commit(
+      kind === 'skipped' ? { status: 'skipped' } : { status: 'completed', step: 'done' },
+    );
+    setClosing(false);
+    if (stored) setOver(kind);
   };
-  const finish = () => {
-    tour.commit({ status: 'completed', step: 'done' });
-    setOver('completed');
-  };
+  const skip = () => void end('skipped');
+  const finish = () => void end('completed');
 
   if (tour.error || global.error) {
     return (
@@ -163,7 +209,7 @@ function Tour() {
             Step {index + 1} of {STEP_COUNT}
           </p>
         </div>
-        <Button variant="ghost" data-testid={TID.skip} onClick={skip}>
+        <Button variant="ghost" busy={closing} data-testid={TID.skip} onClick={skip}>
           Skip the tour
         </Button>
       </header>

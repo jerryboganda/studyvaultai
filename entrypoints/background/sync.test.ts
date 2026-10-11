@@ -10,6 +10,7 @@ import {
   ALARM_PERIODIC,
   ALARM_SOON,
   PERIODIC_MINUTES,
+  browserSyncDeps,
   createSessionBinding,
   createSessionKeyVault,
   createSessionTokenStore,
@@ -1121,5 +1122,28 @@ describe('registerSync', () => {
     expect(() =>
       registerSync('chrome-extension://abcdefghijklmnopabcdefghijklmnop/'),
     ).not.toThrow();
+  });
+});
+
+describe('browserSyncDeps', () => {
+  it('sees the identity API Chrome adds to the running worker once the optional permission is granted', async () => {
+    const api = browser as unknown as { identity?: unknown };
+    delete api.identity; // the worker started before the person turned sync on
+    const deps = browserSyncDeps();
+    expect(deps.identity).toBeNull();
+
+    const url = `${ISSUER}/authorize`;
+    const back = `${REDIRECT}?code=c1`;
+    const launchWebAuthFlow = vi.fn(async () => back);
+    api.identity = { launchWebAuthFlow }; // granted from the click: same worker, no restart
+    try {
+      expect(deps.identity).not.toBeNull();
+      await expect(deps.identity!.launchWebAuthFlow({ url, interactive: true })).resolves.toBe(
+        back,
+      );
+      expect(launchWebAuthFlow).toHaveBeenCalledWith({ url, interactive: true });
+    } finally {
+      delete api.identity;
+    }
   });
 });

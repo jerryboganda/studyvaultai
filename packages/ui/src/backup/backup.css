@@ -2,6 +2,12 @@
 .bk-indent {
   margin-inline-start: var(--sv-space-5);
 }
+/* A list of single-line checkboxes: rows 20px apart leave 16px targets too close (WCAG 2.5.8). */
+.bk-choices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+}
 .bk-rule {
   width: 100%;
   border: 0;

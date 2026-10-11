@@ -1564,15 +1564,21 @@ export function browserSyncDeps(): SyncServiceDeps {
         else await session.remove(DISCOVERY_KEY);
       },
     },
-    identity: browser.identity
-      ? {
-          launchWebAuthFlow: async (request) => {
-            const url = await browser.identity.launchWebAuthFlow(request);
-            if (!url) throw new Error('The sign-in window returned no address.');
-            return url;
-          },
-        }
-      : null,
+    // A getter, like `alarms()`: "identity" is an optional permission that is granted from the click
+    // that turns sync on, while this worker is already running, and Chrome then adds
+    // `chrome.identity` to this same worker. Read once at start it would stay null until the worker
+    // happened to restart, and sign-in would be refused for no visible reason.
+    get identity(): IdentityPort | null {
+      return browser.identity
+        ? {
+            launchWebAuthFlow: async (request) => {
+              const url = await browser.identity.launchWebAuthFlow(request);
+              if (!url) throw new Error('The sign-in window returned no address.');
+              return url;
+            },
+          }
+        : null;
+    },
     redirectUrl: () => `https://${browser.runtime.id}.chromiumapp.org/sync`,
     hasOrigins: (origins) =>
       browser.permissions.contains({ origins: [...origins] }).catch(() => false),

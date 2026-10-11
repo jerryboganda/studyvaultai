@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { Note } from '@shared';
 import { MAX_NOTE_BODY_CHARS, MAX_NOTE_TITLE_CHARS } from '@shared';
 import { Button, errorMessage, useAction, useToast } from '@ui';
@@ -29,6 +29,26 @@ export function PreviewNotes({ highlightId, notes }: { highlightId: string; note
     if (drafts.has(`${highlightId}:new`)) return 'new';
     return notes.find((n) => drafts.has(`${highlightId}:${n.id}`))?.id ?? null;
   });
+  // The button that opened the editor is replaced by it: focus goes into the editor, and back to
+  // that button when the editor closes (a draft restored on mount takes no focus).
+  const section = useRef<HTMLElement>(null);
+  const [userOpened, setUserOpened] = useState(false);
+  const openedFrom = useRef<string | null>(null);
+  const open = (which: string | 'new') => {
+    setUserOpened(true);
+    openedFrom.current = which;
+    setEditing(which);
+  };
+  const close = () => setEditing(null);
+  useEffect(() => {
+    const from = openedFrom.current;
+    if (editing !== null || from === null) return;
+    openedFrom.current = null;
+    const opener = Array.from(
+      section.current?.querySelectorAll<HTMLElement>('[data-opener]') ?? [],
+    );
+    opener.find((el) => el.dataset.opener === from)?.focus();
+  }, [editing]);
 
   const remove = async (note: Note) => {
     try {
@@ -62,13 +82,18 @@ export function PreviewNotes({ highlightId, notes }: { highlightId: string; note
   };
 
   return (
-    <section className="dash-section" aria-labelledby="pv-notes" data-testid="preview-notes">
+    <section
+      ref={section}
+      className="dash-section"
+      aria-labelledby="pv-notes"
+      data-testid="preview-notes"
+    >
       <div className="sv-row">
         <h3 id="pv-notes" className="sv-grow">
           Your notes
         </h3>
         {editing === null ? (
-          <Button onClick={() => setEditing('new')} data-testid="note-add">
+          <Button onClick={() => open('new')} data-opener="new" data-testid="note-add">
             Add a note
           </Button>
         ) : null}
@@ -79,11 +104,12 @@ export function PreviewNotes({ highlightId, notes }: { highlightId: string; note
           draftKey={`${highlightId}:new`}
           initial={{ title: '', body: '' }}
           saveLabel="Save note"
-          onCancel={() => setEditing(null)}
+          focusOnMount={userOpened}
+          onCancel={close}
           onSave={async (title, body) => {
             await api.createNote({ highlightId, title, body });
             bump();
-            setEditing(null);
+            close();
           }}
         />
       ) : null}
@@ -100,11 +126,12 @@ export function PreviewNotes({ highlightId, notes }: { highlightId: string; note
                 draftKey={`${highlightId}:${note.id}`}
                 initial={{ title: note.title, body: note.body }}
                 saveLabel="Save changes"
-                onCancel={() => setEditing(null)}
+                focusOnMount={userOpened}
+                onCancel={close}
                 onSave={async (title, body) => {
                   await api.updateNote(note.id, { title, body });
                   bump();
-                  setEditing(null);
+                  close();
                 }}
               />
             ) : (
@@ -121,7 +148,11 @@ export function PreviewNotes({ highlightId, notes }: { highlightId: string; note
                 ) : null}
                 <Markdown source={note.body} />
                 <div className="sv-row">
-                  <Button onClick={() => setEditing(note.id)} data-testid="note-edit">
+                  <Button
+                    onClick={() => open(note.id)}
+                    data-opener={note.id}
+                    data-testid="note-edit"
+                  >
                     Edit
                   </Button>
                   <Button onClick={() => void togglePin(note)} aria-pressed={note.pinned}>
@@ -148,16 +179,25 @@ function NoteEditor({
   draftKey,
   initial,
   saveLabel,
+  focusOnMount,
   onSave,
   onCancel,
 }: {
   draftKey: string;
   initial: { title: string; body: string };
   saveLabel: string;
+  /** The person just asked for this editor: put the cursor in the note. */
+  focusOnMount: boolean;
   onSave(title: string, body: string): Promise<void>;
   onCancel(): void;
 }) {
   const id = useId();
+  const bodyField = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (focusOnMount) bodyField.current?.focus();
+    // Once, when the editor appears.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [restored] = useState(() => drafts.get(draftKey) ?? null);
   const [title, setTitle] = useState(restored?.title ?? initial.title);
   const [body, setBody] = useState(restored?.body ?? initial.body);
@@ -168,8 +208,11 @@ function NoteEditor({
   });
   const empty = body.trim() === '' && title.trim() === '';
   const dirty = title !== initial.title || body !== initial.body;
+  // Cancel discards the draft for good: an effect that was still pending must not write it back.
+  const discarded = useRef(false);
 
   useEffect(() => {
+    if (discarded.current) return;
     if (dirty) drafts.set(draftKey, { title, body });
     else drafts.delete(draftKey);
   }, [dirty, draftKey, title, body]);
@@ -231,12 +274,12 @@ function NoteEditor({
       ) : (
         <textarea
           id={`${id}-body`}
+          ref={bodyField}
           className="sv-control"
           rows={6}
           maxLength={MAX_NOTE_BODY_CHARS}
           value={body}
           dir="auto"
-          data-autofocus=""
           placeholder="Write in Markdown: **bold**, lists, > quotes, [links](https://example.com)"
           onChange={(e) => setBody(e.target.value)}
           onKeyDown={(e) => {
@@ -266,6 +309,7 @@ function NoteEditor({
         </Button>
         <Button
           onClick={() => {
+            discarded.current = true;
             drafts.delete(draftKey);
             onCancel();
           }}

@@ -269,6 +269,10 @@ test.describe('site access', () => {
     env,
   }) => {
     const ext = await openExt(env, 'options');
+    // The install-time `site.sync` may still be queued on a slow runner; it would prune a hint that
+    // Chrome does not back. Let it finish first (syncs are serialised) so the hint below survives
+    // until the user acts, which is the state this test is about.
+    await bgData(ext, 'site.sync');
     await patchSettings(ext, { persistentOrigins: ['https://*/*', 'http://*/*'] });
     await ext.reload();
     const revoke = ext.getByRole('button', { name: 'Revoke all-sites access' });

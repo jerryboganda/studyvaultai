@@ -475,22 +475,31 @@ export function onBeforeMigrate(
 }
 
 /**
- * False only when this engine can say the database does not exist. A probe open of a missing
- * database creates it and deletes it again, which would delete the real one if another context
- * created it in between.
+ * What this engine can say about `name` without opening it. `exists` is false only when it can say
+ * the database does not exist: a probe open of a missing database creates it and deletes it again,
+ * which would delete the real one if another context created it in between. `version` is the
+ * IndexedDB version (Dexie's `verno` times ten), or null when the engine does not report one.
  */
-async function mayExist(name: string): Promise<boolean> {
+async function lookUp(name: string): Promise<{ exists: boolean; version: number | null }> {
   try {
-    if (typeof indexedDB === 'undefined' || typeof indexedDB.databases !== 'function') return true;
-    return (await indexedDB.databases()).some((d) => d.name === name);
+    if (typeof indexedDB === 'undefined' || typeof indexedDB.databases !== 'function') {
+      return { exists: true, version: null };
+    }
+    const found = (await indexedDB.databases()).find((d) => d.name === name);
+    return { exists: found !== undefined, version: found?.version ?? null };
   } catch {
-    return true;
+    return { exists: true, version: null };
   }
 }
 
 /** Read the existing database at whatever version it has, without declaring a schema. */
 async function runMigrationHooks(name: string): Promise<void> {
-  if (migrationHooks.size === 0 || !(await mayExist(name))) return;
+  if (migrationHooks.size === 0) return;
+  const known = await lookUp(name);
+  if (!known.exists) return;
+  // Already at (or past) this build's version: nothing to protect, so no probe connection. Every
+  // context start used to open the database twice (probe, then the real open) just to learn this.
+  if (known.version !== null && known.version / 10 >= DB_VERSION) return;
   const probe = new Dexie(name);
   try {
     try {

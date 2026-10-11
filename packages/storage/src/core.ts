@@ -3,6 +3,7 @@ import type { z } from 'zod';
 import { bumpDataEpoch, bumpResolutionEpoch } from '@runtime';
 import {
   BankRecord,
+  Folder,
   Highlight,
   HighlightBank,
   Id,
@@ -163,6 +164,37 @@ export async function readBanks(db: StudyVaultDb): Promise<BankRecord[]> {
   return banks.sort(
     (a, b) => a.position - b.position || cmp(a.createdAt, b.createdAt) || cmp(a.id, b.id),
   );
+}
+
+/** Most parents a folder path follows (and shows); deeper chains are cut. */
+const FOLDER_PATH_DEPTH = 16;
+
+/**
+ * The live folders named by `ids` and their ancestors, keyed by id: what a folder path needs, read
+ * by id instead of every folder of every bank involved. A deleted or unreadable folder is absent,
+ * which ends a path there. Call inside a read transaction that includes `folders`.
+ */
+export async function readFolderChains(
+  db: StudyVaultDb,
+  ids: readonly (string | null)[],
+): Promise<Map<string, Folder>> {
+  const folders = new Map<string, Folder>();
+  const asked = new Set<string>();
+  let wanted = unique(ids.filter((id): id is string => id !== null));
+  for (let level = 0; level < FOLDER_PATH_DEPTH && wanted.length > 0; level++) {
+    for (const id of wanted) asked.add(id);
+    const parents: string[] = [];
+    for (const row of await db.folders.bulkGet(wanted)) {
+      const folder = !row || isDeleted(row) ? null : parseRow(Folder, row, 'folder');
+      if (!folder) continue;
+      folders.set(folder.id, folder);
+      if (folder.parentFolderId !== null && !asked.has(folder.parentFolderId)) {
+        parents.push(folder.parentFolderId);
+      }
+    }
+    wanted = unique(parents);
+  }
+  return folders;
 }
 
 /**

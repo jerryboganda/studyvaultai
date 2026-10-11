@@ -58,3 +58,81 @@ describe('form control contrast', () => {
     });
   }
 });
+
+/**
+ * The status and text pairs the extension pages actually draw (WCAG 1.4.3 text, 1.4.11 non-text),
+ * read from the real token files so an edit to either mode that breaks one fails here.
+ */
+describe('token pairs', () => {
+  const status = {
+    light: block(components, ':root {'),
+    dark: block(components, ":root[data-theme='dark'] {"),
+  };
+  const colour = (mode: 'light' | 'dark', name: string): string =>
+    token(
+      name.startsWith('--sv-info') || /warning|danger-bg|success-bg/.test(name)
+        ? status[mode]
+        : SCOPES[mode],
+      name,
+    );
+
+  const TEXT: Array<[string, string]> = [
+    ['--sv-text', '--sv-bg'],
+    ['--sv-text', '--sv-surface'],
+    ['--sv-text', '--sv-info-bg'],
+    ['--sv-text-muted', '--sv-bg'],
+    ['--sv-text-muted', '--sv-surface'],
+    ['--sv-text-muted', '--sv-info-bg'],
+    ['--sv-accent', '--sv-bg'],
+    ['--sv-accent', '--sv-surface'],
+    ['--sv-accent', '--sv-info-bg'],
+    ['--sv-accent-text', '--sv-accent'],
+    ['--sv-accent-text', '--sv-accent-hover'],
+    ['--sv-danger', '--sv-bg'],
+    ['--sv-danger', '--sv-danger-bg'],
+    ['--sv-success', '--sv-bg'],
+    ['--sv-success', '--sv-success-bg'],
+    ['--sv-info', '--sv-info-bg'],
+    ['--sv-warning', '--sv-warning-bg'],
+    ['--sv-text', '--sv-danger-bg'],
+    ['--sv-text', '--sv-warning-bg'],
+    // The toast is drawn in the inverse of the page.
+    ['--sv-bg', '--sv-text'],
+  ];
+  const NON_TEXT: Array<[string, string]> = [
+    ['--sv-focus', '--sv-bg'],
+    ['--sv-focus', '--sv-surface'],
+    ['--sv-focus', '--sv-info-bg'],
+    ['--sv-focus', '--sv-danger-bg'],
+    ['--sv-border-strong', '--sv-bg'],
+    ['--sv-border-strong', '--sv-surface'],
+    ['--sv-border-strong', '--sv-info-bg'],
+    ['--sv-accent', '--sv-bg'],
+    // The focus ring on the (inverse) toast takes the page colour.
+    ['--sv-bg', '--sv-text'],
+  ];
+
+  for (const mode of ['light', 'dark'] as const) {
+    it(`${mode}: text pairs are at least 4.5:1`, () => {
+      for (const [fg, bg] of TEXT) {
+        expect(ratio(colour(mode, fg), colour(mode, bg)), `${fg} on ${bg}`).toBeGreaterThanOrEqual(
+          4.5,
+        );
+      }
+    });
+    it(`${mode}: focus ring, control edges and bars are at least 3:1`, () => {
+      for (const [fg, bg] of NON_TEXT) {
+        expect(ratio(colour(mode, fg), colour(mode, bg)), `${fg} on ${bg}`).toBeGreaterThanOrEqual(
+          3,
+        );
+      }
+    });
+  }
+
+  it('the toast ring is the page colour, and only the tinted error toast keeps the blue', () => {
+    const neutral = block(components, '.sv-toast :focus-visible');
+    expect(neutral).toContain('outline-color: var(--sv-bg)');
+    const error = block(components, '.sv-toast--error :focus-visible');
+    expect(error).toContain('outline-color: var(--sv-focus)');
+  });
+});
