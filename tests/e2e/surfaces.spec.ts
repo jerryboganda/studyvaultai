@@ -1,6 +1,7 @@
 import AxeBuilder from '@axe-core/playwright';
 import type { Page } from '@playwright/test';
 import { SETTINGS_SECTIONS } from '@ui/shell/paths';
+import { describeCommand } from '@ui/shortcuts';
 import { proseDoc } from '../fixtures/pdf/docs';
 import { startPdfServer, type PdfServer } from '../fixtures/pdf/server';
 import {
@@ -437,7 +438,9 @@ test.describe('popup: study bar', () => {
       await manual.getByLabel('Answer', { exact: true }).fill(`Answer ${i}`);
       await review.getByTestId('rv-save-cards').click();
       await expect(review.getByText('Created 1 card.')).toBeVisible();
-      // The confirmation toast sits over the save button until it goes.
+      // The confirmation toast sits over the save button until it goes, and a pointer resting on
+      // it pauses its timer: move the pointer away.
+      await review.mouse.move(0, 0);
       await expect(review.getByText('Created 1 card.')).toBeHidden({ timeout: 20_000 });
     }
     await review.close();
@@ -558,6 +561,19 @@ test.describe('welcome tour', () => {
   const STEPS = ['welcome', 'privacy', 'access', 'banks', 'look', 'keys', 'done'] as const;
   const step = (page: Page, id: (typeof STEPS)[number]) => page.getByTestId(`ob-step-${id}`);
 
+  /**
+   * From the first step to `target`, one button press per step. Each press waits for the next
+   * step to be on screen: a second press on a button that is still being replaced would run the
+   * same step's handler again and land on the same step.
+   */
+  async function walkTo(page: Page, target: (typeof STEPS)[number]): Promise<void> {
+    await expect(step(page, 'welcome')).toBeVisible();
+    for (const id of STEPS.slice(1, STEPS.indexOf(target) + 1)) {
+      await page.getByRole('button', { name: /^(Start|Next)$/ }).click();
+      await expect(step(page, id)).toBeVisible();
+    }
+  }
+
   async function stored(page: Page): Promise<Record<string, unknown> | undefined> {
     return page.evaluate(async () => {
       const got = await chrome.storage.local.get('onboarding');
@@ -599,7 +615,7 @@ test.describe('welcome tour', () => {
     env,
   }) => {
     const page = await extPage(env, 'onboarding.html');
-    await page.getByRole('button', { name: 'Start' }).click();
+    await walkTo(page, 'privacy');
     await expect(page.getByTestId('ob-ai-status')).toContainText('Off');
     await expect(page.getByTestId('ob-sync-status')).toContainText('Off');
     await expect(page.getByTestId('ob-private-windows')).not.toBeChecked();
@@ -620,9 +636,7 @@ test.describe('welcome tour', () => {
   test('site access is explained and nothing is requested from Chrome', async ({ env }) => {
     const page = await extPage(env, 'onboarding.html');
     const before = await page.evaluate(() => chrome.permissions.getAll());
-    await page.getByRole('button', { name: 'Start' }).click();
-    await page.getByRole('button', { name: 'Next' }).click();
-    await expect(step(page, 'access')).toBeVisible();
+    await walkTo(page, 'access');
     for (const level of ['This tab', 'This site', 'All sites']) {
       await expect(page.getByText(level, { exact: true })).toBeVisible();
     }
@@ -637,10 +651,7 @@ test.describe('welcome tour', () => {
     env,
   }) => {
     const page = await extPage(env, 'onboarding.html');
-    await page.getByRole('button', { name: 'Start' }).click();
-    await page.getByRole('button', { name: 'Next' }).click();
-    await page.getByRole('button', { name: 'Next' }).click();
-    await expect(step(page, 'banks')).toBeVisible();
+    await walkTo(page, 'banks');
 
     await page.getByTestId('ob-preset-radiology').check();
     const tree = page.getByRole('list', { name: 'Preview of Diagnostic Radiology' });
@@ -703,9 +714,7 @@ test.describe('welcome tour', () => {
     const a = await extPage(env, 'onboarding.html');
     const b = await extPage(env, 'onboarding.html');
     for (const p of [a, b]) {
-      await p.getByRole('button', { name: 'Start' }).click();
-      await p.getByRole('button', { name: 'Next' }).click();
-      await p.getByRole('button', { name: 'Next' }).click();
+      await walkTo(p, 'banks');
       await p.getByTestId('ob-preset-medicine').check();
     }
     await Promise.all([a.getByTestId('ob-create').click(), b.getByTestId('ob-create').click()]);
@@ -721,10 +730,8 @@ test.describe('welcome tour', () => {
     env,
   }) => {
     const page = await extPage(env, 'onboarding.html');
-    await page.getByRole('button', { name: 'Start' }).click();
-    // privacy -> access -> banks -> look (the blank preset has nothing to create)
-    for (let i = 0; i < 3; i++) await page.getByRole('button', { name: 'Next' }).click();
-    await expect(step(page, 'look')).toBeVisible();
+    // The blank preset has nothing to create, so banks -> look is a plain Next.
+    await walkTo(page, 'look');
     await page.getByTestId('ob-theme-dark').click();
     await page.getByTestId('ob-density-compact').click();
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
@@ -737,7 +744,9 @@ test.describe('welcome tour', () => {
     const commands = await page.evaluate(() => chrome.commands.getAll());
     const list = page.getByTestId('ob-shortcuts');
     for (const c of commands) {
-      const row = list.getByRole('listitem').filter({ hasText: c.description || c.name || '' });
+      // Chrome reports the toolbar-button command without a description: the page names it.
+      const label = describeCommand(c.name ?? '', c.description);
+      const row = list.getByRole('listitem').filter({ hasText: label });
       await expect(row.first(), c.name).toBeVisible();
       if (c.shortcut) await expect(row.first()).toContainText(c.shortcut);
       else await expect(row.first()).toContainText('Not set');
@@ -746,9 +755,7 @@ test.describe('welcome tour', () => {
 
   test('finish opens the side panel from the click and completes the tour', async ({ env }) => {
     const page = await extPage(env, 'onboarding.html');
-    await page.getByRole('button', { name: 'Start' }).click();
-    for (let i = 0; i < 5; i++) await page.getByRole('button', { name: 'Next' }).click();
-    await expect(step(page, 'done')).toBeVisible();
+    await walkTo(page, 'done');
     await expect(page.getByText(/Click the StudyVault icon in the Chrome toolbar/)).toBeVisible();
 
     await page.getByTestId('ob-open-panel').click();
@@ -767,8 +774,7 @@ test.describe('welcome tour', () => {
     env,
   }) => {
     const page = await extPage(env, 'onboarding.html');
-    await page.getByRole('button', { name: 'Start' }).click();
-    await page.getByRole('button', { name: 'Next' }).click();
+    await walkTo(page, 'access');
     await page.getByRole('button', { name: 'Skip the tour' }).click();
     await expect(page.getByTestId('ob-skipped')).toBeVisible();
     await expect(page.getByText(/open this tour again any time from Settings/)).toBeVisible();
@@ -795,9 +801,7 @@ test.describe('welcome tour', () => {
 
   test('a tour left part-way is resumed, and Settings offers to resume it', async ({ env }) => {
     const page = await extPage(env, 'onboarding.html');
-    await page.getByRole('button', { name: 'Start' }).click();
-    await page.getByRole('button', { name: 'Next' }).click();
-    await page.getByRole('button', { name: 'Next' }).click();
+    await walkTo(page, 'banks');
     await page.getByTestId('ob-preset-general').check();
     await page.close();
 

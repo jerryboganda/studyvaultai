@@ -249,24 +249,27 @@ export const hasPersistentAccess = (ctx: Ctx): boolean => PERSISTENT.get(ctx.con
 /**
  * Best effort: persistent site access for the fixture origin (a registered content script). It has
  * no 5 s activation deadline (which a busy machine misses) and it makes a tab opened later by "Jump
- * to source" run the content script. The worker keeps its authoritative settings copy in IndexedDB
- * and only adopts `chrome.storage.local` before that copy exists, so the value is written the way
- * the other specs' patchSettings does and the outcome is CHECKED through `site.sync`; false is
- * returned (never thrown) when the worker did not register the origin.
+ * to source" run the content script. The origin is stored through the worker's `updateSettings`
+ * (the e2e-build hook of entrypoints/background/e2e.ts: the worker ignores a raw
+ * chrome.storage.local write) and the outcome is CHECKED through `site.sync`; false is returned
+ * (never thrown) when the worker did not register the origin.
  */
 async function ensurePersistentAccess(ctx: Ctx, ext: Page): Promise<boolean> {
   const pattern = `${ctx.origin}/*`;
-  await ext.evaluate(async (origin) => {
-    const stored = ((await chrome.storage.local.get('settings')).settings ?? {}) as {
+  const stored = await ext.evaluate(async (origin) => {
+    const current = ((await chrome.storage.local.get('settings')).settings ?? {}) as {
       persistentOrigins?: string[];
     };
-    const have: string[] = stored.persistentOrigins ?? [];
-    if (!have.includes(origin)) {
-      await chrome.storage.local.set({
-        settings: { schemaVersion: 1, ...stored, persistentOrigins: [...have, origin] },
-      });
-    }
+    const have: string[] = current.persistentOrigins ?? [];
+    if (have.includes(origin)) return true;
+    const reply = (await chrome.runtime.sendMessage({
+      v: 1,
+      type: 'e2e.settings.patch',
+      payload: { json: JSON.stringify({ persistentOrigins: [...have, origin] }) },
+    })) as { ok?: boolean } | undefined;
+    return reply?.ok === true;
   }, pattern);
+  if (!stored) return false;
   // The worker answers within 15 s on an idle machine; on a busy one the first call can miss it,
   // which says nothing about the flows under test, so ask again (at most three times).
   let sync = await bg(ext, 'site.sync');

@@ -232,13 +232,15 @@ export async function storedSettings(ext: Page): Promise<Record<string, unknown>
   });
 }
 
-/** Write settings fields the way the options page would persist them (parseSettings fills the rest). */
+/**
+ * Change settings fields the way an extension page does (parseSettings fills the rest): through the
+ * worker's `updateSettings`, via the e2e-build-only hook (entrypoints/background/e2e.ts). A write
+ * straight into chrome.storage.local is what a content script could do, and the worker ignores it.
+ */
 export async function patchSettings(ext: Page, patch: Record<string, unknown>): Promise<void> {
-  await ext.evaluate(async (p) => {
-    const got = await chrome.storage.local.get('settings');
-    const current = (got.settings as Record<string, unknown> | undefined) ?? {};
-    await chrome.storage.local.set({ settings: { ...current, ...p } });
-  }, patch);
+  // A JSON string: extension messaging drops null properties of an object argument.
+  const reply = await bg(ext, 'e2e.settings.patch', { json: JSON.stringify(patch) });
+  if (!reply.ok) throw new Error(`patchSettings was refused: ${JSON.stringify(reply.error)}`);
 }
 
 export async function dataEpoch(ext: Page): Promise<string | undefined> {

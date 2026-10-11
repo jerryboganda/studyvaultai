@@ -97,6 +97,24 @@ const ctxOf = (session: Session, origin: string): Ctx => ({
   origin,
 });
 
+/**
+ * Reopen a profile after its browser went away. On Windows the profile's singleton lock can outlive
+ * a killed browser process for a few seconds ("Failed to create a ProcessSingleton"), which is the
+ * operating system's housekeeping, not the extension's: ask again before giving up.
+ */
+async function relaunch(dir: string): Promise<Session> {
+  let last: unknown;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      return await launchSession(dir);
+    } catch (err) {
+      last = err;
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+    }
+  }
+  throw last;
+}
+
 /** Studied cards (not new, not suspended) bucketed against the UTC study day containing `now`. */
 function dueBuckets(db: StudyDb, now: number, rolloverHour = 4) {
   const start = studyDayStart(now, rolloverHour);
@@ -996,7 +1014,7 @@ test.describe('persistence', () => {
         else await hardKill(first);
         first = null;
 
-        second = await launchSession(dir);
+        second = await relaunch(dir);
         const ctx2 = ctxOf(second, fixtureServer.origin);
         await setClock(ctx2, T0);
         const page2 = await openReview(ctx2, { settings: UTC_DAY });

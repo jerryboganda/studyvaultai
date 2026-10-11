@@ -786,13 +786,16 @@ test.describe('extension pages: axe WCAG 2.2 AA', () => {
     test(`popup.html on a denied host (${scheme})`, async ({ env }) => {
       const popup = await extensionPage(env, 'popup.html');
       await popup.emulateMedia({ colorScheme: scheme });
-      // The fixture host is put on the deny list the way the options page stores it.
+      // The fixture host is put on the deny list the way the options page stores it: through the
+      // worker's updateSettings (e2e-build hook), not a raw chrome.storage.local write.
       const options = await extensionPage(env, 'options.html');
       await options.evaluate(async () => {
-        const stored = (await chrome.storage.local.get('settings')).settings ?? {};
-        await chrome.storage.local.set({
-          settings: { ...stored, denyList: ['127.0.0.1', 'paypal.com'] },
-        });
+        const reply = (await chrome.runtime.sendMessage({
+          v: 1,
+          type: 'e2e.settings.patch',
+          payload: { json: JSON.stringify({ denyList: ['127.0.0.1', 'paypal.com'] }) },
+        })) as { ok?: boolean } | undefined;
+        if (!reply?.ok) throw new Error('the deny list could not be set');
       });
       const page = await openFixture(env, '/article.html', { activate: false });
       await page.bringToFront();

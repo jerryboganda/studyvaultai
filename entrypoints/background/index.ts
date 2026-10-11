@@ -5,6 +5,7 @@ import { getTrustedSettings, serveRpc, updateSettings } from '@runtime';
 import { repo, withDb } from '@storage';
 import { onboardingPath } from '@ui/shell/paths';
 import { createCommandHandlers, installContextMenu } from './commands';
+import { registerE2eHooks } from './e2e';
 import { createHandlers } from './handlers';
 import {
   browserCommandDeps,
@@ -82,6 +83,12 @@ export default defineBackground(() => {
 
   // "Open in StudyVault reader" on links/pages/frames that look like PDFs (see ./pdf.ts).
   registerPdfReaderMenu(report);
+
+  // E2E build only (see ./e2e.ts): the Playwright helpers change settings through the same function
+  // an extension page uses. The production bundle contains none of it (scripts/check-build.mjs).
+  if (typeof __SV_E2E__ !== 'undefined' && __SV_E2E__) {
+    registerE2eHooks(browser.runtime.getURL('/'));
+  }
 
   // Optional sync (see ./sync.ts): listeners only. Nothing reads, fetches or schedules unless
   // Settings.features.sync is on.

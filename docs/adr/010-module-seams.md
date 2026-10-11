@@ -400,3 +400,14 @@ is linear on hostile lines"), `packages/storage/src/backupHardening.test.ts`,
 Real Chrome behaviour of Web Locks across extension pages, of a queued IndexedDB delete with a frozen
 window, and of the restore staging databases after a browser crash; the timing bounds of the import
 reader on a loaded runner; anything in a real private window.
+
+### Addendum to Amendment 1 (e2e build)
+The loaded-extension suite used to change settings by writing `chrome.storage.local` directly, which is
+exactly what the worker now ignores. The e2e build (and only it: `__SV_E2E__`,
+`entrypoints/background/e2e.ts`) registers one extra message, `e2e.settings.patch`, that runs the
+worker's `updateSettings` for an extension page; `patchSettings` in the Playwright helpers uses it.
+`scripts/check-build.mjs` fails when the hook name appears in the production build, or is missing
+from the e2e build. `tests/e2e/settings-trust.spec.ts` proves in real Chromium that a raw write does
+not lift a denial or turn sync on, and that a fresh profile enforces the starter list without any
+write (the worker seeds its copy from defaults on its first read: no race and no rejected load was
+observed).

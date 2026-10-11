@@ -336,9 +336,10 @@ export class FakeVault {
         quote: h?.quote ?? '',
         comment: n.title ? `${n.title}\n${n.body}` : n.body,
         headingContext: null,
-        tags: [],
+        // like the real feed, a note document carries its highlight's facets
+        tags: h ? h.tagIds.map((t) => this.tags.find((x) => x.id === t)?.name ?? t) : [],
         banks: h ? h.bankIds.map((b) => this.banks.find((x) => x.id === b)?.name ?? b) : [],
-        folderPath: [],
+        folderPath: h ? this.folderPath(h.folderId).map((f) => f.name) : [],
         kind: h?.kind ?? null,
         priority: (h?.priority as 1 | 2 | 3 | 4 | 5 | undefined) ?? null,
         resolveStatus: h?.resolveStatus ?? null,

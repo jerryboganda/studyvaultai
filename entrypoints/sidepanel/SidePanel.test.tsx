@@ -278,10 +278,10 @@ describe('This page', () => {
     await waitFor(() => expect(screen.queryByText('Delete me.')).toBeNull());
     expect(store.calls.some((c) => c.fn === 'softDeleteHighlight' && c.args[0] === id)).toBe(true);
     expect(rpc.called('content.refresh').length).toBeGreaterThan(0);
-    // Honest about soft delete: a copy stays until the user wipes everything.
+    // Honest about soft delete: it is in Trash until deleted forever there, or everything is wiped.
     expect(
       await screen.findByText(
-        'Highlight deleted. A copy stays on this device until you delete all data in Settings.',
+        'Highlight deleted. It stays in Trash until you delete it forever there or delete all data in Settings.',
       ),
     ).toBeTruthy();
     // The card that had focus is gone: Undo takes it instead of <body>.

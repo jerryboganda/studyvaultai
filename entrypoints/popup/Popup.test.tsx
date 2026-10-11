@@ -695,6 +695,8 @@ describe('study bar: review and dashboard', () => {
     rpc.background['site.status'] = () => siteStatus();
     const create = vi.spyOn(browser.tabs, 'create').mockResolvedValue({} as never);
     await openOn('https://example.com/notes');
+    // The count (and the buttons beside it) appear once the tab check has answered.
+    await screen.findByTestId('popup-due');
     await userEvent.click(await screen.findByRole('button', { name: 'Open dashboard' }));
     await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
     expect((create.mock.calls[0]![0] as { url: string }).url).toMatch(/\/dashboard\.html$/);
@@ -707,6 +709,7 @@ describe('study bar: review and dashboard', () => {
       .mockRejectedValueOnce(new Error('Tabs are locked'))
       .mockResolvedValue({} as never);
     await openOn('https://example.com/notes');
+    await screen.findByTestId('popup-due');
     await userEvent.click(await screen.findByRole('button', { name: 'Open dashboard' }));
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('Tabs are locked');

@@ -44,10 +44,14 @@ describe('observe', () => {
     await vi.waitFor(() => expect(seen.at(-1)).toEqual(['Inbox:0']), { timeout: 5000 });
 
     await createBank('Cardiology');
-    await vi.waitFor(() => expect(seen.at(-1)).toEqual(['Inbox:0', 'Cardiology:0']), { timeout: 5000 });
+    await vi.waitFor(() => expect(seen.at(-1)).toEqual(['Inbox:0', 'Cardiology:0']), {
+      timeout: 5000,
+    });
 
     await saveCapture(cap('Counted quote text', 10));
-    await vi.waitFor(() => expect(seen.at(-1)).toEqual(['Inbox:1', 'Cardiology:0']), { timeout: 5000 });
+    await vi.waitFor(() => expect(seen.at(-1)).toEqual(['Inbox:1', 'Cardiology:0']), {
+      timeout: 5000,
+    });
     expect(errors).toEqual([]);
   });
 

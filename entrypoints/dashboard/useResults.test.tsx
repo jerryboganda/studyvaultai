@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { createSearchIndex } from '@search';
 import { toIndexDocument } from '@ui/vault/searchHost';
+import type { DashboardApi } from './api';
 import { ALL_SCOPE, EMPTY_FILTERS } from './filters';
 import type { SearchLike } from './results';
 import { FakeVault, manyHighlights } from './testing';
@@ -79,5 +80,73 @@ describe('useResults: the index becoming ready', () => {
     await waitFor(() => expect(result.current.rows).toHaveLength(3));
     expect(result.current.waitingForIndex).toBe(false);
     expect(result.current.total).toBe(3);
+  });
+});
+
+/**
+ * A note document repeats its highlight's quote, so a highlight with notes matches through several
+ * documents. The count, the loaded rows and "load more" must all speak of highlights ("4 results,
+ * 3 loaded" was the symptom: the engine counted documents, the list de-duplicated them).
+ */
+describe('useResults: highlights with notes', () => {
+  const idOf = (i: number) => `hl-${String(i).padStart(6, '0')}`;
+
+  async function setup(highlights: number, withNotes: number) {
+    const vault = new FakeVault(manyHighlights(highlights));
+    const api = vault.api();
+    for (let i = 0; i < withNotes; i++) {
+      await api.createNote({ highlightId: idOf(i), body: 'First note about mitochondria' });
+      await api.createNote({ highlightId: idOf(i), body: 'Second note about mitochondria' });
+    }
+    const index = createSearchIndex();
+    index.applyChanges(vault.searchDocs().map(toIndexDocument));
+    return { vault, api, index: index as SearchLike };
+  }
+
+  const search = (api: DashboardApi, index: SearchLike, query = 'mitochondria') =>
+    renderHook(() =>
+      useResults({
+        api,
+        mode: 'search',
+        scope: ALL_SCOPE,
+        filters: EMPTY_FILTERS,
+        sort: 'relevance',
+        query,
+        index,
+        refreshOn: [0],
+      }),
+    );
+
+  it('reports as many results as it lists, notes or not', async () => {
+    const { api, index } = await setup(3, 1);
+    const { result } = search(api, index);
+    await waitFor(() => expect(result.current.rows).toHaveLength(3));
+    expect(result.current.total).toBe(3);
+    expect(result.current.hasMore).toBe(false);
+    expect(new Set(result.current.rows.map((r) => r.highlightId)).size).toBe(3);
+  });
+
+  it('loads the next page without repeating or skipping a highlight', async () => {
+    // 130 highlights, 40 of them with two notes: 210 documents, 130 results
+    const { api, index } = await setup(130, 40);
+    const { result } = search(api, index);
+    await waitFor(() => expect(result.current.rows).toHaveLength(100));
+    expect(result.current.total).toBe(130);
+    expect(result.current.hasMore).toBe(true);
+
+    act(() => result.current.loadMore());
+    await waitFor(() => expect(result.current.rows).toHaveLength(130));
+    expect(result.current.total).toBe(130);
+    expect(result.current.hasMore).toBe(false);
+    expect(new Set(result.current.rows.map((r) => r.highlightId)).size).toBe(130);
+  });
+
+  it('finds a highlight through a note alone and counts it once', async () => {
+    const { api, index } = await setup(5, 2);
+    const { result } = search(api, index, 'second');
+    await waitFor(() => expect(result.current.rows).toHaveLength(2));
+    expect(result.current.total).toBe(2);
+    expect(result.current.rows.every((r) => r.docType === 'note')).toBe(true);
+    expect(result.current.rows.every((r) => r.matchNote?.field === 'comment')).toBe(true);
   });
 });

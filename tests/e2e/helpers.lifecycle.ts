@@ -263,12 +263,21 @@ export async function readDb(ext: Page): Promise<DbSnapshot> {
 export const liveHighlights = (db: DbSnapshot): DbHighlight[] =>
   db.highlights.filter((h) => h.deletedAt === null);
 
-/** Merge `patch` into the stored settings object (missing fields fall back to defaults on read). */
+/**
+ * Merge `patch` into the settings (missing fields fall back to defaults on read), through the
+ * worker's `updateSettings` via the e2e-build-only hook (entrypoints/background/e2e.ts): the
+ * worker enforces its own authoritative copy and ignores direct chrome.storage.local writes.
+ */
 export async function patchSettings(ext: Page, patch: Record<string, unknown>): Promise<void> {
-  await ext.evaluate(async (p) => {
-    const stored = (await chrome.storage.local.get('settings')).settings ?? {};
-    await chrome.storage.local.set({ settings: { schemaVersion: 1, ...stored, ...p } });
-  }, patch);
+  await ext.evaluate(async (json) => {
+    // A JSON string: extension messaging drops null properties of an object argument.
+    const reply = (await chrome.runtime.sendMessage({
+      v: 1,
+      type: 'e2e.settings.patch',
+      payload: { json },
+    })) as { ok?: boolean; error?: unknown } | undefined;
+    if (!reply?.ok) throw new Error(`patchSettings was refused: ${JSON.stringify(reply)}`);
+  }, JSON.stringify(patch));
 }
 
 export async function registeredScripts(

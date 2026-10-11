@@ -123,7 +123,13 @@ function PopupBody() {
           />
         )}
       </main>
-      {settings ? <StudyBar reviewOn={settings.features.review} /> : null}
+      {settings ? (
+        <StudyBar
+          reviewOn={settings.features.review}
+          // The tab check comes first: the worker answers it, and the card count opens the database.
+          settled={state !== null && state.kind !== 'loading'}
+        />
+      ) : null}
       <Footer />
     </div>
   );
@@ -440,10 +446,17 @@ function PdfReader({ offer, enabled }: { offer: PdfReaderOffer; enabled: boolean
  * Review and dashboard, in every state. Cards due is read live from the database (not from a
  * counter kept elsewhere); with review turned off nothing is queried and no count is shown.
  */
-function StudyBar({ reviewOn }: { reviewOn: boolean }) {
+function StudyBar({ reviewOn, settled }: { reviewOn: boolean; settled: boolean }) {
   return (
     <section className="popup__study sv-stack sv-stack--tight" aria-label="Study">
-      {reviewOn ? <WithReview /> : <StudyActions review={null} />}
+      {reviewOn && settled ? (
+        <WithReview />
+      ) : (
+        <>
+          {reviewOn ? <p className="sv-muted sv-small">Counting cards…</p> : null}
+          <StudyActions review={null} />
+        </>
+      )}
     </section>
   );
 }

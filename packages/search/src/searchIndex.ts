@@ -12,6 +12,11 @@
  * candidate set (or a scan of the corpus when there is no text to narrow it). Fuzzy and prefix matches
  * are down-weighted by MiniSearch, so exact beats prefix beats fuzzy; the top window is additionally
  * boosted when the query words occur adjacently.
+ *
+ * Documents versus highlights: a note document repeats its highlight's quote and facets, so one
+ * highlight can match through several documents. By default every document is a hit; with
+ * `collapseNotes` the candidates are folded to one entry per highlight BEFORE sorting, so `total`,
+ * the page boundaries and the facet counts all count highlights.
  */
 import MiniSearch from 'minisearch';
 import type { AsPlainObject, MatchInfo, Options } from 'minisearch';
@@ -57,6 +62,14 @@ export interface SearchOptions {
   prefix?: boolean;
   /** Typo tolerance, default true (terms of 4+ letters, no digits). */
   fuzzy?: boolean;
+  /**
+   * One hit per highlight, default false (one hit per document). A highlight that matches through
+   * its own document and through note documents is a single hit: the best-scoring document leads
+   * (a tie goes to the highlight itself, so a note leads only when the words matched inside it),
+   * scores merge as their maximum and the matches are united. `total`, paging and facets then count
+   * highlights. A note attached to nothing is its own hit.
+   */
+  collapseNotes?: boolean;
   /** Compute facet counts over all matches, default true. */
   facets?: boolean;
   /** Compute a "did you mean" correction, default true. */
@@ -106,7 +119,10 @@ export interface DidYouMean {
 
 export interface SearchResult {
   hits: SearchHit[];
-  /** Matches across all pages (after filters and the deleted rule). */
+  /**
+   * Matches across all pages (after filters and the deleted rule): documents, or highlights when
+   * `collapseNotes` is set. Always the unit `hits`, `offset` and `limit` count.
+   */
   total: number;
   offset: number;
   limit: number;
@@ -303,6 +319,56 @@ function fuzzyDistance(term: string): number {
 
 const q6 = (n: number): number => Math.round(n * 1e6);
 const cmpStr = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
+/** One candidate row of a search: a document, or (collapsed) every matching document of a highlight. */
+interface Entry {
+  s: Stored;
+  score: number;
+  matches: MatchInfo[];
+  /** Recency key: the document's `updatedAt`, or the newest one of a collapsed highlight. */
+  at: string;
+}
+
+const byRecency = (a: Entry, b: Entry): number =>
+  cmpStr(b.at, a.at) || cmpStr(a.s.doc.id, b.s.doc.id);
+
+/** Negative when `a` is the better document to stand for its highlight than `b`. */
+function leads(a: Entry, b: Entry): number {
+  const ta = a.s.doc.docType;
+  const tb = b.s.doc.docType;
+  return (
+    q6(b.score) - q6(a.score) || (ta === tb ? 0 : ta === 'highlight' ? -1 : 1) || byRecency(a, b)
+  );
+}
+
+/**
+ * One entry per highlight (documents with no `highlightId` stand for themselves). The lead is the
+ * best-scoring document: a note document repeats its highlight's quote and facets, so it outscores
+ * the highlight only when the words also matched inside the note, which is exactly when its text is
+ * the snippet worth showing. The group's score is the best of its documents (the same evidence is
+ * not added up), its matches are united and it is as recent as its newest document.
+ */
+function collapseByHighlight(entries: readonly Entry[]): Entry[] {
+  const groups = new Map<string, Omit<Entry, 's'> & { lead: Entry }>();
+  for (const e of entries) {
+    const key = e.s.doc.highlightId ?? e.s.doc.id;
+    const g = groups.get(key);
+    if (!g) {
+      groups.set(key, { lead: e, score: e.score, matches: e.matches, at: e.at });
+      continue;
+    }
+    if (leads(e, g.lead) < 0) g.lead = e;
+    g.score = Math.max(g.score, e.score);
+    g.matches = g.matches.concat(e.matches);
+    if (e.at > g.at) g.at = e.at;
+  }
+  return [...groups.values()].map((g) => ({
+    s: g.lead.s,
+    score: g.score,
+    matches: g.matches,
+    at: g.at,
+  }));
+}
 
 function nowMs(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now();
@@ -834,33 +900,31 @@ class Index implements SearchIndex {
     const offset = Math.max(0, Math.floor(options.offset ?? 0));
     const sort: SortMode = options.sort ?? 'relevance';
 
-    interface Entry {
-      s: Stored;
-      score: number;
-      matches: MatchInfo[];
-    }
     let entries: Entry[] = [];
     const visible = (s: Stored): boolean => includeDeleted || s.doc.deletedAt === null;
+    const add = (s: Stored, score: number, matches: MatchInfo[]): void => {
+      entries.push({ s, score, matches, at: s.doc.updatedAt });
+    };
 
     if (parsed.root === null) {
-      for (const s of this.docs.values())
-        if (visible(s)) entries.push({ s, score: 0, matches: [] });
+      for (const s of this.docs.values()) if (visible(s)) add(s, 0, []);
     } else {
       const res = this.evalNode(parsed.root, ctx);
       if ('set' in res) {
         for (const [id, h] of this.settle(res.set, res.pending)) {
           const s = this.docs.get(id);
-          if (s && visible(s)) entries.push({ s, score: h.score, matches: h.matches });
+          if (s && visible(s)) add(s, h.score, h.matches);
         }
       } else {
         for (const s of this.docs.values()) {
-          if (visible(s) && res.pred(s)) entries.push({ s, score: 0, matches: [] });
+          if (visible(s) && res.pred(s)) add(s, 0, []);
         }
       }
     }
 
-    const byRecency = (a: Entry, b: Entry): number =>
-      cmpStr(b.s.doc.updatedAt, a.s.doc.updatedAt) || cmpStr(a.s.doc.id, b.s.doc.id);
+    // Before sorting, so the order, the page boundaries, `total` and the facets all count highlights.
+    if (options.collapseNotes === true) entries = collapseByHighlight(entries);
+
     if (sort === 'updated') entries.sort(byRecency);
     else if (sort === 'priority') {
       entries.sort((a, b) => b.s.doc.priority - a.s.doc.priority || byRecency(a, b));

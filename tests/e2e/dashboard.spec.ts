@@ -3155,7 +3155,7 @@ test.describe('keyboard: palette, shortcuts, tab order, focus', () => {
 
     // "?" opens the shortcut legend, Escape closes it and focus goes back where it was.
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
-    await page.keyboard.press('Shift+/');
+    await page.keyboard.press('?'); // key '?' (Shift+/ would send the key '/')
     const legend = dialogOf(page, 'Keyboard shortcuts');
     await expect(legend).toBeVisible();
     await expect(legend).toContainText('Command palette');

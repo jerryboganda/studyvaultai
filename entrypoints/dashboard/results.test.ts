@@ -153,6 +153,118 @@ describe('pages', () => {
   });
 });
 
+/**
+ * A note document repeats its highlight's quote, so one highlight matches through its own document
+ * and through each note. The list shows highlights: the count, the pages and the facets must too.
+ */
+describe('search counts highlights, not documents', () => {
+  async function vaultWithNotes() {
+    const vault = new FakeVault([
+      { id: 'hl-a', quote: 'Hemoglobin carries oxygen from the lungs.' },
+      { id: 'hl-b', quote: 'Alveoli exchange oxygen and carbon dioxide.', tagIds: ['t1'] },
+      { id: 'hl-c', quote: 'Beta-blockers reduce myocardial oxygen demand.' },
+    ]);
+    vault.tags.push({ id: 't1', name: 'lungs' });
+    const api = vault.api();
+    await api.createNote({ highlightId: 'hl-b', body: 'Oxygen diffuses across the wall.' });
+    await api.createNote({ highlightId: 'hl-b', body: 'Surfactant lowers surface tension.' });
+    await api.createNote({ highlightId: 'hl-c', body: 'Reduces the heart rate as well.' });
+    return vault;
+  }
+  const first = (query: string, extra: { limit?: number; idSet?: Set<string> | null } = {}) => ({
+    query,
+    sort: 'relevance' as const,
+    offset: 0,
+    idSet: null,
+    ...extra,
+  });
+
+  it('is one result for a highlight whose quote and notes all match', async () => {
+    const index = indexOf(await vaultWithNotes());
+    // 3 highlights and 3 notes: every note repeats its highlight's quote, so each one matches too
+    expect(index.search('oxygen').total).toBe(6);
+    const page = fetchSearchPage(index, first('oxygen'));
+    expect(page.total).toBe(3);
+    expect(page.rows).toHaveLength(3);
+    expect(page.next).toBeNull();
+    expect(new Set(page.rows.map((r) => r.highlightId))).toEqual(new Set(['hl-a', 'hl-b', 'hl-c']));
+    // the facets count the same highlights (hl-b once, not once per note)
+    expect(page.extras?.facets?.bank).toEqual([{ value: 'Inbox', count: 3 }]);
+    expect(page.extras?.facets?.tag).toEqual([{ value: 'lungs', count: 1 }]);
+  });
+
+  it('shows a match that is only inside a note as that highlight, with the note text', async () => {
+    const page = fetchSearchPage(indexOf(await vaultWithNotes()), first('surfactant'));
+    expect(page.total).toBe(1);
+    const [row] = page.rows;
+    expect(row).toMatchObject({ highlightId: 'hl-b', docType: 'note', hasNote: true });
+    expect(row!.matchNote?.field).toBe('comment');
+    expect(row!.matchNote?.segments.filter((s) => s.match).map((s) => s.text)).toEqual([
+      'Surfactant',
+    ]);
+  });
+
+  it('pages without a repeat or a gap where a highlight has several documents', async () => {
+    const vault = new FakeVault(manyHighlights(7));
+    const api = vault.api();
+    // 3, 0, 2, 1, 3, 0 and 2 notes: 18 documents for 7 highlights, all of them matching
+    for (const [i, count] of [3, 0, 2, 1, 3, 0, 2].entries()) {
+      for (let n = 0; n < count; n++) {
+        await api.createNote({
+          highlightId: `hl-${String(i).padStart(6, '0')}`,
+          body: `Remember mitochondria point ${n}`,
+        });
+      }
+    }
+    const index = indexOf(vault);
+    expect(index.search('mitochondria').total).toBe(18);
+
+    const seen: string[] = [];
+    const sizes: number[] = [];
+    let offset = 0;
+    for (let guard = 0; guard < 10; guard++) {
+      const page = fetchSearchPage(index, { ...first('mitochondria'), offset, limit: 2 });
+      expect(page.total).toBe(7);
+      sizes.push(page.rows.length);
+      seen.push(...page.rows.map((r) => r.highlightId!));
+      if (page.next === null) break;
+      expect(page.next.kind).toBe('search');
+      offset = page.next.kind === 'search' ? page.next.offset : -1;
+    }
+    expect(sizes).toEqual([2, 2, 2, 1]);
+    expect(new Set(seen).size).toBe(7);
+    expect(seen).toHaveLength(7);
+  });
+
+  it('counts an id-set restriction in highlights too', async () => {
+    const index = indexOf(await vaultWithNotes());
+    const page = fetchSearchPage(index, first('oxygen', { idSet: new Set(['hl-b', 'hl-c']) }));
+    expect(page.total).toBe(2);
+    expect(page.rows.map((r) => r.highlightId).sort()).toEqual(['hl-b', 'hl-c']);
+  });
+
+  it('resolves select-all to each highlight once, across the engine page boundary', async () => {
+    // 520 highlights, a note on each of the first 120: 640 documents, so one 500-document page
+    // would end inside a highlight's documents
+    const vault = new FakeVault(manyHighlights(520));
+    const api = vault.api();
+    for (let i = 0; i < 120; i++) {
+      await api.createNote({
+        highlightId: `hl-${String(i).padStart(6, '0')}`,
+        body: 'A note about mitochondria',
+      });
+    }
+    const index = indexOf(vault);
+    expect(index.search('mitochondria').total).toBe(640);
+    const all = collectSearchIds(index, 'mitochondria', null);
+    expect(all.capped).toBe(false);
+    expect(all.ids).toHaveLength(520);
+    expect(new Set(all.ids).size).toBe(520);
+    const some = collectSearchIds(index, 'mitochondria', new Set(['hl-000003', 'hl-000510']));
+    expect(some.ids.sort()).toEqual(['hl-000003', 'hl-000510']);
+  });
+});
+
 describe('whole-result id resolution', () => {
   it('walks every page of a browse query', async () => {
     const vault = new FakeVault(manyHighlights(1_234));

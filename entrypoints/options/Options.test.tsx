@@ -612,7 +612,7 @@ describe('delete all data', () => {
   it('says what is deleted, is accessible, and defaults to Cancel', async () => {
     await open();
     const dialog = await openDialog();
-    expect(dialog.textContent).toMatch(/including ones you already deleted/);
+    expect(dialog.textContent).toMatch(/including the ones in the trash/);
     expect(dialog.textContent).toMatch(/cannot be undone/);
     expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: 'Cancel' }));
 
@@ -654,12 +654,36 @@ describe('delete all data', () => {
     expect(within(alert).queryByRole('button', { name: 'Retry' })).toBeNull();
   });
 
-  it('says the deletion removes highlights, notes, banks, settings and site access', async () => {
+  it('lists everything it removes, and what it does not', async () => {
     await open();
-    const dialog = await openDialog();
-    expect(dialog.textContent).toMatch(
-      /removes your highlights, notes, banks, settings and site access/,
+    const text = (await openDialog()).textContent ?? '';
+    for (const part of [
+      /highlight with its note, including the ones in the trash/,
+      /banks,\s+folders and tags/,
+      /kept PDF copies/,
+      /flashcards and review history/,
+      /AI drafts, your provider settings and your API key/,
+      /sync settings, the sign-in[\s\S]*before its last update/,
+      /theme, colours, deny list/,
+      /access Chrome gave StudyVault to\s+websites/,
+    ]) {
+      expect(text).toMatch(part);
+    }
+    expect(text).toMatch(
+      /does not remove files you exported or backed\s+up, anything on your other devices/,
     );
+    // Never "no server, nothing to get back": there may be a server copy, and it is separate.
+    expect(text).not.toMatch(/no server|no copy to get back/);
+    expect(text).toMatch(/a copy on a sync server, if you ever used sync: that is separate/);
+  });
+
+  it('with sync on, says the server copy stays and how to remove it first', async () => {
+    await open({ features: { ...defaultSettings().features, sync: true } });
+    const dialog = await openDialog();
+    expect(dialog.textContent).toMatch(/the copy on your sync server/);
+    expect(dialog.textContent).toMatch(/Delete my data from the server/);
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete everything' }));
+    expect(await screen.findByText(/The copy on your sync server was not touched/)).toBeTruthy();
   });
 
   it('shows the real error and repeats every step on Retry', async () => {
@@ -676,6 +700,157 @@ describe('delete all data', () => {
     await userEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(rpc.called('site.sync')).toHaveLength(1));
     expect(await screen.findByText(/deleted from this device/)).toBeTruthy();
+  });
+});
+
+describe('delete all data: waiting for another window', () => {
+  const openDialog = async () => {
+    await userEvent.click(
+      await screen.findByRole('button', { name: /Delete all StudyVault data/ }),
+    );
+    return screen.findByRole('dialog', { name: 'Delete all StudyVault data?' });
+  };
+
+  /** A `wipeAllData` the test drives: states in, finish or fail from outside, stop honoured. */
+  async function controlledWipe() {
+    const storage = await import('@storage');
+    const wipe: {
+      state(s: 'deleting' | 'blocked' | 'cleaning'): void;
+      finish(): void;
+      fail(e: Error): void;
+      calls: number;
+    } = { state: () => undefined, finish: () => undefined, fail: () => undefined, calls: 0 };
+    vi.spyOn(storage, 'wipeAllData').mockImplementation(
+      (options = {}) =>
+        new Promise<void>((resolve, reject) => {
+          wipe.calls += 1;
+          wipe.state = (st) => options.onState?.(st);
+          wipe.finish = resolve;
+          wipe.fail = reject;
+          options.signal?.addEventListener('abort', () =>
+            reject(
+              new storage.WipePendingError('Deleting is not finished. It cannot be cancelled.'),
+            ),
+          );
+          options.onState?.('deleting');
+        }),
+    );
+    return wipe;
+  }
+
+  const confirm = async () =>
+    userEvent.click(within(await openDialog()).getByRole('button', { name: 'Delete everything' }));
+
+  it('blocked: names what to do, says it needs no second click, and finishes by itself', async () => {
+    const wipe = await controlledWipe();
+    await open();
+    await confirm();
+    expect(await screen.findByText('Deleting…')).toBeTruthy();
+
+    wipe.state('blocked');
+    expect(await screen.findByText('Waiting for another StudyVault window')).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Close every other StudyVault tab, dashboard and side panel. Your data is deleted the moment they are closed; you don't need to click again.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Stop waiting' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull(); // waiting is not an error
+    expect(rpc.called('site.sync')).toHaveLength(0);
+
+    // The other window closes: the same call finishes, the worker is told, the page reports it.
+    wipe.state('cleaning');
+    expect(await screen.findByText(/Removing the pre-update copy/)).toBeTruthy();
+    wipe.finish();
+    expect(
+      await screen.findByText(/All StudyVault data was deleted from this device/),
+    ).toBeTruthy();
+    expect(rpc.called('site.sync')).toHaveLength(1);
+    expect(screen.queryByText('Waiting for another StudyVault window')).toBeNull();
+    expect(wipe.calls).toBe(1);
+  });
+
+  it('Stop waiting is a warning, not a failure, and does not claim the deletion was cancelled', async () => {
+    const wipe = await controlledWipe();
+    await open();
+    await confirm();
+    wipe.state('blocked');
+    await userEvent.click(await screen.findByRole('button', { name: 'Stop waiting' }));
+
+    expect(await screen.findByText('Deleting is not finished')).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Stopping does not cancel the deletion: it still finishes when that window closes, and StudyVault here can't read or save until then.",
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText('Deleting your data did not finish')).toBeNull();
+    expect(rpc.called('site.sync')).toHaveLength(0);
+    // Not offered again while it is pending.
+    expect(
+      screen
+        .getByRole('button', { name: /Delete all StudyVault data/ })
+        .getAttribute('aria-disabled'),
+    ).toBe('true');
+  });
+
+  it('Check again, once the deletion is over, reads the data and finishes the report without deleting again', async () => {
+    const wipe = await controlledWipe();
+    await open();
+    await confirm();
+    wipe.state('blocked');
+    await userEvent.click(await screen.findByRole('button', { name: 'Stop waiting' }));
+    await screen.findByText('Deleting is not finished');
+
+    // The other window closed and the deletion ended; this page was no longer listening. The
+    // database is empty again, so the check can say so. It must not start another wipe.
+    await userEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    expect(
+      await screen.findByText(/All StudyVault data was deleted from this device/),
+    ).toBeTruthy();
+    expect(wipe.calls).toBe(1);
+    expect(rpc.called('site.sync')).toHaveLength(1);
+  });
+
+  it('Check again says so when data is still there, instead of reporting success', async () => {
+    const wipe = await controlledWipe();
+    await open();
+    await confirm();
+    wipe.state('blocked');
+    await userEvent.click(await screen.findByRole('button', { name: 'Stop waiting' }));
+    await screen.findByText('Deleting is not finished');
+
+    await createDeck({ name: 'Left behind' });
+    await userEvent.click(screen.getByRole('button', { name: 'Check again' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/no longer running, but \d+ items are still stored/);
+    expect(screen.queryByText(/All StudyVault data was deleted/)).toBeNull();
+    expect(wipe.calls).toBe(1);
+  });
+
+  it('a pending-delete refusal from the start is a warning with Check again, not an error', async () => {
+    const storage = await import('@storage');
+    vi.spyOn(storage, 'wipeAllData').mockRejectedValue(
+      new storage.WipePendingError('All StudyVault data is being deleted. Try again in a moment.'),
+    );
+    await open();
+    await confirm();
+    expect(await screen.findByText('Deleting is not finished')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeTruthy();
+  });
+
+  it('a real failure while blocked is still an error with Retry', async () => {
+    const wipe = await controlledWipe();
+    await open();
+    await confirm();
+    wipe.state('blocked');
+    wipe.fail(new Error('Disk is read-only'));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Disk is read-only');
+    expect(within(alert).getByRole('button', { name: 'Retry' })).toBeTruthy();
+    expect(screen.queryByText('Waiting for another StudyVault window')).toBeNull();
   });
 });
 

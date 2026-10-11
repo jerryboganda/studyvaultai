@@ -119,7 +119,11 @@ export function rowFromHit(hit: SearchHit): ResultRow {
   };
 }
 
-/** The same highlight can match through its quote and through each of its notes: keep the first. */
+/**
+ * One row per highlight. The engine already folds a highlight's note hits into one (`collapseNotes`);
+ * this guards the seams it cannot see: a cursor page that overlaps the previous one, or an index that
+ * changed between two pages. The first row of a highlight wins.
+ */
 export function dedupeRows(rows: readonly ResultRow[], seen: Set<string>): ResultRow[] {
   const out: ResultRow[] = [];
   for (const row of rows) {
@@ -193,6 +197,7 @@ export function fetchSearchPage(index: SearchLike, input: SearchInput): Page {
       sort: input.sort,
       limit,
       offset: input.offset,
+      collapseNotes: true,
       facets: input.offset === 0,
       suggest: input.offset === 0,
     });
@@ -212,6 +217,7 @@ export function fetchSearchPage(index: SearchLike, input: SearchInput): Page {
       sort: input.sort,
       limit: SEARCH_PAGE_MAX,
       offset,
+      collapseNotes: true,
       facets: offset === 0,
       suggest: offset === 0,
     });
@@ -266,6 +272,7 @@ export function collectSearchIds(
     const result = index.search(query, {
       limit: SEARCH_PAGE_MAX,
       offset,
+      collapseNotes: true,
       facets: false,
       suggest: false,
     });

@@ -316,7 +316,7 @@ export function CardBrowser({ settings }: { settings: StudySettings }) {
                                 await deleteCards([c.id]);
                                 toast.push({
                                   message:
-                                    'Card deleted. A copy stays on this device until you delete all data in Settings.',
+                                    'Card deleted. A copy stays on this device until you delete its highlight forever from Trash or delete all data in Settings.',
                                   action: { label: 'Undo', onClick: () => void undoDelete([c.id]) },
                                 });
                               })
@@ -345,7 +345,8 @@ export function CardBrowser({ settings }: { settings: StudySettings }) {
         >
           <p>
             The deck and its cards leave your review queue. Highlights and quotes are not touched,
-            and a copy of the cards stays on this device until you delete all data in Settings.
+            and a copy of the cards stays on this device until you delete their highlights forever
+            from Trash or delete all data in Settings.
           </p>
         </ConfirmDialog>
       ) : null}

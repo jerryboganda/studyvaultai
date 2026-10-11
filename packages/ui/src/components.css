@@ -476,6 +476,7 @@ textarea.sv-control {
   border: 1px solid var(--sv-border-strong);
   border-radius: 6px;
   background: var(--sv-surface);
+  color: var(--sv-text); /* its own surface: never inherit a button's light-on-accent text */
   font-family: var(--sv-font-mono);
   font-size: 0.9em;
   white-space: nowrap;

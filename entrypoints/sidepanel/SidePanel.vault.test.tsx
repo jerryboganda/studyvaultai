@@ -126,6 +126,22 @@ describe('Search over the real vault', () => {
     expect(screen.getAllByTestId('search-result')).toHaveLength(1);
   });
 
+  it('counts a highlight once however many of its notes match the same word', async () => {
+    const hl = await save('Warfarin inhibits vitamin K epoxide reductase.');
+    await createNote({ highlightId: hl.id, body: 'Warfarin dosing needs regular INR checks.' });
+    await createNote({ highlightId: hl.id, body: 'Warfarin interacts with many other drugs.' });
+    await open('#search');
+
+    await userEvent.type(await screen.findByRole('searchbox'), 'warfarin');
+    await waitFor(() =>
+      expect(screen.getByTestId('search-status').textContent).toMatch(/^1 match in/),
+    );
+    expect(screen.getAllByTestId('search-result')).toHaveLength(1);
+    expect(screen.getByTestId('search-result').getAttribute('data-highlight-id')).toBe(hl.id);
+    // the count and the list agree, so there is nothing more to show
+    expect(screen.queryByTestId('search-more')).toBeNull();
+  });
+
   it('acts on a hit: shows it on the page, opens the dashboard and the flashcard author', async () => {
     const hl = await save('Aspirin irreversibly inhibits cyclooxygenase.');
     rpc.tab['content.reveal'] = () => ({ found: true });

@@ -299,7 +299,7 @@ export function DeckOptions() {
               </span>
             </summary>
             <div className="rv-details__body">
-              <DeckSettingsForm key={`${deck.id}-${deck.updatedAt}`} deck={deck} />
+              <DeckSettingsForm key={deck.id} deck={deck} />
             </div>
           </details>
         </li>

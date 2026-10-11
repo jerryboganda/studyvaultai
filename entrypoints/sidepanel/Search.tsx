@@ -93,7 +93,9 @@ export function SearchTab({
   const outcome = useMemo((): { result: SearchResult } | { error: string } | null => {
     if (query === '' || !host.index) return null;
     try {
-      return { result: host.search(query, { limit, facets: true, suggest: true }) };
+      return {
+        result: host.search(query, { limit, collapseNotes: true, facets: true, suggest: true }),
+      };
     } catch (err) {
       return { error: errorMessage(err, 'The search failed.') };
     }

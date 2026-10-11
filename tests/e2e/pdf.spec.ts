@@ -317,7 +317,7 @@ test.describe('open and render', () => {
   }) => {
     const { page, errors } = await openReader(env);
     // The open screen says what the reader is and is not.
-    await expect(page.getByTestId('pdf-open')).toContainText('never uploaded');
+    await expect(page.getByTestId('pdf-open')).toContainText('does not upload it');
     await expect(page.getByTestId('pdf-builtin-note')).toContainText('built-in PDF viewer');
     await expect(page.getByTestId('pdf-builtin-note')).toContainText('Open in StudyVault reader');
 

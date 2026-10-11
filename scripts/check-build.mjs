@@ -169,6 +169,27 @@ if (!existsSync(ocrDir)) {
   }
 }
 
+// --- test hooks must not ship ---------------------------------------------------------------
+// The e2e build registers a message that lets the Playwright helpers change settings through the
+// worker's updateSettings (entrypoints/background/e2e.ts, behind __SV_E2E__). Its name must not be
+// in any production file; it must be in the e2e worker, or the helpers would silently stop working.
+const E2E_HOOKS = ['e2e.settings.patch'];
+for (const file of walk(prod).filter((f) => /\.(js|html)$/.test(f))) {
+  const text = readFileSync(file, 'utf8');
+  for (const hook of E2E_HOOKS) {
+    if (text.includes(hook)) fail(`test hook "${hook}" is in the production build: ${file}`);
+  }
+}
+if (existsSync(e2e)) {
+  const shipped = walk(e2e)
+    .filter((f) => f.endsWith('.js'))
+    .map((f) => readFileSync(f, 'utf8'))
+    .join('\n');
+  for (const hook of E2E_HOOKS) {
+    if (!shipped.includes(hook)) fail(`test hook "${hook}" is missing from the e2e build`);
+  }
+}
+
 // --- the e2e variant must be the production React (a dev build hides real timing) -----------
 if (existsSync(e2e)) {
   // ... and the manifest the e2e suite loads must be the shipped one, apart from loopback hosts.

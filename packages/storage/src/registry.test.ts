@@ -85,13 +85,7 @@ describe('table registry', () => {
 
   it('lets another module attach its schema, and refuses unknown table names', () => {
     expect(unregisteredTables()).toEqual(
-      expect.arrayContaining([
-        'cards',
-        'decks',
-        'knowledgePoints',
-        'reviewLogs',
-        'syncOps',
-      ]),
+      expect.arrayContaining(['cards', 'decks', 'knowledgePoints', 'reviewLogs', 'syncOps']),
     );
     // The AI repository is imported by the restore guards, so aiResults registers with the barrel.
     expect(unregisteredTables()).not.toContain('aiResults');

@@ -196,7 +196,7 @@ function Panel() {
         // The card that held focus is gone: Undo takes it, so the keyboard is not dropped on <body>.
         toast.push({
           message:
-            'Highlight deleted. A copy stays on this device until you delete all data in Settings.',
+            'Highlight deleted. It stays in Trash until you delete it forever there or delete all data in Settings.',
           action: { label: 'Undo', onClick: () => void restore(id) },
           focusAction: true,
         });
