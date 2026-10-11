@@ -1,6 +1,8 @@
 import type { Page } from '@playwright/test';
-import { DEFAULT_DENY_HOSTS } from '@shared';
+import { KIND_DECORATION } from '@highlights';
+import { DEFAULT_DENY_HOSTS, HIGHLIGHT_KINDS, KIND_LABELS } from '@shared';
 import { describeResolveState } from '@ui/resolveState';
+import { IN_PAGE_KEYS, describeCommand } from '@ui/shortcuts';
 import {
   activate,
   activeTexts,
@@ -9,6 +11,7 @@ import {
   closedPort,
   errorsOf,
   expect,
+  highlightRuleFor,
   highlightsOf,
   layoutReport,
   luminanceOf,
@@ -19,6 +22,7 @@ import {
   pageListState,
   paintedByColor,
   patchSettings,
+  publishedRangeCount,
   saveBlock,
   saveBlockToBank,
   selectBlockProgrammatically,
@@ -844,5 +848,171 @@ test.describe('options: floating toolbar toggle', () => {
     await page.bringToFront();
     await tripleClickBlock(page, '#p-intro');
     await expect(toolbarOf(page)).toBeVisible();
+  });
+});
+
+// =============================================================================================
+// OPTIONS: highlights on pages, capture, shortcuts, delete all data
+// =============================================================================================
+
+test.describe('options: highlights on pages', () => {
+  test('"Show highlights on pages" off stops painting (saving continues), disables the style choice, and on restores it', async ({
+    env,
+  }) => {
+    const ext = await openExt(env, 'options');
+    const page = await openFixture(env, '/article.html');
+    await saveBlock(ext, page, '#p-intro');
+    await expect.poll(() => paintedByColor(page)).toEqual({ amber: [expect.any(String)] });
+
+    const toggle = ext.getByRole('checkbox', { name: 'Show highlights on pages' });
+    await ext.bringToFront();
+    await expect(toggle).toBeChecked();
+    await expect(toggle).toHaveAccessibleDescription(/scripts that a site itself runs can read/);
+    await toggle.click();
+    await expect.poll(async () => (await storedSettings(ext))?.paintHighlights).toBe(false);
+    await expect(ext.getByRole('radio', { name: /^Strong/ })).toBeDisabled();
+    await expect(
+      ext.getByText('Highlight style has no effect while highlights are not shown'),
+    ).toBeVisible();
+
+    await expect
+      .poll(() => publishedRangeCount(page), { message: 'the page registry is left alone' })
+      .toBe(0);
+    // Quiet mode still saves; the side panel (not the page) is where the highlight is seen.
+    await saveBlock(ext, page, '#quote');
+    expect(await highlightsOf(ext, page.url())).toHaveLength(2);
+    expect(await publishedRangeCount(page)).toBe(0);
+
+    await ext.bringToFront();
+    await toggle.click();
+    await expect(toggle).toBeChecked();
+    await expect.poll(() => publishedRangeCount(page)).toBe(2);
+  });
+
+  test("highlight style: Automatic by default; Strong thickens every underline; the legend names each kind's underline", async ({
+    env,
+  }) => {
+    const ext = await openExt(env, 'options');
+    const page = await openFixture(env, '/article.html');
+    await saveBlock(ext, page, '#p-intro');
+    await expect
+      .poll(async () => (await highlightRuleFor(page, 'sv-hl-amber-essential'))?.thickness)
+      .toBe(`${KIND_DECORATION.essential.thickness}px`);
+
+    await ext.bringToFront();
+    await expect(ext.getByRole('radio', { name: /^Automatic/ })).toBeChecked();
+    const legend = ext.getByRole('list', { name: 'Underline for each highlight kind' });
+    await expect(legend.getByRole('listitem')).toHaveCount(HIGHLIGHT_KINDS.length);
+    for (const kind of HIGHLIGHT_KINDS) {
+      const row = legend.getByRole('listitem').filter({ hasText: KIND_LABELS[kind].label });
+      await expect(row).toContainText(KIND_DECORATION[kind].label);
+    }
+
+    // A controlled radio: its state changes when the saved setting comes back, so click, then wait.
+    await ext.getByRole('radio', { name: /^Strong/ }).click();
+    await expect(ext.getByRole('radio', { name: /^Strong/ })).toBeChecked();
+    await expect.poll(async () => (await storedSettings(ext))?.highlightStyle).toBe('strong');
+    await expect
+      .poll(async () => (await highlightRuleFor(page, 'sv-hl-amber-essential'))?.thickness)
+      .toBe(`${KIND_DECORATION.essential.thickness + 1}px`);
+
+    await ext.getByRole('radio', { name: /^Normal/ }).click();
+    await expect(ext.getByRole('radio', { name: /^Normal/ })).toBeChecked();
+    await expect
+      .poll(async () => (await highlightRuleFor(page, 'sv-hl-amber-essential'))?.thickness)
+      .toBe(`${KIND_DECORATION.essential.thickness}px`);
+  });
+});
+
+test.describe('options: capture and private windows', () => {
+  test('"Save from private windows" is off by default, explains the trade-off, and persists', async ({
+    env,
+  }) => {
+    const ext = await openExt(env, 'options');
+    const box = ext.getByRole('checkbox', { name: 'Save from private windows' });
+    await expect(box).not.toBeChecked();
+    await expect(box).toHaveAccessibleDescription(/private \(incognito\) windows/);
+    await expect(box).toHaveAccessibleDescription(/stay after you close the window/);
+
+    await box.click();
+    await expect.poll(async () => (await storedSettings(ext))?.allowIncognitoCapture).toBe(true);
+    await ext.reload();
+    await expect(box).toBeChecked();
+    await box.click();
+    await expect.poll(async () => (await storedSettings(ext))?.allowIncognitoCapture).toBe(false);
+  });
+});
+
+test.describe('options: keyboard shortcuts', () => {
+  test("lists every command exactly as Chrome reports it, the fixed in-page keys, and opens Chrome's shortcut page", async ({
+    env,
+  }) => {
+    const ext = await openExt(env, 'options');
+    const commands = await ext.evaluate(() => chrome.commands.getAll());
+    expect(commands.map((c) => c.name)).toEqual(
+      expect.arrayContaining(['quick-save', 'open-side-panel', 'focus-toolbar', 'next-highlight']),
+    );
+
+    const section = ext.locator('#shortcuts');
+    await expect(
+      section.getByRole('heading', { name: 'Keyboard shortcuts', level: 2 }),
+    ).toBeVisible();
+    const list = section.getByRole('list', { name: 'Browser shortcuts' });
+    await expect(list.getByRole('listitem')).toHaveCount(commands.length);
+    for (const c of commands) {
+      const row = list.getByRole('listitem').filter({
+        has: ext.getByText(describeCommand(c.name, c.description), { exact: true }),
+      });
+      await expect(row, `${c.name} is listed`).toHaveCount(1);
+      // An unset command says so instead of being hidden.
+      if (!c.shortcut) await expect(row).toContainText(/Not set/i);
+    }
+
+    const inPage = section.getByRole('list', { name: 'In-page shortcuts' });
+    await expect(inPage.getByRole('listitem')).toHaveCount(IN_PAGE_KEYS.length);
+    for (const k of IN_PAGE_KEYS) await expect(inPage).toContainText(k.action);
+
+    const opened = env.context.waitForEvent('page');
+    await section.getByRole('button', { name: 'Change shortcuts in Chrome' }).click();
+    const shortcuts = await opened;
+    await expect.poll(() => shortcuts.url()).toMatch(/^(chrome|edge):\/\/extensions\/shortcuts/);
+  });
+});
+
+test.describe('options: delete all data', () => {
+  test('asks first (focus starts on Cancel), then removes highlights, banks and settings, and the page repaints without them', async ({
+    env,
+  }) => {
+    const ext = await openExt(env, 'options');
+    const page = await openFixture(env, '/article.html');
+    await bgData(ext, 'bank.create', { name: 'Cardiology' });
+    await saveBlock(ext, page, '#p-intro');
+    await patchSettings(ext, { theme: 'dark' });
+    await expect.poll(() => paintedByColor(page)).toEqual({ amber: [expect.any(String)] });
+
+    await ext.bringToFront();
+    const open = ext.getByRole('button', { name: /^Delete all StudyVault data/ });
+    await open.click();
+    const dialog = ext.getByRole('dialog', { name: 'Delete all StudyVault data?' });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
+    await expect(dialog).toContainText('This cannot be undone.');
+    await dialog.getByRole('button', { name: 'Cancel' }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(await highlightsOf(ext, page.url()), 'Cancel deletes nothing').toHaveLength(1);
+
+    await open.click();
+    await dialog.getByRole('button', { name: 'Delete everything' }).click();
+    await expect(ext.getByText(/All StudyVault data was deleted from this device/)).toBeVisible();
+
+    await expect.poll(async () => (await highlightsOf(ext, page.url())).length).toBe(0);
+    const { banks } = await bgData<{ banks: Array<{ name: string }> }>(ext, 'banks.list');
+    expect(banks.map((b) => b.name)).toEqual(['Inbox']);
+    expect((await storedSettings(ext))?.theme ?? 'system', 'settings are back to defaults').toBe(
+      'system',
+    );
+    await expect
+      .poll(() => paintedByColor(page), { message: 'the open page drops the paint' })
+      .toEqual({});
   });
 });

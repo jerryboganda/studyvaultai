@@ -355,6 +355,9 @@ textarea.sv-control {
 }
 .sv-tab {
   flex: 1 1 0;
+  /* Three tabs must still fit a 160 CSS px panel (320 px at 200% zoom): let labels wrap, not overflow. */
+  min-width: 0;
+  overflow-wrap: anywhere;
   min-height: 32px;
   padding: 4px var(--sv-space-2);
   border: 0;

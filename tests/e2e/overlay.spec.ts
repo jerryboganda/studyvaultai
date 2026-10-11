@@ -228,8 +228,11 @@ test.describe('hand-over to the side panel (ADR-005)', () => {
     await expect(side.getByRole('list', { name: 'Your banks' })).toContainText('Cardiology');
     await expect(side.getByLabel('New bank')).toHaveValue('');
 
-    // Back in the page: the new bank is offered (the overlay refreshes the list on focus) and used.
+    // Back in the page: the overlay refreshes its bank list when the page window regains focus.
+    // Playwright pins focus emulation on, so no real focus event is ever delivered: send the one
+    // the browser would have sent (the listener does not look at isTrusted).
     await page.bringToFront();
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
     await expect(dialog.getByRole('combobox', { name: 'Bank' })).toContainText('Cardiology');
     await dialog.getByRole('combobox', { name: 'Bank' }).selectOption({ label: 'Cardiology' });
     await dialog.getByRole('button', { name: 'Save', exact: true }).click();
@@ -272,6 +275,8 @@ test.describe('overlay exposes no free-text surface to the page (ADR-005)', () =
     await audit('toolbar');
     await page.getByRole('button', { name: 'More options', exact: true }).click();
     await expect(page.getByRole('dialog', { name: 'Save with details' })).toBeVisible();
+    // The bank picker appears once the list of banks has loaded.
+    await expect(page.getByRole('combobox', { name: 'Bank' })).toBeVisible();
     await audit('More options panel', 3); // bank, type, priority
     await page.getByRole('button', { name: 'Cancel' }).click();
     await page.getByRole('button', { name: 'Save selection', exact: true }).click();
@@ -285,11 +290,15 @@ test.describe('overlay exposes no free-text surface to the page (ADR-005)', () =
       patch: { userComment: 'A long private thought. '.repeat(30) },
     });
     await page.getByRole('button', { name: 'Dismiss notification' }).click();
-    await openPopoverOn(page, '#p-intro');
+    // The page learns of an edit made elsewhere through the data-change refresh (debounced), so the
+    // popover is opened again until it carries the note.
+    const popover = page.getByRole('dialog', { name: 'Highlight details' });
+    await expect(async () => {
+      await page.keyboard.press('Escape');
+      await openPopoverOn(page, '#p-intro');
+      await expect(popover).toContainText('A long private thought.', { timeout: 1_000 });
+    }).toPass({ timeout: 15_000 });
     await audit('popover with a note', 2); // type, priority
-    await expect(page.getByRole('dialog', { name: 'Highlight details' })).toContainText(
-      'A long private thought.',
-    );
     expect(states).toHaveLength(5);
   });
 
@@ -499,7 +508,10 @@ test.describe('keyboard navigation between highlights', () => {
     await page.evaluate(() => {
       (window as unknown as { __seen: boolean[] }).__seen = [];
       document.addEventListener('keydown', (e) => {
-        (window as unknown as { __seen: boolean[] }).__seen.push(e.defaultPrevented);
+        // The modifier presses (Alt, Shift) arrive first and belong to the page; only "]" is ours.
+        if (e.code === 'BracketRight') {
+          (window as unknown as { __seen: boolean[] }).__seen.push(e.defaultPrevented);
+        }
       });
     });
     await page.keyboard.press(NEXT);
@@ -584,6 +596,9 @@ test.describe('keyboard navigation between highlights', () => {
     await expect(dialog).toBeFocused();
 
     // Nothing selected and no toast with an action: nothing to focus, and it says so (no throw).
+    // The saves above left Undo toasts behind; those are something to focus, so clear them first.
+    const dismiss = page.getByRole('button', { name: 'Dismiss notification' });
+    while ((await dismiss.count()) > 0) await dismiss.first().click();
     expect(await focusToolbarVia(ext, tabId)).toMatchObject({ ok: true, data: { focused: false } });
 
     // Everything hidden: found:false, with a toast, and no popover.

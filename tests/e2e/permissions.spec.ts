@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Page } from '@playwright/test';
+import { DEFAULT_DENY_HOSTS } from '@shared';
 import {
   OVERLAY_HOST,
   activate,
@@ -218,11 +219,32 @@ test.describe('site access', () => {
     env,
   }) => {
     const ext = await openExt(env, 'options');
+    const settingsBefore = await storedSettings(ext);
     const enable = ext.getByRole('button', { name: 'Enable on all sites' });
     await expect(ext.getByText('StudyVault runs only where you enabled it.')).toBeVisible();
     await expect(ext.getByRole('button', { name: 'Revoke all-sites access' })).toHaveCount(0);
 
+    // Step one is StudyVault's own modal: it lists the sites that stay off, starts on Cancel and
+    // asks Chrome for nothing yet.
     await enable.click();
+    const dialog = ext.getByRole('dialog', { name: 'Turn StudyVault on for all sites?' });
+    await expect(dialog).toBeVisible();
+    await expect(
+      dialog.getByText(`StudyVault will stay off on these ${DEFAULT_DENY_HOSTS.length} sites`),
+    ).toBeVisible();
+    const listed = dialog
+      .getByRole('region', { name: 'Sites on your deny list' })
+      .getByRole('listitem');
+    await expect(listed).toHaveCount(DEFAULT_DENY_HOSTS.length);
+    await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
+    await ext.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await expect(enable, 'focus returns to the control that opened the dialog').toBeFocused();
+    expect(await storedSettings(ext), 'Cancel changed nothing').toEqual(settingsBefore);
+
+    // Step two: "Continue" is the user gesture that fires Chrome's native prompt.
+    await enable.click();
+    await dialog.getByRole('button', { name: "Continue to Chrome's prompt" }).click();
     await expect(enable).toHaveAttribute('aria-busy', 'true');
     await expect(enable).toHaveAttribute('aria-disabled', 'true');
     // The page stays alive and explains what is going on while the (native) prompt is open.
@@ -235,7 +257,7 @@ test.describe('site access', () => {
         chrome.permissions.contains({ origins: ['http://*/*', 'https://*/*'] }),
       ),
     ).toBe(false);
-    expect((await storedSettings(ext))?.persistentOrigins ?? []).toEqual([]);
+    expect((await storedSettings(ext))?.persistentOrigins ?? []).not.toContain('https://*/*');
     expect(errorsOf(ext)).toEqual([]);
   });
 
@@ -727,7 +749,9 @@ test.describe('restricted pages: tab.activate answers with a specific error and 
     await expect(popup.getByText("PDFs open in Chrome's built-in viewer")).toBeVisible();
     await expect(popup.getByText(/cannot highlight here/)).toBeVisible();
     await expect(popup.getByRole('button', { name: 'Activate on this tab' })).toHaveCount(0);
-    await expect(popup.getByRole('button', { name: 'Open side panel' })).toHaveCount(0);
+    // The side panel works without the page (saved highlights from every page), so it is offered here
+    // too; what is not possible on this page is said above.
+    await expect(popup.getByRole('button', { name: 'Open side panel' })).toBeVisible();
 
     const side = await viewing(env, 'sidepanel', page);
     await expect(side.getByText("PDFs open in Chrome's built-in viewer")).toBeVisible();

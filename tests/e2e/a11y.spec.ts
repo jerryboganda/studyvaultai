@@ -1,5 +1,6 @@
 import AxeBuilder from '@axe-core/playwright';
 import type { Page } from '@playwright/test';
+import { HIGHLIGHT_KINDS, KIND_LABELS } from '@shared';
 import {
   OVERLAY_HOST,
   activate,
@@ -9,6 +10,7 @@ import {
   focusToolbar,
   openFixture,
   paintedNormalised,
+  removeHighlightRow,
   selectionSnapshot,
   storedHighlights,
   test,
@@ -24,15 +26,10 @@ const WCAG_TAGS = ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'];
 /** The note button saves with the default kind and hands the note over to the side panel (ADR-005). */
 const NOTE_BUTTON = 'Save and add a note in the side panel';
 
+/** Toolbar buttons in DOM order; the kind buttons are named after the product's own kind labels. */
 const KIND_ORDER = [
   'Save selection',
-  'Save as Essential fact',
-  'Save as Formula',
-  'Save as Exception',
-  'Save as Differential',
-  'Save as Weak area',
-  'Save as Verified correction',
-  'Save as Question',
+  ...HIGHLIGHT_KINDS.map((kind) => `Save as ${KIND_LABELS[kind].label}`),
   NOTE_BUTTON,
   'More options',
 ];
@@ -109,11 +106,6 @@ async function pageActiveId(page: Page): Promise<string> {
 async function setNoteFromExtension(env: Env, id: string, userComment: string): Promise<void> {
   const res = await backgroundRpc(env, 'highlight.update', { id, patch: { userComment } });
   if (!res.ok) throw new Error(`highlight.update failed: ${JSON.stringify(res)}`);
-}
-
-async function softDeleteFromExtension(env: Env, id: string): Promise<void> {
-  const res = await backgroundRpc(env, 'highlight.delete', { id });
-  if (!res.ok) throw new Error(`highlight.delete failed: ${JSON.stringify(res)}`);
 }
 
 /** Free-text controls inside the overlay's shadow root (there must be none: ADR-005). */
@@ -198,12 +190,16 @@ test.describe('overlay: axe WCAG 2.2 AA', () => {
         // The note is shown read-only once it exists (it is typed in the side panel).
         const [h] = await storedHighlights(env, page);
         await setNoteFromExtension(env, h!.id, 'Resting rate is about seventy beats per minute.');
-        await page.keyboard.press('Escape');
-        await expect(dialog).toHaveCount(0);
-        await page.mouse.click(p.start.x + 20, p.start.y);
-        await expect(
-          dialog.getByText('Resting rate is about seventy beats per minute.'),
-        ).toBeVisible();
+        // The page learns of an edit made elsewhere through the (debounced) data-change refresh, so
+        // the popover is opened again until it carries the note.
+        await expect(async () => {
+          await page.keyboard.press('Escape');
+          await expect(dialog).toHaveCount(0);
+          await page.mouse.click(p.start.x + 20, p.start.y);
+          await expect(
+            dialog.getByText('Resting rate is about seventy beats per minute.'),
+          ).toBeVisible({ timeout: 1_000 });
+        }).toPass({ timeout: 15_000 });
         await expect(dialog.getByRole('textbox')).toHaveCount(0);
         await expectNoViolations(page, OVERLAY_HOST);
       });
@@ -224,10 +220,12 @@ test.describe('overlay: axe WCAG 2.2 AA', () => {
     await tripleClick(page, '#p-intro');
     await page.getByRole('button', { name: 'Save selection' }).click();
     await expect(page.getByText('Saved to Inbox')).toBeVisible();
-    // The highlight disappears behind the overlay's back (another tab / the side panel deleted it).
+    // The highlight's row disappears behind the overlay's back (all data deleted, a restore from an
+    // older backup). A repeated delete of a SOFT-deleted row is idempotent now, so it has to be
+    // gone for good for Undo to fail.
     const stored = await storedHighlights(env, page);
     expect(stored).toHaveLength(1);
-    await softDeleteFromExtension(env, stored[0]!.id);
+    await removeHighlightRow(env, stored[0]!.id);
     // Undo now fails: the error is announced through the alert region.
     await page.getByRole('button', { name: 'Undo' }).click();
     const alert = page.getByRole('alert').filter({ hasText: /./ });

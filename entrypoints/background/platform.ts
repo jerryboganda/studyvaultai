@@ -26,7 +26,11 @@ export function browserSiteDeps(): SiteAccessDeps {
       browser.permissions.contains({ origins: [origin] }).catch(() => false),
     grantedOrigins: async () => {
       try {
-        return (await browser.permissions.getAll()).origins ?? [];
+        // Install-time host_permissions are not a user choice and cannot be revoked, so only the
+        // OPTIONAL grants decide persistent registration. Production declares none; the e2e build
+        // declares loopback, which must not turn the script on for every loopback page.
+        const fixed = new Set(browser.runtime.getManifest().host_permissions ?? []);
+        return ((await browser.permissions.getAll()).origins ?? []).filter((o) => !fixed.has(o));
       } catch {
         return null;
       }

@@ -448,6 +448,33 @@ export async function backgroundRpc(
 }
 
 /**
+ * Remove a highlight row from IndexedDB for good, from an extension page (same origin as the worker's
+ * database): what a "delete all data" or a restore from an older backup would do behind the overlay's
+ * back. The worker then answers "not found" for that id, which is how a toast error is provoked.
+ */
+export async function removeHighlightRow(env: Env, id: string): Promise<void> {
+  await withExtensionPage(env, (ext) =>
+    ext.evaluate(async (rowId) => {
+      const db = await new Promise<IDBDatabase>((resolve, reject) => {
+        const req = indexedDB.open('studyvault');
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const tx = db.transaction('highlights', 'readwrite');
+          tx.objectStore('highlights').delete(rowId);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        });
+      } finally {
+        db.close();
+      }
+    }, id),
+  );
+}
+
+/**
  * Real browser page zoom through chrome.tabs.setZoom (per-tab). `factor` 1.25 = 125 %.
  * Returns the resulting layout viewport so callers can assert the zoom actually applied.
  */
