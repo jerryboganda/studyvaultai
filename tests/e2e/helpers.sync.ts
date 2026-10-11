@@ -253,9 +253,14 @@ export async function sessionStore(page: Page): Promise<Record<string, unknown>>
   return page.evaluate(() => chrome.storage.session.get(null));
 }
 
-/** Names of the alarms the extension has scheduled (needs the granted `alarms` permission). */
+/**
+ * Names of the alarms the extension has scheduled. Empty once the `alarms` permission is gone:
+ * "Delete all data" gives it back, and the API object disappears with it.
+ */
 export async function alarmNames(page: Page): Promise<string[]> {
-  return page.evaluate(async () => (await chrome.alarms.getAll()).map((a) => a.name).sort());
+  return page.evaluate(async () =>
+    chrome.alarms ? (await chrome.alarms.getAll()).map((a) => a.name).sort() : [],
+  );
 }
 
 /** The current settings flag the worker enforces (through the page's own read of `settings`). */

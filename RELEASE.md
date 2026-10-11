@@ -246,18 +246,20 @@ been exercised end to end by a green CI run or by the manual checklist, so the c
 statements in the store documents stay marked in `docs/PRIVACY_CLAIMS.md`. Do not describe any of
 them in a store listing until its row there says `verified`.
 
-The second-pass hardening changes are in the same position: unit and integration tests, no CI run,
-no loaded-Chrome run. docs/PRIVACY_CLAIMS.md lists each as `unit-only` or `open`, and
-THREAT_MODEL.md section 7 lists the findings and the accepted limitations.
+The second-pass hardening changes are in the same position: unit and integration tests (the `unit`
+job of run 38130710828 ran them), e2e specs that passed only in agent-run local runs, and no green
+`e2e` job or branded-Chrome run. docs/PRIVACY_CLAIMS.md lists each as `unit-only`, `e2e-local` or
+`open`, and THREAT_MODEL.md section 7 lists the findings and the accepted limitations.
 
 ## CI map
 
 Every job, what a green result proves, and how to run it again. Rule 1 of `AGENTS.md` applies: the
-heavy ones run on Actions, not on the developer machine. Status on 2026-10-11: the `stress` job and
-`stress.yml` have never executed (the job was added to `ci.yml` after the last run), and the changes to
-`ci.yml`, `release.yml` and `reproducible-build.yml` that introduced this map (concurrency groups, the
-`ci-ok` aggregate, the bundle-size summary) have had no Actions run either. The earlier `ci.yml` runs
-that were inspected failed in `unit`, `static (format)` and `e2e` test steps, not in the workflow wiring.
+heavy ones run on Actions, not on the developer machine. Status on 2026-10-11: the last `ci.yml` run
+(<https://github.com/jerryboganda/studyvaultai/actions/runs/38130710828>, branch `ci/wave-c`, commit
+`ff0377f`) executed this map: `static` (three jobs), `unit`, `build`, `audit` and the `stress` job
+concluded `success`, seven of the eight `e2e` shards failed, and `ci-ok` therefore failed, as
+designed. `stress.yml`, `release.yml` and `reproducible-build.yml` have never executed. The earlier
+runs failed in `unit`, `static (format)` and `e2e` test steps, not in the workflow wiring.
 
 ### `ci.yml`
 

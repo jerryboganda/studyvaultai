@@ -22,15 +22,23 @@ const NO_RETRY = new Set<FetchFailure['kind']>([
   'too-large',
 ]);
 
+/**
+ * `fetch` follows a redirect on its own and shows no hop, so the other site may have been sent the
+ * request before StudyVault could look at where it ended (THREAT_MODEL R19, PRIVACY_CLAIMS P1d).
+ */
+const REDIRECTED =
+  'The address redirected to another site, and your browser may already have sent that site the request: the steps in between cannot be seen. That request carries your IP address but no cookies and no referrer, and StudyVault did not use anything the site returned.';
+
 /** What the person can do about each way a web PDF can fail (never "try to get around it"). */
 function advice(f: FetchFailure): string {
   switch (f.kind) {
     case 'sign-in':
     case 'redirected-non-pdf':
-    case 'redirect-blocked':
       return 'StudyVault does not use your browser sign-ins to fetch files. Open the link in your browser, sign in, download the PDF, then choose the downloaded file below.';
+    case 'redirect-blocked':
+      return `${REDIRECTED} Open the link in your browser, sign in if it asks, download the PDF, then choose the downloaded file below.`;
     case 'redirect-needs-access':
-      return 'The address sent the download to a site you have not allowed. You can allow that site for this download only, or download the PDF in your browser and choose it below.';
+      return `${REDIRECTED} You can allow that site for this download only, or download the PDF in your browser and choose it below.`;
     case 'not-pdf':
       return 'If the link opens a PDF in your browser, download it from there and choose the downloaded file below.';
     case 'not-found':

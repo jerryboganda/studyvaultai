@@ -172,6 +172,55 @@ async function dragSelect(page: Page, pageNumber: number, from: string, to: stri
   await expect(page.getByTestId('pdf-savebar')).toBeVisible();
 }
 
+/**
+ * Starts recording what the browser really delivers (pointer, mouse, drag, focus and selection
+ * events with their button state), and returns a function that prints it. For failures that depend on
+ * the order of those events: the report then says what happened instead of guessing.
+ */
+async function recordInput(page: Page): Promise<() => Promise<string>> {
+  await page.evaluate(() => {
+    const w = window as unknown as { __svInput?: string[] };
+    const log: string[] = (w.__svInput = []);
+    const t0 = performance.now();
+    const name = (t: EventTarget | null): string =>
+      t === window
+        ? 'window'
+        : t === document
+          ? 'document'
+          : `${(t as Element | null)?.tagName ?? '?'}.${(t as Element | null)?.className ?? ''}`;
+    const types = [
+      'pointerdown',
+      'pointerup',
+      'pointercancel',
+      'pointermove',
+      'mousedown',
+      'mouseup',
+      'mousemove',
+      'dragstart',
+      'dragend',
+      'selectionchange',
+      'blur',
+      'focus',
+    ];
+    for (const type of types) {
+      window.addEventListener(
+        type,
+        (e) => {
+          if (type === 'mousemove') return; // the pointermove next to it says the same
+          const m = e as MouseEvent;
+          const state = 'buttons' in e ? ` button=${m.button} buttons=${m.buttons}` : '';
+          log.push(`${Math.round(performance.now() - t0)}ms ${type} on ${name(e.target)}${state}`);
+        },
+        true,
+      );
+    }
+  });
+  return () =>
+    page.evaluate(() =>
+      ((window as unknown as { __svInput?: string[] }).__svInput ?? []).join('\n'),
+    );
+}
+
 /** Select by range (for text that is not horizontal on screen). `occurrence` as in textBox. */
 async function selectText(
   page: Page,
@@ -442,6 +491,7 @@ test.describe('highlights', () => {
     // the drag: the quote then ran through the bar's own text into the next page (seen on CI).
     await page.setViewportSize({ width: 1280, height: 480 });
     const [from, to] = await settledBoxes(page, 1, 'glomerulus filters', 'tubule reabsorbs');
+    const sentInput = await recordInput(page);
     await page.mouse.move(from.x + 1, from.y + from.h / 2);
     await page.mouse.down();
     await page.mouse.move(to.x + to.w - 1, to.y + to.h / 2, { steps: 12 });
@@ -449,13 +499,29 @@ test.describe('highlights', () => {
     await expect
       .poll(async () => page.evaluate(() => document.getSelection()?.toString() ?? ''))
       .toContain('tubule reabsorbs');
-    await page.waitForTimeout(500); // ... well past the 80 ms a selection takes to be evaluated
-    // ... and the button is still down, so there is no bar yet.
-    await expect(page.getByTestId('pdf-savebar')).toHaveCount(0);
+    // Browsers also report moves with no button down, and focus changes, in the middle of a drag
+    // (after a layout change, an auto-scroll): none of that is a release.
+    await page.evaluate(() => {
+      document.dispatchEvent(new PointerEvent('pointermove', { buttons: 0, bubbles: true }));
+      document.dispatchEvent(new MouseEvent('mousemove', { buttons: 0, bubbles: true }));
+      window.dispatchEvent(new Event('blur'));
+    });
+    await page.waitForTimeout(300); // ... well past the 80 ms a selection takes to be evaluated
+    // ... and the button is still down: the page knows a drag is on, and there is no bar yet.
+    try {
+      await expect(page.locator('html')).toHaveAttribute('data-sv-drag', '', { timeout: 2_000 });
+      await expect(page.getByTestId('pdf-savebar')).toHaveCount(0, { timeout: 2_000 });
+    } catch (err) {
+      throw new Error(
+        `${(err as Error).message}\nThe browser delivered, in order:\n${await sentInput()}`,
+        { cause: err },
+      );
+    }
     await page.mouse.up();
 
     const bar = page.getByTestId('pdf-savebar');
     await expect(bar).toBeVisible();
+    await expect(page.locator('html')).not.toHaveAttribute('data-sv-drag', '');
     await expect(bar.locator('blockquote')).toHaveText(
       'glomerulus filters plasma at a steady rate and the tubule reabsorbs',
     );
@@ -1108,8 +1174,11 @@ test.describe('private windows', () => {
     ).toBeVisible();
 
     // Keeping a copy is refused with the reason (checked first: a click elsewhere drops a selection).
-    await page.getByTestId('pdf-props').locator('summary').click();
+    const props = page.getByTestId('pdf-props').locator('summary');
+    await props.click();
     await expect(page.getByTestId('pdf-keep-copy')).toHaveAttribute('aria-disabled', 'true');
+    await props.click(); // closed again: the text is back where a drag can reach it
+    await page.setViewportSize({ width: 1280, height: 900 });
     // Saving a highlight is refused with the reason and cannot be triggered.
     await dragSelect(page, 1, 'glomerulus filters', 'tubule reabsorbs');
     await expect(page.getByTestId('pdf-savebar')).toContainText('does not save from private');
@@ -1130,8 +1199,10 @@ test.describe('private windows', () => {
     expect(await storedCounts(page)).toMatchObject({ documents: 1, highlights: 1 });
 
     // Turning it off again blocks the next save: the open reader follows in both directions.
+    // (A selection by range: the page has scrolled and the earlier highlight now lies under the
+    // pointer's path, which says nothing about this rule.)
     await patchSettings(page, { allowIncognitoCapture: false });
-    await dragSelect(page, 1, 'tubule reabsorbs', 'filtered water');
+    await selectText(page, 1, 'tubule reabsorbs', 'filtered water');
     await expect(page.getByTestId('pdf-save')).toHaveAttribute('aria-disabled', 'true');
     expect(await storedCounts(page)).toMatchObject({ documents: 1, highlights: 1 });
   });

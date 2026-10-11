@@ -22,6 +22,51 @@ export function splitOrigins(origins: readonly string[]): {
   };
 }
 
+/** `scheme://host` of a match pattern or an address (no port, no path); null when it is neither. */
+export function originKey(text: string): string | null {
+  const m = /^(https?|\*):\/\/(\[[^\]]+\]|[^/:]+)(?::\d+)?(?:\/.*)?$/i.exec(text.trim());
+  return m ? `${m[1]}://${m[2]}`.toLowerCase() : null;
+}
+
+export interface OtherGrant {
+  /** The exact match pattern Chrome lists; what "Revoke" removes. */
+  pattern: string;
+  /** The same without the trailing `/*`, for display. */
+  origin: string;
+  /** What StudyVault can tell it is for ("Other" when nothing it knows of uses it). */
+  purpose: string;
+}
+
+/**
+ * Host access Chrome holds for StudyVault that no other card on the page lists: not a site enabled
+ * one by one, not an all-sites grant (its own card), not a manifest host permission (developer
+ * builds). The purpose is inferred by comparing with the configured AI endpoint and sync addresses
+ * (`known`, as `originKey`s); anything else is "Other", never guessed.
+ */
+export function otherGrants(
+  granted: readonly string[],
+  listed: { persistentOrigins: readonly string[]; manifestHosts: readonly string[] },
+  known: { ai: string | null; syncServer: string | null; syncIssuer: string | null },
+): OtherGrant[] {
+  const hidden = new Set([...listed.persistentOrigins, ...listed.manifestHosts]);
+  return [...new Set(granted)]
+    .filter((pattern) => !isAllSitesPattern(pattern) && !hidden.has(pattern))
+    .sort((a, b) => a.localeCompare(b))
+    .map((pattern) => {
+      const key = originKey(pattern);
+      const purposes = [
+        key !== null && key === known.ai ? 'AI provider' : null,
+        key !== null && key === known.syncServer ? 'Sync server' : null,
+        key !== null && key === known.syncIssuer ? 'Sync sign-in provider' : null,
+      ].filter((p): p is string => p !== null);
+      return {
+        pattern,
+        origin: pattern.replace(/\/\*$/, ''),
+        purpose: purposes.length > 0 ? purposes.join(' and ') : 'Other',
+      };
+    });
+}
+
 export type DenyEdit = { ok: true; list: string[]; host: string } | { ok: false; error: string };
 
 export function addDenyEntry(list: readonly string[], input: string): DenyEdit {

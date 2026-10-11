@@ -5,6 +5,8 @@ import {
   addDenyEntry,
   missingDefaults,
   moveIndex,
+  originKey,
+  otherGrants,
   removeDenyEntry,
   sectionFromHash,
   sortedDeny,
@@ -131,5 +133,74 @@ describe('storageRows', () => {
     expect(storageLabel('meta')).toBe('Internal bookkeeping');
     expect(storageLabel('highlights')).toBe('Highlights');
     expect(storageLabel('somethingNew')).toBe('somethingNew');
+  });
+});
+
+describe('originKey', () => {
+  it('reads scheme and host from a match pattern or an address, ignoring port and path', () => {
+    expect(originKey('https://API.Example.com/*')).toBe('https://api.example.com');
+    expect(originKey('https://sync.example.org:8443/v1/ops?x=1')).toBe('https://sync.example.org');
+    expect(originKey('http://[::1]:3000/*')).toBe('http://[::1]');
+    expect(originKey('*://example.com/*')).toBe('*://example.com');
+    expect(originKey('chrome://favicon/*')).toBeNull();
+    expect(originKey('not an address')).toBeNull();
+  });
+});
+
+describe('otherGrants', () => {
+  const none = { ai: null, syncServer: null, syncIssuer: null };
+  const listed = { persistentOrigins: [] as string[], manifestHosts: [] as string[] };
+
+  it('leaves out sites enabled one by one, all-sites grants and manifest hosts', () => {
+    const out = otherGrants(
+      [
+        'https://enabled.example/*',
+        'https://*/*',
+        'http://*/*',
+        '*://*/*',
+        '<all_urls>',
+        'http://127.0.0.1/*',
+        'https://files.example.net/*',
+      ],
+      { persistentOrigins: ['https://enabled.example/*'], manifestHosts: ['http://127.0.0.1/*'] },
+      none,
+    );
+    expect(out).toEqual([
+      {
+        pattern: 'https://files.example.net/*',
+        origin: 'https://files.example.net',
+        purpose: 'Other',
+      },
+    ]);
+  });
+
+  it('names what an address is for only when it matches a configured one, and is sorted', () => {
+    const out = otherGrants(
+      [
+        'https://z.example/*',
+        'https://sync.example.org/*',
+        'https://api.ai.example/*',
+        'https://sync.example.org/*',
+      ],
+      listed,
+      {
+        ai: 'https://api.ai.example',
+        syncServer: 'https://sync.example.org',
+        syncIssuer: 'https://sync.example.org',
+      },
+    );
+    expect(out.map((g) => [g.pattern, g.purpose])).toEqual([
+      ['https://api.ai.example/*', 'AI provider'],
+      ['https://sync.example.org/*', 'Sync server and Sync sign-in provider'],
+      ['https://z.example/*', 'Other'],
+    ]);
+  });
+
+  it('does not match a different scheme of the same host', () => {
+    const out = otherGrants(['http://api.ai.example/*'], listed, {
+      ...none,
+      ai: 'https://api.ai.example',
+    });
+    expect(out[0]!.purpose).toBe('Other');
   });
 });

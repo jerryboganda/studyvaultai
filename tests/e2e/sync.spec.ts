@@ -495,6 +495,13 @@ test.describe('leaving', () => {
     }
     expect(await syncFlag(options)).toBeFalsy();
     await expect.poll(() => alarmNames(options)).toEqual([]);
+    // U-16: the optional API permissions sync asked for are given back with the data.
+    expect(
+      await options.evaluate(() =>
+        chrome.permissions.contains({ permissions: ['identity', 'alarms'] }),
+      ),
+      'identity and alarms are no longer held',
+    ).toBe(false);
     expect(sync.events.length, 'wiping the device sends nothing').toBe(requests);
     expect((await sync.stored()).length, 'the server copy is separate').toBe(stored);
 

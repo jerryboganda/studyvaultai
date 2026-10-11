@@ -13,6 +13,7 @@ import {
   Button,
   ErrorBoundary,
   InlineNotice,
+  LOCAL_PREF_KEYS,
   ToastProvider,
   errorMessage,
   useApplyTheme,
@@ -104,15 +105,17 @@ function Workspace() {
   const { settings, update } = useSettings();
   useApplyTheme(settings?.theme);
   const density = settings?.density ?? 'comfortable';
-  const [contrast, setContrast] = useLocalPref<'auto' | 'high'>('sv.dashboard.contrast', 'auto', [
+  const [contrast, setContrast] = useLocalPref<'auto' | 'high'>(
+    LOCAL_PREF_KEYS.dashboardContrast,
     'auto',
-    'high',
-  ]);
+    ['auto', 'high'],
+  );
   // WCAG 2.1.4: the "/" and "?" keys act without a modifier, so they can be turned off.
-  const [singleKeys, setSingleKeys] = useLocalPref<'on' | 'off'>('sv.dashboard.singleKeys', 'on', [
+  const [singleKeys, setSingleKeys] = useLocalPref<'on' | 'off'>(
+    LOCAL_PREF_KEYS.dashboardSingleKeys,
     'on',
-    'off',
-  ]);
+    ['on', 'off'],
+  );
   const link = useMemo(() => parseDeepLink(window.location.search), []);
 
   useEffect(() => {

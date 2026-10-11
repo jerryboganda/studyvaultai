@@ -27,10 +27,13 @@ import {
   cacheDocumentBytes,
   createDeck,
   createManualCards,
+  defaultAiSettings,
   listDocuments,
+  setAiSettings,
   upsertDocument,
 } from '@storage';
 import { freshDatabase } from '@storage/test-vault';
+import { LOCAL_PREF_KEYS } from '@ui';
 import { SyncApiProvider, type SyncApi, type SyncStatusView } from '@ui/sync';
 import { COMMANDS, makeChromeFakes, rpc, store } from '@ui/testing/fakes';
 import { Options } from './Options';
@@ -110,12 +113,12 @@ const syncApi = {
   listQuarantine: async () => [],
 } as unknown as SyncApi;
 
-async function open(settings: Partial<Settings> = {}) {
+async function open(settings: Partial<Settings> = {}, api: SyncApi = syncApi) {
   await browser.storage.local.set({
     settings: { ...defaultSettings(), denyList: SHORT_DENY, ...settings },
   });
   const view = render(
-    <SyncApiProvider value={syncApi}>
+    <SyncApiProvider value={api}>
       <Options />
     </SyncApiProvider>,
   );
@@ -334,6 +337,180 @@ describe('site access', () => {
   it('shows a helpful empty state when no site is enabled', async () => {
     await open();
     expect(await screen.findByText(/None yet\./)).toBeTruthy();
+  });
+});
+
+// U-9: access Chrome holds for one address (sync, AI, a PDF's site) that no other card lists.
+describe('site access: other access', () => {
+  const AI = 'https://api.example-ai.com/*';
+  const SYNC_SERVER = 'https://sync.example.org/*';
+  const SYNC_ISSUER = 'https://login.example.org/*';
+  const OTHER = 'https://files.example.net/*';
+  const LIST = 'Other access Chrome holds for StudyVault';
+
+  /** Chrome's own list, kept in step with request/remove by `wirePermissions`. */
+  function listGrants(...patterns: string[]) {
+    patterns.forEach((p) => granted.add(p));
+    chrome.permissions.getAll.mockImplementation(async () => ({
+      origins: [...granted],
+      permissions: [],
+    }));
+  }
+  const syncWith = (serverUrl: string, issuer: string): SyncApi =>
+    ({
+      ...syncApi,
+      status: async () => ({
+        ...syncStatus,
+        enabled: true,
+        config: { serverUrl, issuer, clientId: 'studyvault' },
+      }),
+    }) as unknown as SyncApi;
+  const card = async () => within(await screen.findByTestId('other-access'));
+
+  it('lists only what no other card shows, with the purpose when it can be told', async () => {
+    const manifestHost = 'http://127.0.0.1/*';
+    vi.spyOn(browser.runtime, 'getManifest').mockReturnValue({
+      name: 'StudyVault AI',
+      version: '0.1.0',
+      host_permissions: [manifestHost],
+    } as never);
+    await setAiSettings({
+      ...defaultAiSettings(),
+      provider: 'openai_compatible',
+      baseUrl: 'https://api.example-ai.com/v1',
+    });
+    listGrants(
+      'https://example.com/*', // enabled one by one: listed above
+      ...ALL, // all sites: its own card
+      manifestHost, // part of the manifest
+      AI,
+      SYNC_SERVER,
+      SYNC_ISSUER,
+      OTHER,
+    );
+    await open(
+      { persistentOrigins: ['https://example.com/*'] },
+      syncWith('https://sync.example.org/v1', 'https://login.example.org'),
+    );
+
+    const list = within(await (await card()).findByRole('list', { name: LIST }));
+    await waitFor(() => expect(list.getAllByRole('listitem')).toHaveLength(4));
+    const rows = list.getAllByRole('listitem').map((li) => li.textContent ?? '');
+    expect(rows).toEqual([
+      expect.stringMatching(/^https:\/\/api\.example-ai\.com.*AI provider.*Revoke/),
+      expect.stringMatching(/^https:\/\/files\.example\.net.*Other.*Revoke/),
+      expect.stringMatching(/^https:\/\/login\.example\.org.*Sync sign-in provider.*Revoke/),
+      expect.stringMatching(/^https:\/\/sync\.example\.org.*Sync server.*Revoke/),
+    ]);
+    // Each button names the exact origin it removes.
+    for (const origin of [
+      'https://api.example-ai.com',
+      'https://files.example.net',
+      'https://login.example.org',
+      'https://sync.example.org',
+    ]) {
+      expect(list.getByRole('button', { name: `Revoke access for ${origin}` })).toBeTruthy();
+    }
+  });
+
+  it('says so when nothing else is allowed', async () => {
+    listGrants('https://example.com/*', ...ALL);
+    await open({ persistentOrigins: ['https://example.com/*'] });
+    expect(await (await card()).findByText('Nothing else is allowed.')).toBeTruthy();
+    expect(screen.queryByRole('list', { name: LIST })).toBeNull();
+  });
+
+  it('revokes exactly that origin, says so, and leaves every other grant and the settings alone', async () => {
+    listGrants('https://example.com/*', SYNC_SERVER, OTHER);
+    await open({ persistentOrigins: ['https://example.com/*'] });
+    const other = await (
+      await card()
+    ).findByRole('button', {
+      name: 'Revoke access for https://files.example.net',
+    });
+
+    await userEvent.click(other);
+
+    expect(chrome.permissions.remove).toHaveBeenCalledTimes(1);
+    expect(chrome.permissions.remove).toHaveBeenCalledWith({ origins: [OTHER] });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('button', { name: 'Revoke access for https://files.example.net' }),
+      ).toBeNull(),
+    );
+    expect(
+      await (await card()).findByRole('button', { name: /Revoke access for https:\/\/sync/ }),
+    ).toBeTruthy();
+    expect([...granted].sort()).toEqual(['https://example.com/*', SYNC_SERVER].sort());
+    expect(spoken()).toContain('Revoked access for https://files.example.net.');
+    expect((await getSettings()).persistentOrigins).toEqual(['https://example.com/*']);
+    expect(rpc.called('site.sync')).toHaveLength(0);
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Other access' }));
+  });
+
+  it('reports a grant Chrome keeps, instead of claiming it was revoked', async () => {
+    listGrants(OTHER);
+    chrome.permissions.remove.mockResolvedValueOnce(false);
+    await open();
+    await userEvent.click(
+      await (
+        await card()
+      ).findByRole('button', {
+        name: 'Revoke access for https://files.example.net',
+      }),
+    );
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(
+      /Chrome still holds access for https:\/\/files\.example\.net/,
+    );
+    expect(spoken()).not.toContain('Revoked access for https://files.example.net');
+    expect(
+      screen.getByRole('button', { name: 'Revoke access for https://files.example.net' }),
+    ).toBeTruthy();
+  });
+
+  it('shows the real error when Chrome refuses, with a retry that works', async () => {
+    listGrants(OTHER);
+    chrome.permissions.remove.mockRejectedValueOnce(
+      new Error('Extension is not allowed to do that'),
+    );
+    await open();
+    await userEvent.click(
+      await (
+        await card()
+      ).findByRole('button', {
+        name: 'Revoke access for https://files.example.net',
+      }),
+    );
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Extension is not allowed to do that');
+
+    await userEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    await waitFor(() =>
+      expect(spoken()).toContain('Revoked access for https://files.example.net.'),
+    );
+    expect(granted.has(OTHER)).toBe(false);
+  });
+
+  it('still lists addresses as "Other" when the worker cannot say what they are for', async () => {
+    listGrants(SYNC_SERVER);
+    const unreachable = {
+      ...syncApi,
+      status: async () => {
+        throw new Error('StudyVault did not answer in time.');
+      },
+    } as unknown as SyncApi;
+    await open({}, unreachable);
+    const item = (
+      await (
+        await card()
+      ).findByRole('button', {
+        name: 'Revoke access for https://sync.example.org',
+      })
+    ).closest('li')!;
+    expect(within(item).getByText('Other')).toBeTruthy();
   });
 });
 
@@ -684,6 +861,107 @@ describe('delete all data', () => {
     expect(dialog.textContent).toMatch(/Delete my data from the server/);
     await userEvent.click(within(dialog).getByRole('button', { name: 'Delete everything' }));
     expect(await screen.findByText(/The copy on your sync server was not touched/)).toBeTruthy();
+  });
+
+  it('says what Chrome keeps afterwards: exported files and the server copy stay, its own data page is clean', async () => {
+    await open();
+    const text = (await openDialog()).textContent ?? '';
+    expect(text).toMatch(/the optional sign-in and timer permissions \(identity, alarms\)/);
+    expect(text).toMatch(/display\s+preferences StudyVault pages keep in this browser/);
+    expect(text).toMatch(/does not remove files you exported or backed\s+up/);
+    expect(text).toMatch(/a copy on a sync server, if you ever used sync: that is separate/);
+    expect(text).toMatch(
+      /Chrome's own page for this extension's stored data shows no\s+highlights, notes, settings or preferences/,
+    );
+    // Not a promise of "nothing at all": the new database holds one marker with no study data.
+    expect(text).toMatch(/empty apart\s+from one marker that holds no study data/);
+  });
+
+  describe('what lives outside the database (U-16)', () => {
+    const done = () => screen.findByText(/All StudyVault data was deleted from this device/);
+    const hold = (...permissions: string[]) =>
+      chrome.permissions.getAll.mockResolvedValue({ origins: [], permissions });
+    const wipe = async () =>
+      userEvent.click(
+        within(await openDialog()).getByRole('button', { name: 'Delete everything' }),
+      );
+
+    beforeEach(() => window.localStorage.clear());
+
+    it('removes the display preferences and the optional identity and alarms permissions', async () => {
+      for (const key of Object.values(LOCAL_PREF_KEYS)) window.localStorage.setItem(key, 'x');
+      window.localStorage.setItem('sv.from-an-older-build', 'x');
+      window.localStorage.setItem('someone.elses.key', 'keep');
+      hold('storage', 'sidePanel', 'identity', 'alarms');
+      await open();
+      await wipe();
+
+      const message = await done();
+      expect(chrome.permissions.remove).toHaveBeenCalledTimes(1);
+      expect(chrome.permissions.remove).toHaveBeenCalledWith({
+        permissions: ['identity', 'alarms'],
+      });
+      expect(window.localStorage.length).toBe(1);
+      expect(window.localStorage.getItem('someone.elses.key')).toBe('keep');
+      expect(message.textContent).not.toMatch(/could not|did not let/);
+    });
+
+    it('asks Chrome for nothing when the optional permissions were never granted', async () => {
+      hold('storage');
+      await open();
+      await wipe();
+      await done();
+      expect(chrome.permissions.remove).not.toHaveBeenCalled();
+    });
+
+    it('names what could not be removed instead of reporting a clean wipe', async () => {
+      window.localStorage.setItem(LOCAL_PREF_KEYS.reviewKeys, 'off');
+      hold('identity', 'alarms');
+      chrome.permissions.remove.mockRejectedValueOnce(
+        new Error('You cannot remove required permissions.'),
+      );
+      await open();
+      await wipe();
+
+      const message = (await done()).textContent ?? '';
+      expect(message).toMatch(
+        /Chrome did not let StudyVault give up its optional sign-in and timer permissions \(identity, alarms\)/,
+      );
+      // The data itself was still deleted, and the preferences that could be removed went.
+      expect(store.calls.some((c) => c.fn === 'wipeAllData')).toBe(true);
+      expect(window.localStorage.getItem(LOCAL_PREF_KEYS.reviewKeys)).toBeNull();
+    });
+
+    it('says so when the preferences cannot be cleared (storage blocked)', async () => {
+      window.localStorage.setItem(LOCAL_PREF_KEYS.dashboardContrast, 'high');
+      vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => {
+        throw new Error('The operation is insecure.');
+      });
+      await open();
+      await wipe();
+      expect((await done()).textContent).toMatch(
+        /display preferences StudyVault keeps in this browser .* could not be cleared/,
+      );
+    });
+
+    it('removes them on "Check again" too, when the wipe finished while this page was not waiting', async () => {
+      window.localStorage.setItem(LOCAL_PREF_KEYS.dashboardCollapsed, '["a"]');
+      hold('identity', 'alarms');
+      const storage = await import('@storage');
+      vi.spyOn(storage, 'wipeAllData').mockRejectedValue(
+        new storage.WipePendingError(
+          'All StudyVault data is being deleted. Try again in a moment.',
+        ),
+      );
+      await open();
+      await wipe();
+      await userEvent.click(await screen.findByRole('button', { name: 'Check again' }));
+      await done();
+      expect(window.localStorage.getItem(LOCAL_PREF_KEYS.dashboardCollapsed)).toBeNull();
+      expect(chrome.permissions.remove).toHaveBeenCalledWith({
+        permissions: ['identity', 'alarms'],
+      });
+    });
   });
 
   it('shows the real error and repeats every step on Retry', async () => {

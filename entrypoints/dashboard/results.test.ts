@@ -153,6 +153,19 @@ describe('pages', () => {
   });
 });
 
+describe('the fake vault clock', () => {
+  // The search host catches up with rows changed "since its start minus 5 s" by REAL time. A fixed
+  // calendar date in the fake aged out of that window during the day, and a live-search test that
+  // passed in the morning failed in the afternoon.
+  it('stamps rows strictly increasing and never behind the wall clock', () => {
+    const vault = new FakeVault();
+    const before = Date.now();
+    const stamps = Array.from({ length: 50 }, () => vault.tick());
+    expect(new Date(stamps[0]!).getTime()).toBeGreaterThanOrEqual(before);
+    for (let i = 1; i < stamps.length; i++) expect(stamps[i]! > stamps[i - 1]!).toBe(true);
+  });
+});
+
 /**
  * A note document repeats its highlight's quote, so one highlight matches through its own document
  * and through each note. The list shows highlights: the count, the pages and the facets must too.

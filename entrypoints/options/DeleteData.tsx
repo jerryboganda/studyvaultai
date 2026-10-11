@@ -2,12 +2,15 @@ import { useEffect, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
 import { callBackground } from '@runtime';
 import { getStorageUsage, getWipeState, wipeAllData, type WipeState } from '@storage';
-import { Button, ConfirmDialog, InlineNotice, useAction, useToast } from '@ui';
+import { Button, ConfirmDialog, InlineNotice, clearLocalPrefs, useAction, useToast } from '@ui';
 
 /**
  * "Delete all StudyVault data". `wipeAllData` removes the database and every other store, the
  * settings, session state and the site access Chrome granted; the worker is then asked to re-sync,
- * which can only unregister the always-on content script once nothing asks for it any more.
+ * which can only unregister the always-on content script once nothing asks for it any more. Two
+ * things are not reachable from the storage layer and are removed here, once the wipe is over: the
+ * `localStorage` display preferences of the extension origin (`clearLocalPrefs`) and the optional
+ * `identity` and `alarms` permissions. Both are best effort, and a failure is named in the report.
  *
  * The delete of the database cannot be taken back once requested, and another StudyVault window
  * (a dashboard, a side panel, a second settings tab) can hold it up. So the page shows the three
@@ -21,6 +24,35 @@ const isPending = (err: unknown): boolean =>
 
 const STOP_NOTE =
   "Stopping does not cancel the deletion: it still finishes when that window closes, and StudyVault here can't read or save until then.";
+
+/** The optional API permissions sync asks for (`optional_permissions` in the manifest). */
+const OPTIONAL_API_PERMISSIONS = ['identity', 'alarms'] as const;
+
+/** What could not be removed, as sentences for the report; empty when everything went. */
+async function removeLeftovers(): Promise<string[]> {
+  const problems: string[] = [];
+  try {
+    clearLocalPrefs();
+  } catch {
+    problems.push(
+      "The display preferences StudyVault keeps in this browser (such as high contrast) could not be cleared; Chrome lists them under the extension's site data.",
+    );
+  }
+  try {
+    const { permissions = [] } = (await browser.permissions.getAll?.()) ?? {};
+    const held = OPTIONAL_API_PERMISSIONS.filter((p) => permissions.includes(p));
+    if (held.length > 0) {
+      // Sync's timers go with the permission: an alarm left behind could not be cleared afterwards.
+      await Promise.resolve(browser.alarms?.clearAll?.()).catch(() => undefined);
+      if (!(await browser.permissions.remove({ permissions: held }))) throw new Error('refused');
+    }
+  } catch {
+    problems.push(
+      'Chrome did not let StudyVault give up its optional sign-in and timer permissions (identity, alarms); you can remove them on the extension details page.',
+    );
+  }
+  return problems;
+}
 
 export function DeleteData({ syncOn }: { syncOn: boolean }) {
   const { announce } = useToast();
@@ -38,6 +70,7 @@ export function DeleteData({ syncOn }: { syncOn: boolean }) {
   const finished = async () => {
     setState(null);
     setStopped(false);
+    const left = await removeLeftovers();
     // Required host permissions (developer builds) cannot be removed: do not claim otherwise.
     const { origins = [] } = (await browser.permissions.getAll?.()) ?? {};
     setDone(
@@ -45,7 +78,7 @@ export function DeleteData({ syncOn }: { syncOn: boolean }) {
         origins.length > 0
           ? ' Chrome still lists some site access for StudyVault that it does not let the extension remove; review it on the extension details page.'
           : ''
-      }${
+      }${left.length > 0 ? ` ${left.join(' ')}` : ''}${
         hadSync.current
           ? ' The copy on your sync server was not touched: it is separate, and StudyVault is no longer signed in to remove it.'
           : ''
@@ -235,7 +268,11 @@ export function DeleteData({ syncOn }: { syncOn: boolean }) {
             </li>
             <li>
               your settings (theme, colours, deny list) and the access Chrome gave StudyVault to
-              websites, so it stops starting on them.
+              websites, so it stops starting on them;
+            </li>
+            <li>
+              the optional sign-in and timer permissions (identity, alarms) and the display
+              preferences StudyVault pages keep in this browser, such as high contrast.
             </li>
           </ul>
           <p>
@@ -244,6 +281,11 @@ export function DeleteData({ syncOn }: { syncOn: boolean }) {
             {syncOn
               ? 'the copy on your sync server. That one is separate, and StudyVault will no longer be signed in to remove it afterwards: use "Delete my data from the server" in the Sync section first if you want it gone.'
               : 'a copy on a sync server, if you ever used sync: that is separate.'}
+          </p>
+          <p>
+            Afterwards Chrome&apos;s own page for this extension&apos;s stored data shows no
+            highlights, notes, settings or preferences: the database it still lists is empty apart
+            from one marker that holds no study data.
           </p>
           <p className="sv-muted sv-small">
             If another StudyVault window is open it can hold the deletion up. This page then tells

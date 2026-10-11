@@ -304,7 +304,7 @@ export function makeChromeFakes() {
     },
     permissions: {
       request: vi.fn(async (_p: { origins?: string[] }) => true),
-      remove: vi.fn(async (_p: { origins?: string[] }) => true),
+      remove: vi.fn(async (_p: { origins?: string[]; permissions?: string[] }) => true),
       contains: vi.fn(async (_p: { origins?: string[] }) => false),
       getAll: vi.fn(async () => ({ origins: [] as string[], permissions: [] as string[] })),
       onAdded: event(),

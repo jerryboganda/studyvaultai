@@ -1,6 +1,6 @@
 import { useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react';
 import { COLOR_IDS, COLOR_SWATCH, MAX_BANK_ICON_CHARS, type ColorId } from '@shared';
-import { Button, errorMessage, plural, useToast } from '@ui';
+import { Button, LOCAL_PREF_KEYS, errorMessage, plural, useToast } from '@ui';
 import { PopupMenu, Tree, type MenuItem, type TreeHandle, type TreeKeyResult } from '@ui/vault';
 import type { DashboardApi } from './api';
 import {
@@ -70,7 +70,7 @@ export function BankPane({
   const bump = useBump();
   const toast = useToast();
   const built = useMemo(() => buildTree(data), [data]);
-  const [collapsed, setCollapsed] = useLocalSet('sv.dashboard.collapsed');
+  const [collapsed, setCollapsed] = useLocalSet(LOCAL_PREF_KEYS.dashboardCollapsed);
   const [menu, setMenu] = useState<{ id: string; at: { x: number; y: number } } | null>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
 

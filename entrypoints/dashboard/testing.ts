@@ -80,15 +80,22 @@ export class FakeVault {
   cachedPdfs: Array<{ id: string; title: string; bytes: number }> = [];
   purgeAt: string | null = null;
   seq = 0;
-  clock = 1_000;
+  /** The last stamp handed out, in epoch milliseconds. */
+  clock = 0;
 
   constructor(highlights: FakeHighlight[] = []) {
     for (const h of highlights) this.addHighlight(h);
   }
 
+  /**
+   * A strictly increasing stamp that is never behind the wall clock, like the real vault's writers.
+   * The search host asks for rows changed since "its start, minus a few seconds" by REAL time, so a
+   * fixed calendar date here ages out of that window as the day goes on (a catch-up test that passed
+   * in the morning failed in the afternoon of the day it was written).
+   */
   tick(): string {
-    this.clock += 1;
-    return new Date(Date.UTC(2026, 9, 11, 10, 0, 0) + this.clock * 1000).toISOString();
+    this.clock = Math.max(this.clock + 1, Date.now());
+    return new Date(this.clock).toISOString();
   }
 
   addBank(id: string, name: string, color: ColorId = 'green') {

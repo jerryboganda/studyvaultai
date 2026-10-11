@@ -5,10 +5,12 @@
 **Pre-release, version 0.1.0, not published.** The repository (<https://github.com/jerryboganda/studyvaultai>)
 holds a Manifest V3 extension. Code exists for each phase of `ROADMAP.md` (Phase 6 covers optional
 sync against a server you operate only: there is no account system and no hosted service), but
-verification lags: on 2026-10-11 every completed GitHub Actions run of `ci.yml` had concluded `failure`, the
-release workflows had never run, and the manual checklist had not been run. Read
-`docs/PRIVACY_CLAIMS.md` for what each privacy and store statement is actually backed by, and treat
-`PRIVACY_POLICY.md` and `STORE_LISTING.md` as drafts.
+verification lags: on 2026-10-11 every completed GitHub Actions run of `ci.yml` had concluded `failure`
+(in the last, lint, typecheck, format, unit, build and the stress job succeeded and seven of eight
+`e2e` shards failed), the release workflows had never run, and the manual checklist had not been
+run. The loaded-extension e2e specs were reported passing in agent-run local runs only; no completed Actions run
+has executed their current versions. Read `docs/PRIVACY_CLAIMS.md` for what each privacy and store
+statement is actually backed by, and treat `PRIVACY_POLICY.md` and `STORE_LISTING.md` as drafts.
 
 **Stack in use** (exact pins in `package.json`, rationale in ADR-002): WXT 0.21.4, Vite 8.3.4, React
 19.3.0, TypeScript 6.0.3, Dexie 4.4.6 on IndexedDB, Zod 4.6.5, `pdfjs-dist` 6.4.299 (legacy build,
@@ -39,6 +41,7 @@ a single failing Playwright spec with one worker; do not run the full `pnpm test
 | Product and design | `PRD.md`, `ARCHITECTURE.md`, `DATA_MODEL.md`, `UX_DESIGN.md`, `ROADMAP.md`, `TEST_PLAN.md`, `REFERENCES.md` |
 | Security and privacy | `SECURITY_PRIVACY.md` (rules), `THREAT_MODEL.md`, `SECURITY.md` (reporting), `PRIVACY_POLICY.md` (draft), `docs/PRIVACY_CLAIMS.md` (evidence ledger) |
 | Release | `RELEASE.md`, `STORE_LISTING.md` (draft), `CHANGELOG.md`, `docs/MANUAL_TEST_CHECKLIST.md` |
+| Reviews | `docs/A11Y_REVIEW.md` (accessibility: findings fixed in code and unit-tested, what needs a real browser), `docs/PERF_REVIEW.md` (measured in Node and jsdom, not Chrome; ranked findings) |
 | Plans | `docs/plans/EXECUTION_BRIEF.md`, `prompts/` |
 | Decisions | `docs/adr/001` module layout; `002` toolchain pins and styling; `003` least-privilege site access and injection; `004` text anchoring and highlight rendering; `005` free text only in extension-origin surfaces; `006` PDF reader; `007` release pipeline and store-document gates; `008` `'wasm-unsafe-eval'`; `009` network egress for AI and sync; `010` module seams |
 

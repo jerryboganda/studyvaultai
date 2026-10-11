@@ -2,11 +2,11 @@ import 'fake-indexeddb/auto';
 import { createHash, webcrypto } from 'node:crypto';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { BACKUP_ERROR_CODES, BackupError, exportBackup, type Row } from '@backup';
-import { StudyVaultError } from '@shared';
+import { StudyVaultError, defaultSettings } from '@shared';
 import { backupTableRegistry, getDb, resetDbForTests, type PreMigrationInfo } from '@storage';
 import { createBackupDeps, type BackupDeps, type DownloadFile } from './deps';
 import { ExportPanel } from './ExportPanel';
@@ -16,7 +16,7 @@ import { ReadableExports } from './ReadableExports';
 import { SafetyCopy } from './SafetyCopy';
 import { SYNC_RESTORE_NOTE, explainBackupError } from './explain';
 import { passphraseStrength } from './format';
-import { BackupSection } from './BackupSection';
+import { BackupSection, INTRO_SYNC_OFF, INTRO_SYNC_ON, INTRO_SYNC_UNKNOWN } from './BackupSection';
 
 // jsdom has no crypto.subtle; Node's is what a browser would provide.
 Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true });
@@ -828,4 +828,56 @@ describe('BackupSection', () => {
     await screen.findByTestId('backup-import-review', {}, TIMEOUT);
     expect(screen.getByText(/before\.zip/)).toBeTruthy();
   }, 60_000);
+
+  // U-2: the introduction follows the sync setting instead of promising "only on this device".
+  describe('where it says your data is', () => {
+    const intro = () => screen.getByTestId('backup-intro').textContent;
+
+    it('with sync on, says it is also on the sync server and that a backup is a copy you keep', async () => {
+      const { deps } = harness({ syncActive: async () => true });
+      render(<BackupSection appVersion="1.2.3" deps={deps} />);
+      await waitFor(() => expect(intro()).toBe(INTRO_SYNC_ON));
+      expect(intro()).toBe(
+        'Your study data is on this device and, because you turned on sync, on the sync server you configured. A backup file is a copy you keep yourself.',
+      );
+      expect(intro()).not.toMatch(/only on this device|never uploads/);
+    }, 60_000);
+
+    it('with sync off, keeps saying it lives only on this device', async () => {
+      const { deps } = harness({ syncActive: async () => false });
+      render(<BackupSection appVersion="1.2.3" deps={deps} />);
+      await waitFor(() => expect(intro()).toBe(INTRO_SYNC_OFF));
+      expect(intro()).toMatch(/live only on this device/);
+    }, 60_000);
+
+    it('follows the setting while the page is open (the Sync section is on the same page)', async () => {
+      const { deps } = harness({ syncActive: async () => false });
+      render(<BackupSection appVersion="1.2.3" deps={deps} />);
+      await waitFor(() => expect(intro()).toBe(INTRO_SYNC_OFF));
+
+      const on = { ...defaultSettings(), features: { ...defaultSettings().features, sync: true } };
+      await act(async () => {
+        await fakeBrowser.storage.local.set({ settings: on });
+      });
+      await waitFor(() => expect(intro()).toBe(INTRO_SYNC_ON));
+
+      await act(async () => {
+        await fakeBrowser.storage.local.set({ settings: defaultSettings() });
+      });
+      await waitFor(() => expect(intro()).toBe(INTRO_SYNC_OFF));
+    }, 60_000);
+
+    it('says only what is true either way until the setting is known, and when it cannot be read', async () => {
+      const failing = harness({
+        syncActive: () => Promise.reject(new Error('settings unreadable')),
+      });
+      render(<BackupSection appVersion="1.2.3" deps={failing.deps} />);
+      expect(intro()).toBe(INTRO_SYNC_UNKNOWN);
+      // Give the rejected read every chance to (wrongly) change the sentence.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(intro()).toBe(INTRO_SYNC_UNKNOWN);
+      expect(intro()).toMatch(/only if you turned on sync/);
+      expect(intro()).not.toMatch(/only on this device/);
+    }, 60_000);
+  });
 });

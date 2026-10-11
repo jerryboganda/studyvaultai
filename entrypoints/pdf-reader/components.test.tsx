@@ -103,10 +103,41 @@ describe('OpenPanel', () => {
     );
     expect(screen.getByText(/redirects to cdn\.example\.net/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    // U-14: the hop cannot be observed, so the other site may already have the request, and the
+    // advice names both ways forward.
+    const advice = screen.getByText(/address redirected to another site/).textContent ?? '';
+    expect(advice).toMatch(/may already have sent that site the request/);
+    expect(advice).toMatch(/cannot be seen/);
+    expect(advice).toMatch(/no cookies and no referrer/);
+    expect(advice).toMatch(/allow that site for this download only/);
+    expect(advice).toMatch(/download the PDF in your browser and choose it below/);
+    expect(advice).not.toMatch(/never contacts/);
     await userEvent.click(
       screen.getByRole('button', { name: 'Allow access to cdn.example.net and open' }),
     );
     expect(onAllowAndOpen).toHaveBeenCalledWith(['https://cdn.example.net/*']);
+  });
+
+  it('a redirect that could not be followed says the other site may already have the request, and what to do', () => {
+    render(
+      <OpenPanel
+        {...base}
+        src={src}
+        web={{
+          t: 'failed',
+          failure: {
+            kind: 'redirect-blocked',
+            message: 'The address redirects somewhere StudyVault could not follow.',
+          },
+        }}
+      />,
+    );
+    const advice = screen.getByText(/address redirected to another site/).textContent ?? '';
+    expect(advice).toMatch(/may already have sent that site the request/);
+    expect(advice).toMatch(/did not use anything the site returned/);
+    expect(advice).toMatch(/download the PDF, then choose the downloaded file below/);
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Choose a PDF file' })).toBeTruthy();
   });
 
   it('shows download progress in a status region', () => {

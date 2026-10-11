@@ -26,8 +26,8 @@ The evidence for each privacy and store statement is tracked in `docs/PRIVACY_CL
 - Popup, side panel, settings page (eleven sections), dashboard (banks, folders, topics, tags,
   trash, search, saved searches), welcome tour, keyboard commands and context menu.
 - Local storage on IndexedDB (Dexie) with versioned migrations, an automatic pre-update copy,
-  backup and restore (zip or JSON, optional AES-256-GCM passphrase, dry-run report, atomic commit)
-  and readable exports.
+  backup and restore (zip, optional AES-256-GCM passphrase, dry-run report, atomic commit; a
+  single-file JSON variant exists in the engine but no control exports it) and readable exports.
 - Retention: knowledge points, decks and flashcards, FSRS scheduling through `ts-fsrs`, review
   sessions and study-day settings.
 - Extension-owned PDF reader on a bundled `pdfjs-dist` (ADR-006): local files and web addresses,
@@ -43,6 +43,21 @@ The evidence for each privacy and store statement is tracked in `docs/PRIVACY_CL
   and `stress.yml` (none of the last three has run yet), Dependabot configuration.
 - Documents: privacy policy and store listing drafts, claims ledger, threat model, security
   policy, manual checklist and ADRs 001 to 010.
+- Loaded-extension e2e coverage in `tests/e2e` (real Chromium, the built e2e extension, no mocked
+  Chrome API): optional AI against a fake provider (14 tests), backup, restore and import (11),
+  sync against the reference server and a stand-in OpenID Connect provider with a second profile and
+  worker suspension (13, plus 4 `test.fixme` for the native permission prompt, an ungranted origin,
+  a hosted https provider and the first-lifetime alarm wake), trusted settings (3), the settings,
+  popup and welcome-tour surfaces, the dashboard, the review session and the PDF reader (OCR resume,
+  web open, private windows through `?incognito=1`), and the extension-pages CSP. Each file was
+  reported passing in an agent-run local run on Windows; **no completed GitHub Actions run has executed
+  the current versions**, and an earlier version of several of them failed there (`docs/PRIVACY_CLAIMS.md`
+  evidence caveat). Not driven: Chrome's native permission prompt, a real incognito window, a hosted
+  provider, screen readers; those are `docs/MANUAL_TEST_CHECKLIST.md` section 12 (MT-41a, MT-42 to
+  MT-53).
+- `docs/A11Y_REVIEW.md` (27 findings, 18 fixed in code and CSS) and `docs/PERF_REVIEW.md` (23
+  findings; 8 have a fix with a test, 3 of those only in part; the rest are recommended with their
+  reasons).
 
 ### Changed
 
@@ -66,12 +81,35 @@ The evidence for each privacy and store statement is tracked in `docs/PRIVACY_CL
   the delete completed (ADR-010 amendment 2).
 - The extension-pages CSP allows `connect-src https:` and loopback http for the user-chosen AI and
   sync endpoints and web PDFs (ADR-009), and `'wasm-unsafe-eval'` for bundled decoders (ADR-008).
+- Accessibility (`docs/A11Y_REVIEW.md`): the review session's and the dashboard's single-key
+  shortcuts can be turned off (WCAG 2.1.4); focus no longer falls to the page body when the control
+  that had it is removed (`useFocusRescue`) and the note editor, narrow dashboard panels and PDF
+  save bar move focus on purpose; view, scope and "Delete all data" wait states are announced; the
+  tree twist is 24 px; selected states survive forced colours; the toast's focus ring meets 3:1.
+  Changed in code and CSS and unit-tested in jsdom; no screen reader, forced-colours or 400% zoom
+  pass has been made (MT-42 to MT-44).
+- Performance (`docs/PERF_REVIEW.md`): no second database open when the version is current; the
+  search feed reads only the banks and folders it names; per-bank and per-tag counts in one pass;
+  PDF document counts from an index; a hidden review page no longer polls; the search-cache write
+  backs off to 20 times its cost; scrolling inside a row no longer re-renders the rows. Measured in
+  Node, jsdom and fake IndexedDB, not in Chrome. Still recommended there: the seconds-long
+  search-index serialise and restore, the eager dashboard index, parsing of due cards, and a bundle
+  total at 99.4% of its budget.
+- The per-deck settings form is no longer remounted when it is saved, so its confirmation stays
+  (ADR-010 amendment 3).
 
 ### Fixed
 
 - The PDF reader no longer stores documents, highlights, recognised text or kept copies from a
   private window, or from one it cannot identify, unless "Save from private windows" is on; before
   this the guard it relied on was always false for this extension (`entrypoints/pdf-reader/privacy.ts`).
+- The PDF reader's save bar is evaluated when the mouse button is released, so a drag no longer runs
+  on into the bar and saves a quote the person did not choose (`entrypoints/pdf-reader/selectionGate.ts`,
+  commit `c9334b1`; its Actions run had not completed when this was written).
+- Sync sign-in no longer depends on the worker having restarted after the `identity` permission was
+  granted (ADR-010 amendment 3). Known limit: the first worker lifetime after `alarms` is granted
+  does not register the sync alarm listener, so a stopped worker is not woken by it until something
+  else has started the worker once.
 - A redirect to a site the person did not allow is no longer read; the reader asks first.
 - A purge now also removes AI results that used the item as a later input, evidence references in
   surviving knowledge points, and the sync conflict, quarantine and never-delivered outbox copies of
@@ -101,20 +139,27 @@ The evidence for each privacy and store statement is tracked in `docs/PRIVACY_CL
 ### Known issues
 
 - The hardening changes listed under Changed, Fixed and Security were made after the 2026-10-11
-  reviews and have unit or integration tests only: no CI run has executed them and none has been
-  exercised in a loaded Chrome (a real incognito window, `chrome.storage.session` across worker
-  suspension, a second window blocking "Delete all data", a real sign-in provider).
-- "Delete all data" does not remove the optional `identity` and `alarms` permissions or the
-  dashboard's two `localStorage` preferences (no fix yet; `docs/PRIVACY_CLAIMS.md` P15), and the
-  Settings page shows only "Deleting..." while another window blocks it (U-1).
+  reviews. Their unit and integration tests passed in the `unit` job of the last run; their e2e
+  specs passed in agent-run local runs only. None has been exercised in branded Chrome or Edge, and
+  four things no automated spec can drive remain manual: a real incognito window, a second window
+  blocking "Delete all data", a restore started twice, and a real sign-in provider
+  (`docs/MANUAL_TEST_CHECKLIST.md` MT-45, MT-46, MT-50, MT-51).
+- "Delete all data" does not remove the optional `identity` and `alarms` permissions or the four
+  per-viewer `localStorage` preferences (`sv.dashboard.contrast`, `sv.dashboard.collapsed`,
+  `sv.dashboard.singleKeys`, `sv.review.keys`), and its dialog does not say so (no fix yet;
+  `docs/PRIVACY_CLAIMS.md` P15, U-16).
 - A purge cannot reach the sync server's copy, an unsent edit of an already-delivered item, an upload
   attempted but not acknowledged, sync merge bookkeeping (up to 90 days), the cached search index
   until a search page rebuilds it, or backups (R14, R15).
-- Some in-product strings still say data stays only on the device, that deleted items stay until
-  "Delete all data", or that there is no copy to get back, which is not true once sync is used or a
-  purge exists; the PDF reader says it "never contacts a site you have not allowed" although a
-  redirect may reach the other site (`docs/PRIVACY_CLAIMS.md` "Open items", U-1 to U-4, U-8, U-9,
-  U-14).
+- The Backup section's introduction still says "Your highlights live only on this device", which is
+  not true once sync is used; Settings lists no control for the sync server, issuer and token
+  origins, and turning sync off or signing out leaves their access in place; the PDF reader's
+  redirect advice no longer promises that it never contacts a site you have not allowed but does not
+  say the other site may already have received the request (`docs/PRIVACY_CLAIMS.md` "Open items",
+  U-2, U-9, U-14).
+- The sync alarm is not registered in the worker lifetime in which `alarms` was granted (ADR-010
+  amendment 3, MT-49); no Settings control exports the single-file JSON backup (the engine and its
+  unit tests exist; `tests/e2e/backup.spec.ts` header).
 - No licence file exists (owner decision); the privacy policy, security contact and store account
   details are owner-supplied `[USER-REQUIRED]` markers.
 

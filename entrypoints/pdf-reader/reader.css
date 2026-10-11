@@ -357,6 +357,11 @@ body,
   color: var(--sv-text);
   box-shadow: var(--sv-shadow);
 }
+/* While a drag is going on (set by selectionGate.ts) the bar lets the pointer through: if it is ever on
+   screen under the pointer, the drag must go on selecting the page's text, not the bar's. */
+:root[data-sv-drag] .sv-savebar {
+  pointer-events: none;
+}
 .sv-savebar__quote {
   max-height: 6rem;
   overflow: auto;

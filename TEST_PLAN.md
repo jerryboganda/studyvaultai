@@ -80,8 +80,8 @@ so Chromium never shows a native permission prompt). Every control is driven thr
 page; the only message the build adds is `e2e.settings.patch` (extension pages only, absent from the
 production build, `scripts/check-build.mjs`; ADR-010 amendment 3), and it skips the install-time
 welcome tab. **Status: each file below was reported as passing in
-an agent-run local run on Windows (private build folder, one worker). No Actions run has executed the
-current versions.** The last run, <https://github.com/jerryboganda/studyvaultai/actions/runs/38130710828>
+an agent-run local run on Windows (private build folder, one worker). No completed Actions run has executed
+the current versions.** The last run, <https://github.com/jerryboganda/studyvaultai/actions/runs/38130710828>
 (commit `ff0377f`), failed seven of eight `e2e` shards, including earlier versions of `ai.spec.ts`
 "accessibility", `pdf.spec.ts` "private windows", `dashboard.spec.ts` "perf: 10,000 highlights" and
 "bulk ... move", and eight `sync.spec.ts` tests; these were changed afterwards.

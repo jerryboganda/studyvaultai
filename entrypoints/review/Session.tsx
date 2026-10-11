@@ -6,6 +6,7 @@ import {
   Button,
   InlineNotice,
   Kbd,
+  LOCAL_PREF_KEYS,
   errorMessage,
   truncate,
   useAction,
@@ -44,7 +45,7 @@ const STATE_LABEL = {
 } as const;
 
 /** Per-viewer convenience (localStorage): whether the single-key shortcuts act (WCAG 2.1.4). */
-const KEYS_PREF = 'sv.review.keys';
+const KEYS_PREF = LOCAL_PREF_KEYS.reviewKeys;
 function readKeysPref(): boolean {
   try {
     return window.localStorage.getItem(KEYS_PREF) !== 'off';

@@ -29,6 +29,7 @@ export {
   type ShortcutInfo,
 } from './shortcuts';
 export { LOG_PREFIX, logError } from './log';
+export { LOCAL_PREF_KEYS, LOCAL_PREF_PREFIX, clearLocalPrefs } from './localPrefs';
 export { editDenyList, grantSiteAccess, revokeSiteAccess, type GrantResult } from './siteAccess';
 export {
   ALL_SITES_ORIGINS,

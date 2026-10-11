@@ -183,7 +183,7 @@ decisions and resources that are not in it. Each box is something a person has t
       sign-in provider learn. It is also driven end to end by `tests/e2e/sync.spec.ts` against this
       server, with a stand-in OpenID Connect provider and the real `chrome.identity` flow (agent-run
       local e2e on Windows; **CI pending**: the last Actions run failed eight of that spec's tests
-      in an earlier version, and no run has executed the current one). It is not a run against a
+      in an earlier version, and no completed run has executed the current one). It is not a run against a
       hosted provider, an https origin or a native permission prompt (the four `test.fixme` entries
       there; `docs/MANUAL_TEST_CHECKLIST.md` MT-46, MT-47).
 

@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { browser } from 'wxt/browser';
 import { DEFAULT_DENY_HOSTS, DENY_LIST_SCOPE_NOTE, type Settings } from '@shared';
+import { getAiEndpointPattern } from '@storage';
 import {
   ALL_SITES_ORIGINS,
   Badge,
@@ -14,9 +15,12 @@ import {
   useAsync,
   useToast,
 } from '@ui';
+import { useSyncApi } from '@ui/sync';
 import {
   addDenyEntry,
   missingDefaults,
+  originKey,
+  otherGrants,
   removeDenyEntry,
   sortedDeny,
   splitOrigins,
@@ -310,8 +314,122 @@ export function SiteAccess({ settings }: { settings: Settings }) {
         ) : null}
       </div>
 
+      <OtherAccess settings={settings} changes={changes} />
+
       <DenyList settings={settings} />
     </section>
+  );
+}
+
+/**
+ * Access Chrome holds for one address at a time that no card above lists: the AI provider, the
+ * sync server and its sign-in provider, and whatever else was granted from a click (a PDF's site
+ * while its download runs). Chrome's own page is the only other place to see it.
+ */
+function OtherAccess({ settings, changes }: { settings: Settings; changes: number }) {
+  const { announce } = useToast();
+  const syncApi = useSyncApi();
+  const heading = useRef<HTMLHeadingElement>(null);
+  const listKey = settings.persistentOrigins.join('\n');
+
+  const grants = useAsync(
+    async () => (await browser.permissions.getAll?.())?.origins ?? [],
+    [listKey],
+    [changes],
+  );
+  // What an address is for is a best-effort lookup of its own, so a slow or failing worker never
+  // holds the list back: until it answers, an address reads "Other".
+  const known = useAsync(
+    async () => {
+      const [ai, status] = await Promise.all([
+        getAiEndpointPattern().catch(() => null),
+        syncApi.status().catch(() => null),
+      ]);
+      const key = (address: string | null | undefined) => (address ? originKey(address) : null);
+      return {
+        ai: key(ai),
+        syncServer: key(status?.config?.serverUrl),
+        syncIssuer: key(status?.config?.issuer),
+      };
+    },
+    [],
+    [changes],
+  );
+
+  const revoke = useAction(async (grant: { pattern: string; origin: string }) => {
+    // `remove` also answers false when there was nothing to remove: Chrome's own list decides.
+    await browser.permissions.remove({ origins: [grant.pattern] });
+    const { origins = [] } = (await browser.permissions.getAll?.()) ?? {};
+    grants.refresh();
+    if (origins.includes(grant.pattern)) {
+      throw new Error(
+        `Chrome still holds access for ${grant.origin}. It may be part of how this copy of StudyVault was installed; the extension details page lists it.`,
+      );
+    }
+    announce(`Revoked access for ${grant.origin}.`);
+    heading.current?.focus();
+  });
+
+  const list = otherGrants(
+    grants.data ?? [],
+    {
+      persistentOrigins: settings.persistentOrigins,
+      manifestHosts: browser.runtime.getManifest().host_permissions ?? [],
+    },
+    known.data ?? { ai: null, syncServer: null, syncIssuer: null },
+  );
+  return (
+    <div className="opt-card sv-stack sv-stack--tight" data-testid="other-access">
+      <h3 ref={heading} tabIndex={-1}>
+        Other access
+      </h3>
+      <p className="sv-muted">
+        Access Chrome gave StudyVault for one address at a time, apart from the sites above: the AI
+        provider, the sync server and its sign-in provider, and any other address you allowed from a
+        prompt. Revoking one makes the feature that used it ask again the next time you use it.
+      </p>
+      {grants.loading ? (
+        <p className="sv-muted">Checking Chrome…</p>
+      ) : grants.error ? null : list.length === 0 ? (
+        <p className="sv-muted">Nothing else is allowed.</p>
+      ) : (
+        <ul className="opt-list" aria-label="Other access Chrome holds for StudyVault">
+          {list.map((grant) => (
+            <li key={grant.pattern} className="opt-item">
+              <span className="sv-grow sv-wrap" dir="ltr">
+                {grant.origin}
+              </span>
+              <Badge>{grant.purpose}</Badge>
+              <Button
+                busy={revoke.busy}
+                aria-label={`Revoke access for ${grant.origin}`}
+                onClick={() => void revoke.run(grant)}
+              >
+                Revoke
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {revoke.error || grants.error ? (
+        <InlineNotice
+          tone="error"
+          title="That did not work"
+          action={
+            (revoke.error ? revoke.retryable : grants.retryable) ? (
+              <Button
+                busy={revoke.error ? revoke.busy : grants.refreshing}
+                onClick={revoke.error ? revoke.retry : grants.refresh}
+              >
+                Retry
+              </Button>
+            ) : undefined
+          }
+        >
+          {revoke.error ?? grants.error}
+        </InlineNotice>
+      ) : null}
+    </div>
   );
 }
 
