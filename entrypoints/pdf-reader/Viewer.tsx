@@ -1,4 +1,12 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from 'react';
 import {
   CSS_UNITS,
   LazyPages,
@@ -30,8 +38,8 @@ export interface ViewerHandle {
   /** Scroll to a rectangle of a page (raw frame) so it sits in the upper third of the view. */
   reveal(pageNumber: number, rect: PdfRect | null): void;
   focus(): void;
-  /** Draw the kept pages again (their text source changed). */
-  redraw(): void;
+  /** Draw pages again (their text source changed): one page, or every kept page. */
+  redraw(pageNumber?: number): void;
 }
 
 export type ViewerShortcut =
@@ -246,9 +254,54 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
     // paintHighlights/paintFind are stable; the document is the only real dependency.
   }, [doc, paintHighlights, paintFind]);
 
+  // The page at the top of the view and how far into it, kept up to date while scrolling, so a size
+  // change (zoom, rotation, a pane opening or closing in a fit mode) keeps the reader where they were
+  // instead of leaving the scroll offset in pixels of the old layout.
+  const topAnchor = useRef<{ page: number; frac: number } | null>(null);
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el) return undefined;
+    let frame = 0;
+    const measure = (): void => {
+      frame = 0;
+      // Last page whose top is at or above the viewport's top edge (slots are in page order).
+      let lo = 1;
+      let hi = doc.pageCount;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >> 1;
+        const slot = slots.current.get(mid);
+        if (slot && slot.offsetTop <= el.scrollTop + 1) lo = mid;
+        else hi = mid - 1;
+      }
+      const slot = slots.current.get(lo);
+      const host = hosts.current.get(lo);
+      const height = host?.offsetHeight ?? 0;
+      if (slot && height > 0) {
+        const frac = (el.scrollTop - slot.offsetTop) / height;
+        topAnchor.current = { page: lo, frac: Math.min(1, Math.max(0, frac)) };
+      }
+    };
+    const onScroll = (): void => {
+      if (frame === 0) frame = requestAnimationFrame(measure);
+    };
+    el.addEventListener('scroll', onScroll, { passive: true });
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      if (frame !== 0) cancelAnimationFrame(frame);
+    };
+  }, [doc]);
+
   // Zoom, rotation or (in fit modes) window size changed: redraw what is kept.
   const fitKey =
     props.zoom.kind === 'custom' ? props.zoom.zoom : `${props.zoom.kind}:${area.w}x${area.h}`;
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    const anchor = topAnchor.current;
+    if (!el || !anchor) return;
+    const slot = slots.current.get(anchor.page);
+    const host = hosts.current.get(anchor.page);
+    if (slot && host) el.scrollTop = Math.max(0, slot.offsetTop + anchor.frac * host.offsetHeight);
+  }, [fitKey, props.rotation]);
   useEffect(() => {
     lazy.current?.invalidate();
   }, [fitKey, props.rotation]);
@@ -402,7 +455,8 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
         el.scrollTop = Math.max(0, slot.offsetTop + r.y * h - el.clientHeight / 3);
       },
       focus: () => scroller.current?.focus(),
-      redraw: () => lazy.current?.invalidate(),
+      redraw: (n) =>
+        n === undefined ? lazy.current?.invalidate() : lazy.current?.invalidatePage(n),
     }),
     // cssSize/rotationOf/infoFor close over the latest render; the handle is re-created each time.
     // eslint-disable-next-line react-hooks/exhaustive-deps

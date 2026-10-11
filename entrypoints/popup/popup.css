@@ -19,6 +19,10 @@ body {
   padding: var(--sv-space-3) var(--sv-space-4);
   overflow-y: auto;
 }
+.popup__study {
+  padding: var(--sv-space-2) var(--sv-space-4);
+  border-top: 1px solid var(--sv-border);
+}
 .popup__foot {
   padding: var(--sv-space-2) var(--sv-space-3);
   border-top: 1px solid var(--sv-border);

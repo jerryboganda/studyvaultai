@@ -5,6 +5,20 @@ import { z } from 'zod';
 z.config({ jitless: true });
 
 /**
+ * A note attached to no highlight has no kind, priority or status: the vault sends null and the
+ * index holds '' and 0. They match no `kind:` or `status:` filter and are not counted in those
+ * facets; priority 0 sorts last under `sort: 'priority'` and satisfies only `priority:<n` filters.
+ */
+const kindOrEmpty = z
+  .string()
+  .nullable()
+  .transform((v) => v ?? '');
+const priorityOrZero = z
+  .number()
+  .nullable()
+  .transform((v) => v ?? 0);
+
+/**
  * One searchable unit. The vault (`listSearchDocuments` in @storage) produces these; this package only
  * consumes them. A `highlight` document carries the immutable quote plus the user's inline comment; a
  * `note` document is a user-authored note attached to `highlightId` (or free-standing when null).
@@ -22,9 +36,9 @@ export const SearchDocumentSchema = z.object({
   tags: z.array(z.string()),
   banks: z.array(z.string()),
   folderPath: z.array(z.string()),
-  kind: z.string(),
-  priority: z.number(),
-  resolveStatus: z.string(),
+  kind: kindOrEmpty,
+  priority: priorityOrZero,
+  resolveStatus: kindOrEmpty,
   updatedAt: z.string(),
   deletedAt: z.string().nullable(),
 });

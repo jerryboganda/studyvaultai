@@ -1,3 +1,4 @@
+import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -11,6 +12,8 @@ import {
   type Settings,
 } from '@shared';
 import { getSettings } from '@runtime';
+import { createDeck, createManualCards } from '@storage';
+import { freshDatabase } from '@storage/test-vault';
 import {
   COMMANDS,
   makeChromeFakes,
@@ -23,7 +26,13 @@ import {
 } from '@ui/testing/fakes';
 import { Popup } from './Popup';
 
-vi.mock('@storage', async () => (await import('@ui/testing/fakes')).store.module);
+// The pages' highlight and bank reads go through the in-memory fake; the review counts and the
+// bank presets are real code over fake-indexeddb.
+vi.mock('@storage', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  const { store: fake } = await import('@ui/testing/fakes');
+  return { ...actual, ...fake.module } as never;
+});
 vi.mock('@runtime', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   const { rpc: fake } = await import('@ui/testing/fakes');
@@ -51,7 +60,9 @@ const tabAt = (url: string | undefined) =>
 
 async function openOn(url: string | undefined, settings: Partial<Settings> = {}) {
   await browser.storage.local.set({ settings: { ...defaultSettings(), ...settings } });
-  vi.spyOn(browser.tabs, 'query').mockImplementation(async () => tabAt(url));
+  // A query with a url filter is "is this extension page already open?": nothing is.
+  vi.spyOn(browser.tabs, 'query').mockImplementation((async (q?: { url?: unknown }) =>
+    q && 'url' in q ? [] : tabAt(url)) as never);
   return render(<Popup />);
 }
 
@@ -60,8 +71,8 @@ const main = () => within(screen.getByRole('main'));
 /** What the surface's one polite status region holds right now. */
 const spoken = () => screen.getByRole('status').textContent ?? '';
 
-beforeEach(() => {
-  fakeBrowser.reset();
+beforeEach(async () => {
+  await freshDatabase(); // also resets fakeBrowser
   store.reset();
   rpc.reset();
   chrome = makeChromeFakes();
@@ -550,5 +561,157 @@ describe('status region', () => {
     await screen.findByText('StudyVault is not running on this tab');
     expect(screen.getAllByRole('status')).toHaveLength(1);
     expect(screen.getByRole('status').getAttribute('aria-live')).toBe('polite');
+  });
+});
+
+describe('PDF tabs: the StudyVault reader', () => {
+  it('offers the reader with the tab address, explains the built-in viewer once, and closes', async () => {
+    rpc.background['site.status'] = () => siteStatus();
+    const create = vi.spyOn(browser.tabs, 'create').mockResolvedValue({} as never);
+    await openOn('https://example.com/papers/cell.pdf#page=3');
+
+    expect(await screen.findByText("PDFs open in Chrome's built-in viewer")).toBeTruthy();
+    expect(screen.getAllByText(/cannot highlight here/)).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: /activate/i })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Open side panel' })).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Open in StudyVault reader' }));
+
+    expect(create).toHaveBeenCalledTimes(1);
+    const url = new URL((create.mock.calls[0]![0] as { url: string }).url);
+    expect(url.pathname).toBe('/pdf-reader.html');
+    // The fragment is dropped: the reader fetches the document, not a place in it.
+    expect(url.searchParams.get('src')).toBe('https://example.com/papers/cell.pdf');
+    await waitFor(() => expect(window.close).toHaveBeenCalled());
+  });
+
+  it('is shown without waiting for the worker', async () => {
+    rpc.background['site.status'] = () => new Promise(() => undefined); // never answers
+    await openOn('https://example.com/papers/cell.pdf');
+    expect(await screen.findByRole('button', { name: 'Open in StudyVault reader' })).toBeTruthy();
+  });
+
+  it('a plain-http PDF is not offered as a web address: says so, still lets a file be chosen', async () => {
+    rpc.background['site.status'] = () => siteStatus();
+    const create = vi.spyOn(browser.tabs, 'create').mockResolvedValue({} as never);
+    await openOn('http://example.com/papers/cell.pdf');
+
+    expect(await screen.findByText(/Only https addresses can be opened from the web/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Open in StudyVault reader' })).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Open the StudyVault reader' }));
+
+    const url = new URL((create.mock.calls[0]![0] as { url: string }).url);
+    expect(url.pathname).toBe('/pdf-reader.html');
+    expect(url.search).toBe('');
+  });
+
+  it('a local PDF file says it is not a web address', async () => {
+    await openOn('file:///C:/study/cell.pdf');
+    expect(await screen.findByText(/This PDF is not on the web/)).toBeTruthy();
+    expect(screen.getByText(/choose the file from your computer/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Open the StudyVault reader' })).toBeTruthy();
+    // Not a PDF: the ordinary "cannot run here" note, no reader.
+    cleanup();
+    await openOn('file:///C:/study/notes.html');
+    expect(await screen.findByText('StudyVault cannot run on this page')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /reader/i })).toBeNull();
+  });
+
+  it('is not offered while the PDF reader is turned off, and says where to turn it on', async () => {
+    rpc.background['site.status'] = () => siteStatus();
+    await openOn('https://example.com/papers/cell.pdf', {
+      features: { ...defaultSettings().features, pdfReader: false },
+    });
+    expect(await screen.findByText(/PDF reader is turned off/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /StudyVault reader/ })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Open side panel' })).toBeTruthy();
+  });
+
+  it('a PDF on a denied site stays denied: no reader button', async () => {
+    rpc.background['site.status'] = () => siteStatus({ denied: true });
+    await openOn('https://paypal.com/statement.pdf');
+    expect(await screen.findByText('StudyVault is off on paypal.com')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /StudyVault reader/ })).toBeNull();
+  });
+});
+
+describe('study bar: review and dashboard', () => {
+  const basic = (n: number) => ({
+    template: 'basic' as const,
+    question: `Question ${n}?`,
+    answer: `Answer ${n}`,
+  });
+
+  it('shows the real number of cards due, live, and Start review opens the review page', async () => {
+    rpc.background['site.status'] = () => siteStatus();
+    const deck = await createDeck({ name: 'Cardiology' });
+    await createManualCards([basic(1), basic(2), basic(3)], { deckId: deck.id });
+    const create = vi.spyOn(browser.tabs, 'create').mockResolvedValue({} as never);
+    await openOn('https://example.com/notes');
+
+    const badge = await screen.findByTestId('popup-due');
+    await waitFor(() => expect(badge.textContent).toContain('3 cards due'));
+    expect(screen.getByText(/3 new · 0 learning · 0 review/)).toBeTruthy();
+
+    // Live: a card made in another window raises the count without a reload.
+    await createManualCards([basic(4)], { deckId: deck.id });
+    await waitFor(() => expect(badge.textContent).toContain('4 cards due'));
+
+    await userEvent.click(screen.getByRole('button', { name: 'Start review' }));
+    const url = new URL((create.mock.calls[0]![0] as { url: string }).url);
+    expect(url.pathname).toBe('/review.html');
+    expect(url.searchParams.get('start')).toBe('1');
+    await waitFor(() => expect(window.close).toHaveBeenCalled());
+  });
+
+  it('is there in every state, next to Open side panel', async () => {
+    await openOn('chrome://extensions');
+    expect(await screen.findByRole('button', { name: 'Open dashboard' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Open side panel' })).toBeTruthy();
+    expect(await screen.findByTestId('popup-due')).toBeTruthy();
+  });
+
+  it('says there are no flashcards instead of showing a zero, and does not promise to "start"', async () => {
+    rpc.background['site.status'] = () => siteStatus();
+    await openOn('https://example.com/notes');
+    expect((await screen.findByTestId('popup-due')).textContent).toBe('No flashcards yet');
+    expect(screen.queryByRole('button', { name: 'Start review' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Open review' })).toBeTruthy();
+  });
+
+  it('review turned off: no count, no review button, nothing queried, dashboard still there', async () => {
+    rpc.background['site.status'] = () => siteStatus();
+    const deck = await createDeck({ name: 'Cardiology' });
+    await createManualCards([basic(1)], { deckId: deck.id });
+    await openOn('https://example.com/notes', {
+      features: { ...defaultSettings().features, review: false },
+    });
+    expect(await screen.findByRole('button', { name: 'Open dashboard' })).toBeTruthy();
+    expect(screen.queryByTestId('popup-due')).toBeNull();
+    expect(screen.queryByRole('button', { name: /review/i })).toBeNull();
+    expect(screen.queryByText(/cards? due/)).toBeNull();
+  });
+
+  it('Open dashboard opens dashboard.html in a tab', async () => {
+    rpc.background['site.status'] = () => siteStatus();
+    const create = vi.spyOn(browser.tabs, 'create').mockResolvedValue({} as never);
+    await openOn('https://example.com/notes');
+    await userEvent.click(await screen.findByRole('button', { name: 'Open dashboard' }));
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect((create.mock.calls[0]![0] as { url: string }).url).toMatch(/\/dashboard\.html$/);
+    await waitFor(() => expect(window.close).toHaveBeenCalled());
+  });
+
+  it('a failure to open the page is shown with a Retry, not swallowed', async () => {
+    rpc.background['site.status'] = () => siteStatus();
+    vi.spyOn(browser.tabs, 'create')
+      .mockRejectedValueOnce(new Error('Tabs are locked'))
+      .mockResolvedValue({} as never);
+    await openOn('https://example.com/notes');
+    await userEvent.click(await screen.findByRole('button', { name: 'Open dashboard' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Tabs are locked');
+    await userEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
   });
 });

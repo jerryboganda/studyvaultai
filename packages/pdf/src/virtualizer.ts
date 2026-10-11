@@ -55,6 +55,13 @@ export class LazyPages<H> {
     this.sync();
   }
 
+  /** One page changed (its text source did): draw it again if it is kept, leave the others alone. */
+  invalidatePage(n: number): void {
+    if (this.destroyed || !this.entries.has(n)) return;
+    this.drop(n);
+    this.sync();
+  }
+
   destroy(): void {
     this.destroyed = true;
     for (const n of [...this.entries.keys()]) this.drop(n);

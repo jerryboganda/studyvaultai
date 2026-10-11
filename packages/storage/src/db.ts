@@ -1,4 +1,12 @@
-import Dexie, { type Table, type Transaction } from 'dexie';
+import Dexie, {
+  type DBCore,
+  type DBCoreMutateRequest,
+  type DBCoreMutateResponse,
+  type DBCoreTable,
+  type DBCoreTransaction,
+  type Table,
+  type Transaction,
+} from 'dexie';
 import {
   HighlightBank as HighlightBankSchema,
   SCHEMA_VERSION,
@@ -64,8 +72,27 @@ export const SCHEMA_V2 = {
   meta: 'key',
 } as const;
 
+/**
+ * Dexie store definitions of schema version 3 (optional sync, Phase 6). Additive: no vault table
+ * changes. `syncOps` gains the two fields the outbox needs (`seq`: insertion order that survives a
+ * coalescing replace; `pending`: 1 until the server acknowledged it, so "oldest unsent" is an index
+ * range and not a scan of every sent row) and three device-local bookkeeping tables are added.
+ * None of them is ever backed up, restored or synchronised.
+ */
+export const SCHEMA_V3 = {
+  ...SCHEMA_V2,
+  syncOps:
+    'id, entityType, entityId, [entityType+entityId], clientId, createdAt, sentAt, seq, [pending+seq]',
+  /** Merge metadata of one entity (EntityMeta). `tombstoneAt` drives retention pruning. */
+  syncEntityMeta: '[entityType+entityId], entityType, tombstoneAt',
+  /** Both versions of a concurrent edit or a delete-versus-edit, until the user decides. */
+  syncConflicts: 'id, [entityType+entityId], kind, detectedAt',
+  /** Remote operations (or local rows) that were not applied, with the reason. */
+  syncQuarantine: 'id, entityType, reason, at',
+} as const;
+
 /** The Dexie (IndexedDB) version this build declares. Not the per-record `schemaVersion`. */
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 
 /** Row of a table whose entity schema belongs to another module (study, ai, sync). */
 export type ForeignRow = { id: string } & Record<string, unknown>;
@@ -131,7 +158,236 @@ export async function upgradeV1ToV2(tx: Transaction): Promise<UpgradeStats> {
   return stats;
 }
 
+export interface UpgradeV3Stats {
+  /** `syncOps` rows from a pre-release build that were given `seq` / `pending` / `attempts`. */
+  opsFixed: number;
+}
+
+/**
+ * v2 -> v3. The new tables start empty; the only thing to carry over is `syncOps`, which no released
+ * build wrote to (the table was reserved in v2), so this is defensive: a row that already has the
+ * outbox fields is left exactly as it is. The schema marker keeps what earlier steps recorded (a
+ * v1 upgrade's `migratedFrom: 1` stays) and only advances `dbVersion`.
+ */
+export async function upgradeV2ToV3(tx: Transaction): Promise<UpgradeV3Stats> {
+  const stats: UpgradeV3Stats = { opsFixed: 0 };
+  const ts = new Date().toISOString();
+
+  const ops = tx.table('syncOps');
+  const rows = (await ops.toArray()) as Array<Record<string, unknown>>;
+  const missing = rows
+    .filter((r) => typeof r.seq !== 'number')
+    .sort((a, b) => String(a.createdAt ?? '').localeCompare(String(b.createdAt ?? '')));
+  let next = rows.reduce((n, r) => Math.max(n, typeof r.seq === 'number' ? r.seq : 0), 0);
+  const fixed = missing.map((r) => ({
+    ...r,
+    seq: ++next,
+    attempts: typeof r.attempts === 'number' ? r.attempts : 0,
+    pending: typeof r.sentAt === 'number' ? 0 : 1,
+  }));
+  if (fixed.length > 0) await ops.bulkPut(fixed);
+  stats.opsFixed = fixed.length;
+
+  const metaTable = tx.table('meta');
+  const previous = (await metaTable.get(META_SCHEMA_KEY)) as MetaRow | undefined;
+  const prior =
+    previous && typeof previous.value === 'object' && previous.value !== null
+      ? (previous.value as Record<string, unknown>)
+      : {};
+  const marker: MetaRow = {
+    key: META_SCHEMA_KEY,
+    value: {
+      recordSchemaVersion: SCHEMA_VERSION,
+      migratedFrom: 2,
+      migratedAt: ts,
+      ...prior,
+      dbVersion: 3,
+      v3MigratedAt: ts,
+      v3OpsFixed: stats.opsFixed,
+    },
+    updatedAt: ts,
+  };
+  await metaTable.put(marker);
+  return stats;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Write interception (optional sync)
+// ---------------------------------------------------------------------------------------------
+
+/** One row-level effect of a successful write, as the sync layer needs it. */
+export interface ObservedWrite {
+  /** The row before the write (null: created) ... */
+  before: Record<string, unknown> | null;
+  /** ... and after it (null: physically deleted). */
+  after: Record<string, unknown> | null;
+}
+
+/**
+ * What the optional sync layer plugs into a connection (see sync.ts). The connection has none until
+ * the user turns sync on: with `syncInterceptor === null` the middleware below is a pass-through.
+ */
+export interface WriteInterceptor {
+  /** Tables whose writes are reported. */
+  readonly tables: ReadonlySet<string>;
+  /**
+   * Object stores added to every readwrite transaction that includes an observed table, so the
+   * bookkeeping commits or fails together with the write itself.
+   */
+  readonly scope: readonly string[];
+  /**
+   * Called inside the writing transaction, after the write succeeded. `trans` is the raw
+   * IDBTransaction (the DBCore base transaction): use `trans.objectStore(name)` for every access.
+   * Dexie's own table API must not be used here: Dexie keeps its transaction zone, and the write
+   * lock of `modify`/`update`/`delete`, only across awaits it can see, so a native `await` chain
+   * would wait for a lock its own caller holds. If this rejects the transaction is aborted: the
+   * write and its bookkeeping are both gone.
+   */
+  record(
+    table: string,
+    writes: readonly ObservedWrite[],
+    trans: DBCoreTransaction,
+  ): PromiseLike<void>;
+  /** A write happened in a transaction that was opened before the interceptor was installed. */
+  missed?(table: string): void;
+}
+
+/** Transactions whose writes must not be reported (sync's own applier, restore). */
+const suppressed = new WeakSet<object>();
+/** Transactions whose scope was extended by the middleware. */
+const scoped = new WeakSet<object>();
+
+/**
+ * Exclude the writes of this transaction from sync capture. Call as the first statement of the
+ * transaction callback. Used by the sync applier (a remote change must not be echoed back as a local
+ * edit) and available to whoever replaces data wholesale.
+ */
+export function suppressSyncCapture(tx: Transaction): void {
+  suppressed.add(tx.idbtrans as unknown as object);
+}
+
+type Existing = Array<Record<string, unknown> | undefined>;
+
+function observedMutate(
+  table: DBCoreTable,
+  req: DBCoreMutateRequest,
+  it: WriteInterceptor,
+): PromiseLike<DBCoreMutateResponse> {
+  const extract = table.schema.primaryKey.extractKey;
+  if (!extract) return table.mutate(req); // outbound keys: no StudyVault table has them
+  const P = Dexie.Promise;
+
+  let keys: unknown[] = [];
+  let existing: PromiseLike<Existing>;
+  switch (req.type) {
+    case 'add':
+      keys = req.keys ?? req.values.map(extract);
+      existing = P.resolve([] as Existing);
+      break;
+    case 'put':
+      keys = req.keys ?? req.values.map(extract);
+      existing = table.getMany({ trans: req.trans, keys });
+      break;
+    case 'delete':
+      keys = req.keys;
+      existing = table.getMany({ trans: req.trans, keys });
+      break;
+    case 'deleteRange':
+      existing = table
+        .query({
+          trans: req.trans,
+          values: true,
+          query: { index: table.schema.primaryKey, range: req.range },
+        })
+        .then((r) => r.result as Existing);
+      break;
+  }
+
+  return existing.then((before) =>
+    table.mutate(req).then((res) => {
+      const failed = (i: number) => res.failures !== undefined && Object.hasOwn(res.failures, i);
+      const writes: ObservedWrite[] = [];
+      if (req.type === 'add' || req.type === 'put') {
+        req.values.forEach((value, i) => {
+          if (!failed(i)) writes.push({ before: before[i] ?? null, after: value });
+        });
+      } else if (req.type === 'delete') {
+        keys.forEach((_key, i) => {
+          const old = before[i];
+          if (old && !failed(i)) writes.push({ before: old, after: null });
+        });
+      } else {
+        for (const old of before) if (old) writes.push({ before: old, after: null });
+      }
+      if (writes.length === 0) return res;
+      return P.resolve(it.record(table.name, writes, req.trans)).then(
+        () => res,
+        (err: unknown) => {
+          // The row is already written inside this transaction: take both back.
+          try {
+            (req.trans as DBCoreTransaction).abort();
+          } catch {
+            /* already aborted */
+          }
+          throw err;
+        },
+      );
+    }),
+  );
+}
+
+/**
+ * DBCore middleware (outermost, so it sees what the repositories asked for). It is a pass-through
+ * unless `getInterceptor()` returns something, in which case:
+ *  - readwrite transactions that include an observed table also open the interceptor's bookkeeping
+ *    stores, so no repository needs to know sync exists;
+ *  - every successful add/put/delete/deleteRange (bulk operations, Collection.modify and soft deletes
+ *    included: they are all `mutate` requests) is reported with the row before and after.
+ */
+function syncCaptureMiddleware(getInterceptor: () => WriteInterceptor | null) {
+  return {
+    stack: 'dbcore' as const,
+    name: 'studyvault-sync-capture',
+    level: 10,
+    create(down: DBCore): DBCore {
+      return {
+        ...down,
+        transaction(stores, mode, options) {
+          const it = getInterceptor();
+          if (!it || mode !== 'readwrite' || !stores.some((s) => it.tables.has(s))) {
+            return down.transaction(stores, mode, options);
+          }
+          const trans = down.transaction([...new Set([...stores, ...it.scope])], mode, options);
+          scoped.add(trans);
+          return trans;
+        },
+        table(name) {
+          const table = down.table(name);
+          return {
+            ...table,
+            mutate(req) {
+              const it = getInterceptor();
+              if (!it || !it.tables.has(name) || suppressed.has(req.trans)) {
+                return table.mutate(req);
+              }
+              if (!scoped.has(req.trans)) {
+                it.missed?.(name);
+                return table.mutate(req);
+              }
+              // Dexie hands out its own thenable here, which every consumer treats as a Promise.
+              return observedMutate(table, req, it) as Promise<DBCoreMutateResponse>;
+            },
+          };
+        },
+      };
+    },
+  };
+}
+
 export class StudyVaultDb extends Dexie {
+  /** Installed by sync.ts while Settings.features.sync is on; null otherwise. */
+  syncInterceptor: WriteInterceptor | null = null;
+
   declare banks: Table<BankRecord, string>;
   declare sources: Table<Source, string>;
   declare highlights: Table<Highlight, string>;
@@ -148,7 +404,11 @@ export class StudyVaultDb extends Dexie {
   declare documents: Table<PdfDocument, string>;
   declare attachments: Table<Attachment, string>;
   declare ocrPages: Table<OcrPage, [string, number]>;
+  /** Outbox rows are typed in sync.ts (`SyncOpRow`); other modules only ever see a keyed row. */
   declare syncOps: Table<ForeignRow, string>;
+  declare syncEntityMeta: Table<Record<string, unknown>, [string, string]>;
+  declare syncConflicts: Table<{ id: string } & Record<string, unknown>, string>;
+  declare syncQuarantine: Table<{ id: string } & Record<string, unknown>, string>;
   declare meta: Table<MetaRow, string>;
 
   constructor(name: string = DB_NAME) {
@@ -159,6 +419,12 @@ export class StudyVaultDb extends Dexie {
       .upgrade(async (tx) => {
         await upgradeV1ToV2(tx);
       });
+    this.version(3)
+      .stores(SCHEMA_V3)
+      .upgrade(async (tx) => {
+        await upgradeV2ToV3(tx);
+      });
+    this.use(syncCaptureMiddleware(() => this.syncInterceptor));
   }
 }
 
@@ -298,11 +564,24 @@ export function getDb(): StudyVaultDb {
   return (instance ??= new StudyVaultDb());
 }
 
+/**
+ * Runs once per connection, after it is open and before the first callback. sync.ts registers it so
+ * that every extension context (service worker, side panel, options, PDF reader) learns, before it
+ * writes anything, whether Settings.features.sync is on and must record its changes.
+ */
+export type ConnectionGate = (db: StudyVaultDb) => PromiseLike<void> | void;
+let connectionGate: ConnectionGate | null = null;
+
+export function setConnectionGate(gate: ConnectionGate | null): void {
+  connectionGate = gate;
+}
+
 /** Open the shared database if needed, run `fn`, and surface every failure as a StudyVaultError. */
 export async function withDb<T>(fn: (db: StudyVaultDb) => Promise<T>): Promise<T> {
   try {
     const db = getDb();
     if (!db.isOpen()) await openDatabase(db);
+    if (connectionGate) await connectionGate(db);
     return await fn(db);
   } catch (err) {
     throw toStorageError(err);
@@ -322,7 +601,7 @@ export const NEWER_DATA_MESSAGE =
  * writes SCHEMA_VERSION, so a clean result stays clean); a positive result is re-checked each time
  * so that wiping the data, or replacing it, lifts the refusal.
  */
-async function assertNoNewerRows(db: StudyVaultDb): Promise<void> {
+export async function assertNoNewerRows(db: StudyVaultDb): Promise<void> {
   if (verifiedCurrent) return;
   const refuse = () => new StudyVaultError('storage_unavailable', NEWER_DATA_MESSAGE);
   // Big tables: probe the schemaVersion index (numbers above ours; strings and junk sort after

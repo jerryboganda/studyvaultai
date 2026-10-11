@@ -10,6 +10,7 @@ export * from './search';
 export * from './virtualizer';
 export * from './overlay';
 export * from './ocr';
+export * from './outline';
 export * from './store';
 export {
   PdfOpenError,

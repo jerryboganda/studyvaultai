@@ -82,8 +82,8 @@ LIMITATIONS, STATED PLAINLY
 
 ## Permission justifications (Privacy practices tab)
 
-The manifest at the time of writing declares exactly the five permissions below and two optional host
-patterns; `scripts/check-build.mjs` asserts the same set on every build. There is no
+The manifest at the time of writing declares exactly the five permissions below, two optional host
+patterns and two optional API permissions (`identity`, `alarms`, requested only when sync is turned on); `scripts/check-build.mjs` asserts the same set on every build. There is no
 `host_permissions` entry, no `content_scripts` entry (scripts are injected or registered at run time),
 no `web_accessible_resources` and no `externally_connectable`.
 
@@ -94,12 +94,15 @@ no `web_accessible_resources` and no `externally_connectable`.
 | `storage` | Stores the user's settings (theme, colours, deny list, enabled sites, optional-feature switches) and small change markers that let open StudyVault windows refresh. Saved highlights live in IndexedDB, not in this storage. |
 | `sidePanel` | Shows the StudyVault companion panel (highlights of the current page, recent saves, banks, notes) beside the page. |
 | `contextMenus` | Adds one item, "Save selection to StudyVault", to the right-click menu when text is selected on an http(s) page. |
+| `identity` (optional permission) | Never granted at install. Requested at run time, from a click, only when the user turns on the optional sync feature and presses sign in. Used for `chrome.identity.launchWebAuthFlow` so the browser can open the sign-in page of the sync service the user configured and return the result. Not used by any other feature. |
+| `alarms` (optional permission) | Never granted at install. Requested at run time only when the user turns on the optional sync feature. Used to schedule a periodic sync while the browser is open. No alarm is created while sync is off. |
 | `https://*/*`, `http://*/*` (optional host permissions) | Never granted at install. Requested at run time, from a user gesture, only when the user chooses "always enable on this site" (one origin) or the explicit "all sites" option in Settings. Needed because activeTab access ends at navigation: without a persistent grant a saved highlight could not be shown again on the next visit. The deny list is applied as an exclusion, and every grant can be revoked in Settings. |
 
 ### Permissions deliberately not requested
 
-`tabs`, `history`, `bookmarks`, `cookies`, `webRequest`, `webNavigation`, `downloads`, `alarms`,
-`notifications`, `identity`, `declarativeNetRequest`, `<all_urls>` and any `host_permissions`.
+`tabs`, `history`, `bookmarks`, `cookies`, `webRequest`, `webNavigation`, `downloads`, `notifications`,
+`declarativeNetRequest`, `<all_urls>` and any `host_permissions`. (`identity` and `alarms` exist only as
+*optional* permissions for the optional sync feature.)
 
 ### Permissions or changes to re-check before submission
 
@@ -109,9 +112,9 @@ manifest, update this table, `PRIVACY_POLICY.md` and `scripts/check-build.mjs` i
 | Change | Why it matters | Status |
 | --- | --- | --- |
 | Reader fetches a web PDF from the extension page | Needs the PDF's origin granted (optional host permission requested at that moment) and a `connect-src` that allows it. | [USER-REQUIRED: confirm against `docs/adr/006` and the built manifest] |
-| AI provider endpoint | `connect-src` must name the provider the user configured, or the call must run from a context with its own policy. Must stay user-initiated. | [USER-REQUIRED: confirm against the built manifest] |
-| Sync server endpoint | Same as above; must stay off until the user signs in. | [USER-REQUIRED: confirm against the built manifest] |
-| `downloads`, `alarms`, `notifications` | Listed in SECURITY_PRIVACY.md as optional when a feature needs them (file export, review reminders). Request only with the feature, never "just in case". | none requested today |
+| AI provider endpoint | Extension-page CSP is `connect-src 'self' https: http://localhost:* http://127.0.0.1:*` (ADR-009) because the endpoint is user-chosen. Requires the feature flag, a consent token for the exact previewed payload, and a per-origin host permission requested from a click. | confirmed in `docs/adr/009`; [USER-REQUIRED: re-confirm against the submitted build] |
+| Sync server endpoint | Same policy as above; stays off until the user enables sync and signs in; needs `identity` and `alarms` (optional) and a per-origin host permission. | confirmed in `docs/adr/009`; [USER-REQUIRED: re-confirm against the submitted build] |
+| `downloads`, `notifications` | Listed in SECURITY_PRIVACY.md as optional when a feature needs them (file export, review reminders). Request only with the feature, never "just in case". | none requested today |
 
 ## Remote code
 

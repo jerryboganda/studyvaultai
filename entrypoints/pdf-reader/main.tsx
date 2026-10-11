@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client';
 import { configurePdfRuntime, parseReaderParams } from '@pdf';
 import { bundledRuntime } from '@pdf/assets';
 import { ErrorBoundary } from '@ui';
-import { getOcrPort } from './ocr';
+import { createOcrService } from './ocr';
 import { Reader } from './Reader';
 import { createStorageStore } from './store';
 
@@ -16,7 +16,7 @@ createRoot(document.getElementById('root')!).render(
   <ErrorBoundary surface="PDF reader">
     <Reader
       store={createStorageStore()}
-      ocr={getOcrPort()}
+      ocr={createOcrService()}
       params={parseReaderParams(window.location.search)}
     />
   </ErrorBoundary>,

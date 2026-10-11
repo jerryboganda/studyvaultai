@@ -60,6 +60,11 @@ export interface SaveOcrPageInput {
   language: string;
   engine: string;
   confidence: number | null;
+  /**
+   * The person's line-by-line corrections of the page, one line per recognised line joined by a line feed.
+   * Omitted: an existing correction is kept; null: cleared. The recognised text is never edited.
+   */
+  correctedText?: string | null;
 }
 
 export interface StoredOcrPage {
@@ -67,6 +72,16 @@ export interface StoredOcrPage {
   text: string;
   correctedText: string | null;
   words: OcrStoredWord[];
+}
+
+/** A document whose bytes StudyVault keeps (user-approved), for the stored-copy manager. */
+export interface StoredCopy {
+  documentId: string;
+  title: string;
+  pageCount: number;
+  /** Size of the kept copy. */
+  byteLength: number;
+  originalUrl: string | null;
 }
 
 export interface PdfStore {
@@ -83,6 +98,8 @@ export interface PdfStore {
   cacheDocumentBytes?(documentId: string, blob: Blob): Promise<{ byteLength: number }>;
   getDocumentBytes?(documentId: string): Promise<Blob | null>;
   removeDocumentBytes?(documentId: string): Promise<boolean>;
+  /** Every document with a kept copy, newest first. Absent: the reader shows no manager. */
+  listStoredCopies?(): Promise<StoredCopy[]>;
   /** Recognised text of scanned pages (see ocr.ts). Present only when OCR results can be kept. */
   saveOcrPage?(input: SaveOcrPageInput): Promise<unknown>;
   getOcrPages?(documentId: string): Promise<StoredOcrPage[]>;

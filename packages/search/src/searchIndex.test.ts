@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createSearchIndex, searchCoreIsAccelerated } from './searchIndex';
+import { createSearchIndex, deserializeSearchIndex, searchCoreIsAccelerated } from './searchIndex';
 import type { SearchIndex, SearchOptions } from './searchIndex';
 import type { SearchDocument } from './schema';
 import { doc, prng } from './testUtils';
@@ -332,6 +332,68 @@ describe('filters', () => {
     expect(new Set(ids(idx, 'has:note'))).toContain('b');
     idx.remove('n1');
     expect(new Set(ids(idx, 'has:note'))).toEqual(new Set(['a']));
+  });
+});
+
+describe('a note attached to no highlight (null kind, priority and status)', () => {
+  const standalone = (id: string, comment: string) => ({
+    ...doc({ id, docType: 'note', highlightId: null, quote: '', comment }),
+    kind: null,
+    priority: null,
+    resolveStatus: null,
+  });
+
+  it('is accepted and held as an empty kind and status and priority 0', () => {
+    const index = createSearchIndex();
+    const result = index.applyChanges([
+      standalone('n1', 'Free standing note about ribosomes'),
+      doc({ id: 'h1', quote: 'Ribosomes make proteins', kind: 'formula', priority: 5 }),
+    ]);
+    expect(result.rejected).toEqual([]);
+    expect(result.added).toBe(2);
+
+    const hit = index.search('ribosomes').hits.find((h) => h.id === 'n1');
+    expect(hit?.doc).toMatchObject({ kind: '', priority: 0, resolveStatus: '' });
+  });
+
+  it('matches no kind or status filter and is not counted in those facets', () => {
+    const index = createSearchIndex();
+    index.applyChanges([
+      standalone('n1', 'ribosomes in a note'),
+      doc({
+        id: 'h1',
+        quote: 'ribosomes in a highlight',
+        kind: 'formula',
+        resolveStatus: 'resolved',
+      }),
+    ]);
+    expect(index.search('ribosomes kind:formula').hits.map((h) => h.id)).toEqual(['h1']);
+    expect(index.search('ribosomes status:resolved').hits.map((h) => h.id)).toEqual(['h1']);
+    const facets = index.search('ribosomes').facets!;
+    expect(facets.kind).toEqual([{ value: 'formula', count: 1 }]);
+    expect(facets.status).toEqual([{ value: 'resolved', count: 1 }]);
+  });
+
+  it('sorts last by priority and survives serialisation unchanged', () => {
+    const index = createSearchIndex();
+    index.applyChanges([
+      standalone('n1', 'ribosomes in a note'),
+      doc({ id: 'h1', quote: 'ribosomes in a highlight', priority: 1 }),
+    ]);
+    expect(index.search('ribosomes', { sort: 'priority' }).hits.map((h) => h.id)).toEqual([
+      'h1',
+      'n1',
+    ]);
+    const loaded = deserializeSearchIndex(index.serialize());
+    expect(loaded.ok).toBe(true);
+    if (!loaded.ok) return;
+    expect(loaded.index.search('ribosomes').hits.find((h) => h.id === 'n1')?.doc).toMatchObject({
+      kind: '',
+      priority: 0,
+      resolveStatus: '',
+    });
+    // the same document again is unchanged (null and '' are one value)
+    expect(loaded.index.applyChanges([standalone('n1', 'ribosomes in a note')]).unchanged).toBe(1);
   });
 });
 

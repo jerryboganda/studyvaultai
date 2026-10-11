@@ -38,6 +38,10 @@ export default defineConfig({
     // activeTab, or persistently via optional host permissions the user grants explicitly.
     permissions: ['storage', 'sidePanel', 'contextMenus', 'activeTab', 'scripting'],
     optional_host_permissions: ['https://*/*', 'http://*/*'],
+    // Optional sync only (docs/adr/009). Both are requested at runtime, from the click that turns
+    // sync on, and are never granted at install: "identity" opens the sign-in window
+    // (chrome.identity.launchWebAuthFlow), "alarms" lets the worker sync on a timer.
+    optional_permissions: ['identity', 'alarms'],
     action: { default_title: 'StudyVault AI' },
     commands: {
       'open-side-panel': {
@@ -62,13 +66,15 @@ export default defineConfig({
         description: 'Go to the previous highlight on the page',
       },
     },
-    // Defence in depth for "nothing leaves the device": extension pages may only talk to themselves.
-    // Sync/AI phases must add their endpoints here deliberately.
+    // Defence in depth. Core features make no network request at all. The OPTIONAL AI and sync
+    // features talk to an endpoint the USER configures, which cannot be listed statically, so https:
+    // (and loopback, for local models) is allowed here; each such call additionally needs the feature
+    // flag, an explicit consent token / sign-in, and a per-origin host permission. See docs/adr/009.
     // 'wasm-unsafe-eval' permits compiling WebAssembly ONLY (the OCR engine and PDF decoders need it);
     // it does not allow eval()/new Function(), which stay blocked. See docs/adr/008.
     content_security_policy: {
       extension_pages:
-        "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; base-uri 'self'; connect-src 'self'; frame-src 'none'; form-action 'none'",
+        "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; base-uri 'self'; connect-src 'self' https: http://localhost:* http://127.0.0.1:*; frame-src 'none'; form-action 'none'",
     },
   },
   hooks: {

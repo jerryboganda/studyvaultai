@@ -1,7 +1,7 @@
 // @vitest-environment node
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { FINGERPRINT_MAX_BYTES, documentFingerprint } from './fingerprint';
-import { parseReaderParams, parseSrc, pdfReaderPath } from './readerUrl';
+import { isLikelyPdfUrl, parseReaderParams, parseSrc, pdfReaderPath } from './readerUrl';
 import { fetchPdf, hasPdfHeader, readFile } from './source';
 import { buildPdf, proseFixture } from './testing/pdfWriter';
 import { pageHasText, samplePageNumbers, summarizeTextStatus } from './textStatus';
@@ -232,5 +232,78 @@ describe('fingerprint and text status helpers', () => {
         ]),
       ),
     ).toBe('partial');
+  });
+});
+
+describe('loopback http and PDF-looking addresses', () => {
+  it('accepts plain http only for localhost and 127.0.0.1', () => {
+    expect(parseSrc('http://127.0.0.1:8080/a.pdf')).toMatchObject({
+      ok: true,
+      origin: 'http://127.0.0.1:8080',
+      pattern: 'http://127.0.0.1:8080/*',
+      host: '127.0.0.1',
+    });
+    expect(parseSrc('http://localhost:3000/doc')).toMatchObject({ ok: true, host: 'localhost' });
+    for (const raw of ['http://example.org/a.pdf', 'http://[::1]/a.pdf', 'http://10.0.0.5/a.pdf']) {
+      expect(parseSrc(raw)).toMatchObject({ ok: false });
+    }
+  });
+
+  it('isLikelyPdfUrl reads the text only', () => {
+    const yes = [
+      'https://example.org/papers/a.PDF',
+      'https://example.org/a.pdf?download=1',
+      'http://127.0.0.1:9/x.pdf#page=3',
+      'https://arxiv.org/pdf/2101.00001',
+      'https://arxiv.org/pdf/2101.00001v2',
+      'https://example.org/viewer?file=/docs/a.pdf',
+      'https://example.org/get?pdf=render',
+      'https://example.org/get?format=pdf',
+    ];
+    const no = [
+      'https://example.org/',
+      'https://example.org/pdf/converter',
+      'https://example.org/a.pdf.html',
+      'https://example.org/?q=pdf+reader',
+      'ftp://example.org/a.pdf',
+      'file:///C:/a.pdf',
+      'chrome://pdf-viewer',
+      'not a url',
+      '',
+    ];
+    for (const u of yes) expect(isLikelyPdfUrl(u), u).toBe(true);
+    for (const u of no) expect(isLikelyPdfUrl(u), u).toBe(false);
+    expect(isLikelyPdfUrl(null)).toBe(false);
+    expect(isLikelyPdfUrl(undefined)).toBe(false);
+  });
+});
+
+describe('fetchPdf failure messages', () => {
+  it('says "offline" when the device is offline, not "CORS"', async () => {
+    vi.stubGlobal('navigator', { onLine: false });
+    try {
+      const r = await fetchPdf('https://example.org/a.pdf', {
+        fetchImpl: async () => {
+          throw new TypeError('Failed to fetch');
+        },
+      });
+      expect(r).toMatchObject({ ok: false, failure: { kind: 'offline' } });
+      expect(r.ok === false && r.failure.message).toContain('offline');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a web page served at a .pdf address is named as a web page', async () => {
+    const r = await fetchPdf('https://example.org/report.pdf', {
+      fetchImpl: respond('<html>Please sign in</html>', { type: 'text/html; charset=utf-8' }),
+    });
+    expect(r).toMatchObject({ ok: false, failure: { kind: 'not-pdf' } });
+    expect(r.ok === false && r.failure.message).toContain('web page (text/html)');
+  });
+
+  it('an extension-less address that answers application/pdf opens', async () => {
+    const r = await fetchPdf('https://example.org/download/42', { fetchImpl: respond(PDF) });
+    expect(r.ok).toBe(true);
   });
 });

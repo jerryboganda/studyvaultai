@@ -151,3 +151,35 @@ export type {
   VaultApi,
   VaultCounts,
 } from './types';
+
+// Backup / restore (Dexie side of @backup's ports) and external highlight import
+export * from './backupTarget';
+
+// Optional AI features: results, cache port, settings, key and usage ledger (one line; see ai.ts)
+export * from './ai';
+
+// Retention: decks, knowledge points, cards, reviews, queue, session (one line; see study.ts)
+export * from './study';
+
+// Optional sync: Dexie outbox, state store, applier, write capture and reconcile (one statement; see sync.ts)
+export {
+  activeSyncPolicy,
+  countSyncAttention,
+  createDexieApplier,
+  createDexieOpLog,
+  createDexieStateStore,
+  createSyncRuntime,
+  ensureClientId,
+  listSyncConflicts,
+  listSyncQuarantine,
+  resetSyncIdentity,
+  startSyncCapture,
+  stopSyncCapture,
+  suppressSyncCapture,
+  SyncPolicyDriftError,
+  type ActiveSyncPolicy,
+  type ReconcileResult,
+  type SyncOpRow,
+  type SyncRuntime,
+  type SyncRuntimeOptions,
+} from './sync';

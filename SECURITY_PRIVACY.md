@@ -1,7 +1,8 @@
 # Security, Privacy and Store Compliance
 
 ## Permissions principles
-- Primary path: `activeTab`, `scripting` only where needed, `contextMenus`, `storage`, `sidePanel`, `commands`, and optionally `alarms`, `downloads`, `notifications` when their features exist.
+- Install-time permissions: `storage`, `sidePanel`, `contextMenus`, `activeTab`, `scripting`, plus the `commands` shortcuts. Nothing else is granted at install, and `host_permissions` is empty.
+- Optional permissions, each requested from the click that needs it and never at install: `identity` (the sync sign-in window) and `alarms` (the sync timer) only when sync is switched on; per-origin host access for the AI endpoint, the sync server and issuer, and the origin of a PDF opened in the reader; site access for highlights (ADR-003). A per-origin grant for a feature is never read as site access: it does not inject the highlighter. `downloads` and `notifications` are not used.
 - Access to arbitrary websites must be user-initiated per-site or optional all-sites access; do not require `host_permissions: <all_urls>` for functionality that works via activeTab and optional hosts.
 - Permission explanations before requesting an elevated scope; revoke/deny must have useful fallback and no nagging.
 - `file://` access and incognito need distinct user opt-ins and are disabled by default. Never auto-upload incognito content.
@@ -18,6 +19,9 @@
 - Retain source provenance, don't disguise a summary as quote, don't claim AI verification that did not occur.
 - Sensitive sites and inputs never monitored; mask secrets and personally identifiable information on AI preview when feasible.
 - User can export, wipe, inspect data, see storage consumption, exclude domains and configure retention.
+- "Delete all data" removes the database, the automatic pre-update copy and the staging area of an interrupted restore (both are full copies of the vault), settings, session state, and revokes the optional host grants.
+- Secrets (the AI key) live in the extension-origin database, not in `chrome.storage.local`, which content scripts can read; sync tokens live in `chrome.storage.session`. Backups, the pre-update copy and sync never include them (`meta` and `syncOps` are excluded). Where each setting lives: docs/adr/010-module-seams.md.
+- Sources without an address (PDFs opened from a file, imported highlights) use a stand-in `studyvault.invalid` URL that is never shown, linked or indexed.
 - Cloud service privacy policy, precise data categories and disclosures are mandatory before public publishing.
 
 ## Browser extension security

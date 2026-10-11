@@ -1,10 +1,18 @@
-import { BankRecord, Folder, Highlight, IsoDate, Note, Tag, type SearchDocument } from '@shared';
+import {
+  BankRecord,
+  Folder,
+  Highlight,
+  IsoDate,
+  Note,
+  Tag,
+  visibleSourceUrl,
+  type SearchDocument,
+} from '@shared';
 import {
   cmp,
   keysWhereIn,
   rowsWhereIn,
   isDeleted,
-  LOCAL_PDF_URL_PREFIX,
   notNull,
   parseInput,
   parseRow,
@@ -35,9 +43,6 @@ const READ_TABLES = (db: StudyVaultDb) => [
 
 const clampLimit = (limit: number | undefined) =>
   Math.min(Math.max(Math.floor(limit ?? DEFAULT_LIMIT), 1), MAX_LIMIT);
-
-/** A local PDF has no address; do not index the synthetic one. */
-const visibleUrl = (url: string) => (url.startsWith(LOCAL_PDF_URL_PREFIX) ? '' : url);
 
 async function buildDocuments(
   db: StudyVaultDb,
@@ -116,7 +121,7 @@ async function buildDocuments(
       docType: 'highlight',
       highlightId: h.id,
       title: source?.title ?? h.capturedTitle ?? '',
-      url: visibleUrl(h.capturedUrl ?? source?.originalUrl ?? ''),
+      url: visibleSourceUrl(h.capturedUrl ?? source?.originalUrl),
       host: source?.host ?? '',
       quote: h.exactQuote,
       comment: h.userComment,
@@ -137,7 +142,7 @@ async function buildDocuments(
       docType: 'note',
       highlightId: n.highlightId,
       title: source?.title ?? n.title,
-      url: visibleUrl(h?.capturedUrl ?? source?.originalUrl ?? ''),
+      url: visibleSourceUrl(h?.capturedUrl ?? source?.originalUrl),
       host: source?.host ?? '',
       quote: h?.exactQuote ?? '',
       comment: n.title ? `${n.title}\n${n.body}` : n.body,

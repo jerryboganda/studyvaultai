@@ -2,8 +2,10 @@ import { useRef, useState, type RefObject } from 'react';
 import { browser } from 'wxt/browser';
 import { DEFAULT_DENY_HOSTS, DENY_LIST_SCOPE_NOTE, type SiteStatus } from '@shared';
 import { callBackground, callTab } from '@runtime';
+import { pdfReaderPath } from '@pdf/readerUrl';
 import { listBanks, listRecentHighlights } from '@storage';
 import {
+  Badge,
   Button,
   COMMAND,
   InlineNotice,
@@ -27,7 +29,16 @@ import {
   useToast,
   type ActiveTab,
 } from '@ui';
-import { derivePopupState, type PopupState } from './model';
+import { useDueCount } from '@ui/review/hooks';
+import { reviewPageUrl } from '@ui/review/links';
+import { openDashboard } from '@ui/vault/dashboardLink';
+import {
+  derivePopupState,
+  studyView,
+  type PdfReaderOffer,
+  type PopupState,
+  type StudyView,
+} from './model';
 
 const RECENT_LIMIT = 5;
 
@@ -106,11 +117,13 @@ function PopupBody() {
             tab={tab}
             state={state}
             lastBankId={settings?.lastBankId ?? null}
+            pdfReaderOn={settings?.features.pdfReader ?? true}
             onChanged={status.refresh}
             focusAfter={heading}
           />
         )}
       </main>
+      {settings ? <StudyBar reviewOn={settings.features.review} /> : null}
       <Footer />
     </div>
   );
@@ -139,12 +152,15 @@ function TabState({
   tab,
   state,
   lastBankId,
+  pdfReaderOn,
   onChanged,
   focusAfter,
 }: {
   tab: ActiveTab | null;
   state: Exclude<PopupState, { kind: 'loading' }>;
   lastBankId: string | null;
+  /** Settings.features.pdfReader: while off, the reader is not offered. */
+  pdfReaderOn: boolean;
   /** Quiet re-check: the current view stays until the new answer arrives. */
   onChanged(): void;
   focusAfter: RefObject<HTMLElement | null>;
@@ -230,6 +246,7 @@ function TabState({
       return (
         <div className="sv-stack">
           <Unsupported state={state} />
+          {state.reason === 'pdf' ? <PdfReader offer={state.reader} enabled={pdfReaderOn} /> : null}
           <OpenPanel tab={tab} />
         </div>
       );
@@ -380,13 +397,142 @@ function KeyHints() {
   return <ShortcutHints commands={shown} />;
 }
 
+/**
+ * "Open in StudyVault reader" for a PDF tab. The reader asks for access to that one site itself
+ * (it needs its own click); this only opens it. When the address cannot be fetched the reader is
+ * still offered without it, so a downloaded copy can be chosen there, and the reason is said.
+ */
+function PdfReader({ offer, enabled }: { offer: PdfReaderOffer; enabled: boolean }) {
+  const open = useAction(async () => {
+    const path = pdfReaderPath(offer.src ? { src: offer.src } : {});
+    await browser.tabs.create({ url: browser.runtime.getURL(`/${path}` as never) });
+    window.close();
+  });
+  if (!enabled) {
+    return (
+      <p className="sv-muted">
+        StudyVault&apos;s PDF reader is turned off. Turn it on under Capture in Settings to use it.
+      </p>
+    );
+  }
+  return (
+    <div className="sv-stack sv-stack--tight">
+      {offer.problem ? <p>{offer.problem}</p> : null}
+      <div>
+        <Button variant="primary" busy={open.busy} onClick={() => void open.run()}>
+          {offer.src ? 'Open in StudyVault reader' : 'Open the StudyVault reader'}
+        </Button>
+      </div>
+      {open.error ? (
+        <InlineNotice
+          tone="error"
+          title="Could not open the reader"
+          action={open.retryable ? <Button onClick={open.retry}>Retry</Button> : undefined}
+        >
+          {open.error}
+        </InlineNotice>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Review and dashboard, in every state. Cards due is read live from the database (not from a
+ * counter kept elsewhere); with review turned off nothing is queried and no count is shown.
+ */
+function StudyBar({ reviewOn }: { reviewOn: boolean }) {
+  return (
+    <section className="popup__study sv-stack sv-stack--tight" aria-label="Study">
+      {reviewOn ? <WithReview /> : <StudyActions review={null} />}
+    </section>
+  );
+}
+
+function WithReview() {
+  const due = useDueCount();
+  const view = studyView(due);
+  if (due.error) {
+    return (
+      <>
+        <InlineNotice
+          tone="error"
+          title="Review counts are unavailable"
+          action={due.retryable ? <Button onClick={due.refresh}>Retry</Button> : undefined}
+        >
+          {due.error}
+        </InlineNotice>
+        <StudyActions review={null} />
+      </>
+    );
+  }
+  return (
+    <>
+      {view ? (
+        <p className="popup__due">
+          <span data-testid="popup-due">
+            <Badge tone={due.count ? 'info' : 'neutral'}>{view.badge}</Badge>
+          </span>{' '}
+          {view.detail ? <span className="sv-muted sv-small">{view.detail}</span> : null}
+        </p>
+      ) : (
+        <p className="sv-muted sv-small">Counting cards…</p>
+      )}
+      <StudyActions review={view} />
+    </>
+  );
+}
+
+function StudyActions({ review }: { review: StudyView | null }) {
+  const open = useAction(async (what: 'review' | 'dashboard') => {
+    if (what === 'review' && review) {
+      await browser.tabs.create({ url: reviewPageUrl(review.action.link) });
+    } else {
+      await openDashboard();
+    }
+    window.close();
+  });
+  return (
+    <div className="sv-stack sv-stack--tight">
+      <div className="sv-row">
+        {review ? (
+          <Button
+            variant={review.action.primary ? 'primary' : 'secondary'}
+            busy={open.busy}
+            data-testid="popup-review"
+            onClick={() => void open.run('review')}
+          >
+            {review.action.label}
+          </Button>
+        ) : null}
+        <Button
+          busy={open.busy}
+          data-testid="popup-dashboard"
+          onClick={() => void open.run('dashboard')}
+        >
+          Open dashboard
+        </Button>
+      </div>
+      {open.error ? (
+        <InlineNotice
+          tone="error"
+          title="Could not open that page"
+          action={open.retryable ? <Button onClick={open.retry}>Retry</Button> : undefined}
+        >
+          {open.error}
+        </InlineNotice>
+      ) : null}
+    </div>
+  );
+}
+
 function Unsupported({ state }: { state: Extract<PopupState, { kind: 'unsupported' }> }) {
   if (state.reason === 'pdf') {
     return (
       <InlineNotice tone="info" title="PDFs open in Chrome's built-in viewer">
         <p>
           Chrome does not let extensions read or mark up its built-in PDF viewer, so StudyVault
-          cannot highlight here. A StudyVault PDF reader is planned for a later release.
+          cannot highlight here. StudyVault&apos;s own reader can open this PDF so you can
+          highlight, add notes and search it.
         </p>
       </InlineNotice>
     );

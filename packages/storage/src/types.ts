@@ -2,6 +2,7 @@ import type {
   Bank,
   BankLite,
   CaptureInput,
+  CaptureMethod,
   CaptureResult,
   ColorId,
   CustomFields,
@@ -225,6 +226,8 @@ export interface DuplicateMember {
   capturedAt: string;
   /** PDF page, when the member is a PDF highlight. */
   pageNumber: number | null;
+  /** The `documents` row of a PDF member (open it in the reader at `pageNumber`); absent for web. */
+  documentId?: string;
 }
 export interface DuplicateCluster {
   quoteHash: string;
@@ -241,7 +244,7 @@ export interface HighlightDetail extends DashboardItem {
   deletedAt: string | null;
   capturedUrl: string | null;
   capturedTitle: string | null;
-  captureMethod: 'toolbar' | 'shortcut' | 'context-menu';
+  captureMethod: CaptureMethod;
 }
 
 export interface BulkResult {

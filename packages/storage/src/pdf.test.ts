@@ -6,7 +6,7 @@ import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { INBOX_BANK_ID, type PdfAnchorSet, type PdfHighlightInput } from '@shared';
 import { getDb } from './db';
 import { createFolder } from './hierarchy';
-import { listHighlights } from './query';
+import { findDuplicateClusters, getHighlightDetail, listHighlights } from './query';
 import { createBank, getPageHighlights, listRecentHighlights, wipeAllData } from './repo';
 import { listSearchDocuments } from './search';
 import {
@@ -83,6 +83,26 @@ const highlightInput = (
   priority: 3,
   captureMethod: 'toolbar',
   ...over,
+});
+
+describe('duplicates across a web page and a PDF', () => {
+  it('say which document a PDF member belongs to, so a viewer can open it at that page', async () => {
+    const quote = 'Cardiac output is stroke volume times heart rate.';
+    await upsertDocument(doc());
+    const pdf = (await savePdfHighlight(highlightInput(7, quote, 40))).highlight;
+    const web = await save(quote);
+
+    const [cluster] = await findDuplicateClusters();
+    expect(cluster?.members).toHaveLength(2);
+    const pdfMember = cluster!.members.find((m) => m.highlightId === pdf.id)!;
+    const webMember = cluster!.members.find((m) => m.highlightId === web.id)!;
+    expect(pdfMember).toMatchObject({ sourceType: 'pdf', pageNumber: 7, documentId: DOC });
+    expect('documentId' in webMember).toBe(false); // web members keep the shape callers know
+
+    // the same member is described the same way from the other highlight's detail
+    const detail = await getHighlightDetail(web.id);
+    expect(detail.duplicates.find((m) => m.highlightId === pdf.id)).toEqual(pdfMember);
+  });
 });
 
 describe('documents', () => {
@@ -490,7 +510,10 @@ describe('storage usage and wiping', () => {
         'ocrPages',
         'reviewLogs',
         'sources',
+        'syncConflicts',
+        'syncEntityMeta',
         'syncOps',
+        'syncQuarantine',
         'tags',
       ].sort(),
     );
@@ -517,7 +540,7 @@ describe('storage usage and wiping', () => {
     expect(after.totalRows).toBe(0);
     expect(Object.values(after.rows).every((n) => n === 0)).toBe(true);
     expect(await fakeBrowser.storage.local.get('settings')).toEqual({});
-    // And the recreated database is a normal, writable v2 database.
+    // And the recreated database is a normal, writable database.
     expect((await save('After the wipe')).bankIds).toEqual([INBOX_BANK_ID]);
   });
 });

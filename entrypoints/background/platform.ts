@@ -19,6 +19,8 @@ const BADGE_MS = 3000;
 const INJECT_FILE = `/${CONTENT_SCRIPT_FILE}` as const;
 const BADGE_COLORS = { success: '#15803d', error: '#b91c1c' } as const;
 
+const ALL_SITES_PATTERNS = new Set(['https://*/*', 'http://*/*', '*://*/*', '<all_urls>']);
+
 export function browserSiteDeps(): SiteAccessDeps {
   return {
     getSettings,
@@ -30,7 +32,14 @@ export function browserSiteDeps(): SiteAccessDeps {
         // OPTIONAL grants decide persistent registration. Production declares none; the e2e build
         // declares loopback, which must not turn the script on for every loopback page.
         const fixed = new Set(browser.runtime.getManifest().host_permissions ?? []);
-        return ((await browser.permissions.getAll()).origins ?? []).filter((o) => !fixed.has(o));
+        // A per-origin grant is NOT site access by itself: the AI endpoint, the sync server and a
+        // PDF's origin are granted for fetching data, and must never get the highlighter injected.
+        // Those origins count only when the user enabled the site in StudyVault (the settings hint,
+        // merged by sync()). What Chrome's own "site access: all sites" toggle produces is an
+        // all-sites pattern, which is a deliberate broad choice, so it counts without a hint.
+        return ((await browser.permissions.getAll()).origins ?? []).filter(
+          (o) => !fixed.has(o) && ALL_SITES_PATTERNS.has(o),
+        );
       } catch {
         return null;
       }

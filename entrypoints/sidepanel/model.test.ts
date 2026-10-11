@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { defaultSettings, type PageStatus } from '@shared';
 import { makeItem } from '@ui/testing/fakes';
-import { derivePageState, groupPageItems, revealAvailability, validateBankName } from './model';
+import {
+  derivePageState,
+  groupPageItems,
+  parseTagInput,
+  revealAvailability,
+  scopeLabel,
+  sourceLinkFor,
+  validateBankName,
+  validateNoteBody,
+  viewFromHash,
+} from './model';
 
 const status: PageStatus = {
   url: 'https://example.com/notes',
@@ -123,5 +133,80 @@ describe('validateBankName', () => {
     expect(validateBankName('')).toBe('Enter a name for the bank.');
     expect(validateBankName(' \t ')).toBe('Enter a name for the bank.');
     expect(validateBankName('x'.repeat(81))).toMatch(/80 characters or fewer \(this is 81\)/);
+  });
+});
+
+describe('viewFromHash', () => {
+  it('maps the address hash to a tab and ignores anything else', () => {
+    expect(viewFromHash('#search')).toBe('search');
+    expect(viewFromHash('review')).toBe('review');
+    expect(viewFromHash('#page')).toBe('page');
+    expect(viewFromHash('')).toBeNull();
+    expect(viewFromHash('#inbox')).toBeNull();
+    expect(viewFromHash('#__proto__')).toBeNull();
+  });
+});
+
+describe('scopeLabel', () => {
+  it('names the bank, and the folder inside it when there is one', () => {
+    const bank = { bankId: 'b', bankName: 'Biology', folderId: null, folderName: null };
+    expect(scopeLabel(bank)).toBe('Biology');
+    expect(scopeLabel({ ...bank, folderId: 'f', folderName: 'Cell' })).toBe('Biology \u203a Cell');
+  });
+});
+
+describe('source links', () => {
+  it('links a web source, hides a placeholder and refuses a script address', () => {
+    const web = makeItem({ source: { originalUrl: 'https://example.com/notes' } });
+    expect(sourceLinkFor(web)).toEqual({ kind: 'web', href: 'https://example.com/notes' });
+    const fake = makeItem({ source: { originalUrl: 'https://studyvault.invalid/imported/9' } });
+    expect(sourceLinkFor(fake)).toEqual({ kind: 'none' });
+    const evil = makeItem({ source: { originalUrl: 'javascript:alert(1)' as never } });
+    expect(sourceLinkFor(evil)).toEqual({ kind: 'none' });
+  });
+
+  it('opens a PDF source in the extension reader at the highlight page', () => {
+    const base = makeItem();
+    const pdf = {
+      ...base,
+      highlight: {
+        ...base.highlight,
+        anchorSet: { ...base.highlight.anchorSet, type: 'pdf', pageNumber: 7 } as never,
+      },
+      source: {
+        ...base.source,
+        type: 'pdf' as const,
+        documentId: 'doc-00000001',
+        originalUrl: 'https://studyvault.invalid/pdf/doc-00000001',
+      },
+    };
+    const link = sourceLinkFor(pdf);
+    expect(link).toMatchObject({ kind: 'pdf', label: 'Open in the PDF reader, page 7' });
+    const params = new URLSearchParams((link as { path: string }).path.split('?')[1]);
+    expect(params.get('doc')).toBe('doc-00000001');
+    expect(params.get('page')).toBe('7');
+    expect(params.get('highlight')).toBe(base.highlight.id);
+    expect(sourceLinkFor({ ...pdf, source: { ...pdf.source, documentId: undefined } })).toEqual({
+      kind: 'none',
+    });
+  });
+});
+
+describe('parseTagInput', () => {
+  it('trims and collapses spacing, and explains an empty or over-long name', () => {
+    expect(parseTagInput('  exam   pearl ')).toEqual({ name: 'exam pearl' });
+    expect(parseTagInput('   ')).toEqual({ error: 'Enter a tag name.' });
+    expect(parseTagInput('x'.repeat(51))).toEqual({
+      error: expect.stringMatching(/50 characters or fewer \(this is 51\)/),
+    });
+    expect(parseTagInput('x'.repeat(50))).toEqual({ name: 'x'.repeat(50) });
+  });
+});
+
+describe('validateNoteBody', () => {
+  it('needs some text and respects the stored limit', () => {
+    expect(validateNoteBody('**x**')).toBeNull();
+    expect(validateNoteBody(' \n ')).toBe('Write something, or cancel.');
+    expect(validateNoteBody('x'.repeat(100_001))).toMatch(/100,000 characters or fewer/);
   });
 });

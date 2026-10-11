@@ -5,9 +5,11 @@ import {
   hostOf,
   isAllSitesPattern,
   isPdfUrl,
+  isPlaceholderSourceUrl,
   normalizeDenyInput,
   patternHost,
   safeHref,
+  visibleSourceUrl,
 } from './hosts';
 
 describe('address helpers', () => {
@@ -27,6 +29,24 @@ describe('address helpers', () => {
     expect(safeHref('javascript:alert(1)')).toBeUndefined();
     expect(safeHref('data:text/html,<b>x</b>')).toBeUndefined();
     expect(safeHref('')).toBeUndefined();
+  });
+
+  it('never treats the stand-in address of a source without one as an address', () => {
+    for (const placeholder of [
+      'https://studyvault.invalid/pdf/doc-00000001',
+      'https://studyvault.invalid/imported/0192f4c0/1',
+      'https://STUDYVAULT.invalid/x',
+    ]) {
+      expect(isPlaceholderSourceUrl(placeholder)).toBe(true);
+      expect(visibleSourceUrl(placeholder)).toBe('');
+      expect(safeHref(placeholder)).toBeUndefined();
+    }
+    for (const real of ['https://example.com/studyvault.invalid/', 'https://invalid/pdf/x']) {
+      expect(isPlaceholderSourceUrl(real)).toBe(false);
+      expect(visibleSourceUrl(real)).toBe(real);
+    }
+    expect(visibleSourceUrl(undefined)).toBe('');
+    expect(visibleSourceUrl(null)).toBe('');
   });
 
   it('recognises PDF addresses by path, not by query', () => {

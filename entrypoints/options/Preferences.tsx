@@ -20,6 +20,11 @@ const THEMES = [
   { id: 'dark', label: 'Dark', hint: 'Always dark.' },
 ] as const;
 
+const DENSITIES = [
+  { id: 'comfortable', label: 'Comfortable', hint: 'More space around rows and buttons.' },
+  { id: 'compact', label: 'Compact', hint: 'Fits more on screen.' },
+] as const;
+
 const STYLES = [
   {
     id: 'auto',
@@ -44,7 +49,7 @@ const COLOR_NAMES: Record<ColorId, string> = {
  * One settings write with its own error, shown in the section that owns the control: an error far
  * from the control that caused it is easy to miss and impossible to connect to it.
  */
-function useWriter(update: Update) {
+export function useWriter(update: Update) {
   const save = useAction(async (mutate: (s: Settings) => Settings) => {
     await update(mutate);
   });
@@ -67,7 +72,7 @@ function useWriter(update: Update) {
 }
 
 /** Checkbox whose explanation is its accessible description, not part of its name. */
-function Toggle({
+export function Toggle({
   label,
   hint,
   checked,
@@ -125,6 +130,27 @@ export function Appearance({ settings, update }: { settings: Settings; update: U
             </label>
           ))}
         </div>
+      </fieldset>
+
+      <fieldset className="opt-fieldset">
+        <legend>Density</legend>
+        <div className="sv-stack sv-stack--tight">
+          {DENSITIES.map((d) => (
+            <label key={d.id} className="sv-check">
+              <input
+                type="radio"
+                name={`${uid}-density`}
+                value={d.id}
+                checked={settings.density === d.id}
+                onChange={() => write((s) => ({ ...s, density: d.id }))}
+              />
+              <span>
+                {d.label} <span className="sv-muted sv-small">{d.hint}</span>
+              </span>
+            </label>
+          ))}
+        </div>
+        <p className="sv-muted sv-small">Applies to the dashboard and to the toolbar on pages.</p>
       </fieldset>
 
       <div className="sv-field opt-narrow">
@@ -284,6 +310,12 @@ export function Capture({ settings, update }: { settings: Settings; update: Upda
         hint="Off by default. When on, you can save highlights from private (incognito) windows. They are stored in your normal Chrome profile and stay after you close the window, so the private window leaves a trace. Chrome also only runs StudyVault in private windows if you allow it there on the extension's details page."
         checked={settings.allowIncognitoCapture}
         onChange={(allowIncognitoCapture) => write((s) => ({ ...s, allowIncognitoCapture }))}
+      />
+      <Toggle
+        label="Use the StudyVault PDF reader"
+        hint="Chrome's built-in PDF viewer cannot be marked up by any extension, so StudyVault has its own reader for PDFs (choose Open in StudyVault reader in the popup, or right-click a PDF link). Turn this off and the reader will not open a PDF and the popup does not offer it. PDFs you already highlighted keep their highlights."
+        checked={settings.features.pdfReader}
+        onChange={(pdfReader) => write((s) => ({ ...s, features: { ...s.features, pdfReader } }))}
       />
       {error}
     </section>

@@ -31,7 +31,10 @@ describe('LazyPages (100+ page lazy rendering)', () => {
     );
     return { lazy, live, renders, peak: () => peak };
   }
-  const settle = () => new Promise((r) => setTimeout(r, 0));
+  // Microtasks only: the hooks settle in promise callbacks, and 300 real timers take seconds on Windows.
+  const settle = async (): Promise<void> => {
+    for (let i = 0; i < 6; i++) await Promise.resolve();
+  };
 
   it('renders only the window, never the whole document', async () => {
     const h = harness(250);
@@ -93,6 +96,20 @@ describe('LazyPages (100+ page lazy rendering)', () => {
     expect(h.renders).toEqual([9, 10, 11, 9, 10, 11]);
     h.lazy.destroy();
     expect(h.live.size).toBe(0);
+  });
+
+  it('invalidatePage() redraws one kept page and ignores a page that is not kept', async () => {
+    const h = harness(20);
+    h.lazy.setVisible([10]);
+    await settle();
+    expect(h.renders).toEqual([9, 10, 11]);
+    h.lazy.invalidatePage(10);
+    await settle();
+    expect(h.renders).toEqual([9, 10, 11, 10]);
+    h.lazy.invalidatePage(3); // not kept: nothing is drawn for it
+    await settle();
+    expect(h.renders).toEqual([9, 10, 11, 10]);
+    expect([...h.live].sort((a, b) => a - b)).toEqual([9, 10, 11]);
   });
 
   it('a failing page is reported once and does not stop the others', async () => {

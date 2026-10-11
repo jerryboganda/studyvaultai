@@ -77,6 +77,91 @@ export function orderTextLayer(
   return { itemOf, spanOf };
 }
 
+// ---------------------------------------------------------------------------------------------
+// Drag selection. The text layer ends in an empty "end of content" element that, while the pointer
+// is down, covers the layer so a drag that leaves the text cannot jump the selection to the end of
+// the page. It sits BELOW the text spans (reader.css gives spans z-index 1; without that it covered
+// them and a mouse drag selected nothing, verified in Chromium) and, as pdf.js does, is kept right
+// after the selection's moving end so a gap resolves to the selection's own edge.
+// ---------------------------------------------------------------------------------------------
+
+const guardedLayers = new Map<HTMLElement, HTMLElement>();
+const guardedDocs = new WeakSet<Document>();
+
+function resetEnd(end: HTMLElement, layer: HTMLElement): void {
+  layer.append(end);
+  end.style.width = '';
+  end.style.height = '';
+  layer.classList.remove('selecting');
+}
+
+function guardSelection(doc: Document): void {
+  if (guardedDocs.has(doc)) return;
+  guardedDocs.add(doc);
+  let pointerDown = false;
+  let previous: Range | null = null;
+  const resetAll = (): void => guardedLayers.forEach(resetEnd);
+  doc.addEventListener('pointerdown', () => {
+    pointerDown = true;
+  });
+  doc.addEventListener('pointerup', () => {
+    pointerDown = false;
+    resetAll();
+  });
+  doc.defaultView?.addEventListener('blur', () => {
+    pointerDown = false;
+    resetAll();
+  });
+  doc.addEventListener('keyup', () => {
+    if (!pointerDown) resetAll();
+  });
+  doc.addEventListener('selectionchange', () => {
+    const selection = doc.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+      guardedLayers.forEach((_end, layer) => layer.classList.remove('selecting'));
+      return;
+    }
+    const active = new Set<HTMLElement>();
+    for (let i = 0; i < selection.rangeCount; i++) {
+      const range = selection.getRangeAt(i);
+      for (const layer of guardedLayers.keys()) {
+        if (!active.has(layer) && range.intersectsNode(layer)) active.add(layer);
+      }
+    }
+    for (const [layer, end] of guardedLayers) {
+      if (active.has(layer)) layer.classList.add('selecting');
+      else resetEnd(end, layer);
+    }
+    const range = selection.getRangeAt(0);
+    let modifyStart = false;
+    try {
+      modifyStart =
+        previous !== null &&
+        (range.compareBoundaryPoints(Range.END_TO_END, previous) === 0 ||
+          range.compareBoundaryPoints(Range.START_TO_END, previous) === 0);
+    } catch {
+      /* the previous range lives in a tree that was redrawn: treat the end as the moving one */
+    }
+    let anchor: Node | null = modifyStart ? range.startContainer : range.endContainer;
+    if (anchor?.nodeType === Node.TEXT_NODE) anchor = anchor.parentNode;
+    if (anchor && !modifyStart && range.endOffset === 0) {
+      // The range ends at the very start of a node: the last selected text is the previous one.
+      do {
+        while (anchor && !anchor.previousSibling) anchor = anchor.parentNode;
+        anchor = anchor?.previousSibling ?? null;
+      } while (anchor && anchor.childNodes.length === 0);
+    }
+    const layer = (anchor?.parentElement ?? null)?.closest<HTMLElement>('.sv-textlayer');
+    const end = layer ? guardedLayers.get(layer) : undefined;
+    if (layer && end && anchor?.parentElement) {
+      end.style.width = layer.style.width;
+      end.style.height = layer.style.height;
+      anchor.parentElement.insertBefore(end, modifyStart ? anchor : anchor.nextSibling);
+    }
+    previous = range.cloneRange();
+  });
+}
+
 export async function renderPageInto(args: RenderArgs): Promise<RenderedPage> {
   const { pdfPage, content, pageText, host, scale, rotation, signal } = args;
   const pdfjs = await loadPdfjs();
@@ -117,6 +202,7 @@ export async function renderPageInto(args: RenderArgs): Promise<RenderedPage> {
 
   const listener = new AbortController();
   const cleanup = (): void => {
+    guardedLayers.delete(textLayer);
     listener.abort();
     canvas.width = 0;
     canvas.height = 0;
@@ -160,12 +246,10 @@ export async function renderPageInto(args: RenderArgs): Promise<RenderedPage> {
   const end = doc.createElement('div');
   end.className = 'endOfContent';
   textLayer.append(end);
-  // pdf.js's trick: while the pointer is down the end-of-content sentinel covers the layer so a drag
-  // that leaves the text does not make the selection jump.
+  // While the pointer is down the end-of-content sentinel covers the layer (see guardSelection).
+  guardSelection(doc);
+  guardedLayers.set(textLayer, end);
   textLayer.addEventListener('mousedown', () => textLayer.classList.add('selecting'), {
-    signal: listener.signal,
-  });
-  doc.addEventListener('mouseup', () => textLayer.classList.remove('selecting'), {
     signal: listener.signal,
   });
 

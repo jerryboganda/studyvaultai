@@ -3,6 +3,7 @@ import {
   captureBlock,
   denyEntriesFor,
   isHostDenied,
+  isPlaceholderSourceUrl,
   isRegistrablePattern,
   normalizeHost,
   normalizeUrl,
@@ -11,6 +12,7 @@ import {
   sameSite,
   sourceKeys,
   trustedCanonical,
+  visibleSourceUrl,
 } from './urls';
 
 describe('deny list host matching', () => {
@@ -220,5 +222,22 @@ describe('match patterns', () => {
     'http://[::1/*',
   ])('does not register %s', (pattern) => {
     expect(isRegistrablePattern(pattern)).toBe(false);
+  });
+});
+
+describe('stand-in addresses of sources without one', () => {
+  it('are recognised by host, whatever the path or the letter case', () => {
+    expect(isPlaceholderSourceUrl('https://studyvault.invalid/pdf/abc')).toBe(true);
+    expect(isPlaceholderSourceUrl('https://studyvault.invalid/imported/b/1')).toBe(true);
+    expect(isPlaceholderSourceUrl('https://StudyVault.INVALID/anything')).toBe(true);
+    expect(isPlaceholderSourceUrl('https://example.com/studyvault.invalid/')).toBe(false);
+    expect(isPlaceholderSourceUrl('not a url')).toBe(false);
+    expect(isPlaceholderSourceUrl(null)).toBe(false);
+  });
+
+  it('are hidden by visibleSourceUrl, real addresses are returned as they are', () => {
+    expect(visibleSourceUrl('https://studyvault.invalid/pdf/abc')).toBe('');
+    expect(visibleSourceUrl('https://example.com/a?b=1')).toBe('https://example.com/a?b=1');
+    expect(visibleSourceUrl(undefined)).toBe('');
   });
 });

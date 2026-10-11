@@ -1,9 +1,12 @@
-import { DENY_HOST, denyEntriesFor, parseHttpUrl } from '@shared';
+import { DENY_HOST, denyEntriesFor, isPlaceholderSourceUrl, parseHttpUrl } from '@shared';
 
 /** Pure host / match-pattern helpers shared by the popup, side panel and options page. */
 
 // One deny-list matcher for the worker, the content script and every page (trailing dots included).
 export { denyEntriesFor };
+// Sources without an address (a PDF opened from a file, imported highlights) carry a stand-in URL
+// that never resolves: show `visibleSourceUrl(url)` (empty for it), never the URL itself.
+export { isPlaceholderSourceUrl, visibleSourceUrl } from '@shared';
 
 export const ALL_SITES_ORIGINS = ['https://*/*', 'http://*/*'] as const;
 const ALL_SITES = new Set<string>([...ALL_SITES_ORIGINS, '*://*/*', '<all_urls>']);
@@ -21,9 +24,9 @@ export function hostOf(url: string | null | undefined): string | null {
   return url ? (parseHttpUrl(url)?.hostname ?? null) : null;
 }
 
-/** An href that is safe to render from stored data: http(s) only, never javascript:/data:. */
+/** An href that is safe to render from stored data: http(s) only, never javascript:/data: or a placeholder. */
 export function safeHref(url: string | null | undefined): string | undefined {
-  return url ? parseHttpUrl(url)?.href : undefined;
+  return url && !isPlaceholderSourceUrl(url) ? parseHttpUrl(url)?.href : undefined;
 }
 
 /** Chrome opens PDFs in its built-in viewer, which extensions cannot annotate (Phase 3 adds a reader). */

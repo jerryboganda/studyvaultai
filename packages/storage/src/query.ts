@@ -578,6 +578,7 @@ async function memberOf(
       bankIds: memberships.filter((m) => m.highlightId === r.id).map((m) => m.bankId),
       capturedAt: r.capturedAt,
       pageNumber: r.anchorSet.type === 'pdf' ? r.anchorSet.pageNumber : null,
+      ...(source?.documentId === undefined ? {} : { documentId: source.documentId }),
     };
   });
 }

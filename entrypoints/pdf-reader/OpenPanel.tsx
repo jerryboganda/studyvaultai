@@ -11,6 +11,16 @@ export type WebState =
 
 const mb = (n: number): string => `${(n / 1048576).toFixed(n > 10 * 1048576 ? 0 : 1)} MB`;
 
+/** Failures that retrying cannot fix: the answer will be the same. */
+const NO_RETRY = new Set<FetchFailure['kind']>([
+  'sign-in',
+  'redirected-non-pdf',
+  'redirect-blocked',
+  'not-found',
+  'not-pdf',
+  'too-large',
+]);
+
 /** What the person can do about each way a web PDF can fail (never "try to get around it"). */
 function advice(f: FetchFailure): string {
   switch (f.kind) {
@@ -18,6 +28,14 @@ function advice(f: FetchFailure): string {
     case 'redirected-non-pdf':
     case 'redirect-blocked':
       return 'StudyVault does not use your browser sign-ins to fetch files. Open the link in your browser, sign in, download the PDF, then choose the downloaded file below.';
+    case 'not-pdf':
+      return 'If the link opens a PDF in your browser, download it from there and choose the downloaded file below.';
+    case 'not-found':
+      return 'Check the address, or choose a copy of the file from your computer below.';
+    case 'too-large':
+      return 'Download the file in your browser and choose it below if it is within the size the reader opens, or split it into smaller files.';
+    case 'offline':
+      return 'Reconnect and try again, or choose a PDF that is already on this device below.';
     case 'network':
       return 'You can still read it: download the PDF in your browser, then choose the file below. Your highlights attach to the file itself, so they match either way.';
     case 'permission':
@@ -35,6 +53,7 @@ export function OpenPanel({
   onFile,
   onAllowAndOpen,
   fileInputRef,
+  copies,
 }: {
   src: SrcCheck | null;
   web: WebState;
@@ -45,6 +64,8 @@ export function OpenPanel({
   /** Called synchronously from the click: permissions.request needs the user gesture. */
   onAllowAndOpen(): void;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
+  /** The stored-copy manager (rendered after the open options). */
+  copies?: ReactNode;
 }) {
   const local = useRef<HTMLInputElement>(null);
   const input = fileInputRef ?? local;
@@ -57,6 +78,15 @@ export function OpenPanel({
         are read on this device and are never uploaded.
       </p>
       {notice}
+
+      <details className="sv-open__about" data-testid="pdf-builtin-note">
+        <summary>About Chrome's built-in PDF viewer</summary>
+        <p className="sv-muted">
+          When Chrome opens a PDF in its own viewer, extensions cannot read or mark that page, so
+          StudyVault does not try. To highlight such a PDF, right-click its link (or the page) and
+          choose <strong>Open in StudyVault reader</strong>, or choose the downloaded file here.
+        </p>
+      </details>
 
       <section className="sv-open__card" aria-labelledby="open-file">
         <h2 id="open-file">From your computer</h2>
@@ -131,7 +161,7 @@ export function OpenPanel({
                 <InlineNotice tone="error" title="The PDF could not be downloaded">
                   <p>{web.failure.message}</p>
                   <p>{advice(web.failure)}</p>
-                  {web.failure.kind !== 'sign-in' && web.failure.kind !== 'redirected-non-pdf' ? (
+                  {!NO_RETRY.has(web.failure.kind) ? (
                     <p>
                       <Button onClick={onAllowAndOpen}>Try again</Button>
                     </p>
@@ -142,6 +172,8 @@ export function OpenPanel({
           )}
         </section>
       ) : null}
+
+      {copies}
     </main>
   );
 }

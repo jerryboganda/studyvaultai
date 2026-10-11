@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { browser } from 'wxt/browser';
 import {
   HIGHLIGHT_KINDS,
   KIND_LABELS,
   MAX_COMMENT_CHARS,
+  isPlaceholderSourceUrl,
   type ColorId,
   type HighlightKind,
   type HighlightPatch,
 } from '@shared';
-import type { HighlightListItem } from '@storage';
+import type { HighlightDetail, HighlightListItem } from '@storage';
 import {
   Badge,
   Button,
@@ -17,14 +19,17 @@ import {
   describeResolveState,
   errorMessage,
   isRetryable,
-  safeHref,
   truncate,
   useAction,
   useLatest,
   useToast,
 } from '@ui';
+import { HighlightAiActions } from '@ui/ai';
+import { CardNotes } from './CardNotes';
+import { CardTags } from './CardTags';
+import { extensionPageUrl, optionsUrl } from './links';
 import type { RevealAvailability } from './model';
-import { REVEAL_NOT_FOUND } from './model';
+import { REVEAL_NOT_FOUND, sourceLinkFor } from './model';
 
 export const COMMENT_DEBOUNCE_MS = 600;
 const QUOTE_PREVIEW_CHARS = 280;
@@ -33,22 +38,54 @@ export interface CardActions {
   update(id: string, patch: HighlightPatch): Promise<void>;
   remove(id: string): Promise<void>;
   reveal(id: string): Promise<{ found: boolean }>;
+  /** Open the dashboard on this highlight (extension page; reuses an open dashboard tab). */
+  openDashboard(id: string): Promise<void>;
+  /** Open the review page's card author on this highlight. */
+  makeFlashcard(id: string): Promise<void>;
+  addTag(highlightId: string, name: string): Promise<void>;
+  removeTag(highlightId: string, tagId: string): Promise<void>;
+  saveNote(input: {
+    highlightId: string;
+    sourceId: string;
+    noteId: string | null;
+    body: string;
+  }): Promise<void>;
 }
+
+/** What is the same for every card of a list. */
+export interface CardContext {
+  /** Settings.features.review: flashcards can be made. */
+  reviewOn: boolean;
+  /** Settings.features.ai; null until settings are read. */
+  aiOn: boolean | null;
+  /** id of the panel's shared tag <datalist>. */
+  tagListId: string;
+}
+
+/** The part of a highlight's detail the card shows. */
+export type CardDetail = Pick<HighlightDetail, 'tags' | 'notes'>;
 
 type Op =
   | { t: 'kind'; kind: HighlightKind }
   | { t: 'priority'; priority: number }
   | { t: 'delete' }
-  | { t: 'reveal' };
+  | { t: 'reveal' }
+  | { t: 'dashboard' }
+  | { t: 'flashcard' };
 
 export function HighlightCard({
   item,
+  detail,
+  context,
   showSource,
   paletteFor,
   reveal,
   actions,
 }: {
   item: HighlightListItem;
+  /** undefined while loading; null when the details could not be read. */
+  detail: CardDetail | null | undefined;
+  context: CardContext;
   /** Recent list: show which page the highlight came from. */
   showSource: boolean;
   paletteFor(kind: HighlightKind): ColorId;
@@ -59,6 +96,7 @@ export function HighlightCard({
   const uid = useId();
   const { announce } = useToast();
   const [expanded, setExpanded] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
   const [revealNote, setRevealNote] = useState<{ ok: boolean; text: string } | null>(null);
   const state = describeResolveState(highlight.resolveStatus);
 
@@ -82,12 +120,23 @@ export function HighlightCard({
         announce(text);
         break;
       }
+      case 'dashboard':
+        await actions.openDashboard(highlight.id);
+        break;
+      case 'flashcard':
+        await actions.makeFlashcard(highlight.id);
+        break;
     }
   });
 
   const quote = highlight.exactQuote;
   const long = quote.length > QUOTE_PREVIEW_CHARS;
-  const href = showSource ? safeHref(source.originalUrl) : undefined;
+  const link = showSource ? sourceLinkFor(item) : ({ kind: 'none' } as const);
+  // Made-up addresses of imported and file PDFs never resolve: show the title, not the address.
+  const where = [
+    source.title,
+    isPlaceholderSourceUrl(source.originalUrl) ? '' : source.host,
+  ].filter((x) => x !== '');
 
   return (
     <article
@@ -118,13 +167,19 @@ export function HighlightCard({
 
       {showSource ? (
         <p className="sv-small sv-muted sv-wrap" dir="auto">
-          From {source.title ? `${source.title} · ` : ''}
-          {source.host}
-          {href ? (
+          From {where.length > 0 ? where.join(' · ') : 'an imported source'}
+          {link.kind === 'web' ? (
             <>
               {' · '}
-              <a href={href} target="_blank" rel="noopener noreferrer">
+              <a href={link.href} target="_blank" rel="noopener noreferrer">
                 Open page
+              </a>
+            </>
+          ) : link.kind === 'pdf' ? (
+            <>
+              {' · '}
+              <a href={extensionPageUrl(link.path)} target="_blank" rel="noopener noreferrer">
+                {link.label}
               </a>
             </>
           ) : null}
@@ -147,6 +202,14 @@ export function HighlightCard({
           ))
         )}
       </div>
+
+      <CardTags
+        highlightId={highlight.id}
+        tags={detail === undefined ? undefined : (detail?.tags ?? null)}
+        listId={context.tagListId}
+        onAdd={actions.addTag}
+        onRemove={actions.removeTag}
+      />
 
       <CommentField
         id={`${uid}-note`}
@@ -191,6 +254,13 @@ export function HighlightCard({
         </div>
       </div>
 
+      <CardNotes
+        highlightId={highlight.id}
+        sourceId={highlight.sourceId}
+        notes={detail === undefined ? undefined : (detail?.notes ?? null)}
+        onSave={actions.saveNote}
+      />
+
       <div className="sv-row">
         <Button
           busy={act.busy}
@@ -198,6 +268,25 @@ export function HighlightCard({
           onClick={() => void act.run({ t: 'reveal' })}
         >
           Show on page
+        </Button>
+        <Button
+          busy={act.busy}
+          data-testid="card-flashcard"
+          disabledReason={
+            context.reviewOn
+              ? undefined
+              : 'Review is turned off in Settings, so flashcards cannot be made.'
+          }
+          onClick={() => void act.run({ t: 'flashcard' })}
+        >
+          Make flashcard
+        </Button>
+        <Button
+          busy={act.busy}
+          data-testid="card-dashboard"
+          onClick={() => void act.run({ t: 'dashboard' })}
+        >
+          Open in dashboard
         </Button>
         <Button variant="danger" busy={act.busy} onClick={() => void act.run({ t: 'delete' })}>
           Delete
@@ -211,6 +300,33 @@ export function HighlightCard({
       )}
       {revealNote ? (
         <InlineNotice tone={revealNote.ok ? 'success' : 'warning'}>{revealNote.text}</InlineNotice>
+      ) : null}
+      {context.aiOn === true ? (
+        <div className="sv-stack sv-stack--tight">
+          <div>
+            <Button
+              aria-expanded={aiOpen}
+              data-testid="card-ai-toggle"
+              onClick={() => setAiOpen((v) => !v)}
+            >
+              AI drafts
+            </Button>
+          </div>
+          {aiOpen ? (
+            <HighlightAiActions
+              highlights={[{ id: highlight.id, exactQuote: highlight.exactQuote }]}
+              onOpenSettings={() => void browser.tabs.create({ url: optionsUrl('ai') })}
+            />
+          ) : null}
+        </div>
+      ) : context.aiOn === false ? (
+        <p className="sv-small sv-muted" data-testid="card-ai-hint">
+          AI drafts are off, so nothing is sent anywhere.{' '}
+          <a href={optionsUrl('ai')} target="_blank" rel="noopener noreferrer">
+            Turn them on in Options
+          </a>
+          .
+        </p>
       ) : null}
       {act.error ? (
         <InlineNotice

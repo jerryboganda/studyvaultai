@@ -1,0 +1,43 @@
+/* Optional sync settings (packages/ui/src/sync). Tokens come from packages/ui/src/tokens.css. */
+
+.sv-sync-bullets {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+  padding-left: var(--sv-space-4);
+  list-style: disc;
+}
+
+/* The two (three) versions of a conflict, side by side where there is room. */
+.sv-sync-versions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--sv-space-3);
+}
+
+.sv-sync-version {
+  min-width: 0;
+}
+
+.sv-sync-text {
+  margin: 0;
+  padding: var(--sv-space-2);
+  max-height: 14rem;
+  overflow: auto;
+  border: 1px solid var(--sv-border-strong);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface-raised);
+  color: var(--sv-text);
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.sv-sync-conflict {
+  padding: var(--sv-space-3);
+  border: 1px solid var(--sv-border);
+  border-left: 4px solid var(--sv-warning);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface);
+  list-style: none;
+}

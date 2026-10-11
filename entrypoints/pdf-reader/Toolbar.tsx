@@ -22,6 +22,7 @@ export function Toolbar({
   effectiveZoom,
   search,
   companionOpen,
+  sidePaneOpen,
   highlightCount,
   pageInput,
   searchInput,
@@ -31,6 +32,7 @@ export function Toolbar({
   onQuery,
   onFind,
   onToggleCompanion,
+  onToggleSidePane,
   onOpenAnother,
 }: {
   page: number;
@@ -39,6 +41,7 @@ export function Toolbar({
   effectiveZoom: number;
   search: SearchState;
   companionOpen: boolean;
+  sidePaneOpen: boolean;
   highlightCount: number;
   pageInput: RefObject<HTMLInputElement | null>;
   searchInput: RefObject<HTMLInputElement | null>;
@@ -48,6 +51,7 @@ export function Toolbar({
   onQuery(q: string): void;
   onFind(direction: 1 | -1): void;
   onToggleCompanion(): void;
+  onToggleSidePane(): void;
   onOpenAnother(): void;
 }) {
   // null = follow the current page; a string = what was typed and not yet committed.
@@ -80,6 +84,17 @@ export function Toolbar({
 
   return (
     <header className="sv-toolbar" aria-label="PDF toolbar">
+      <div className="sv-toolbar__group">
+        <Button
+          aria-pressed={sidePaneOpen}
+          onClick={onToggleSidePane}
+          title="Show or hide the outline and page thumbnails"
+          data-testid="pdf-toggle-sidepane"
+        >
+          Outline and pages
+        </Button>
+      </div>
+
       <div className="sv-toolbar__group" role="group" aria-label="Page">
         <Button
           aria-label="Previous page"

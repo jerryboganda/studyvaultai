@@ -2,21 +2,41 @@
 
 **Status:** accepted · **Date:** 2026-10-11 · Anchors: ADR-004 (text anchoring), ADR-005 (free text only in
 extension origin). Schema: `PdfAnchorSet` in `packages/shared/src/schema.ts`.
+**Amended 2026-10-11 (wiring task):** OCR engine wired with correction UI and the OCR text stream; outline,
+thumbnails, document properties and stored-copy manager; context-menu entry; web-open hardening; drag
+selection fix. Amendments are folded into the sections below.
 
 ## What this is, and what it is not
 StudyVault annotates PDFs **only in its own reader page** (`pdf-reader.html`, an unlisted WXT page). It
 does **not** inject into, extend or read Chrome's built-in PDF viewer: that is a protected internal
 extension context (SECURITY_PRIVACY.md, "Protected browser contexts") and Chrome exposes no API for its
-own annotations. Users get PDFs into the reader explicitly:
+own annotations. **A PDF that Chrome opens in its own viewer is therefore never instrumented**; the reader's
+open screen says so and says how to get such a PDF into the reader. Users get PDFs into the reader
+explicitly:
 
 | Entry | How | Needs |
 | --- | --- | --- |
 | File picker, drag and drop | read locally in chunks (`file.stream()`), never uploaded | nothing |
-| `?src=<https url>` | fetched **by the extension page**, no cookies (`credentials:'omit'`), no referrer | the single origin, requested with `permissions.request` from a click after an explanation |
+| `?src=<https url>` (or `http://localhost`, `http://127.0.0.1`) | fetched **by the extension page**, no cookies (`credentials:'omit'`), no referrer | the single origin, requested with `permissions.request` from a click after an explanation |
 | `?doc=<fingerprint>[&page=N][&highlight=ID]` | bytes from the user-approved stored copy (`getDocumentBytes`) | a stored copy |
+| Context menu **Open in StudyVault reader** | on a link, page or frame whose address looks like a PDF; opens `pdf-reader.html?src=...` in a new tab | nothing (the reader asks for the origin itself) |
+| Stored copies list on the open screen | opens a kept copy by its id, shows sizes, removes copies | a stored copy |
 
-`pdfReaderPath({src,doc,page,highlight})` in `@pdf/readerUrl` builds these addresses; it has no imports so
-other surfaces (popup, side panel, dashboard) can use it without bundling pdf.js.
+`pdfReaderPath({src,doc,page,highlight})` and `isLikelyPdfUrl(url)` in `@pdf/readerUrl` build and recognise
+these addresses; the module has no imports so other surfaces (popup, side panel, dashboard, the service
+worker) can use it without bundling pdf.js. `isLikelyPdfUrl` reads the address text only: http(s), a path
+ending `.pdf`, an arXiv-style `/pdf/<id with a digit>`, or a query that says so (`?file=a.pdf`, `?pdf=render`,
+`format=pdf`). It is a hint; the reader checks the bytes.
+
+**The menu** (`entrypoints/background/pdf.ts`) is two items with the same title, because the menus API has
+two filters: a *link* item filtered on `targetUrlPatterns` and a *page/frame* item filtered on
+`documentUrlPatterns` (a document filter on a link item would hide it on every non-PDF page). The patterns
+are the path-based part of `isLikelyPdfUrl` for https and loopback http only (the addresses the reader
+accepts); the click handler runs `isLikelyPdfUrl` again, uses the **tab's** address for a page and the
+frame's for a frame, and opens the reader in a new tab. Created on `runtime.onInstalled` (each id is removed
+first, so it is idempotent); the click listener is registered at the worker's top level. Whether Chrome
+shows extension items inside its own PDF viewer's context menu was not verified: the reliable route is the
+link item or the reader's own open panel.
 
 ## pdf.js: legacy build, bundled locally
 - **`pdfjs-dist/legacy/build/pdf.mjs` + `pdf.worker.min.mjs`, not the modern build.** The 6.x modern build
@@ -39,6 +59,11 @@ other surfaces (popup, side panel, dashboard) can use it without bundling pdf.js
   14 files (both fetched on demand); wasm decoders 0.35 MB (JBIG2, OpenJPEG). `assets/` total 3.9 MB.
   The `quickjs-eval` sandbox (form scripting, 469 KB) and `qcms` (ICC colour, 97 KB) are deliberately not
   shipped: `enableScripting` is never on, and `useWorkerFetch:false` already disables qcms.
+- **OCR is lazy.** After the wiring task the reader's initial chunk is 127 KB (92 KB before: outline,
+  thumbnails, properties, correction UI). `@ocr/engine` (6 KB), `@ocr/runner` (3 KB) and the tesseract.js
+  wrapper (17 KB) are separate chunks loaded by the first "OCR" click; the engine's worker, wasm core and
+  language data (5.9 MB) are `ocr/` files fetched by the worker then, and are budgeted separately by
+  `scripts/check-build.mjs` (7 MB). Opening a PDF that has text loads none of it.
 
 ## CSP and permissions (required changes, owned by `wxt.config.ts`)
 Verified against the shipped manifest in Chromium:
@@ -139,35 +164,112 @@ reason. A quote that changed is marked "Source changed", never silently re-bound
   `prefers-contrast: more` have rules; selection and search matches have their own layers.
 - **Search** runs over the same page streams (case-insensitive, whitespace-tolerant, 2,000 match cap),
   incrementally and cancellably, with a live count.
+- **Drag selection (fixed in the wiring task).** The empty `endOfContent` element that ends the text layer
+  covers the layer while the pointer is down. With the spans at `z-index: auto` it sat ON TOP of them and a
+  real mouse drag selected nothing (programmatic selections worked, which is why it went unseen). Spans now
+  have `z-index: 1`, and `guardSelection` (pageView.ts) keeps the element right after the selection's moving
+  end as pdf.js does. Covered by a real-mouse drag across a wrapped line in `tests/e2e/pdf.spec.ts`.
+- **Navigation pane** (collapsible, toolbar "Outline and pages"). *Outline*: `PdfDocument.getOutline()`
+  flattens the bookmarks (pre-order, depth <= 8, <= 2,000 entries, titles cleaned and cut at 300) and
+  resolves each destination to a page and a height; the section in view is marked `aria-current`. *Pages*:
+  one button per page; each thumbnail is drawn only while it is within 300 px of the pane's viewport and
+  released when it leaves (a 1,000-page file costs a few small canvases).
+- **Heading context.** A highlight's `headingContext` is the nearest outline entry above the selection:
+  on the selection's page the entry whose destination height is nearest above the selection's top, else the
+  last entry of the closest earlier page (`headingFor`, outline.ts). Cut to 300 characters; null when the
+  file has no outline. It is shown on the card as "Section: ...".
+- **Properties and stored copy.** A disclosure under the title lists title, pages, size, source, text status
+  (with the scanned and OCR page counts), the first 12 digits of the fingerprint and the stored-copy state.
+  Keeping or removing the copy shows its size; the open screen lists every kept copy (`listStoredCopies`,
+  from the vault's `listDocuments`) with sizes and a total. Removing a copy never touches highlights, notes
+  or recognised text.
 
 ## Scanned and partial documents, OCR
 `textStatus` (`text` | `scanned` | `partial`): up to 16 evenly spread pages are checked when a document is
 opened (a page with fewer than 10 non-space characters has no text) and the verdict is refined, and
 persisted, as other pages are viewed. The banner says what it means; pages without text carry a note.
-`OcrPort {recognizePage, cancel}` is the seam to `@ocr`. Recognised words (stored through the vault's
-`saveOcrPage`) stand in for the text of a page that has none: they are turned into pdf.js-shaped text items,
-so selection, anchors and resolution run unchanged on OCR text, which is labelled "OCR text" wherever it
-appears. **"OCR this document" is disabled, with the reason, until a recogniser is wired** in
-`entrypoints/pdf-reader/ocr.ts`. The reader has no UI to correct OCR text yet.
+
+**Engine and job.** `@ocr` (tesseract.js in a dedicated worker; wasm and language data bundled under
+`ocr/`, nothing fetched). `entrypoints/pdf-reader/ocr.ts` returns an `OcrService` that imports
+`@ocr/engine` and `@ocr/runner` lazily (submodules, not the package index, so `engine.ts` is not in the
+reader's initial chunk; tesseract.js itself is a third lazy chunk). `runOcrJob` does the work: one page at a
+time, each saved as soon as it is recognised (`OcrJobStore` adapter over the vault's
+`saveOcrPage`/`getOcrPages`), pages already stored are skipped (resume), one retry for a crash or
+out-of-memory, cancellation terminates the worker. Pages are rendered at **300 dpi capped at 9 Mpx in the
+orientation the page is shown in by default** (a sideways scan with `/Rotate 90` is upright for the
+engine) and the engine is told that rotation, so word boxes come back in the raw page frame anchors use.
+
+**Actions.** "OCR this document" and "OCR page N" (banner; "OCR this page" also in the *Page text* tab)
+are enabled when the document is scanned or partial and the engine exists; otherwise they are disabled
+with the reason. A status line and a `<progress>` show "finding pages", then per-page phases ("Preparing
+page 3 (2 of 4)", "Starting the text recogniser (first page only)", "Recognising", "Saving"); **Cancel**
+stops it for real. The outcome is shown until dismissed and uses the engine's error taxonomy:
+`asset-missing`, `wasm-unsupported`, `out-of-memory`, `cancelled`, `failed` each have their own sentence;
+a run that read some pages and failed others is "partial" and says which code and page. In a private
+window without consent the recognised text is kept for the session only (nothing is written).
+
+**The stream choice: `sv-ocr-text-v1` on OCR pages.** A page whose text comes from OCR is NOT run through
+the PDF geometric reading-order algorithm. Its anchor space is the OCR stream of `@ocr`
+(`buildPageTextStream`): the recogniser's words in its own reading order, **after the person's
+corrections**, joined by exactly one space, no hyphen repair, no case folding. `buildOcrPageText`
+(`packages/pdf/src/ocr.ts`) presents that stream as a `PageText`, so selection, search, rectangles and
+resolution run unchanged; the text layer is one span per word on the word's box. `PageText.algorithm`
+says which stream built a page.
+
+**Recording that an anchor is OCR-derived.** `PdfAnchorSet.textAlgorithm` is the literal
+`'sv-pdf-text-v1'` (shared schema, not changed here), so the marker is the stream's signature:
+`contentSignature = 'ocr1:' + cyrb53hex(text)` (19 characters, inside the 32 allowed). `isOcrSignature`
+tells; the companion and the save bar label such highlights "OCR text". Consequences, all in
+`resolvePdfAnchor` unchanged: an anchor whose signature equals the page's current one is positioned by
+offset; after a correction or a re-run the signature differs, so the stored offset is not trusted and the
+anchor is found by quote and context, else by the rectangles it covered (`changed`, "Source changed"),
+else `ambiguous`/`orphaned` and not painted. A correction **never edits `exactQuote`**; it changes the
+stream used by selection, search and *future* anchors. If the schema later admits `'sv-ocr-text-v1'` as a
+`textAlgorithm`, only `buildPdfAnchor` changes (one line) and old anchors keep resolving by the prefix.
+
+**Storage of corrections.** The vault row keeps `text` (the recogniser's lines joined by a line feed, never
+edited), `words` (normalised box, text, confidence 0..1) and one `correctedText`. The reader rebuilds lines
+from `text` (falling back to box geometry for rows stored without line feeds) and writes the corrected text
+as the same lines, one per recognised line; lines that differ are the corrections. So "revert line" and
+"revert page" are exact and a re-run could be diffed. Corrections are per **line** (the unit the UI edits).
+
+**Correction UI** (*Page text* tab): the lines of the page in view, each with its mean confidence **in words**
+(high 85% and above, medium 60-84%, low below 60%), words shaded by band with a text legend and
+screen-reader text after every marked word, "Edit line N" (an input; Enter saves, Escape cancels), the
+recognised text shown beside an edited line, "Revert line N", "Revert all corrections on this page", and
+the notice that the text is machine-recognised and may be wrong.
 
 ## Failure handling
 Password protected: a modal asks, retries on a wrong password, never stores it. Damaged or truncated:
 `%PDF-` check, then pdf.js's `InvalidPDFException` -> a specific message. Web fetch: 401/403 (sign-in),
-404/410, other HTTP errors, a redirect to HTML (named host), HTML or non-PDF content type, a cross-origin
-redirect the extension has no access to (detected by a second `redirect:'manual'` request), CORS/CSP/offline,
-size limit, abort. Each shows what happened and the **manual-upload fallback**; a sign-in wall never offers
-"retry" and the reader never sends cookies or tokens.
+404/410, other HTTP errors, a redirect to HTML (named host), an HTML response at a `.pdf` address ("a web
+page (text/html)"), other non-PDF content types, a cross-origin redirect the extension has no access to
+(detected by a second `redirect:'manual'` request), **offline** (`navigator.onLine === false`, reported as
+offline rather than CORS), CORS/CSP, size limit (300 MB), abort. A PDF is recognised by content type
+`application/pdf` or `octet-stream` plus the `%PDF-` header, not by the address, so `/download?id=7` works.
+Each shows what happened, a specific next step, and the **manual-upload fallback**; failures that cannot
+change (sign-in, redirect to a page, not found, not a PDF, too large) never offer "retry", and the reader
+never sends cookies, tokens or a referrer (`credentials:'omit'`, `referrerPolicy:'no-referrer'`): there is
+no authentication bypass. The permission is requested for the one origin, from the click, after the
+explanation; `http:` is accepted only for `localhost` and `127.0.0.1` (what the CSP already allows, ADR-009).
 
 ## Persistence
 `PdfStore` (`packages/pdf/src/store.ts`) is the port: `upsertDocument`, `getDocument`, `savePdfHighlight`,
 `listPdfHighlights`, `updateHighlight`, `deleteHighlight` (+ optional `restoreHighlight`,
-`cacheDocumentBytes`/`getDocumentBytes`/`removeDocumentBytes`, `saveOcrPage`/`getOcrPages`),
+`cacheDocumentBytes`/`getDocumentBytes`/`removeDocumentBytes`, `listStoredCopies`,
+`saveOcrPage` (with `correctedText`)/`getOcrPages`),
 `listBanks`, `createBank`. `entrypoints/pdf-reader/store.ts` adapts `@storage`; tests use
 `@pdf/testing/memoryStore`. PDF highlights are ordinary highlights whose source is the document; nothing
 about them depends on the cached bytes.
 
 ## Known limitations
-- No injection into, or reading of, Chrome's built-in viewer or its own annotations.
+- No injection into, or reading of, Chrome's built-in viewer or its own annotations. The context menu is
+  the only route from a Chrome-viewer tab; `file://` PDFs are not offered (the extension has no file access).
+- OCR: English only (the bundled language data); one engine run at a time; corrections are per line, not per
+  word; there is no "re-run" or "remove recognised text" action yet (the model supports both); the text of an
+  edited line is shown without per-word confidence shading; vertical and right-to-left scripts are not tuned.
+- Highlights saved on OCR text and then affected by a correction are listed as "Source changed", not
+  re-bound (by design).
 - Reading order is geometric: tables and slide layouts with aligned gaps are read column by column;
   vertical (`ttb`) text and mixed-direction lines are ordered by position only.
 - Hyphen joining is a heuristic (see above). Ligatures are expanded by pdf.js's own normalisation.

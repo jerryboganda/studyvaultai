@@ -3,8 +3,15 @@ import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { browser } from 'wxt/browser';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
+import { inspectBackup } from '@backup';
 import { PENDING_FOCUS_KEY } from '@shared';
-import { resetDbForTests } from '@storage';
+import {
+  deletePreMigrationSnapshot,
+  getPreMigrationInfo,
+  readPreMigrationSnapshot,
+  resetDbForTests,
+} from '@storage';
+import { loadFixture, seedV1 } from '../../packages/storage/src/test-vault';
 import background from './index';
 import { ACTIVATE_TIMEOUT_MS } from './siteAccess';
 
@@ -31,6 +38,7 @@ function installFakes() {
     contextMenus: {
       onClicked: event(),
       removeAll: vi.fn(async () => undefined),
+      remove: vi.fn(async (_id: string) => undefined),
       create: vi.fn((_item: unknown, cb?: () => void) => cb?.()),
     },
     permissions: {
@@ -52,13 +60,14 @@ function installFakes() {
   };
   Object.assign(browser, fakes);
   Object.assign(browser.runtime, {
-    getManifest: () => ({ action: { default_title: 'StudyVault AI' } }),
+    getManifest: () => ({ version: '9.8.7', action: { default_title: 'StudyVault AI' } }),
   });
   return fakes;
 }
 
 beforeEach(async () => {
   await resetDbForTests();
+  await deletePreMigrationSnapshot();
   fakeBrowser.reset();
 });
 
@@ -71,7 +80,8 @@ describe('background wiring', () => {
     expect(browser.runtime.onInstalled.hasListeners()).toBe(true);
     expect(browser.runtime.onStartup.hasListeners()).toBe(true);
     expect(fakes.commands.onCommand.listeners).toHaveLength(1);
-    expect(fakes.contextMenus.onClicked.listeners).toHaveLength(1);
+    // save-selection (commands.ts) and "Open in StudyVault reader" (pdf.ts)
+    expect(fakes.contextMenus.onClicked.listeners).toHaveLength(2);
     expect(fakes.permissions.onAdded.listeners).toHaveLength(1);
     expect(fakes.permissions.onRemoved.listeners).toHaveLength(1);
   });
@@ -84,8 +94,13 @@ describe('background wiring', () => {
     background.main();
     await fakeBrowser.runtime.onInstalled.trigger({ reason: 'install' });
 
-    await vi.waitFor(() => expect(fakes.contextMenus.create).toHaveBeenCalledOnce());
+    // The selection menu plus the two "Open in StudyVault reader" items (link; page and frame).
+    await vi.waitFor(() => expect(fakes.contextMenus.create).toHaveBeenCalledTimes(3));
     expect(fakes.contextMenus.removeAll).toHaveBeenCalled();
+    const ids = fakes.contextMenus.create.mock.calls.map(([item]) => (item as { id: string }).id);
+    expect(ids).toEqual(
+      expect.arrayContaining(['sv-save-selection', 'sv-open-pdf-link', 'sv-open-pdf-page']),
+    );
     await vi.waitFor(() => expect(fakes.scripting.registerContentScripts).toHaveBeenCalledOnce());
     expect(fakes.scripting.registerContentScripts.mock.calls[0]![0]).toMatchObject([
       {
@@ -95,6 +110,45 @@ describe('background wiring', () => {
         persistAcrossSessions: true,
       },
     ]);
+  });
+
+  it('opens the welcome tour on the first install and never on an update', async () => {
+    installFakes();
+    const create = vi.spyOn(browser.tabs, 'create').mockResolvedValue({} as never);
+    background.main();
+
+    await fakeBrowser.runtime.onInstalled.trigger({ reason: 'update', previousVersion: '0.0.1' });
+    await fakeBrowser.runtime.onInstalled.trigger({ reason: 'chrome_update' });
+    await fakeBrowser.runtime.onStartup.trigger();
+    expect(create).not.toHaveBeenCalled();
+
+    await fakeBrowser.runtime.onInstalled.trigger({ reason: 'install' });
+    await vi.waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(create).toHaveBeenCalledWith({
+      url: browser.runtime.getURL('/onboarding.html' as never),
+    });
+  });
+
+  it('keeps a restorable copy of the old data when the worker meets a schema upgrade', async () => {
+    installFakes();
+    await seedV1(loadFixture('schema-v1.json')); // what the previous build left on disk
+    background.main(); // the install happens at worker start, before any database use
+    expect(await getPreMigrationInfo()).toBeNull();
+
+    const reply = new Promise<{ ok: boolean }>((resolve) => {
+      void fakeBrowser.runtime.onMessage.trigger(
+        { v: 1, type: 'banks.list', payload: {} },
+        { id: browser.runtime.id },
+        resolve,
+      );
+    });
+    expect((await reply).ok).toBe(true); // the first database use upgrades v1 -> current
+
+    const info = await getPreMigrationInfo();
+    expect(info).toMatchObject({ status: 'kept', fromVersion: 1 });
+    const kept = await readPreMigrationSnapshot();
+    const inspected = await inspectBackup(kept!.bytes);
+    expect(inspected.manifest?.createdBy.version).toBe('9.8.7'); // the manifest's version
   });
 
   it('re-syncs on browser startup and when a permission is removed', async () => {

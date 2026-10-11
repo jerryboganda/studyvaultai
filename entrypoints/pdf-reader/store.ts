@@ -5,6 +5,7 @@ import {
   getDocumentBytes,
   getOcrPages,
   listBanks,
+  listDocuments,
   listPdfHighlights,
   removeDocumentBytes,
   restoreHighlight,
@@ -37,6 +38,16 @@ export function createStorageStore(): PdfStore {
     removeDocumentBytes: (documentId) => removeDocumentBytes(documentId),
     saveOcrPage: (input) => saveOcrPage(input),
     getOcrPages: (documentId) => getOcrPages(documentId),
+    listStoredCopies: async () =>
+      (await listDocuments())
+        .filter((d) => d.cachedBytes !== null)
+        .map((d) => ({
+          documentId: d.document.id,
+          title: d.document.title,
+          pageCount: d.document.pageCount,
+          byteLength: d.cachedBytes ?? 0,
+          originalUrl: d.document.originalUrl,
+        })),
     listBanks: () => listBanks(),
     createBank: (name) => createBank(name),
   };

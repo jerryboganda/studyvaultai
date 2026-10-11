@@ -45,6 +45,7 @@ import {
   toLite,
   toViews,
 } from './core';
+import { clearRestoreStaging, deletePreMigrationSnapshot } from './backupTarget';
 import { deleteDatabase, withDb, withWritableDb } from './db';
 import { normalizeQuote, quoteHash } from './normalize';
 import type { BankWithCount, HighlightListItem, RepoApi } from './types';
@@ -410,6 +411,9 @@ export async function wipeAllData(): Promise<void> {
   // Deleting the database drops every table of every schema version (vault, study, ai, sync, PDF
   // bytes and OCR text included); the next use recreates it empty.
   await deleteDatabase();
+  // Two more full copies of the vault live in databases of their own: the automatic pre-update
+  // archive and the staging area of a restore that crashed. "Delete all" must reach both.
+  await Promise.all([deletePreMigrationSnapshot(), clearRestoreStaging()]);
   await browser.storage.local.clear();
   await browser.storage.session?.clear();
   // Optional host permissions are part of what StudyVault holds: left granted, the worker would

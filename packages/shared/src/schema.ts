@@ -23,7 +23,11 @@ export const HttpUrl = z.url({ protocol: /^https?$/ }).max(MAX_URL_CHARS);
 export const HighlightKind = z.enum(HIGHLIGHT_KINDS);
 export const ColorId = z.enum(COLOR_IDS);
 export const Priority = z.number().int().min(1).max(5);
-export const CaptureMethod = z.enum(['toolbar', 'shortcut', 'context-menu']);
+/**
+ * How a highlight came to be: a capture gesture, or 'import' for highlights read from a Markdown or
+ * CSV file (their `customFields` say which, and that they still need review).
+ */
+export const CaptureMethod = z.enum(['toolbar', 'shortcut', 'context-menu', 'import']);
 export const ResolveStatus = z.enum(['unchecked', 'resolved', 'changed', 'ambiguous', 'orphaned']);
 
 export type Id = z.infer<typeof Id>;

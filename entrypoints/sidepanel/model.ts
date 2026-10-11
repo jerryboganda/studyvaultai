@@ -1,6 +1,13 @@
-import { MAX_BANK_NAME_CHARS, type PageStatus } from '@shared';
+import {
+  MAX_BANK_NAME_CHARS,
+  MAX_NOTE_BODY_CHARS,
+  MAX_TAG_NAME_CHARS,
+  isPlaceholderSourceUrl,
+  type PageStatus,
+} from '@shared';
+import { pdfReaderPath } from '@pdf/readerUrl';
 import type { HighlightListItem } from '@storage';
-import { classifyAddress, hostOf, type AddressClass } from '@ui/hosts';
+import { classifyAddress, hostOf, safeHref, type AddressClass } from '@ui/hosts';
 import { describeResolveState } from '@ui/resolveState';
 
 /** Side panel view model. Pure: everything the panel decides is testable without Chrome. */
@@ -117,6 +124,79 @@ export function validateBankName(input: string): string | null {
   if (name === '') return 'Enter a name for the bank.';
   if (name.length > MAX_BANK_NAME_CHARS) {
     return `Use ${MAX_BANK_NAME_CHARS} characters or fewer (this is ${name.length}).`;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Tabs and the bank filter
+// ---------------------------------------------------------------------------------------------
+
+export const VIEWS = ['page', 'recent', 'search', 'banks', 'review'] as const;
+export type View = (typeof VIEWS)[number];
+
+/** `#search` -> 'search'. Anything else (including the empty hash) is not a view. */
+export function viewFromHash(hash: string): View | null {
+  const id = hash.replace(/^#/, '');
+  return (VIEWS as readonly string[]).includes(id) ? (id as View) : null;
+}
+
+/** A bank (and optionally one folder of it) that Recent and Search are narrowed to. */
+export interface BankScope {
+  bankId: string;
+  bankName: string;
+  folderId: string | null;
+  folderName: string | null;
+}
+
+export const scopeLabel = (scope: BankScope): string =>
+  scope.folderName ? `${scope.bankName} › ${scope.folderName}` : scope.bankName;
+
+// ---------------------------------------------------------------------------------------------
+// Source links
+// ---------------------------------------------------------------------------------------------
+
+export type SourceLink =
+  | { kind: 'web'; href: string }
+  /** Extension-relative path of the StudyVault PDF reader, at the highlight's page. */
+  | { kind: 'pdf'; path: string; label: string }
+  | { kind: 'none' };
+
+export function sourceLinkFor(item: HighlightListItem): SourceLink {
+  const { highlight, source } = item;
+  if (source.type === 'pdf') {
+    if (!source.documentId) return { kind: 'none' };
+    const page = highlight.anchorSet.type === 'pdf' ? highlight.anchorSet.pageNumber : null;
+    return {
+      kind: 'pdf',
+      path: pdfReaderPath({ doc: source.documentId, page, highlight: highlight.id }),
+      label: page ? `Open in the PDF reader, page ${page}` : 'Open in the PDF reader',
+    };
+  }
+  if (isPlaceholderSourceUrl(source.originalUrl)) return { kind: 'none' };
+  const href = safeHref(source.originalUrl);
+  return href ? { kind: 'web', href } : { kind: 'none' };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Tags and notes typed in the panel
+// ---------------------------------------------------------------------------------------------
+
+/** The tag name to create or attach, or what is wrong with what was typed. */
+export function parseTagInput(input: string): { name: string } | { error: string } {
+  const name = input.replace(/\s+/g, ' ').trim();
+  if (name === '') return { error: 'Enter a tag name.' };
+  if (name.length > MAX_TAG_NAME_CHARS) {
+    return { error: `Use ${MAX_TAG_NAME_CHARS} characters or fewer (this is ${name.length}).` };
+  }
+  return { name };
+}
+
+/** What is wrong with a note body the person typed, or null when it can be saved. */
+export function validateNoteBody(input: string): string | null {
+  if (input.trim() === '') return 'Write something, or cancel.';
+  if (input.length > MAX_NOTE_BODY_CHARS) {
+    return `Use ${MAX_NOTE_BODY_CHARS.toLocaleString()} characters or fewer (this is ${input.length.toLocaleString()}).`;
   }
   return null;
 }

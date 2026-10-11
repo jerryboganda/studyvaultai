@@ -4,6 +4,7 @@
  * (security handler R2) with a user password, optional image-only pages. Never imported by app code.
  */
 import { createHash } from 'node:crypto';
+import { deflateSync } from 'node:zlib';
 
 export interface FixtureText {
   x: number;
@@ -21,12 +22,28 @@ export interface FixturePage {
   texts?: FixtureText[];
   /** Draw a full-page raster image and no text: a scanned page. */
   imageOnly?: boolean;
+  /**
+   * A scanned page with real content: this 8-bit grayscale raster (row-major, top row first) fills the
+   * page, Flate-compressed. No text is written, so the page has no text layer.
+   */
+  gray?: { width: number; height: number; data: Uint8Array };
+}
+
+export interface FixtureOutlineItem {
+  title: string;
+  /** 1-based page the bookmark opens. */
+  page: number;
+  /** Distance of the heading from the page's top edge, in points (written as an /XYZ destination). */
+  fromTop?: number;
+  children?: FixtureOutlineItem[];
 }
 
 export interface FixtureOptions {
   title?: string;
   /** Encrypt with RC4-40 (R2); this is the user password required to open the file. */
   userPassword?: string;
+  /** Bookmarks (not combined with a password). */
+  outline?: FixtureOutlineItem[];
 }
 
 const PAD = Uint8Array.from([
@@ -82,28 +99,98 @@ export function buildPdf(pages: FixturePage[], options: FixtureOptions = {}): Ui
   bodies.set(3, {
     dict: '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>',
   });
+  // Strings of an encrypted file would have to be encrypted too; the title is left out instead.
   bodies.set(4, {
-    dict: `<< /Title (${escapeText(options.title ?? 'Fixture')}) /Producer (sv-test) >>`,
+    dict:
+      options.userPassword === undefined
+        ? `<< /Title (${escapeText(options.title ?? 'Fixture')}) /Producer (sv-test) >>`
+        : '<< /Producer (sv-test) >>',
   });
   bodies.set(5, {
     dict: '<< /Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 64 >>',
     stream: Uint8Array.from({ length: 64 }, (_, i) => (i * 13) & 255),
   });
 
+  // Extra objects are numbered after the pages: outline entries, then per-page rasters.
+  let nextObj = pageObj(pages.length - 1) + 2;
+  const outlineRoot = options.outline?.length ? nextObj++ : 0;
+  const grayObj = new Map<number, number>();
+  pages.forEach((p, i) => {
+    if (p.gray) grayObj.set(i, nextObj++);
+  });
+  if (outlineRoot) {
+    type Flat = {
+      id: number;
+      item: FixtureOutlineItem;
+      parent: number;
+      prev: number;
+      next: number;
+      kids: number[];
+    };
+    const flat: Flat[] = [];
+    const build = (items: FixtureOutlineItem[], parent: number): number[] => {
+      const ids = items.map(() => nextObj++);
+      items.forEach((item, k) => {
+        const f: Flat = {
+          id: ids[k]!,
+          item,
+          parent,
+          prev: ids[k - 1] ?? 0,
+          next: ids[k + 1] ?? 0,
+          kids: [],
+        };
+        flat.push(f);
+        f.kids = build(item.children ?? [], f.id);
+      });
+      return ids;
+    };
+    const top = build(options.outline!, outlineRoot);
+    bodies.set(outlineRoot, {
+      dict: `<< /Type /Outlines /First ${top[0]} 0 R /Last ${top[top.length - 1]} 0 R /Count ${flat.length} >>`,
+    });
+    for (const f of flat) {
+      const kids = f.kids;
+      const target = pages[f.item.page - 1];
+      const pageHeight = target?.height ?? 792;
+      const dest = `[${pageObj(f.item.page - 1)} 0 R /XYZ 72 ${pageHeight - (f.item.fromTop ?? 0)} 0]`;
+      bodies.set(f.id, {
+        dict:
+          `<< /Title (${escapeText(f.item.title)}) /Parent ${f.parent} 0 R` +
+          (f.prev ? ` /Prev ${f.prev} 0 R` : '') +
+          (f.next ? ` /Next ${f.next} 0 R` : '') +
+          (kids.length
+            ? ` /First ${kids[0]} 0 R /Last ${kids[kids.length - 1]} 0 R /Count ${kids.length}`
+            : '') +
+          ` /Dest ${dest} >>`,
+      });
+    }
+    bodies.set(1, { dict: `<< /Type /Catalog /Pages 2 0 R /Outlines ${outlineRoot} 0 R >>` });
+  }
+
   pages.forEach((p, i) => {
     const w = p.width ?? 612;
     const h = p.height ?? 792;
-    const content = p.imageOnly
-      ? `q ${w - 100} 0 0 ${h - 200} 50 100 cm /Im0 Do Q`
-      : (p.texts ?? [])
-          .map(
-            (t) =>
-              `BT /F1 ${t.size ?? 12} Tf ${t.angle === 90 ? `0 1 -1 0 ${t.x} ${t.y} Tm` : `1 0 0 1 ${t.x} ${t.y} Tm`} (${escapeText(t.text)}) Tj ET`,
-          )
-          .join('\n');
+    const gray = p.gray;
+    if (gray) {
+      const raw = deflateSync(Buffer.from(gray.data));
+      bodies.set(grayObj.get(i)!, {
+        dict: `<< /Type /XObject /Subtype /Image /Width ${gray.width} /Height ${gray.height} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode >>`,
+        stream: new Uint8Array(raw),
+      });
+    }
+    const content = gray
+      ? `q ${w} 0 0 ${h} 0 0 cm /Im1 Do Q`
+      : p.imageOnly
+        ? `q ${w - 100} 0 0 ${h - 200} 50 100 cm /Im0 Do Q`
+        : (p.texts ?? [])
+            .map(
+              (t) =>
+                `BT /F1 ${t.size ?? 12} Tf ${t.angle === 90 ? `0 1 -1 0 ${t.x} ${t.y} Tm` : `1 0 0 1 ${t.x} ${t.y} Tm`} (${escapeText(t.text)}) Tj ET`,
+            )
+            .join('\n');
     const rotate = p.rotate ? ` /Rotate ${p.rotate}` : '';
     bodies.set(pageObj(i), {
-      dict: `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${w} ${h}]${rotate} /Resources << /Font << /F1 3 0 R >> /XObject << /Im0 5 0 R >> >> /Contents ${pageObj(i) + 1} 0 R >>`,
+      dict: `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${w} ${h}]${rotate} /Resources << /Font << /F1 3 0 R >> /XObject << /Im0 5 0 R${gray ? ` /Im1 ${grayObj.get(i)} 0 R` : ''} >> >> /Contents ${pageObj(i) + 1} 0 R >>`,
     });
     bodies.set(pageObj(i) + 1, { dict: '<< >>', stream: latin1(content) });
   });
@@ -111,7 +198,7 @@ export function buildPdf(pages: FixturePage[], options: FixtureOptions = {}): Ui
   // Encryption (R2, RC4-40, empty owner distinct from user).
   let encryptRef = '';
   let objectKey: ((num: number) => Uint8Array) | null = null;
-  const lastObj = pageObj(pages.length - 1) + 1;
+  const lastObj = nextObj - 1;
   if (options.userPassword !== undefined) {
     const id = md5(latin1(options.title ?? 'fixture'));
     const ownerKey = md5(padPassword(`${options.userPassword}-owner`)).slice(0, 5);

@@ -10,12 +10,12 @@ import {
   samplePageNumbers,
   summarizeTextStatus,
   type FetchFailure,
-  type OcrWordInput,
   type PdfDocument,
   type PdfStore,
   type TextStatus,
 } from '@pdf';
 import { MAX_TITLE_CHARS } from '@shared';
+import { pageOcrFromStored, wordsByPage, type PageOcr } from './ocrModel';
 
 /** Opening a document: bytes -> identity -> pdf.js -> text status -> store. UI-free and testable. */
 
@@ -32,6 +32,8 @@ export interface Session {
   persisted: boolean;
   /** Per-page "has embedded text" verdicts learned so far (sampled at open, refined while reading). */
   known: Map<number, boolean>;
+  /** Recognised (OCR) pages kept for this document, with the person's corrections. */
+  ocr: Map<number, PageOcr>;
 }
 
 export interface OpenInput {
@@ -81,17 +83,11 @@ export async function openSession(input: OpenInput): Promise<Session> {
     const textStatus: TextStatus = known.size === 0 ? 'text' : summarizeTextStatus(known);
     const title = titleFrom(doc.title, input.nameHint);
 
+    const ocr = new Map<number, PageOcr>();
     if (store.getOcrPages) {
       const stored = await store.getOcrPages(fp.id).catch(() => []);
-      const pages = new Map<number, OcrWordInput[]>();
-      for (const p of stored) {
-        if (p.words.length > 0)
-          pages.set(
-            p.pageNumber,
-            p.words.map((w) => ({ text: w.text, x: w.x, y: w.y, w: w.w, h: w.h })),
-          );
-      }
-      if (pages.size > 0) doc.setOcrPages(pages);
+      for (const p of stored) if (p.words.length > 0) ocr.set(p.pageNumber, pageOcrFromStored(p));
+      if (ocr.size > 0) doc.setOcrPages(wordsByPage(ocr));
     }
 
     const persisted = input.persist !== false;
@@ -115,6 +111,7 @@ export async function openSession(input: OpenInput): Promise<Session> {
       textStatus,
       persisted,
       known,
+      ocr,
     };
   } catch (err) {
     await doc.destroy().catch(() => undefined);

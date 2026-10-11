@@ -13,5 +13,7 @@ export default defineConfig({
       'server/**/*.test.ts',
     ],
     restoreMocks: true,
+    // Several suites build 5k-10k row fixtures; a loaded CI runner must not turn that into a flake.
+    testTimeout: 30_000,
   },
 });

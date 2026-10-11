@@ -59,8 +59,13 @@ export interface ItemGeometry {
 
 export interface PageText {
   readonly text: string;
-  /** cyrb53 hex of `text`: equals `PdfAnchorSet.contentSignature` while the page text is unchanged. */
+  /**
+   * cyrb53 hex of `text`: equals `PdfAnchorSet.contentSignature` while the page text is unchanged.
+   * An OCR stream's signature carries the `ocr1:` marker (see ocr.ts), so anchors record their origin.
+   */
   readonly signature: string;
+  /** Which stream built `text`; absent on hand-made values, which are PDF text. */
+  readonly algorithm?: 'sv-pdf-text-v1' | 'sv-ocr-text-v1';
   readonly segments: readonly TextSegment[];
   /** Per original item index; null for items without geometry or text. */
   readonly items: ReadonlyArray<ItemGeometry | null>;
@@ -382,6 +387,7 @@ export function buildPageText(items: readonly PageTextItem[], geometry: PageGeom
   return {
     text,
     signature: cyrb53Hex(text),
+    algorithm: 'sv-pdf-text-v1',
     segments,
     items: geos,
     order,

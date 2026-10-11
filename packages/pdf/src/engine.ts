@@ -1,6 +1,7 @@
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import type * as PdfjsNamespace from 'pdfjs-dist/legacy/build/pdf.mjs';
-import { ocrWordsToContent, type OcrWordInput } from './ocr';
+import { buildOcrPageText, ocrWordsToContent, usableOcrWords, type OcrWordInput } from './ocr';
+import { buildOutline, type OutlineEntry, type ResolvedDest } from './outline';
 import { buildPageText, type PageText, type PageTextItem } from './pageText';
 import { pageHasText } from './textStatus';
 
@@ -103,8 +104,13 @@ export interface PdfDocument {
    * page that has none. OCR text is machine output and may contain errors.
    */
   textSource(pageNumber: number): Promise<'embedded' | 'ocr'>;
-  /** Replace the recognised text of pages that have no embedded text; clears the page-text cache. */
+  /**
+   * Replace the recognised text of pages that have no embedded text; clears the page-text cache.
+   * A page's words become its `sv-ocr-text-v1` stream (words in the given order, one space apart).
+   */
   setOcrPages(pages: ReadonlyMap<number, readonly OcrWordInput[]>): void;
+  /** Bookmarks as a flat, depth-annotated list (empty when the file has none). Cached. */
+  getOutline(): Promise<OutlineEntry[]>;
   /** The document's original bytes (for a user-approved stored copy). */
   getBytes(): Promise<Uint8Array>;
   destroy(): Promise<void>;
@@ -210,10 +216,10 @@ export async function openPdf(bytes: Uint8Array, opts: OpenOptions = {}): Promis
         let content = await page.getTextContent();
         let text = buildPageText(toItems(content), geometry);
         let source: 'embedded' | 'ocr' = 'embedded';
-        const words = ocrPages.get(n);
-        if (!pageHasText(text) && words && words.length > 0) {
+        const words = usableOcrWords(ocrPages.get(n) ?? []);
+        if (!pageHasText(text) && words.length > 0) {
           content = ocrWordsToContent(words, page.view);
-          text = buildPageText(toItems(content), geometry);
+          text = buildOcrPageText(words);
           source = 'ocr';
         }
         return { text, content, source };
@@ -224,6 +230,32 @@ export async function openPdf(bytes: Uint8Array, opts: OpenOptions = {}): Promis
     while (cache.size > CACHE_PAGES) cache.delete(cache.keys().next().value as number);
     return hit;
   };
+
+  /** Destination (name or explicit array) -> page and y; anything unresolvable has no page. */
+  const resolveDest = async (dest: unknown): Promise<ResolvedDest> => {
+    const none: ResolvedDest = { pageNumber: null, top: null };
+    let explicit: unknown = dest;
+    if (typeof dest === 'string') explicit = await doc.getDestination(dest);
+    if (!Array.isArray(explicit) || explicit.length === 0) return none;
+    const target = explicit[0] as unknown;
+    let index: number;
+    if (typeof target === 'number') index = target;
+    else if (target && typeof target === 'object') index = await doc.getPageIndex(target as never);
+    else return none;
+    if (!Number.isInteger(index) || index < 0 || index >= doc.numPages) return none;
+    // [ref, /XYZ left top zoom], [ref, /FitH top], [ref, /FitBH top], [ref, /FitR l b r top]
+    const kind = (explicit[1] as { name?: string } | null)?.name;
+    const y =
+      kind === 'XYZ'
+        ? explicit[3]
+        : kind === 'FitH' || kind === 'FitBH'
+          ? explicit[2]
+          : kind === 'FitR'
+            ? explicit[5]
+            : null;
+    return { pageNumber: index + 1, top: typeof y === 'number' && Number.isFinite(y) ? y : null };
+  };
+  let outline: Promise<OutlineEntry[]> | null = null;
 
   return {
     pageCount: doc.numPages,
@@ -236,6 +268,13 @@ export async function openPdf(bytes: Uint8Array, opts: OpenOptions = {}): Promis
     setOcrPages: (pages) => {
       ocrPages = pages;
       cache.clear();
+    },
+    getOutline: () => {
+      outline ??= doc
+        .getOutline()
+        .then((raw) => buildOutline(raw as never, resolveDest))
+        .catch(() => []);
+      return outline;
     },
     getBytes: () => task.getData(),
     destroy: () => task.destroy(),

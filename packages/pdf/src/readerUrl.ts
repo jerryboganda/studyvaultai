@@ -32,13 +32,47 @@ export function pdfReaderPath(target: ReaderTarget = {}): string {
   return q ? `${READER_PAGE}?${q}` : READER_PAGE;
 }
 
+/** Hosts whose plain-http addresses are accepted: the CSP's loopback allowance (ADR-009), no more. */
+const LOOPBACK_HOSTS = new Set(['localhost', '127.0.0.1']);
+
+/** Path of a PDF-like address: `.pdf`, or `/pdf/<id with a digit>` (arXiv-style). */
+const PDF_PATH = /\.pdf$|^\/pdf\/[^/]*\d[^/]*$/i;
+const PDF_QUERY_KEYS = new Set(['format', 'type', 'filetype', 'ext', 'mime', 'contenttype']);
+
+/**
+ * Whether an address looks like a PDF by its text alone (no request is made): http(s) path ending in
+ * `.pdf`, an arXiv-style `/pdf/2101.00001`, or a query that says so (`?file=a.pdf`, `?pdf=render`,
+ * `format=pdf`). A hint, not a promise: the reader still checks the bytes. Used by the context menu
+ * and offered to the popup and side panel.
+ */
+export function isLikelyPdfUrl(url: string | null | undefined): boolean {
+  if (!url || url.length > MAX_SRC_CHARS * 4) return false;
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return false;
+  if (PDF_PATH.test(u.pathname)) return true;
+  for (const [key, value] of u.searchParams) {
+    const k = key.toLowerCase().replace(/[-_]/g, '');
+    const v = value.toLowerCase();
+    if (k === 'pdf') return true;
+    if (/\.pdf$/.test(v.split('#')[0] ?? '')) return true;
+    if (PDF_QUERY_KEYS.has(k) && (v === 'pdf' || v === 'application/pdf')) return true;
+  }
+  return false;
+}
+
 export type SrcCheck =
   | { ok: true; url: string; origin: string; pattern: string; host: string }
   | { ok: false; message: string };
 
 /**
- * `?src=` is untrusted input from whoever built the link. Only plain https addresses are accepted:
- * no credentials in the address, no other scheme, bounded length. Null when there is no `src`.
+ * `?src=` is untrusted input from whoever built the link. Only https addresses are accepted (plain
+ * http only for localhost / 127.0.0.1, which the extension CSP already allows for local servers): no
+ * credentials in the address, no other scheme, bounded length. Null when there is no `src`.
  */
 export function parseSrc(raw: string | null): SrcCheck | null {
   if (raw === null || raw === '') return null;
@@ -50,7 +84,8 @@ export function parseSrc(raw: string | null): SrcCheck | null {
   } catch {
     return { ok: false, message: 'That is not a valid web address.' };
   }
-  if (u.protocol !== 'https:') {
+  const loopbackHttp = u.protocol === 'http:' && LOOPBACK_HOSTS.has(u.hostname);
+  if (u.protocol !== 'https:' && !loopbackHttp) {
     return {
       ok: false,
       message: `Only https addresses can be opened from the web (this one is ${u.protocol.replace(':', '') || 'unknown'}). Download the file and open it from your computer instead.`,

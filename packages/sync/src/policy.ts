@@ -50,9 +50,10 @@ export function resolvePolicy(p: EntityPolicy): ResolvedPolicy {
 const LOCAL = ['schemaVersion'] as const;
 
 /**
- * StudyVault's tables (execution brief "Database plan"). Field names that belong to tables other
- * tasks own are best-effort: unknown names are harmless, but a free-text field missing from `text`
- * would merge last-writer-wins, so each table's owner must confirm its list (see the report).
+ * StudyVault's tables: the single source of truth for what is synchronised and how it merges. A
+ * field named here that no schema has fails loudly (`checkPolicy`, SyncPolicyDriftError), and a
+ * free-text field missing from `text` would merge last-writer-wins, so whoever adds a text field to
+ * a schema adds it here (the storage cross-check lists every unclassified field).
  * `attachments`, `syncOps` and `meta` are local-only and deliberately absent. `aiResults` is absent
  * until its schema (evidence links, immutable output) is final.
  */
@@ -83,21 +84,21 @@ export const STUDYVAULT_SYNC_POLICY: SyncPolicy = {
   highlightBanks: { immutable: ['highlightId', 'bankId'] },
   highlightTags: { immutable: ['highlightId', 'tagId'] },
   notes: { text: ['title', 'body'], local: LOCAL },
+  // Retention tables follow the schemas registered by @storage/study.ts (the cross-check in
+  // packages/storage/src/sync.policy.test.ts fails when a name here stops existing there). Free text
+  // and structured user data are `text` (a concurrent edit keeps both versions); `cards.tags` is a
+  // set; the quote snapshot of a card is provenance.
   knowledgePoints: {
-    text: [
-      'title',
-      'body',
-      'oneLiner',
-      'shortOneLiner',
-      'examPearl',
-      'misconception',
-      'explanation',
-      'customFields',
-    ],
+    text: ['shortOneLiner', 'examPearl', 'misconception', 'claims'],
     local: LOCAL,
   },
-  decks: { text: ['name', 'description'], local: LOCAL },
-  cards: { text: ['front', 'back', 'explanation'], local: LOCAL },
+  decks: { text: ['name', 'settings'], local: LOCAL },
+  cards: {
+    immutable: ['sourceQuote'],
+    text: ['front', 'back', 'explanation', 'choices', 'cloze'],
+    sets: ['tags'],
+    local: LOCAL,
+  },
   reviewLogs: { appendOnly: true, local: LOCAL },
   documents: { text: ['title'], local: LOCAL },
   ocrPages: { immutable: ['documentId', 'pageNumber'], text: ['correctedText'], local: LOCAL },

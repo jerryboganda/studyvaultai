@@ -8,6 +8,7 @@ import {
   Id,
   INBOX_BANK_ID,
   INBOX_BANK_NAME,
+  PLACEHOLDER_SOURCE_PREFIX,
   SCHEMA_VERSION,
   Source,
   StudyVaultError,
@@ -79,7 +80,7 @@ export const signalResolution = signaller(bumpResolutionEpoch, 'bumpResolutionEp
  * `originalUrl` of a PDF source that has no address (a local import): Source requires an http(s)
  * URL, and `.invalid` is reserved (RFC 2606) so this can never resolve. Never shown or indexed.
  */
-export const LOCAL_PDF_URL_PREFIX = 'https://studyvault.invalid/pdf/';
+export const LOCAL_PDF_URL_PREFIX = `${PLACEHOLDER_SOURCE_PREFIX}pdf/`;
 
 /** Dedupe, keeping first occurrences. */
 export const unique = <T>(items: readonly T[]): T[] => [...new Set(items)];

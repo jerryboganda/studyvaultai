@@ -8,7 +8,7 @@ import {
   type HighlightKind,
   type HighlightPatch,
 } from '@shared';
-import type { PdfResolution } from '@pdf';
+import { isOcrSignature, type PdfResolution } from '@pdf';
 import {
   Button,
   EmptyState,
@@ -85,7 +85,11 @@ export function Companion({
                 row={r}
                 resolution={resolutions.get(r.view.id)}
                 banks={banks}
-                fromOcr={ocrPages.has(r.pageNumber)}
+                fromOcr={
+                  ocrPages.has(r.pageNumber) ||
+                  (r.view.anchorSet.type === 'pdf' &&
+                    isOcrSignature(r.view.anchorSet.contentSignature))
+                }
                 originalUrl={originalUrl}
                 selected={r.view.id === selectedId}
                 paletteFor={paletteFor}
@@ -191,6 +195,11 @@ function Card({
       {fromOcr ? (
         <p className="sv-small sv-muted">
           This text was recognised from a scanned image and may contain errors.
+        </p>
+      ) : null}
+      {view.headingContext ? (
+        <p className="sv-small sv-muted" dir="auto" data-testid="pdf-card-heading">
+          Section: {view.headingContext}
         </p>
       ) : null}
       {bankNames.length > 0 ? (

@@ -1,5 +1,6 @@
 import '@ui/tokens.css';
 import '@ui/components.css';
+import '@ui/sync/sync.css';
 import './options.css';
 import { createRoot } from 'react-dom/client';
 import { ErrorBoundary } from '@ui';

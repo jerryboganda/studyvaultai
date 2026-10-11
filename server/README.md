@@ -167,8 +167,12 @@ decisions and resources that are not in it. Each box is something a person has t
       erases the live data only).
 
 **Extension and policy (not part of this task, required before enabling sync in a release)**
-- [ ] Add the server origin to the extension's CSP `connect-src` and request it as an optional host
+- [x] Add the server origin to the extension's CSP `connect-src` and request it as an optional host
       permission at the moment the user turns sync on, plus the `identity` permission for sign-in.
+      Done in the extension, nothing to do on the server side: `connect-src` allows `https:` and
+      loopback (docs/adr/009), `identity` and `alarms` are `optional_permissions` in `wxt.config.ts`,
+      and the settings page requests `identity`, `alarms` and the server and issuer origins from the
+      click that turns sync on (a token endpoint on another origin, from the next click).
 - [ ] Privacy policy and Chrome Web Store data-use disclosures that name the server operator, the data
       categories, and the difference between E2EE and non-E2EE sync.
 - [ ] A user-facing explanation in the settings screen before the flag can be switched on.

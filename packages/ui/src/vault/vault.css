@@ -1,0 +1,250 @@
+/*
+ * Shared knowledge-workspace components (packages/ui/src/vault): windowed list, tree, menu,
+ * command palette, rendered Markdown. Tokens come from tokens.css; no colour is meaningful alone.
+ */
+
+/* Windowed listbox --------------------------------------------------------------------------- */
+.sv-vlist {
+  position: relative;
+  overflow: auto;
+  min-height: 0;
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-bg);
+}
+.sv-vlist__spacer {
+  position: relative;
+  width: 100%;
+}
+.sv-vrow {
+  position: absolute;
+  inset-inline: 0;
+  display: block;
+  overflow: hidden;
+  border-bottom: 1px solid var(--sv-border);
+  cursor: default;
+}
+.sv-vrow[aria-selected='true'] {
+  background: var(--sv-info-bg);
+  box-shadow: inset 4px 0 0 var(--sv-accent);
+}
+/* The active row is drawn with an inset ring, only while the list itself has focus. */
+.sv-vlist:focus-visible {
+  outline: 2px solid var(--sv-focus);
+  outline-offset: 1px;
+}
+.sv-vlist:focus-visible .sv-vrow[data-active] {
+  outline: 2px solid var(--sv-focus);
+  outline-offset: -2px;
+}
+.sv-vlist:not(:focus-visible) .sv-vrow[data-active] {
+  background: var(--sv-surface);
+}
+
+/* Tree --------------------------------------------------------------------------------------- */
+.sv-tree {
+  display: flex;
+  flex-direction: column;
+}
+.sv-treeitem {
+  display: flex;
+  align-items: center;
+  gap: var(--sv-space-1);
+  min-height: 30px;
+  padding-block: 2px;
+  padding-inline-end: var(--sv-space-2);
+  border-radius: var(--sv-radius-sm);
+  cursor: pointer;
+  user-select: none;
+}
+.sv-treeitem:hover {
+  background: var(--sv-surface);
+}
+.sv-treeitem[aria-selected='true'] {
+  background: var(--sv-info-bg);
+  font-weight: 600;
+  box-shadow: inset 3px 0 0 var(--sv-accent);
+}
+.sv-treeitem:focus-visible {
+  outline: 2px solid var(--sv-focus);
+  outline-offset: -2px;
+}
+.sv-treeitem[data-drop='true'] {
+  outline: 2px dashed var(--sv-accent);
+  outline-offset: -2px;
+}
+.sv-treeitem__twist {
+  flex: none;
+  width: 16px;
+  text-align: center;
+  color: var(--sv-text-muted);
+}
+
+/* Dialog size ------------------------------------------------------------------------------- */
+.sv-dialog--wide {
+  width: min(52rem, calc(100vw - 2 * var(--sv-space-4)));
+}
+
+/* Menu --------------------------------------------------------------------------------------- */
+.sv-menu {
+  position: fixed;
+  z-index: 40;
+  min-width: 14rem;
+  max-width: 22rem;
+  padding: var(--sv-space-1);
+  border: 1px solid var(--sv-border-strong);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface-raised);
+  color: var(--sv-text);
+  box-shadow: var(--sv-shadow);
+}
+.sv-menu__item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--sv-space-2);
+  width: 100%;
+  padding: 6px var(--sv-space-2);
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.sv-menu__item:hover,
+.sv-menu__item:focus-visible {
+  background: var(--sv-surface);
+}
+.sv-menu__item:focus-visible {
+  outline: 2px solid var(--sv-focus);
+  outline-offset: -2px;
+}
+.sv-menu__item[aria-disabled='true'] {
+  cursor: not-allowed;
+}
+.sv-menu__item[aria-disabled='true'] .sv-menu__label {
+  opacity: 0.7;
+}
+.sv-menu__item--danger .sv-menu__label {
+  color: var(--sv-danger);
+}
+.sv-menu__label {
+  flex: 1 1 auto;
+}
+.sv-menu__hint,
+.sv-menu__reason {
+  font-size: var(--sv-text-xs);
+}
+.sv-menu__reason {
+  flex-basis: 100%;
+}
+.sv-menu__sep {
+  margin: var(--sv-space-1) 0;
+  border: 0;
+  border-top: 1px solid var(--sv-border);
+}
+
+/* Command palette ---------------------------------------------------------------------------- */
+.sv-palette {
+  width: min(40rem, calc(100vw - 2 * var(--sv-space-4)));
+  margin-top: 10vh;
+}
+.sv-palette__list {
+  max-height: 50vh;
+  overflow: auto;
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+}
+.sv-palette__item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--sv-space-3);
+  padding: 6px var(--sv-space-3);
+  cursor: pointer;
+}
+.sv-palette__item[aria-selected='true'] {
+  background: var(--sv-info-bg);
+  box-shadow: inset 3px 0 0 var(--sv-accent);
+}
+.sv-palette__item[aria-disabled='true'] .sv-palette__label {
+  opacity: 0.7;
+}
+.sv-palette__label {
+  flex: 1 1 auto;
+}
+.sv-palette__reason {
+  flex-basis: 100%;
+}
+.sv-palette__none {
+  padding: var(--sv-space-3);
+}
+
+/* Rendered Markdown (sanitised; see markdown.ts) --------------------------------------------- */
+.sv-md {
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+.sv-md > * + * {
+  margin-top: var(--sv-space-2);
+}
+.sv-md h1,
+.sv-md h2,
+.sv-md h3,
+.sv-md h4,
+.sv-md h5,
+.sv-md h6 {
+  font-size: var(--sv-text-md);
+  font-weight: 700;
+}
+.sv-md ul,
+.sv-md ol {
+  padding-inline-start: var(--sv-space-5);
+  list-style: revert;
+}
+.sv-md blockquote {
+  padding-inline-start: var(--sv-space-2);
+  border-inline-start: 3px solid var(--sv-border-strong);
+  color: var(--sv-text-muted);
+}
+.sv-md code {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: var(--sv-surface);
+  font-family: var(--sv-font-mono);
+  font-size: 0.9em;
+}
+.sv-md pre {
+  padding: var(--sv-space-2);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface);
+  overflow: auto;
+}
+.sv-md pre code {
+  padding: 0;
+  background: transparent;
+}
+.sv-md table {
+  border-collapse: collapse;
+}
+.sv-md th,
+.sv-md td {
+  padding: 2px var(--sv-space-2);
+  border: 1px solid var(--sv-border-strong);
+}
+
+@media (forced-colors: active) {
+  .sv-vrow[aria-selected='true'],
+  .sv-treeitem[aria-selected='true'],
+  .sv-palette__item[aria-selected='true'] {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+  }
+  .sv-menu {
+    border-color: CanvasText;
+  }
+}

@@ -74,6 +74,8 @@ export function SaveBar({
   const pages = [...new Set(selection.parts.map((p) => p.pageNumber))];
   const multi = selection.parts.length > 1;
   const quote = selection.parts.map((p) => p.quote).join(' … ');
+  // The text of an OCR page is machine output; say so where the quote is about to become a record.
+  const fromOcr = selection.parts.some((p) => p.part?.page?.text?.algorithm === 'sv-ocr-text-v1');
 
   const save = async (): Promise<void> => {
     setState({ busy: true, error: null, done: null });
@@ -130,6 +132,13 @@ export function SaveBar({
       <blockquote className="sv-quote sv-savebar__quote" dir="auto">
         {truncate(quote, 200)}
       </blockquote>
+
+      {fromOcr ? (
+        <p className="sv-small" data-testid="pdf-save-ocr-note">
+          This text was recognised from a scanned image (OCR) and may contain errors. Check the
+          quote against the page before relying on it.
+        </p>
+      ) : null}
 
       {multi ? (
         <InlineNotice tone="warning" title="This selection spans more than one page">

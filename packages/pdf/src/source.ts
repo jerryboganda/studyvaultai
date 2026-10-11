@@ -16,6 +16,7 @@ export type FetchFailureKind =
   | 'redirect-blocked'
   | 'not-pdf'
   | 'network'
+  | 'offline'
   | 'too-large'
   | 'aborted';
 
@@ -90,6 +91,12 @@ export async function fetchPdf(url: string, opts: FetchOptions = {}): Promise<Fe
     if (opts.signal?.aborted || (err instanceof DOMException && err.name === 'AbortError')) {
       return fail('aborted', 'Loading was cancelled.');
     }
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      return fail(
+        'offline',
+        'This device appears to be offline, so the file could not be downloaded. Everything already in StudyVault still works without a connection.',
+      );
+    }
     // A cross-origin redirect to a site we have no access to fails like any network error. Asking
     // again without following redirects tells the two apart (the second answer is opaque but typed).
     const redirected = await doFetch(url, {
@@ -140,7 +147,12 @@ export async function fetchPdf(url: string, opts: FetchOptions = {}): Promise<Fe
           'redirected-non-pdf',
           `The address redirected to ${hostOf(finalUrl)}, which returned a web page (${contentType.split(';')[0]}) instead of a PDF. This is usually a sign-in page.`,
         )
-      : fail('not-pdf', `The address returned ${contentType.split(';')[0]}, not a PDF.`);
+      : contentType.trim().toLowerCase().startsWith('text/html')
+        ? fail(
+            'not-pdf',
+            'The address returned a web page (text/html) instead of a PDF. That is usually a sign-in, cookie-consent or error page.',
+          )
+        : fail('not-pdf', `The address returned ${contentType.split(';')[0]}, not a PDF.`);
   }
 
   const declared = Number(res.headers.get('content-length'));

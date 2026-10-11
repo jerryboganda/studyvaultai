@@ -194,3 +194,20 @@ export function captureBlock(url: string, denyList: readonly string[]): CaptureB
   if (!u) return 'unsupported-scheme';
   return isHostDenied(u.hostname, denyList) ? 'denied-site' : null;
 }
+
+/**
+ * Stand-in address of sources that have none: a PDF opened from a file, highlights imported from a
+ * file without a URL. `.invalid` is reserved (RFC 2606), so these never resolve and are never shown,
+ * linked or indexed. Writers build theirs from this prefix; readers ask `isPlaceholderSourceUrl`.
+ */
+export const PLACEHOLDER_SOURCE_PREFIX = 'https://studyvault.invalid/';
+
+export function isPlaceholderSourceUrl(url: string | null | undefined): boolean {
+  const parsed = url ? parseHttpUrl(url) : null;
+  return parsed !== null && parsed.hostname === 'studyvault.invalid';
+}
+
+/** The address to show, link or index: '' for a missing one and for a placeholder. */
+export function visibleSourceUrl(url: string | null | undefined): string {
+  return url && !isPlaceholderSourceUrl(url) ? url : '';
+}

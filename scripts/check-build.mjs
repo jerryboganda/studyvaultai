@@ -36,6 +36,11 @@ if (perms !== wantPerms) fail(`permissions "${perms}" != "${wantPerms}"`);
 const optHosts = [...(m.optional_host_permissions ?? [])].sort().join(',');
 if (optHosts !== 'http://*/*,https://*/*') fail(`optional_host_permissions "${optHosts}"`);
 const csp = m.content_security_policy?.extension_pages ?? '';
+const CONNECT_ALLOWED = new Set(["'self'", 'https:', 'http://localhost:*', 'http://127.0.0.1:*']);
+const connectTokens = (/connect-src ([^;]+)/.exec(csp)?.[1] ?? '').trim().split(/\s+/);
+for (const token of connectTokens) {
+  if (!CONNECT_ALLOWED.has(token)) fail(`connect-src token not allow-listed: ${token}`);
+}
 for (const directive of [
   "script-src 'self' 'wasm-unsafe-eval'",
   "connect-src 'self'",
@@ -44,7 +49,10 @@ for (const directive of [
 ]) {
   if (!csp.includes(directive)) fail(`extension_pages CSP is missing ${directive}: ${csp}`);
 }
-if (/(?<!wasm-)unsafe-eval|unsafe-inline|https?:/.test(csp))
+if (
+  /(?<!wasm-)unsafe-eval|unsafe-inline/.test(csp) ||
+  /(script|object|base|frame|form)-[a-z]+[^;]*https?:/.test(csp)
+)
   fail(`extension_pages CSP is too loose: ${csp}`);
 const commands = Object.keys(m.commands ?? {})
   .sort()
@@ -65,7 +73,9 @@ const KB = 1024;
 const size = (rel) => statSync(join(prod, rel)).size;
 const budgets = [
   ['content-scripts/highlighter.js', 450 * KB],
-  ['background.js', 320 * KB],
+  // The worker bundles @storage, which now includes the study, AI and sync repositories (they register
+  // their table schemas at import time, so they are not tree-shaken). 420 KB is a regress guard.
+  ['background.js', 420 * KB],
 ];
 for (const [rel, max] of budgets) {
   if (!existsSync(join(prod, rel))) fail(`missing ${rel}`);
@@ -77,7 +87,12 @@ const ocrDir = join(prod, 'ocr');
 const total = walk(prod)
   .filter((f) => !f.startsWith(ocrDir + sep))
   .reduce((n, f) => n + statSync(f).size, 0);
-if (total > 1800 * KB) fail(`total extension size ${Math.round(total / KB)} KB exceeds 1800 KB`);
+// Phase 1 shipped ~1.1 MB. PDF.js (worker, CJK character maps, standard fonts) and the new pages take
+// the non-OCR total to ~5.3 MB; 6500 KB leaves room for the dashboard/review pages. OCR assets are
+// budgeted separately above. Raise this only with a reason in the commit.
+const TOTAL_BUDGET_KB = 6500;
+if (total > TOTAL_BUDGET_KB * KB)
+  fail(`total extension size ${Math.round(total / KB)} KB exceeds ${TOTAL_BUDGET_KB} KB`);
 
 // --- OCR assets: exactly the audited files (packages/ocr/assets.manifest.json), within budget ---
 // Generated into public/ocr by scripts/copy-ocr-assets.mjs (WXT module modules/ocr-assets.ts).

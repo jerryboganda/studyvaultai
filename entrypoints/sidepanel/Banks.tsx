@@ -1,18 +1,38 @@
 import { useId, useState, type FormEvent } from 'react';
-import { createBank, listBanksWithCounts } from '@storage';
+import { createBank, listBanksWithCounts, listFolderTree, type FolderNode } from '@storage';
 import { Badge, Button, InlineNotice, plural, useAction, useObserved, useToast } from '@ui';
-import { validateBankName } from './model';
+import { openDashboard } from '@ui/vault';
+import { scopeLabel, validateBankName, type BankScope } from './model';
 
 /**
  * Banks tab. Names are typed here, in the extension origin, because the page overlay has no text
- * input (ADR-005); the overlay only picks among the banks listed below.
+ * input (ADR-005); the overlay only picks among the banks listed below. The list is also a
+ * read-only map of bank > folder with counts: choosing one narrows Recent and Search to it.
+ * Folders are managed (created, moved, merged) in the dashboard.
  */
-export function Banks() {
+export function Banks({
+  scope,
+  onScope,
+}: {
+  scope: BankScope | null;
+  /** Narrow Recent and Search to this bank / folder (null clears). */
+  onScope(next: BankScope | null): void;
+}) {
   const banks = useObserved(() => listBanksWithCounts(), []);
   return (
     <div className="sv-stack">
       <h2 className="sv-sr">Banks</h2>
       <NewBankForm />
+      {scope ? (
+        <div className="sv-row" data-testid="bank-scope">
+          <Badge glyph="⌖">
+            <span dir="auto">Recent and Search show only {scopeLabel(scope)}</span>
+          </Badge>
+          <Button variant="ghost" onClick={() => onScope(null)}>
+            Show everything
+          </Button>
+        </div>
+      ) : null}
       {banks.error ? (
         <InlineNotice
           tone="error"
@@ -30,19 +50,226 @@ export function Banks() {
       ) : !banks.data ? (
         <p className="sv-muted">Loading banks…</p>
       ) : (
-        <ul className="bank-list" aria-label="Your banks">
-          {banks.data.map(({ bank, count }) => (
-            <li key={bank.id} className="bank-item">
-              <span className="sv-grow sv-wrap" dir="auto">
-                {bank.name}
-              </span>
-              {bank.isInbox ? <Badge>Default</Badge> : null}
-              <Badge>{plural(count, 'highlight')}</Badge>
-            </li>
-          ))}
-        </ul>
+        <>
+          <p className="sv-small sv-muted">
+            Choose a bank or folder to see only its highlights in Recent and Search. Organise
+            folders in the dashboard.
+          </p>
+          <ul className="bank-list" aria-label="Your banks">
+            {banks.data.map(({ bank, count }) => (
+              <BankRow key={bank.id} bank={bank} count={count} scope={scope} onScope={onScope} />
+            ))}
+          </ul>
+        </>
       )}
     </div>
+  );
+}
+
+function BankRow({
+  bank,
+  count,
+  scope,
+  onScope,
+}: {
+  bank: { id: string; name: string; isInbox: boolean };
+  count: number;
+  scope: BankScope | null;
+  onScope(next: BankScope | null): void;
+}) {
+  const uid = useId();
+  const [open, setOpen] = useState(false);
+  const active = scope?.bankId === bank.id && scope.folderId === null;
+  const dashboard = useAction(() => openDashboard({ bank: bank.id }));
+
+  return (
+    <li className="bank-item" data-testid="bank-item">
+      <div className="sv-row">
+        <Button
+          variant="ghost"
+          className="sv-grow bank-name"
+          aria-pressed={active}
+          aria-label={`Show ${bank.name} in Recent and Search`}
+          data-testid="bank-filter"
+          onClick={() =>
+            onScope(
+              active
+                ? null
+                : { bankId: bank.id, bankName: bank.name, folderId: null, folderName: null },
+            )
+          }
+        >
+          <span dir="auto" className="sv-wrap">
+            {bank.name}
+          </span>
+        </Button>
+        {bank.isInbox ? <Badge>Default</Badge> : null}
+        <Badge>{plural(count, 'highlight')}</Badge>
+      </div>
+      <div className="sv-row">
+        <Button
+          variant="ghost"
+          aria-expanded={open}
+          aria-controls={`${uid}-folders`}
+          aria-label={`${open ? 'Hide' : 'Show'} folders of ${bank.name}`}
+          data-testid="bank-folders-toggle"
+          onClick={() => setOpen((v) => !v)}
+        >
+          Folders
+        </Button>
+        <Button
+          variant="ghost"
+          busy={dashboard.busy}
+          aria-label={`Open ${bank.name} in the dashboard`}
+          onClick={() => void dashboard.run()}
+        >
+          Open in dashboard
+        </Button>
+      </div>
+      {dashboard.error ? (
+        <InlineNotice tone="error" title="Could not open the dashboard">
+          {dashboard.error}
+        </InlineNotice>
+      ) : null}
+      {open ? (
+        <div id={`${uid}-folders`}>
+          <Folders bank={bank} scope={scope} onScope={onScope} />
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
+function Folders({
+  bank,
+  scope,
+  onScope,
+}: {
+  bank: { id: string; name: string };
+  scope: BankScope | null;
+  onScope(next: BankScope | null): void;
+}) {
+  const tree = useObserved(() => listFolderTree(bank.id), [bank.id]);
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+
+  if (tree.error) {
+    return (
+      <InlineNotice
+        tone="error"
+        title="Could not load folders"
+        action={
+          tree.retryable ? (
+            <Button busy={tree.refreshing} onClick={tree.refresh}>
+              Retry
+            </Button>
+          ) : undefined
+        }
+      >
+        {tree.error}
+      </InlineNotice>
+    );
+  }
+  if (!tree.data) return <p className="sv-small sv-muted">Loading folders…</p>;
+  if (tree.data.length === 0) {
+    return <p className="sv-small sv-muted">No folders in this bank yet.</p>;
+  }
+  const toggle = (id: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+  return (
+    <FolderItems
+      nodes={tree.data}
+      label={`Folders in ${bank.name}`}
+      bank={bank}
+      scope={scope}
+      onScope={onScope}
+      expanded={expanded}
+      toggle={toggle}
+    />
+  );
+}
+
+function FolderItems({
+  nodes,
+  label,
+  bank,
+  scope,
+  onScope,
+  expanded,
+  toggle,
+}: {
+  nodes: readonly FolderNode[];
+  label: string;
+  bank: { id: string; name: string };
+  scope: BankScope | null;
+  onScope(next: BankScope | null): void;
+  expanded: ReadonlySet<string>;
+  toggle(id: string): void;
+}) {
+  return (
+    <ul className="folder-list" aria-label={label}>
+      {nodes.map((node) => {
+        const { folder } = node;
+        const active = scope?.folderId === folder.id;
+        const hasChildren = node.children.length > 0;
+        const open = expanded.has(folder.id);
+        return (
+          <li key={folder.id} data-testid="folder-item">
+            <div className="sv-row">
+              {hasChildren ? (
+                <Button
+                  variant="ghost"
+                  className="folder-twist"
+                  aria-expanded={open}
+                  aria-label={`${open ? 'Collapse' : 'Expand'} ${folder.name}`}
+                  onClick={() => toggle(folder.id)}
+                >
+                  <span aria-hidden="true">{open ? '▾' : '▸'}</span>
+                </Button>
+              ) : null}
+              <Button
+                variant="ghost"
+                className="sv-grow bank-name"
+                aria-pressed={active}
+                aria-label={`Show ${folder.name} in Recent and Search`}
+                data-testid="folder-filter"
+                onClick={() =>
+                  onScope(
+                    active
+                      ? null
+                      : {
+                          bankId: bank.id,
+                          bankName: bank.name,
+                          folderId: folder.id,
+                          folderName: folder.name,
+                        },
+                  )
+                }
+              >
+                <span dir="auto" className="sv-wrap">
+                  {folder.name}
+                </span>
+              </Button>
+              <Badge>{node.totalCount}</Badge>
+            </div>
+            {hasChildren && open ? (
+              <FolderItems
+                nodes={node.children}
+                label={`Folders in ${folder.name}`}
+                bank={bank}
+                scope={scope}
+                onScope={onScope}
+                expanded={expanded}
+                toggle={toggle}
+              />
+            ) : null}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 

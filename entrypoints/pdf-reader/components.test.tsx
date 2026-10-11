@@ -363,6 +363,7 @@ describe('Toolbar', () => {
       effectiveZoom: 1.2,
       search: search(),
       companionOpen: true,
+      sidePaneOpen: false,
       highlightCount: 2,
       pageInput: createRef<HTMLInputElement>(),
       searchInput: createRef<HTMLInputElement>(),
@@ -372,6 +373,7 @@ describe('Toolbar', () => {
       onQuery: vi.fn(),
       onFind: vi.fn(),
       onToggleCompanion: vi.fn(),
+      onToggleSidePane: vi.fn(),
       onOpenAnother: vi.fn(),
       ...over,
     };

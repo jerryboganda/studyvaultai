@@ -4,16 +4,25 @@ import type {
   PdfDocumentInput,
   PdfDocumentRecord,
   PdfStore,
+  SaveOcrPageInput,
   SavePdfHighlightInput,
+  StoredCopy,
+  StoredOcrPage,
 } from '../store';
 
 /** In-memory PdfStore for tests and for previewing the reader without extension storage. */
 export function createMemoryPdfStore(): PdfStore & {
   highlights: Map<string, HighlightView & { documentId: string; deleted: boolean }>;
   documents: Map<string, PdfDocumentRecord>;
+  /** documentId -> kept bytes (user-approved copy). */
+  copies: Map<string, Blob>;
+  /** documentId -> page number -> stored OCR page. */
+  ocr: Map<string, Map<number, StoredOcrPage & { language: string; engine: string }>>;
 } {
   const documents = new Map<string, PdfDocumentRecord>();
   const highlights = new Map<string, HighlightView & { documentId: string; deleted: boolean }>();
+  const copies = new Map<string, Blob>();
+  const ocr = new Map<string, Map<number, StoredOcrPage & { language: string; engine: string }>>();
   const banks: BankLite[] = [
     { id: INBOX_BANK_ID, name: INBOX_BANK_NAME, color: 'blue', isInbox: true },
   ];
@@ -26,6 +35,47 @@ export function createMemoryPdfStore(): PdfStore & {
   return {
     highlights,
     documents,
+    copies,
+    ocr,
+    async cacheDocumentBytes(documentId: string, blob: Blob) {
+      copies.set(documentId, blob);
+      return { byteLength: blob.size };
+    },
+    async getDocumentBytes(documentId: string) {
+      return copies.get(documentId) ?? null;
+    },
+    async removeDocumentBytes(documentId: string) {
+      return copies.delete(documentId);
+    },
+    async listStoredCopies(): Promise<StoredCopy[]> {
+      return [...copies].map(([documentId, blob]) => {
+        const rec = documents.get(documentId);
+        return {
+          documentId,
+          title: rec?.title ?? 'Untitled PDF',
+          pageCount: rec?.pageCount ?? 0,
+          byteLength: blob.size,
+          originalUrl: rec?.originalUrl ?? null,
+        };
+      });
+    },
+    async saveOcrPage(input: SaveOcrPageInput) {
+      const pages = ocr.get(input.documentId) ?? new Map();
+      const prev = pages.get(input.pageNumber);
+      pages.set(input.pageNumber, {
+        pageNumber: input.pageNumber,
+        text: input.text,
+        words: input.words,
+        language: input.language,
+        engine: input.engine,
+        correctedText:
+          input.correctedText === undefined ? (prev?.correctedText ?? null) : input.correctedText,
+      });
+      ocr.set(input.documentId, pages);
+    },
+    async getOcrPages(documentId: string): Promise<StoredOcrPage[]> {
+      return [...(ocr.get(documentId)?.values() ?? [])].sort((a, b) => a.pageNumber - b.pageNumber);
+    },
     async upsertDocument(input: PdfDocumentInput) {
       const now = new Date().toISOString();
       const prev = documents.get(input.id);

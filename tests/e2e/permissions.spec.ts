@@ -806,7 +806,8 @@ prodTest.describe('production build', () => {
     expect(manifest.content_scripts).toBeUndefined();
     expect(manifest.web_accessible_resources).toBeUndefined();
     expect(manifest.externally_connectable).toBeUndefined();
-    expect(manifest.optional_permissions).toBeUndefined();
+    // identity + alarms are requested at runtime, only when the user turns sync on (ADR-009).
+    expect([...(manifest.optional_permissions ?? [])].sort()).toEqual(['alarms', 'identity']);
     expect(manifest.action).toMatchObject({ default_popup: 'popup.html' });
     expect(manifest.side_panel).toEqual({ default_path: 'sidepanel.html' });
     expect(manifest.options_ui).toEqual({ open_in_tab: true, page: 'options.html' });
@@ -814,7 +815,7 @@ prodTest.describe('production build', () => {
     // Extension pages may only talk to themselves (SECURITY_PRIVACY: "nothing leaves the device").
     expect(manifest.content_security_policy).toEqual({
       extension_pages:
-        "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; base-uri 'self'; connect-src 'self'; frame-src 'none'; form-action 'none'",
+        "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; base-uri 'self'; connect-src 'self' https: http://localhost:* http://127.0.0.1:*; frame-src 'none'; form-action 'none'",
     });
     expect(Object.keys(manifest.commands ?? {}).sort()).toEqual([
       'focus-toolbar',

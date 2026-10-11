@@ -1,5 +1,15 @@
+import 'fake-indexeddb/auto';
+import { webcrypto } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import {
+  cleanup,
+  configure,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { browser } from 'wxt/browser';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
@@ -14,15 +24,35 @@ import {
   type Settings,
 } from '@shared';
 import { getSettings } from '@runtime';
+import {
+  cacheDocumentBytes,
+  createDeck,
+  createManualCards,
+  listDocuments,
+  upsertDocument,
+} from '@storage';
+import { freshDatabase } from '@storage/test-vault';
+import { SyncApiProvider, type SyncApi, type SyncStatusView } from '@ui/sync';
 import { COMMANDS, makeChromeFakes, rpc, store } from '@ui/testing/fakes';
 import { Options } from './Options';
 
-vi.mock('@storage', async () => (await import('@ui/testing/fakes')).store.module);
+// The page's own writes (delete all data) go through the in-memory fake, which records them; what
+// the review, AI, backup and storage sections read is real code over fake-indexeddb.
+vi.mock('@storage', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  const { store: fake } = await import('@ui/testing/fakes');
+  return { ...actual, ...fake.module } as never;
+});
 vi.mock('@runtime', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   const { rpc: fake } = await import('@ui/testing/fakes');
   return { ...actual, callBackground: fake.callBackground, callTab: fake.callTab } as never;
 });
+
+// The page now mounts the review, AI, sync, backup and storage sections too; a loaded CI shard
+// must not turn "still reading" into a failure.
+vi.setConfig({ testTimeout: 30_000 });
+configure({ asyncUtilTimeout: 10_000 });
 
 const ALL = ['https://*/*', 'http://*/*'];
 let chrome: ReturnType<typeof makeChromeFakes>;
@@ -53,11 +83,42 @@ function wirePermissions() {
 const SHORT_DENY = ['paypal.com'];
 const withStarterList = { denyList: [...DEFAULT_DENY_HOSTS] };
 
+/** Sync is off and not configured; the worker is not involved. */
+const syncStatus: SyncStatusView = {
+  enabled: false,
+  config: null,
+  redirectUrl: 'https://abcdefghijklmnopabcdefghijklmnop.chromiumapp.org/sync',
+  permissions: { identity: true, alarms: true, missingOrigins: [] },
+  signedIn: false,
+  account: null,
+  status: 'disabled',
+  lastSyncAt: null,
+  pending: 0,
+  lastError: null,
+  retryAt: null,
+  running: false,
+  e2ee: { mode: 'none', version: null, lockInSeconds: null },
+  attention: { conflicts: 0, quarantined: 0 },
+  notSynced: [],
+  problem: null,
+  scheduling: 'alarms',
+};
+const syncApi = {
+  status: async () => syncStatus,
+  onStatusChanged: () => () => undefined,
+  listConflicts: async () => [],
+  listQuarantine: async () => [],
+} as unknown as SyncApi;
+
 async function open(settings: Partial<Settings> = {}) {
   await browser.storage.local.set({
     settings: { ...defaultSettings(), denyList: SHORT_DENY, ...settings },
   });
-  return render(<Options />);
+  return render(
+    <SyncApiProvider value={syncApi}>
+      <Options />
+    </SyncApiProvider>,
+  );
 }
 
 /** "Enable on all sites" is a two-step flow: the question, then Chrome's own prompt. */
@@ -66,11 +127,14 @@ async function enableAll() {
   await userEvent.click(await screen.findByRole('button', { name: "Continue to Chrome's prompt" }));
 }
 
-/** What the surface's one polite status region holds right now. */
-const spoken = () => screen.getByRole('status').textContent ?? '';
+/**
+ * What the surface's polite status region (the toast provider's) holds right now. The backup
+ * importer keeps a second, private announcer that is empty until an import runs.
+ */
+const spoken = () => document.querySelector('.sv-toasts__polite')?.textContent ?? '';
 
-beforeEach(() => {
-  fakeBrowser.reset();
+beforeEach(async () => {
+  await freshDatabase(); // also resets fakeBrowser
   store.reset();
   rpc.reset();
   rpc.background['site.sync'] = () => ({ registeredMatches: [] });
@@ -116,10 +180,14 @@ describe('content', () => {
     expect(seen.textContent).toMatch(/sv-hl-amber-formula/);
   });
 
-  it('wraps everything in one polite status region', async () => {
+  it('has one toast status region; the only other live region is the importer’s, empty at rest', async () => {
     await open();
     await screen.findByText(/Everything stays on this device/);
-    expect(screen.getAllByRole('status')).toHaveLength(1);
+    const regions = screen.getAllByRole('status');
+    expect(document.querySelectorAll('.sv-toasts__polite')).toHaveLength(1);
+    const others = regions.filter((r) => !r.classList.contains('sv-toasts__polite'));
+    expect(others.map((r) => r.getAttribute('data-testid'))).toEqual(['backup-import-announce']);
+    expect(others[0]!.textContent).toBe('');
   });
 });
 
@@ -614,5 +682,317 @@ describe('safety', () => {
     expect(await screen.findByText('<img src=x onerror=window.__pwned=1>')).toBeTruthy();
     expect(screen.getByText('<b>bold</b>.example.com')).toBeTruthy();
     expect(container.querySelector('img, script, b')).toBeNull();
+  });
+});
+
+// =============================================================================================
+// Navigation, sections and flags
+// =============================================================================================
+
+const SECTION_IDS = [
+  'site-access',
+  'appearance',
+  'capture',
+  'review',
+  'ai',
+  'sync',
+  'backup',
+  'storage',
+  'shortcuts',
+  'privacy',
+  'data',
+];
+
+describe('section navigation', () => {
+  afterEach(() => window.history.replaceState(null, '', window.location.pathname));
+
+  it('is a named navigation landmark whose links match the sections, in page order', async () => {
+    await open();
+    const nav = await screen.findByRole('navigation', { name: 'Settings sections' });
+    const links = within(nav).getAllByRole('link');
+    expect(links.map((a) => a.getAttribute('href'))).toEqual(SECTION_IDS.map((id) => `#${id}`));
+    // Every link has a target on the page, and each target holds its section's heading.
+    for (const id of SECTION_IDS) {
+      const target = document.getElementById(id);
+      expect(target, `#${id}`).not.toBeNull();
+      // A section may still be reading its own data; its heading arrives with it.
+      expect((await within(target!).findAllByRole('heading', { level: 2 })).length).toBeGreaterThan(
+        0,
+      );
+    }
+    expect(screen.getByRole('heading', { level: 1 })).toBeTruthy();
+  });
+
+  it('has one tab stop; arrows, Home and End move focus and the tab stop follows', async () => {
+    await open();
+    const nav = await screen.findByRole('navigation', { name: 'Settings sections' });
+    const links = within(nav).getAllByRole('link');
+    const stops = () => links.filter((a) => a.getAttribute('tabindex') === '0');
+    expect(stops()).toEqual([links[0]]);
+
+    links[0]!.focus();
+    await userEvent.keyboard('{ArrowDown}');
+    expect(document.activeElement).toBe(links[1]);
+    expect(stops()).toEqual([links[1]]);
+    await userEvent.keyboard('{End}');
+    expect(document.activeElement).toBe(links.at(-1));
+    await userEvent.keyboard('{ArrowDown}'); // wraps
+    expect(document.activeElement).toBe(links[0]);
+    await userEvent.keyboard('{ArrowUp}'); // wraps back
+    expect(document.activeElement).toBe(links.at(-1));
+    await userEvent.keyboard('{Home}');
+    expect(document.activeElement).toBe(links[0]);
+    expect(stops()).toEqual([links[0]]);
+  });
+
+  it('marks the section the address names and scrolls to it once the sections exist', async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    window.history.replaceState(null, '', '#storage');
+    await open();
+    const nav = await screen.findByRole('navigation', { name: 'Settings sections' });
+    const current = within(nav)
+      .getAllByRole('link')
+      .filter((a) => a.getAttribute('aria-current') === 'location');
+    expect(current.map((a) => a.getAttribute('href'))).toEqual(['#storage']);
+    await waitFor(() => expect(scroll).toHaveBeenCalled());
+    expect((scroll.mock.contexts[0] as HTMLElement).id).toBe('storage');
+    // The tab stop starts on the current section, not on the first link.
+    expect(current[0]!.getAttribute('tabindex')).toBe('0');
+  });
+
+  it('ignores a hash that is not a section', async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    window.history.replaceState(null, '', '#javascript:alert(1)');
+    await open();
+    await screen.findByRole('navigation', { name: 'Settings sections' });
+    expect(scroll).not.toHaveBeenCalled();
+  });
+});
+
+describe('optional features explain themselves first and run nothing until enabled', () => {
+  it('AI: explanation and an unticked box; no provider form, no request, no permission prompt', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    await open();
+    const section = (await screen.findByRole('heading', { name: /AI assistance/ })).closest(
+      'section',
+    )!;
+    expect(section.textContent).toMatch(/While this is off, StudyVault sends nothing anywhere/);
+    expect(section.textContent).toMatch(/only the highlights you selected/);
+    const box = within(section).getByRole('checkbox', { name: 'Turn on AI features' });
+    expect((box as HTMLInputElement).checked).toBe(false);
+    expect(within(section).queryByLabelText('Provider address')).toBeNull();
+    expect(within(section).queryByLabelText('API key')).toBeNull();
+
+    // Turning it on shows the setup but still sends nothing: a request needs Test or Send.
+    await userEvent.click(box);
+    expect(await within(section).findByLabelText('Provider address')).toBeTruthy();
+    expect((await getSettings()).features.ai).toBe(true);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(chrome.permissions.request).not.toHaveBeenCalled();
+  });
+
+  it('sync: explanation and sign-in only after the server is named; nothing is asked of Chrome', async () => {
+    await open();
+    const section = (await screen.findByTestId('sync-section')) as HTMLElement;
+    const text = (await within(section).findByTestId('sync-explanation')).textContent ?? '';
+    expect(text).toMatch(/off by default/);
+    expect(text).toMatch(/There is no StudyVault server/);
+    const turnOn = within(section).getByRole('button', { name: /Turn on sync/ });
+    expect(turnOn.getAttribute('aria-disabled')).toBe('true'); // needs the acknowledgement first
+    expect(within(section).queryByRole('button', { name: /Sign in/ })).toBeNull();
+    expect(chrome.permissions.request).not.toHaveBeenCalled();
+    expect((await getSettings()).features.sync).toBe(false);
+  });
+});
+
+describe('review section', () => {
+  it('is on by default with the study day settings; off hides them and the quick action', async () => {
+    await open();
+    expect(await screen.findByRole('heading', { name: 'Review and study day' })).toBeTruthy();
+    const openReview = screen.getByRole('button', { name: 'Open review' });
+    expect(openReview.getAttribute('aria-disabled')).toBeNull();
+
+    const toggle = screen.getByRole('checkbox', { name: 'Show review in StudyVault' });
+    expect((toggle as HTMLInputElement).checked).toBe(true);
+    await userEvent.click(toggle);
+
+    await waitFor(async () => expect((await getSettings()).features.review).toBe(false));
+    expect(screen.queryByRole('heading', { name: 'Review and study day' })).toBeNull();
+    expect(screen.getByText(/Review is off/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Open review' }).getAttribute('aria-disabled')).toBe(
+      'true',
+    );
+    expect(spoken()).toBe(''); // a switch is not an announcement; nothing leaks into the region
+  });
+
+  it('Open review and Open dashboard open their pages in tabs', async () => {
+    const create = vi.spyOn(browser.tabs, 'create').mockResolvedValue({} as never);
+    vi.spyOn(browser.tabs, 'query').mockResolvedValue([]);
+    await open();
+    await userEvent.click(await screen.findByRole('button', { name: 'Open review' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Open dashboard' }));
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
+    const urls = create.mock.calls.map((c) => (c[0] as { url: string }).url);
+    expect(urls[0]).toMatch(/\/review\.html\?view=study$/);
+    expect(urls[1]).toMatch(/\/dashboard\.html$/);
+  });
+});
+
+describe('capture and appearance additions', () => {
+  it('density and the PDF reader switch persist', async () => {
+    await open();
+    await userEvent.click(await screen.findByRole('radio', { name: /^Compact/ }));
+    await waitFor(async () => expect((await getSettings()).density).toBe('compact'));
+
+    const reader = screen.getByRole('checkbox', { name: 'Use the StudyVault PDF reader' });
+    expect((reader as HTMLInputElement).checked).toBe(true);
+    expect(reader.getAttribute('aria-describedby')).toBeTruthy();
+    await userEvent.click(reader);
+    await waitFor(async () => expect((await getSettings()).features.pdfReader).toBe(false));
+    // Other flags are left alone by the write.
+    expect((await getSettings()).features).toMatchObject({ review: true, ai: false, sync: false });
+  });
+});
+
+describe('welcome tour', () => {
+  it('opens the tour page, and offers to resume one that was left part-way', async () => {
+    const create = vi.spyOn(browser.tabs, 'create').mockResolvedValue({} as never);
+    vi.spyOn(browser.tabs, 'query').mockResolvedValue([]);
+    await open();
+    await userEvent.click(await screen.findByRole('button', { name: 'Show the welcome tour' }));
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect((create.mock.calls[0]![0] as { url: string }).url).toMatch(/\/onboarding\.html$/);
+
+    await browser.storage.local.set({
+      onboarding: {
+        schemaVersion: 1,
+        status: 'pending',
+        step: 'banks',
+        preset: { id: 'blank', excluded: [] },
+        applied: null,
+        updatedAt: '2026-10-11T10:00:00.000Z',
+      },
+    });
+    expect(await screen.findByRole('button', { name: 'Resume the welcome tour' })).toBeTruthy();
+  });
+});
+
+// =============================================================================================
+// Storage
+// =============================================================================================
+
+describe('storage section', () => {
+  Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true });
+  const ID_A = 'a'.repeat(64);
+  const ID_B = 'b'.repeat(64);
+
+  async function seedPdf(id: string, title: string, bytes: number) {
+    await upsertDocument({
+      id,
+      title,
+      pageCount: 3,
+      byteLength: bytes,
+      originalUrl: null,
+      textStatus: 'text',
+    });
+    await cacheDocumentBytes(id, new Blob([new Uint8Array(bytes).fill(7)]));
+  }
+
+  it('shows real counts from the database, and what is stored', async () => {
+    const deck = await createDeck({ name: 'Cardiology' });
+    await createManualCards(
+      [1, 2, 3].map((n) => ({
+        template: 'basic' as const,
+        question: `Q${n}?`,
+        answer: `A${n}`,
+      })),
+      { deckId: deck.id },
+    );
+    await open();
+    const section = (await screen.findByTestId('storage-section')) as HTMLElement;
+    const table = await within(section).findByTestId('storage-table');
+    const rows = within(table)
+      .getAllByRole('row')
+      .map((r) => r.textContent ?? '');
+    expect(rows.some((r) => /Flashcards\s*3$/.test(r))).toBe(true);
+    expect(rows.some((r) => /Flashcard decks\s*1$/.test(r))).toBe(true);
+    const total = Number(
+      (within(section).getByTestId('storage-total-rows').textContent ?? '').replace(/,/g, ''),
+    );
+    expect(total).toBeGreaterThanOrEqual(4);
+    expect(within(section).getByTestId('no-cached-pdfs').textContent).toBe(
+      'No PDF copies are stored.',
+    );
+  });
+
+  it('lists stored PDF copies with sizes, removes one, then all, and keeps focus somewhere real', async () => {
+    await seedPdf(ID_A, 'Cardiac physiology', 2048);
+    await seedPdf(ID_B, 'Renal handbook', 4096);
+    await open();
+    const section = (await screen.findByTestId('storage-section')) as HTMLElement;
+    const list = await within(section).findByTestId('cached-pdfs');
+    expect(within(list).getAllByRole('listitem')).toHaveLength(2);
+    expect(list.textContent).toContain('Cardiac physiology');
+    expect(list.textContent).toContain('2.0 KB');
+    await waitFor(() =>
+      expect(within(section).getByTestId('storage-pdf-bytes').textContent).toBe('6.0 KB'),
+    );
+
+    await userEvent.click(
+      within(section).getByRole('button', { name: 'Remove the stored copy of Cardiac physiology' }),
+    );
+    await waitFor(() => expect(within(list).getAllByRole('listitem')).toHaveLength(1));
+    await waitFor(() =>
+      expect(within(section).getByTestId('storage-pdf-bytes').textContent).toBe('4.0 KB'),
+    );
+    expect(spoken()).toContain('Removed 1 stored copy of Cardiac physiology.');
+    expect(document.activeElement?.tagName).toBe('H3');
+
+    // The PDF record itself (highlights hang off it) is still there.
+    expect((await listDocuments()).map((d) => d.document.title).sort()).toEqual([
+      'Cardiac physiology',
+      'Renal handbook',
+    ]);
+
+    await userEvent.click(within(section).getByTestId('clear-all-cache'));
+    const dialog = await screen.findByRole('dialog', { name: 'Remove every stored PDF copy?' });
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Remove the copies' }));
+    expect(await within(section).findByTestId('no-cached-pdfs')).toBeTruthy();
+    await waitFor(() =>
+      expect(within(section).getByTestId('storage-pdf-bytes').textContent).toBe('0 B'),
+    );
+  });
+});
+
+describe('privacy and your data', () => {
+  it('lists the optional permissions the manifest declares, apart from the held ones', async () => {
+    vi.spyOn(browser.runtime, 'getManifest').mockReturnValue({
+      name: 'StudyVault AI',
+      version: '0.1.0',
+      permissions: ['storage', 'sidePanel', 'contextMenus', 'activeTab', 'scripting'],
+      optional_permissions: ['identity', 'alarms'],
+    } as never);
+    await open();
+    const privacy = (await screen.findByText('Permissions this extension holds')).closest(
+      'section',
+    )!;
+    expect(within(privacy).getByText('identity')).toBeTruthy();
+    expect(within(privacy).getByText('alarms')).toBeTruthy();
+    expect(privacy.textContent).toMatch(/Asked for later, only from a button/);
+    expect(privacy.textContent).toMatch(/Access to websites is not among them/);
+  });
+
+  it('delete-all lives under Your data, not inside Privacy', async () => {
+    await open();
+    await screen.findByText(/Everything stays on this device/);
+    const data = document.getElementById('data')!;
+    expect(within(data).getByRole('button', { name: /^Delete all StudyVault data/ })).toBeTruthy();
+    expect(
+      within(document.getElementById('privacy')!).queryByRole('button', {
+        name: /^Delete all StudyVault data/,
+      }),
+    ).toBeNull();
   });
 });

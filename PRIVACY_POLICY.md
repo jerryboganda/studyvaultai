@@ -120,6 +120,8 @@ can be protected with a passphrase; one without a passphrase is readable by anyo
 | `contextMenus` | Adds "Save selection to StudyVault" to the right-click menu. |
 | `activeTab` | Lets StudyVault work in the tab you are looking at, only when you ask it to. Access ends when you navigate away or reload. |
 | `scripting` | Starts StudyVault's page script on tabs and sites you enabled. |
+| `identity` (optional) | Not granted at install. Requested only when you turn on sync and press sign in, so the browser can run the sign-in page of the sync service you configured and hand the result back to StudyVault. Without it, sync cannot sign in. |
+| `alarms` (optional) | Not granted at install. Requested only when you turn on sync, so StudyVault can schedule a periodic sync while the browser is open. Nothing is scheduled while sync is off. |
 | `https://*/*` and `http://*/*` (optional) | Not granted at install. Requested one site at a time when you choose "always enable on this site", or for all sites if you choose that in Settings. You can revoke them in Settings or on the browser's extension page. |
 
 StudyVault does not request the `tabs`, `history`, `bookmarks`, `cookies`, `webRequest` or `downloads`

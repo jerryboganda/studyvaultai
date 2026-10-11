@@ -12,8 +12,16 @@ import {
 } from '@shared';
 import { COMMANDS, INBOX, BIOLOGY, makeChromeFakes, makeItem, rpc, store } from '@ui/testing/fakes';
 import { SidePanel } from './SidePanel';
+import { extras } from './testing';
 
-vi.mock('@storage', async () => (await import('@ui/testing/fakes')).store.module);
+// The real module underneath (review's session port binds to it at import time); the panel's
+// reads and writes are the in-memory fakes, which share one item list and one change signal.
+vi.mock('@storage', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  const { store: fakeStore } = await import('@ui/testing/fakes');
+  const { extras: more } = await import('./testing');
+  return { ...actual, ...fakeStore.module, ...more.module };
+});
 vi.mock('@runtime', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   const { rpc: fake } = await import('@ui/testing/fakes');
@@ -57,7 +65,9 @@ const live = () => {
 beforeEach(() => {
   fakeBrowser.reset();
   store.reset();
+  extras.reset();
   rpc.reset();
+  window.history.replaceState(null, '', '/');
   Object.assign(browser, makeChromeFakes());
   Object.assign(browser.runtime, { openOptionsPage: vi.fn(async () => undefined) });
 });
@@ -689,9 +699,9 @@ describe('Tabs and safety', () => {
     await userEvent.keyboard('{Home}');
     expect(pageTab.getAttribute('aria-selected')).toBe('true');
     await userEvent.keyboard('{End}');
-    expect(screen.getByRole('tab', { name: 'Banks' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tab', { name: 'Review' }).getAttribute('aria-selected')).toBe('true');
     await userEvent.keyboard('{ArrowLeft}');
-    expect(recentTab.getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tab', { name: 'Banks' }).getAttribute('aria-selected')).toBe('true');
   });
 
   it('renders every page-derived string as text', async () => {

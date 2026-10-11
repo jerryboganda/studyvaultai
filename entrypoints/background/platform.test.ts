@@ -12,19 +12,26 @@ describe('browserSiteDeps.grantedOrigins', () => {
     (browser.permissions as { getAll: unknown }).getAll = vi.fn(async () => ({ origins: granted }));
   };
 
-  it('excludes install-time host_permissions: only optional grants are persistent choices', async () => {
+  it('excludes install-time host_permissions: they are not a user choice', async () => {
     stub(
       ['http://127.0.0.1/*', 'http://localhost/*'],
       ['http://127.0.0.1/*', 'http://localhost/*', 'https://example.com/*'],
     );
-    await expect(browserSiteDeps().grantedOrigins()).resolves.toEqual(['https://example.com/*']);
+    // example.com is a per-origin grant, so it is not implicit site access either (settings hint only).
+    await expect(browserSiteDeps().grantedOrigins()).resolves.toEqual([]);
   });
 
-  it('keeps every grant when the manifest declares no host_permissions (production)', async () => {
-    stub(undefined, ['https://a.test/*', 'http://b.test/*']);
+  it('keeps all-sites grants and drops per-origin grants made for AI, sync or PDF fetches', async () => {
+    stub(undefined, [
+      'https://*/*',
+      'http://*/*',
+      'https://api.openai.com/*',
+      'http://localhost/*',
+      'https://sync.example.org/*',
+    ]);
     await expect(browserSiteDeps().grantedOrigins()).resolves.toEqual([
-      'https://a.test/*',
-      'http://b.test/*',
+      'https://*/*',
+      'http://*/*',
     ]);
   });
 
