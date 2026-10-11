@@ -170,6 +170,23 @@ export const OcrOrientation = z.union([
 ]);
 export type OcrOrientation = z.infer<typeof OcrOrientation>;
 
+/**
+ * The one reading a re-recognition (or a restore) replaced, kept on the page's row so it can be put
+ * back (ADR-006 Amendment 5). Device-local: never synchronised and never written to a backup.
+ */
+export const PreviousOcrReading = z.object({
+  text: z.string().max(MAX_OCR_TEXT_CHARS),
+  correctedText: z.string().max(MAX_OCR_TEXT_CHARS).nullable(),
+  words: z.array(OcrWord).max(MAX_OCR_WORDS),
+  language: z.string().max(32),
+  engine: z.string().max(64),
+  confidence: z.number().min(0).max(1).nullable(),
+  orientation: OcrOrientation.optional(),
+  /** When this reading stopped being the page's current one. */
+  replacedAt: IsoDate,
+});
+export type PreviousOcrReading = z.infer<typeof PreviousOcrReading>;
+
 /** Recognised text of one page, keyed by [documentId+pageNumber]. `correctedText` is the user's fix. */
 export const OcrPage = z.object({
   documentId: Id,
@@ -185,6 +202,11 @@ export const OcrPage = z.object({
   confidence: z.number().min(0).max(1).nullable(),
   /** Absent on pages recognised before orientation checks: read as 0 (the page as it is shown). */
   orientation: OcrOrientation.optional(),
+  /**
+   * The reading this one replaced (one step back). A damaged slot reads as absent, so it can never
+   * make the page's own text unreadable.
+   */
+  previousReading: PreviousOcrReading.optional().catch(undefined),
 });
 export type OcrPage = z.infer<typeof OcrPage>;
 

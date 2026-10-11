@@ -2,6 +2,7 @@ import DOMPurify from 'dompurify';
 import { Marked } from 'marked';
 import { inlineBudget, renderBudget, type BudgetReason } from './markdownBudget';
 import { maskMath, mathExtension } from './markdownMath';
+import { typesetMath } from './mathLoader';
 
 /**
  * Notes are user-typed Markdown (DATA_MODEL: Note.body) and must be rendered through a sanitiser.
@@ -11,8 +12,11 @@ import { maskMath, mathExtension } from './markdownMath';
  * tab with rel="noopener noreferrer". The result is a node tree, not an HTML string, so no
  * `innerHTML` is involved on the page.
  *
- * TeX (`$...$`, `$$...$$`) is kept as its source text in `<code class="math">` (markdownMath.ts,
- * ADR-015). `class` is the one extra attribute, kept only on `code` with exactly those values.
+ * TeX (`$...$`, `$$...$$`) comes out of that pipeline as its source text in `<code class="math">`
+ * (markdownMath.ts, ADR-015); `class` is the one extra attribute, kept only on `code` with exactly
+ * those values. A last, separate step (mathLoader.ts) swaps the formulas for typeset MathML once the
+ * lazily loaded typesetter is there; the MathML never passes through this file's sanitiser, it has its
+ * own allow-list (mathTypeset.ts), and the source text stays when anything is refused.
  *
  * Rendering is bounded in time (markdownBudget.ts). marked is quadratic or worse on some inputs, and a
  * note may be 100,000 characters, so the text is measured first and, when it is over budget, shown as
@@ -169,29 +173,51 @@ function parseBounded(source: string): Bounded {
 }
 
 /**
+ * The typeset step. It runs on the sanitised tree and after every size check (the two budget passes
+ * and the formula cap in mathBudget), and nothing it does can fail the render: a throw leaves the
+ * formulas that were not replaced as source text.
+ */
+function withMath(fragment: DocumentFragment, onMathReady?: () => void): DocumentFragment {
+  try {
+    typesetMath(fragment, onMathReady);
+  } catch {
+    // the source text is a complete rendering
+  }
+  return fragment;
+}
+
+/**
  * The sanitised node tree for `source`. Requires a DOM (extension pages, jsdom). Never throws and is
  * bounded in time: text that is too long, too deeply nested or too expensive for marked comes back
  * as plain text with a note (`FALLBACK_NOTE`), see markdownBudget.ts.
+ *
+ * Formulas are typeset when the typesetter is already loaded. When it is not, they are returned as
+ * source text, the load is started, and `onMathReady` (if given) is called once it has finished
+ * loading: the caller renders again and gets the typeset version. It is not called when there is no
+ * formula, when the load fails, or when the typesetter was already there.
  */
-export function renderMarkdown(source: string): DocumentFragment {
+export function renderMarkdown(source: string, onMathReady?: () => void): DocumentFragment {
   const text = typeof source === 'string' ? source : '';
   const bounded = parseBounded(text);
   if ('html' in bounded) {
+    let fragment: DocumentFragment;
     try {
-      return sanitise(bounded.html);
+      fragment = sanitise(bounded.html);
     } catch {
       return plainText(text, 'error');
     }
+    return withMath(fragment, onMathReady);
   }
   return plainText(text, bounded.reason);
 }
 
 /**
  * The one-call marked pipeline, with no budget. Tests use it as the reference that the bounded
- * pipeline must equal for text that is within budget. Never call it on user text.
+ * pipeline must equal for text that is within budget (formulas included: same typeset step). Never
+ * call it on user text.
  */
 export function renderMarkdownUnbounded(source: string): DocumentFragment {
-  return sanitise(parser.parse(source) as string);
+  return withMath(sanitise(parser.parse(source) as string));
 }
 
 /** Same output as markup text; for tests and for places that need a string. */

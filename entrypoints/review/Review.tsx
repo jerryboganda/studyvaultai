@@ -17,6 +17,7 @@ import {
   reviewSearch,
   useDueCount,
   useStudySettings,
+  type ExamTarget,
   type ReviewView,
 } from '@ui/review';
 import { Analytics } from './Analytics';
@@ -46,6 +47,13 @@ function Page() {
   const [view, setView] = useState<ReviewView>(
     link.view ?? (link.highlightId ? 'create' : 'study'),
   );
+  // An exam setup that opens with a syllabus (and topic) chosen: from the address, or from the
+  // "Exam on this topic" button of the coverage table.
+  const [examTarget, setExamTarget] = useState<ExamTarget | null>(() =>
+    link.view === 'exam' && link.syllabusId
+      ? { syllabusId: link.syllabusId, topicId: link.topicId ?? null }
+      : null,
+  );
   const [focusMode, setFocusMode] = useState(false);
   const due = useDueCount();
   // Edit, Delete and Cancel buttons leave the page with their own action: focus stays on the panel.
@@ -53,7 +61,18 @@ function Page() {
 
   const select = useCallback((next: ReviewView) => {
     setView(next);
+    setExamTarget(null);
     const q = reviewSearch({ view: next });
+    window.history.replaceState(null, '', `${window.location.pathname}?${q}`);
+  }, []);
+  const openExamOn = useCallback((target: ExamTarget) => {
+    setExamTarget(target);
+    setView('exam');
+    const q = reviewSearch({
+      view: 'exam',
+      syllabusId: target.syllabusId,
+      ...(target.topicId === null ? {} : { topicId: target.topicId }),
+    });
     window.history.replaceState(null, '', `${window.location.pathname}?${q}`);
   }, []);
 
@@ -134,12 +153,14 @@ function Page() {
           ) : null}
           {view === 'exam' ? (
             <Suspense fallback={<p className="sv-muted">Loading…</p>}>
-              <ExamView settings={settings} onFocusMode={setFocusMode} />
+              <ExamView settings={settings} onFocusMode={setFocusMode} target={examTarget} />
             </Suspense>
           ) : null}
           {view === 'create' ? <Author initialHighlightId={link.highlightId ?? null} /> : null}
           {view === 'cards' ? <CardBrowser settings={settings} /> : null}
-          {view === 'analytics' ? <Analytics settings={settings} /> : null}
+          {view === 'analytics' ? (
+            <Analytics settings={settings} onExamOnTopic={openExamOn} />
+          ) : null}
           {view === 'settings' ? <ReviewSettingsSection /> : null}
         </div>
       </Tabs>

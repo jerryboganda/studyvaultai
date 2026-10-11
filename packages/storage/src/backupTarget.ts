@@ -85,6 +85,27 @@ export const IMPORTED_SOURCE_URL_PREFIX = `${PLACEHOLDER_SOURCE_PREFIX}imported/
  */
 export const BACKUP_EXCLUDED_TABLES: readonly string[] = ['meta', 'syncOps'];
 
+/**
+ * Fields of an exported table that stay on this device: left out of every archive and of the rows a
+ * restore compares, whatever the stored row holds. `ocrPages.previousReading` is the one-step undo of
+ * a re-recognition (ADR-006 Amendment 5).
+ */
+export const BACKUP_LOCAL_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  ocrPages: ['previousReading'],
+};
+
+/** The rows as an archive may carry them. Returns the same array when the table has no such field. */
+function forBackup(table: string, rows: Row[]): Row[] {
+  const fields = BACKUP_LOCAL_FIELDS[table];
+  if (!fields) return rows;
+  return rows.map((row) => {
+    if (!fields.some((f) => f in row)) return row;
+    const copy = { ...row };
+    for (const f of fields) delete copy[f];
+    return copy;
+  });
+}
+
 /** Live view of the registry minus the excluded tables (schemas other modules register show up). */
 export const backupTableRegistry: TableRegistry = {
   get schemaVersion() {
@@ -156,7 +177,7 @@ function liveSource(): BackupSource {
           afterKey === undefined
             ? table.toCollection()
             : table.where(':id').above(afterKey as IndexableType);
-        return rows.limit(limit).toArray();
+        return forBackup(name, await rows.limit(limit).toArray());
       });
     },
     counts() {
@@ -224,7 +245,9 @@ export async function createSnapshotSource(): Promise<BackupSource> {
       'r',
       specs.map((s) => tableOf(db, s.name)),
       async () => {
-        for (const spec of specs) data.set(spec.name, await tableOf(db, spec.name).toArray());
+        for (const spec of specs) {
+          data.set(spec.name, forBackup(spec.name, await tableOf(db, spec.name).toArray()));
+        }
       },
     ),
   );
@@ -600,7 +623,9 @@ export function installPreMigrationSnapshot(
         };
       } else {
         const raw = await ctx.snapshot(names);
-        const data = new Map(specs.map((s) => [s.name, raw[s.name] as Row[]] as const));
+        const data = new Map(
+          specs.map((s) => [s.name, forBackup(s.name, raw[s.name] as Row[])] as const),
+        );
         const appVersion = options.appVersion ?? manifestVersion();
         const out = await exportBackup(
           memorySource({ schemaVersion: ctx.fromVersion, tables: specs }, data),

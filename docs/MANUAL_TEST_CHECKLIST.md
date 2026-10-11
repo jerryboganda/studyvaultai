@@ -16,7 +16,9 @@ MT-53) holds what the accessibility and performance reviews and the e2e wave cou
 (`docs/A11Y_REVIEW.md` "Needs a real browser", `docs/PRIVACY_CLAIMS.md` `test.fixme` rows); section 13
 (MT-54 to MT-61) holds what the finish wave added and no spec can drive: the real folder prompt,
 reminders across a restart, filing-rule toasts, the exam and the graph with a screen reader, real
-office files, two real AI providers and the Preact overlay. The agent-run local e2e passes recorded
+office files, two real AI providers and the Preact overlay; section 14 (MT-62 to MT-65) holds what the
+PDF reader's three late changes added (links, scans stored sideways, the real-document corpus) and
+no spec can drive. The agent-run local e2e passes recorded
 in `docs/PRIVACY_CLAIMS.md` are not evidence for any row here.
 
 ## 0. Set-up (once per run)
@@ -212,6 +214,22 @@ branded Chrome and Edge, not the e2e build.
 | MT-60 | **AI fallback with two real providers** (`tests/e2e/ai-extras.spec.ts` uses two fake providers on loopback; P20a, ADR-013). Settings > AI: a real provider as primary and a second real provider (or a local model on another origin) as a fallback with its own key; run an action. Then (a) revoke the first key at its provider, (b) make the first address unreachable (firewall rule or a dead host), (c) reorder the list after the preview was shown | Chrome's prompt lists both origins in one prompt and Block sends nothing; the preview lists both addresses in order with each key's state; (a) a rejected key stays on the first provider and is reported by name, the second hears nothing (provider log); (b) the second provider receives the same previewed text, and the result names the provider that answered; the usage ledger counts both attempts; (c) the earlier confirmation no longer applies | yes, if fallbacks ship |
 | MT-61 | **The Preact overlay, and a selection made before activation** (ADR-012; only unit-tested). The production zip in branded Chrome and Edge, on the sites of MT-13a to MT-13k: select text first, then activate with the toolbar button or the shortcut; select with the keyboard; open "More options", the highlight popover and a toast with Undo; look at the extension folder and DevTools > Memory on one tab | The toolbar appears for the selection that existed before activation; focus, Escape, positioning and forced colours behave as MT-17 to MT-20 describe; no console error; `content-scripts/highlighter.js` is about 209 KB; nothing is rendered outside the shadow root | yes |
 
+## 14. The PDF reader after the finish wave (2026-10-12): links and sideways scans
+
+ADR-006 amendments 3 and 4 added link following and the turned reading of scans stored sideways; the
+real-document corpus (`tests/fixtures/pdf/real/`, eleven public-domain files, `SOURCES.md`) gave the
+tests real files. `tests/e2e/pdf-links.spec.ts`, `pdf-real.spec.ts` and `pdf-real-memory.spec.ts` are
+written and not yet run in CI (`docs/PRIVACY_CLAIMS.md` P45 to P47). The rows below are what only a
+person with a real browser, a screen reader or a scanner can check. Use the production zip in branded
+Chrome and Edge; the real PDFs are in the repository and can be chosen with the reader's file picker.
+
+| ID | Check | Expected | Blocker |
+| --- | --- | --- | --- |
+| MT-62 | **Following a real link with a screen reader** (`pdf-links.spec.ts` runs axe and the keyboard only; P45, `docs/A11Y_REVIEW.md` addendum "links in the PDF reader"). NVDA and JAWS with Chrome on Windows, VoiceOver with Chrome on macOS. Open `nist-cswp29-csf-2-0.pdf`; go to page 4 (the contents), Tab into the page, listen to the first three links, press Enter on one, listen, press Alt+Left. On page 2 activate the web address and the `mailto:` link. Open the navigation pane's "Links" tab and follow an entry. Then open `cdc-sti-guidelines-2021.pdf`, go to page 138 (references) and Tab into the page once | Each link is announced as a link by its name ("Link to page 6", "External link to www.nist.gov"); Enter lands on the target page, "Went to page N." is heard once and focus is on the page; Alt+Left, or the Back button named "Back to page N", returns to where the link was; the web address opens a dialog that reads the whole address and the site and starts on Cancel; the `mailto:` link is named "Link that StudyVault will not open" and, when activated, a notice says why; the Links tab lists every link by name and follows it; page 138 has **one** tab stop, the arrow keys, Home and End move between its links, and its group label says so; nothing is announced twice | yes |
+| MT-63 | **The new tab and Chrome's pop-up blocker** (P45; `noopener` makes `window.open` return null, so the reader cannot know whether the tab opened). Production zip in branded Chrome with pop-ups at the default. In `nist-cswp29-csf-2-0.pdf`, page 2, follow the web address and confirm; follow it again with "Always allow this site" ticked (the second click opens without the dialog); then, in Chrome's site settings for the extension's address (`chrome-extension://<id>`), set "Pop-ups and redirects" to blocked and repeat; follow a link while another window has focus | By default the tab opens next to the reader with `window.opener` null in its console and no `Referer` in the site's own log; the address bar shows the address the dialog showed; with pop-ups blocked Chrome shows its own blocked-pop-up indicator, the reader still says "Opening {host} in a new tab." (the known limit: record it), stays usable and opens nothing else; the reader's Network panel shows no request from StudyVault; a reader that cannot return to its page or dialog is a failure | no |
+| MT-64 | **OCR of a physically sideways scan** (`pdf-real.spec.ts` covers the one real file in the repository; P46, ADR-006 amendment 4). Scan one printed English page of at least 15 lines to image-only PDFs with `/Rotate 0` (a scanner's PDF mode or a phone scan app, not print-to-PDF): sheet turned a quarter turn one way, the other way, upside down, and upright. Open each in the reader, press "OCR this page", time it, read the *Page text* tab; turn the view with Rotate, select four recognised words, save the highlight, reload the reader and choose the file again; repeat the first with the network off. Add one scan with a sideways table beside upright text | Each turned scan comes back as English text and the outcome names it ("Page 1 is stored sideways (its lines run from bottom to top); it was turned to be read.", "... from top to bottom", "... upside down"); the Page text tab says the same; "Checking orientation of page 1..." appears only for the turned ones; the upright scan takes one reading (compare the times with each other and with MT-39a); the highlight sits on the words and is found again after the reload with no new recognition; nothing is requested while it runs; the mixed page is read in one orientation only (record what comes back: the known limit) | no |
+| MT-65 | **Forced colours on PDF links** (`docs/A11Y_REVIEW.md` addendum "links in the PDF reader"; extends MT-42). Windows "Contrast themes" (Aquatic, Desert, Night sky) on. Open `nist-cswp29-csf-2-0.pdf`, page 4, and Tab through the contents links; `cdc-sti-guidelines-2021.pdf` page 138 (one tab stop and the arrow keys); the confirmation dialog and the Back button | The focused link has a visible `Highlight` ring that is not clipped by the page edge and does not hide the text under it; on the dense page the ring follows the arrow keys; the dialog, the Back button and the Links list are readable in every theme; the pointer over a link is a hand | yes |
+
 ## Evidence table
 
 Copy this table into the release notes or an issue and fill one row per check you ran. Attach
@@ -274,6 +292,10 @@ screenshots, screen recordings or logs; name the files after the ID.
 | MT-59 | | | | | | | | |
 | MT-60 | | | | | | | | |
 | MT-61 | | | | | | | | |
+| MT-62 | | | | | | | | |
+| MT-63 | | | | | | | | |
+| MT-64 | | | | | | | | |
+| MT-65 | | | | | | | | |
 
 Summary line for the release notes: *"Manual checklist run on <date> against <zip SHA-256 prefix>:
 N pass, N fail, N not run. Blocker failures: none / <list>."*

@@ -109,6 +109,14 @@ export interface RunOcrJobOptions {
   orientationBudgetMs?: number;
   /** Test seam: which way the lines of the image run. Default: measured from the canvas ink. */
   lineDirection?(image: OcrImageSource): LineDirection | null;
+  /**
+   * Read every requested page again, whether or not the store already has it (nothing is skipped and
+   * `storedPageNumbers` is not consulted). The runner never deletes: a page's stored text is only
+   * touched by `saveOcrPage`, which is called after that page's new reading succeeded, so a page that
+   * fails or is not reached (cancel, a job-level error) keeps what it had. Whoever implements
+   * `saveOcrPage` for a forced job replaces the page's text there, in one write.
+   */
+  force?: boolean;
 }
 
 /** Errors that will repeat for every page: stop instead of failing the whole document page by page. */
@@ -162,7 +170,7 @@ export async function runOcrJob(options: RunOcrJobOptions): Promise<OcrJobSummar
   try {
     let stored: Set<number>;
     try {
-      stored = new Set(await options.store.storedPageNumbers());
+      stored = options.force ? new Set() : new Set(await options.store.storedPageNumbers());
     } catch (cause) {
       return finish(
         'failed',

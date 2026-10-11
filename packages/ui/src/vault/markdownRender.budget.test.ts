@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 import { RENDER_MAX_CHARS } from './markdownBudget';
 import {
   FALLBACK_MAX_CHARS,
@@ -16,6 +16,10 @@ import {
  * hostile shapes, which are refused before any DOM is built; documents that are rendered are checked
  * for what they produce, with a bound that only catches a freeze.
  */
+
+// The budget is about marked and DOMPurify; formulas stay source text here (the typesetter is replaced
+// by one that refuses everything). Typeset math and the budget have markdownRender.math.test.ts.
+vi.mock('./mathTypeset', () => ({ typeset: () => null }));
 
 const CAP = RENDER_MAX_CHARS;
 const fill = (unit: string, chars = CAP) =>

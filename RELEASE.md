@@ -17,11 +17,22 @@
 >
 > Finish wave, 2026-10-12: branch `feat/finish-all` added ADR-011 to ADR-020 (schema v4, filing rules,
 > graph, reminders, exam and syllabus, backup folder, import formats, AI router, Preact content script).
-> No `ci.yml` run of that branch has concluded `success` yet, so none of it is covered by the status
-> above; the pipeline described below is unchanged (same jobs, same gates; only the numbers in
-> `scripts/check-build.mjs` moved). Each new row in `docs/PRIVACY_CLAIMS.md` is `unit-only` with its
-> e2e spec written and not yet run in CI, and `docs/MANUAL_TEST_CHECKLIST.md` MT-54 to MT-61 hold what
-> only a person can check for it.
+> Its `ci.yml` run https://github.com/jerryboganda/studyvaultai/actions/runs/38173629818 (commit
+> `79d8cbc38111bfcde0e621f37d4795fd3f38e736`, 2026-10-11) concluded `success` in every job: `static`
+> (three jobs), `unit` (266 files and 4,846 tests passed; 5 files and 13 tests skipped by their
+> environment gates), `build` (both builds, the zip, `scripts/check-build.mjs` and
+> `scripts/check-release-docs.mjs`), `audit`, `stress` (seven suites, 39 tests) and all eight `e2e` shards
+> (per OS 546 tests passed, 6 `test.fixme` skipped, none failed or flaky). The pipeline described below
+> is unchanged (same jobs, same gates; only the numbers in `scripts/check-build.mjs` moved). What the
+> run proves: the specs passed against the e2e build in Playwright's bundled Chromium on Ubuntu and
+> Windows, and the release gate passed on the production build. What it does not prove: branded Chrome
+> or Edge, a real incognito window, Chrome's native permission prompts and folder picker, a hosted
+> sign-in provider, a screen reader or the Web Store review. `release.yml`, `reproducible-build.yml` and
+> `stress.yml` have still never executed (`gh run list --workflow <file>` shows no run of any of them)
+> and the manual checklist has not been run. Each wave row in `docs/PRIVACY_CLAIMS.md` that has a
+> loaded-extension spec is now `verified (CI 38173629818)` for what that spec asserts and `unit-only` or
+> manual for the rest (P40 and P44 have no spec and stay `unit-only`), and
+> `docs/MANUAL_TEST_CHECKLIST.md` MT-54 to MT-65 hold what only a person can check for it.
 
 How a version gets from `main` to the Chrome Web Store, what the pipeline proves on the way, and
 what only the account owner can do. The pipeline never publishes to the store: that needs the
@@ -71,9 +82,9 @@ Scripts (all plain Node, no remote code): `scripts/check-build.mjs`, `scripts/ch
    `release` artifact and verify: `sha256sum -c SHA256SUMS`; open the zip's `manifest.json`;
    skim `licenses.json` and the SBOM.
 4. **Manual checks.** Install the zip unpacked in branded Chrome and Edge and fill in
-   `docs/MANUAL_TEST_CHECKLIST.md` (the upgrade check needs the previous release; MT-54 to MT-61 cover
-   the finish wave and need real folders, real office files, two real AI providers and a screen
-   reader). Attach the evidence table to the draft release. Blocker failures stop the release.
+   `docs/MANUAL_TEST_CHECKLIST.md` (the upgrade check needs the previous release; MT-54 to MT-65 cover
+   the finish wave and need real folders, real office files, two real AI providers, a scanner and a
+   screen reader). Attach the evidence table to the draft release. Blocker failures stop the release.
 5. **Tag.** `git tag -a vX.Y.Z -m "StudyVault AI X.Y.Z" && git push origin vX.Y.Z`. `release.yml`
    builds again from the tag and creates the draft release with the zip, `SHA256SUMS`, SBOM and
    licence report.
@@ -282,10 +293,24 @@ Taken from ADR-011 to ADR-020 and the code; remove an entry only when the code c
 - **Not built, with reasons** (`docs/plans/FINISH_BRIEF.md`, `PRD.md` "Delivery status"): shared or
   collaborative banks, calendar and cloud-drive sync, YouTube captions, semantic search, image
   occlusion, a reading view. Edge automation is not possible: Edge ignores `--load-extension`.
-- **Verification state:** unit files and e2e specs are written and have not run in a passing Actions
-  run; the manual rows MT-54 to MT-61 are the only check of the real folder prompt, real office files,
-  two real providers, screen readers on the exam and the graph, and the Preact overlay in branded
-  Chrome. `docs/PRIVACY_CLAIMS.md` P20a to P20c, P26j and P33 to P44.
+- **PDF reader (ADR-006 amendments 3 and 4).** Only link annotations are followed, plus the four named
+  actions next, previous, first and last page; JavaScript, form, layer, attachment and Print or
+  Download actions are not supported and are refused with a notice, and a link whose action pdf.js
+  does not turn into a destination has no anchor at all. A web address opens only after a
+  confirmation, in a new tab, and the reader cannot tell whether Chrome's pop-up blocker allowed it.
+  A scan stored sideways or upside down is turned to be read, one orientation per page, with no
+  deskew and English only; a page that mixes orientations is read in the one that scores best, and a
+  blank page can cost four readings. **Pages recognised before the turn was added keep their text**
+  (junk included) until a re-run action exists; the reader has none. Matrix items 6 (password) and 7
+  (remote PDF, redirect) have no real file and stay on synthetic fixtures; no hostile-PDF fixture
+  exists. Eleven real public-domain PDFs (20.7 MB, `tests/fixtures/pdf/real/SOURCES.md`) are test
+  material: they live under `tests/`, not `public/`, and no build gate asserts their absence.
+- **Verification state:** the unit files and the e2e specs ran and passed in Actions run 38173629818
+  (Ubuntu and Windows, Playwright's bundled Chromium, the e2e build); the manual rows MT-54 to MT-65
+  are the only check of the real folder prompt, real office files, two real providers, screen readers
+  on the exam, the graph and PDF links, the pop-up blocker on a followed link, a physically sideways
+  scan, and the Preact overlay in branded Chrome. `docs/PRIVACY_CLAIMS.md` P20a to P20c, P26h to P26j
+  and P33 to P47.
 
 ### Modules still being integrated (2026-10-11)
 
@@ -300,22 +325,27 @@ in a store listing until its row there says `verified` for every part the statem
 The second-pass hardening changes are in the same position: unit and integration tests (the `unit`
 job of run 38139836238 ran them) and e2e specs that passed there, but no branded-Chrome run and no
 manual checklist. docs/PRIVACY_CLAIMS.md lists each as `verified`, `unit-only` or `open` per part, and
-THREAT_MODEL.md section 7 lists the findings and the accepted limitations.
+THREAT_MODEL.md section 7 lists the findings and the accepted limitations. Run 38173629818 ran the
+same specs again, with the finish wave included; it adds no browser the first run lacked.
 
 ## CI map
 
 Every job, what a green result proves, and how to run it again. Rule 1 of `AGENTS.md` applies: the
-heavy ones run on Actions, not on the developer machine. Status on 2026-10-11: the first `ci.yml`
-run in which every job concluded `success` is <https://github.com/jerryboganda/studyvaultai/actions/runs/38139836238> (branch `ci/wave-c`, commit
-`d641515b1154aa46597e7ebb069d2341014c125c`): `static` (three jobs), `unit` (201 files, 3,693 tests passed, 12 skipped), `build`
-(including `scripts/check-build.mjs` and `scripts/check-release-docs.mjs`), `audit`, `stress` (38 tests
-in six suites), all eight `e2e` shards (per OS 449 tests scheduled, 443 passed, 6 `test.fixme`
-skipped, 0 failed, 0 flaky) and `ci-ok`. The 13 earlier completed runs all concluded `failure`;
-the earlier status note recorded their failures in `unit`, `static (format)` and `e2e` test steps, not
-in the workflow wiring. `stress.yml`, `release.yml` and `reproducible-build.yml` have never executed. A green `e2e` job proves the specs passed against the
-e2e build in Playwright's bundled Chromium; it does not prove the production zip (that is the release
-gate and the two production-build specs), branded Chrome or Edge, a real incognito window, a permission
-prompt, a hosted provider or a screen reader.
+heavy ones run on Actions, not on the developer machine. Status on 2026-10-12: the latest `ci.yml` run in
+which every job concluded `success` is <https://github.com/jerryboganda/studyvaultai/actions/runs/38173629818>
+(branch `feat/finish-all`, commit `79d8cbc38111bfcde0e621f37d4795fd3f38e736`): `static` (three jobs),
+`unit` (271 files: 266 passed, 5 skipped by their gates; 4,846 tests passed, 13 skipped), `build` (including
+`scripts/check-build.mjs`: "content script 214 KB; total 6662 KB", OCR assets 5870 KB under their own
+budget, and `scripts/check-release-docs.mjs`), `audit`, `stress` (39 tests in seven suites), all eight
+`e2e` shards (per OS 552 tests scheduled, 546 passed, 6 `test.fixme` skipped, 0 failed, 0 flaky) and
+`ci-ok`. The first green run was <https://github.com/jerryboganda/studyvaultai/actions/runs/38139836238>
+(branch `ci/wave-c`, commit `d641515b1154aa46597e7ebb069d2341014c125c`; 443 of 449 e2e tests per OS); the
+13 completed runs before it all concluded `failure` (their failures were in `unit`, `static (format)` and
+`e2e` test steps, not in the workflow wiring). `stress.yml`, `release.yml` and `reproducible-build.yml`
+have never executed. A green `e2e` job proves the specs passed against the e2e build in Playwright's
+bundled Chromium; it does not prove the production zip (that is the release gate and the two
+production-build specs), branded Chrome or Edge, a real incognito window, a permission prompt, a hosted
+provider or a screen reader.
 
 ### `ci.yml`
 
@@ -325,7 +355,7 @@ prompt, a hosted provider or a screen reader.
 | `unit (vitest)` | push, PR, manual | required | every `*.test.ts(x)` under `packages/`, `entrypoints/`, `server/` passes in jsdom/node with `SV_PERF` unset (the 10k-row suite in `packages/storage` skips itself) | a loaded extension, a real browser, IndexedDB outside `fake-indexeddb` |
 | `build (prod + e2e + zip)` | push, PR, manual | required | production and e2e builds succeed, the zip is produced, `scripts/check-build.mjs` (manifest, permissions, CSP, remote code, size budgets, test hooks) and `scripts/check-release-docs.mjs` pass. Uploads `extension-builds`; the size table is in the job summary | that the build is reproducible (`reproducible-build.yml`) |
 | `e2e (<os>, shard <n>/4)` | push, PR, manual, after `build` | required, 2 OSes x 4 shards | the Playwright suite passes against the built MV3 extension in Playwright's bundled Chromium (headless) on Ubuntu and Windows; a test that needed its retry fails the run. Uploads `e2e-report-<os>-<n>` and `screenshots-<os>-<n>` | branded Chrome or Edge, macOS, permission prompts, screen readers (manual checklist) |
-| `stress (perf suites, SV_PERF=1)` | push, PR, manual | advisory (`continue-on-error`; `ci-ok` prints it and does not require it until it has a few green runs; it has one, run 38139836238) | the seeded 10k-row and round-trip suites (`scripts/run-perf.mjs`: storage, search, highlights, backup, study: 10k-card queue and 100k review-log analytics) ran, none was skipped, and their budgets held on a CI runner. Uploads `perf-results` (`timings.json`, `summary.md`) | the study suite is pure functions (no IndexedDB), so the Zod parse of due cards in `getDueSummary` is not in it; numbers on a shared runner are regression guards, not user hardware. The 10k dashboard spec is not here: it is `perf: 10,000 highlights` in `tests/e2e/dashboard.spec.ts` and runs in `e2e` |
+| `stress (perf suites, SV_PERF=1)` | push, PR, manual | advisory (`continue-on-error`; `ci-ok` prints it and does not require it until it has a few green runs; it has two, runs 38139836238 and 38173629818) | the seeded 10k-row and round-trip suites (`scripts/run-perf.mjs`: storage, search, highlights, backup, study: 10k-card queue and 100k review-log analytics) ran, none was skipped, and their budgets held on a CI runner. Uploads `perf-results` (`timings.json`, `summary.md`) | the study suite is pure functions (no IndexedDB), so the Zod parse of due cards in `getDueSummary` is not in it; numbers on a shared runner are regression guards, not user hardware. The 10k dashboard spec is not here: it is `perf: 10,000 highlights` in `tests/e2e/dashboard.spec.ts` and runs in `e2e` |
 | `audit (advisory)` | push, PR, manual | advisory | nothing is promised: `pnpm audit --prod --audit-level=high` and the licence allow-list report | `release.yml` enforces the licence allow-list |
 | `ci-ok (required checks)` | always | the only check to require in branch protection | `static`, `unit`, `build`, `e2e` all concluded `success`; failed, cancelled and skipped all count as failure (`stress` is printed, not required) | |
 

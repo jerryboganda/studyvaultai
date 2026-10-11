@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useId, useState, type ReactNode } from 'react';
 import type { Card } from '@study';
 import {
   correctAnswerText,
@@ -15,9 +15,18 @@ import {
   type ExamQuestion,
   type ExamSession,
 } from '@study/exam';
-import { getCardSourceContext, type CardSourceContext } from '@storage';
+import { SKIP_REASON_TEXT } from '@study/examSyllabus';
+import {
+  getCardSourceContext,
+  getSyllabus,
+  listBanks,
+  listTags,
+  type CardSourceContext,
+} from '@storage';
 import { Badge, Button, InlineNotice, plural, truncate, useAction, useAsync } from '@ui';
-import { TID, examJumpId, examMissedId, formatWhen, percent } from '@ui/review';
+import { TID, examJumpId, examMissedId, examStudyTopicId, formatWhen, percent } from '@ui/review';
+import { openDashboard, type DashboardTarget } from '@ui/vault/dashboardLink';
+import { subtreeMappings, topicLibraryTarget } from '@ui/vault/topicLink';
 import { openSource, type JumpResult } from './jump';
 
 const OUTCOME = {
@@ -46,11 +55,14 @@ function Breakdown({
   first,
   rows,
   testId,
+  action,
 }: {
   title: string;
   first: string;
   rows: BreakdownRow[];
   testId: string;
+  /** An extra column: a button per row. */
+  action?: { header: string; cell(row: BreakdownRow): ReactNode };
 }) {
   if (rows.length === 0) return null;
   return (
@@ -67,6 +79,7 @@ function Breakdown({
               <th scope="col">Wrong</th>
               <th scope="col">Unanswered</th>
               <th scope="col">Score</th>
+              {action ? <th scope="col">{action.header}</th> : null}
             </tr>
           </thead>
           <tbody>
@@ -78,6 +91,7 @@ function Breakdown({
                 <td>{r.wrong}</td>
                 <td>{r.unanswered}</td>
                 <td>{percent(r.correct / r.total)}</td>
+                {action ? <td>{action.cell(r)}</td> : null}
               </tr>
             ))}
           </tbody>
@@ -227,6 +241,56 @@ export function ExamResults({
     return out;
   }, [exam.id]);
 
+  // "Study this topic" opens the same dashboard list the coverage table's "Show" opens, so the
+  // topic is read as it is now (it may have been edited since the exam).
+  const syllabusId = exam.scope.kind === 'syllabus' ? exam.scope.syllabusId : null;
+  const hasTopics = parts.topics.length > 0;
+  const links = useAsync(async () => {
+    if (syllabusId === null || !hasTopics) return null;
+    const [syllabus, banks, tags] = await Promise.all([
+      getSyllabus(syllabusId),
+      listBanks(),
+      listTags(),
+    ]);
+    return {
+      mappings: syllabus ? subtreeMappings(syllabus.nodes) : null,
+      banks: new Map(banks.map((b) => [b.id, b.name] as const)),
+      tags: new Map(tags.map((t) => [t.tag.id, t.tag.name] as const)),
+    };
+  }, [exam.id, syllabusId, hasTopics]);
+  const openTopic = useAction(async (target: DashboardTarget) => {
+    await openDashboard(target);
+  });
+  const studyCell = (r: BreakdownRow): ReactNode => {
+    const found = links.data?.mappings?.get(r.key);
+    const target =
+      found && links.data ? topicLibraryTarget(found, links.data.banks, links.data.tags) : null;
+    const why = links.error
+      ? `The syllabus could not be read: ${links.error}`
+      : !links.data
+        ? 'Reading your syllabus…'
+        : links.data.mappings === null
+          ? 'This syllabus has been deleted since the exam.'
+          : !target
+            ? 'This topic is no longer in the syllabus.'
+            : target.kind === 'none'
+              ? target.reason
+              : undefined;
+    return (
+      <Button
+        data-testid={examStudyTopicId(r.key)}
+        aria-label={`Study this topic: ${r.label}`}
+        disabledReason={why}
+        onClick={() => {
+          if (!target || target.kind === 'none') return;
+          void openTopic.run(target.kind === 'bank' ? { bank: target.bankId } : { q: target.q });
+        }}
+      >
+        Study this topic
+      </Button>
+    );
+  };
+
   const countReason = undone
     ? 'This exam was counted once and then undone. An exam can only be counted once.'
     : plan.items.length === 0
@@ -275,6 +339,42 @@ export function ExamResults({
         </p>
       ) : null}
 
+      <Breakdown
+        title="By topic"
+        first="Topic"
+        rows={parts.topics}
+        testId={TID.examTopics}
+        action={{ header: 'Study', cell: studyCell }}
+      />
+      {openTopic.error ? (
+        <InlineNotice tone="error" title="Could not open the dashboard">
+          {openTopic.error}
+        </InlineNotice>
+      ) : null}
+      {exam.syllabus ? (
+        <div className="sv-stack sv-stack--tight">
+          {hasTopics ? (
+            <p className="sv-small sv-muted">
+              A card that belongs to several topics counts under one of them, so each question is
+              listed once.
+            </p>
+          ) : null}
+          {exam.syllabus.skipped.length > 0 || exam.syllabus.undrawn > 0 ? (
+            <p className="sv-small" data-testid={TID.examLeftOut}>
+              Left out of this exam:{' '}
+              {[
+                ...exam.syllabus.skipped.map((s) => `${s.title} (${SKIP_REASON_TEXT[s.reason]})`),
+                ...(exam.syllabus.undrawn > 0
+                  ? [
+                      `${plural(exam.syllabus.undrawn, 'card')} that only belong to a topic with subtopics`,
+                    ]
+                  : []),
+              ].join('; ')}
+              .
+            </p>
+          ) : null}
+        </div>
+      ) : null}
       <Breakdown title="By bank" first="Bank" rows={parts.banks} testId={TID.examBanks} />
       <Breakdown title="By tag" first="Tag" rows={parts.tags} testId={TID.examTags} />
       {parts.tags.length > 0 ? (

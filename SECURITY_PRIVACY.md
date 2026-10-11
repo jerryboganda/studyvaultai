@@ -42,6 +42,7 @@
 - Document import (ADR-014, THREAT_MODEL C5.11): Word, PowerPoint, EPUB, HTML and Anki text files are untrusted ZIP/XML/HTML. They are parsed in an extension page, never the worker or a content script, by StudyVault's own central-directory reader (entry, size, ratio and name limits; an entry whose stream does not match its header is abandoned) and `DOMParser` after any `<!DOCTYPE`/`<!ENTITY` refusal; HTML is parsed inert and never attached to a document; encrypted and DRM files are refused, not opened. No new dependency was added for it. The parse runs on the page's thread (no Worker was added: a worker would add a message protocol for no change in trust, ADR-014), so a hostile file inside the caps can keep a page busy for seconds (R26).
 - Rendered text (ADR-015, THREAT_MODEL C3.3, C3.7): Markdown goes through the DOMPurify allow-list as before; TeX is shown as `<code class="math">` source text and never evaluated, `class` is allowed only on `<code>` and only as `math` or `math math-display`; a text whose estimated render cost is over budget is shown as plain text with a note, so a hostile note cannot freeze a page; AI-drafted notes escape `$`.
 - Backup folder (ADR-016, THREAT_MODEL C5.10): written only from a click on an extension page; each file is read back and compared; only files with the exact name shape and the `origin: "backup-folder"` marker are ever pruned; an existing file is never replaced; the handle and state are `meta` rows (not in backups or sync, removed with the database).
+- PDF links (docs/adr/006 amendment 3, THREAT_MODEL C6.6 and R31): a link inside a PDF is never opened by the click itself. Only an absolute `http:` or `https:` address of at most 2,048 characters, with no user name or password, is offered, and only through a dialog that shows the whole address and the site; "Open in a new tab" then opens it with `noopener,noreferrer`, so the new tab has no opener and no referrer. `javascript:`, `data:`, `file:`, `blob:`, `chrome:`, `chrome-extension:`, `mailto:` and every other scheme, and Launch, JavaScript, form and attachment actions, are refused with a notice and nothing runs. The extension makes no request for a link: it is a navigation by the browser that the person confirmed, not a fourth network path (docs/PRIVACY_CLAIMS.md P45: unit-only, e2e written and not yet run in CI).
 
 ## Exposures to page scripts (known, accepted, disclosed)
 A web page is untrusted code running in the same document the extension annotates. Verified by review
@@ -108,3 +109,8 @@ request); TeX and Markdown (R28, formulas are not typeset, expensive notes are s
 (R29, two devices can create one link twice and it is folded on read); reminders (R30, browser must be
 running, the first-lifetime alarm miss). Open items O15 to O17 are the CI run, the manual rows MT-54 to
 MT-61 and a real v3 to v4 upgrade.
+
+PDF reader changes of the same day (links; scans stored sideways read by turning them; eleven real
+public-domain PDFs as test material): rows C6.6 to C6.8, residual risk R31 and open item O18 of
+THREAT_MODEL.md (docs/adr/006 amendments 3 and 4). Status of each is unit-only with the e2e spec written
+and not yet run in CI; no new permission, no new network path and no new bundled data.

@@ -14,7 +14,7 @@ import {
 } from '@storage';
 import { loadCoverageThresholds } from '@storage/syllabusCoverage';
 import { freshDatabase, save } from '@storage/test-vault';
-import { TID, defaultStudySettings, syllabusShowId } from '@ui/review';
+import { TID, defaultStudySettings, syllabusExamId, syllabusShowId } from '@ui/review';
 import SyllabusCoverage from './SyllabusCoverage';
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -269,5 +269,42 @@ describe('syllabus coverage', () => {
     expect(systems.textContent).toMatch(/Thin/);
     expect(systems.textContent).toMatch(/50% of its subtopics by weight/);
     expect(rowOf('Heart').textContent).toMatch(/Covered/);
+  });
+});
+
+describe('an exam on a topic', () => {
+  it('is offered for a topic that has cards, by keyboard too, and explained where it has none', async () => {
+    const user = userEvent.setup();
+    const s = await seed();
+    const open = vi.fn();
+    render(<SyllabusCoverage settings={settings} onExamOnTopic={open} />);
+    await screen.findByTestId(TID.syllabusTable);
+    await waitFor(() => expect(screen.getByTestId(TID.syllabusOverall).textContent).toMatch(/60%/));
+    const [cardiology, renal] = s.syllabus.nodes;
+
+    // The column is there, and the button names the topic it is for.
+    expect(screen.getByRole('columnheader', { name: 'Exam' })).toBeTruthy();
+    const ask = screen.getByTestId(syllabusExamId(cardiology!.id));
+    expect(ask.textContent).toBe('Exam on this topic');
+    expect(ask.getAttribute('aria-label')).toBe('Exam on this topic: Cardiology');
+    expect(ask.getAttribute('aria-disabled')).toBeNull();
+    ask.focus();
+    await user.keyboard('{Enter}');
+    expect(open).toHaveBeenCalledWith({ syllabusId: s.syllabus.id, topicId: cardiology!.id });
+
+    // Renal has a highlight and no card: nothing to ask, and the button says why.
+    const none = screen.getByTestId(syllabusExamId(renal!.id));
+    expect(none.getAttribute('aria-disabled')).toBe('true');
+    expect(none.getAttribute('title')).toMatch(/no cards to ask/);
+    await user.click(none);
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+
+  it('is not drawn where the host has no exam (no dead control)', async () => {
+    await seed();
+    render(<SyllabusCoverage settings={settings} />);
+    await screen.findByTestId(TID.syllabusTable);
+    expect(screen.queryByRole('columnheader', { name: 'Exam' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Exam on this topic/ })).toBeNull();
   });
 });

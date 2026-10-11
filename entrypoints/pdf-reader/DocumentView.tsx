@@ -50,7 +50,7 @@ import {
 import type { OcrService } from './ocr';
 import { useOcr } from './ocrController';
 import { describeProgress } from './ocrModel';
-import { OcrPanel, type PageTextState } from './OcrPanel';
+import { OcrPanel, type PageTextState, type RerunInfo } from './OcrPanel';
 import { SaveBar, type SaveDraft } from './SaveBar';
 import { useLinks } from './links';
 import { SidePane } from './SidePane';
@@ -717,6 +717,29 @@ export function DocumentView({
     ? undefined
     : 'Text recognition is not available in this build.';
   const running = ocr.run !== null;
+  const rerunInfo = useMemo((): RerunInfo => {
+    let lines = 0;
+    let withCorrections = 0;
+    let withEarlier = 0;
+    for (const po of ocr.pages.values()) {
+      const n = Object.keys(po.corrections.lines).length + Object.keys(po.corrections.words).length;
+      if (n > 0) {
+        lines += n;
+        withCorrections += 1;
+      }
+      if (po.previous) withEarlier += 1;
+    }
+    return {
+      recognisedPages: ocr.pages.size,
+      corrected: { pages: withCorrections, lines },
+      withEarlier,
+      msPerPage: ocr.msPerPage,
+      sessionOnly: !persistAllowed,
+      onRerecognisePage: () => ocr.rerun('page', page),
+      onRerecogniseAll: () => ocr.rerun('document'),
+      onRestore: () => ocr.restore(page),
+    };
+  }, [ocr, page, persistAllowed]);
 
   return (
     <div className="sv-doc">
@@ -843,7 +866,15 @@ export function DocumentView({
       {ocr.run ? (
         <InlineNotice
           tone="info"
-          title={ocr.run.scope === 'document' ? 'Recognising this document' : 'Recognising a page'}
+          title={
+            ocr.run.again
+              ? ocr.run.scope === 'document'
+                ? 'Reading the recognised pages again'
+                : 'Reading a page again'
+              : ocr.run.scope === 'document'
+                ? 'Recognising this document'
+                : 'Recognising a page'
+          }
           action={
             <Button onClick={ocr.cancel} data-testid="pdf-ocr-cancel">
               Cancel
@@ -882,6 +913,13 @@ export function DocumentView({
           action={<Button onClick={ocr.dismissOutcome}>Dismiss</Button>}
         >
           <p data-testid="pdf-ocr-outcome">{ocr.outcome.detail}</p>
+          {ocr.outcome.lines && ocr.outcome.lines.length > 0 ? (
+            <ul className="sv-small" data-testid="pdf-ocr-outcome-list">
+              {ocr.outcome.lines.map((line, i) => (
+                <li key={i}>{line}</li>
+              ))}
+            </ul>
+          ) : null}
         </InlineNotice>
       ) : null}
       {links.notice}
@@ -954,6 +992,7 @@ export function DocumentView({
                   onSetLine={(line, text) => ocr.setLine(page, line, text)}
                   onRevertLine={(line) => ocr.revertLine(page, line)}
                   onRevertPage={() => ocr.revertPage(page)}
+                  rerun={rerunInfo}
                 />
               )}
             </Tabs>

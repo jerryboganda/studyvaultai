@@ -1,3 +1,4 @@
+import { flattenSyllabus, type SyllabusNode } from '@shared/schema';
 import type { Card, Deck, FsrsState, Rating, ReviewLog } from './schema';
 import { retrievability } from './scheduler';
 import { MINUTE_MS, studyDayKey, studyDayNumber, studyDayStartMs, toMs } from './time';
@@ -624,6 +625,126 @@ export interface SyllabusCoverage {
   unmapped: number;
 }
 
+/** A stored outline as the flat, pre-order topic list that coverage and exam scopes read. */
+export function coverageTopics(nodes: readonly SyllabusNode[]): CoverageTopic[] {
+  return flattenSyllabus(nodes).map(({ node, depth, parentId }) => ({
+    id: node.id,
+    title: node.title,
+    depth,
+    parentId,
+    ...(node.weight === undefined ? {} : { weight: node.weight }),
+    bankIds: node.bankIds,
+    tagIds: node.tagIds,
+  }));
+}
+
+/**
+ * The shape of a syllabus as coverage and exams read it: the tree (a parent must come before its
+ * child; anything else is treated as a root), what each topic points at, each topic's weight among
+ * its siblings and its part of the whole syllabus, and which topics an item with given banks and
+ * tags belongs to. Pure. `syllabusTopicCoverage` and the exam scope both use it, so "belongs to a
+ * topic" has exactly one definition (ADR-020).
+ */
+export interface SyllabusTopicIndex {
+  /** Index of the parent topic, or -1 for a top-level topic. */
+  parent: number[];
+  children: number[][];
+  roots: number[];
+  /** The topic itself points at a bank or a tag. */
+  ownMapped: boolean[];
+  /** Some topic below it points at a bank or a tag. */
+  descendantMapped: boolean[];
+  /** It or some topic below it points at a bank or a tag. */
+  subtreeMapped: boolean[];
+  /** As set; 1 when absent or not a positive number. */
+  weight: number[];
+  /** Weight relative to its siblings (they add up to 1). */
+  rel: number[];
+  /** Part of the whole syllabus (0..1); the top-level topics add up to 1. */
+  share: number[];
+  /** The topics an item belongs to: those it matches and all their ancestors, each once. */
+  topicsOf(bankIds: readonly string[], tagIds: readonly string[]): Set<number>;
+}
+
+export function syllabusTopicIndex(topics: readonly CoverageTopic[]): SyllabusTopicIndex {
+  const n = topics.length;
+  // Tree shape. A parent must come before its child; anything else is treated as a root.
+  const index = new Map<string, number>();
+  topics.forEach((t, i) => {
+    if (!index.has(t.id)) index.set(t.id, i);
+  });
+  const parent = topics.map((t, i) => {
+    const p = t.parentId === null ? -1 : (index.get(t.parentId) ?? -1);
+    return p < i ? p : -1;
+  });
+  const children: number[][] = topics.map(() => []);
+  const roots: number[] = [];
+  parent.forEach((p, i) => (p < 0 ? roots : (children[p] as number[])).push(i));
+
+  const byBank = new Map<string, number[]>();
+  const byTag = new Map<string, number[]>();
+  const add = (map: Map<string, number[]>, key: string, i: number) => {
+    const list = map.get(key);
+    if (list) list.push(i);
+    else map.set(key, [i]);
+  };
+  const ownMapped = topics.map((t, i) => {
+    for (const id of t.bankIds) add(byBank, id, i);
+    for (const id of t.tagIds) add(byTag, id, i);
+    return t.bankIds.length > 0 || t.tagIds.length > 0;
+  });
+
+  const topicsOf = (bankIds: readonly string[], tagIds: readonly string[]): Set<number> => {
+    const hit = new Set<number>();
+    // An ancestor that is already in the set brought its own ancestors with it.
+    const climb = (from: number) => {
+      for (let at = from; at >= 0 && !hit.has(at); at = parent[at] as number) hit.add(at);
+    };
+    for (const id of bankIds) for (const i of byBank.get(id) ?? []) climb(i);
+    for (const id of tagIds) for (const i of byTag.get(id) ?? []) climb(i);
+    return hit;
+  };
+
+  // Shares: weights are relative among siblings.
+  const weight = topics.map((t) =>
+    typeof t.weight === 'number' && Number.isFinite(t.weight) && t.weight > 0 ? t.weight : 1,
+  );
+  const rel = new Array<number>(n).fill(0);
+  const normalise = (list: readonly number[]) => {
+    const total = list.reduce((sum, i) => sum + (weight[i] as number), 0);
+    for (const i of list) rel[i] = (weight[i] as number) / total;
+  };
+  normalise(roots);
+  for (const list of children) if (list.length > 0) normalise(list);
+  const share = new Array<number>(n).fill(0);
+  for (let i = 0; i < n; i += 1) {
+    const p = parent[i] as number;
+    share[i] = (p < 0 ? 1 : (share[p] as number)) * (rel[i] as number);
+  }
+
+  // Which topics have anything mapped at or below them.
+  const descendantMapped = new Array<boolean>(n).fill(false);
+  const subtreeMapped = new Array<boolean>(n).fill(false);
+  for (let i = n - 1; i >= 0; i -= 1) {
+    subtreeMapped[i] = (ownMapped[i] as boolean) || (descendantMapped[i] as boolean);
+    const p = parent[i] as number;
+    if (p >= 0 && subtreeMapped[i]) descendantMapped[p] = true;
+  }
+
+  return {
+    parent,
+    children,
+    roots,
+    ownMapped,
+    descendantMapped,
+    subtreeMapped,
+    weight,
+    rel,
+    share,
+    topicsOf,
+  };
+}
+
 /**
  * Coverage of a custom syllabus by what the person actually holds. A highlight or a card belongs to
  * a topic when one of its banks or tags is one the topic (or a subtopic) points at, and is counted
@@ -655,43 +776,18 @@ export function syllabusTopicCoverage(
     return { status: 'empty', thresholds, topics: [], covered: null, started: null, unmapped: 0 };
   }
 
-  // Tree shape. A parent must come before its child; anything else is treated as a root.
-  const index = new Map<string, number>();
-  topics.forEach((t, i) => {
-    if (!index.has(t.id)) index.set(t.id, i);
-  });
-  const parent = topics.map((t, i) => {
-    const p = t.parentId === null ? -1 : (index.get(t.parentId) ?? -1);
-    return p < i ? p : -1;
-  });
-  const children: number[][] = topics.map(() => []);
-  const roots: number[] = [];
-  parent.forEach((p, i) => (p < 0 ? roots : (children[p] as number[])).push(i));
-
-  const byBank = new Map<string, number[]>();
-  const byTag = new Map<string, number[]>();
-  const add = (map: Map<string, number[]>, key: string, i: number) => {
-    const list = map.get(key);
-    if (list) list.push(i);
-    else map.set(key, [i]);
-  };
-  const ownMapped = topics.map((t, i) => {
-    for (const id of t.bankIds) add(byBank, id, i);
-    for (const id of t.tagIds) add(byTag, id, i);
-    return t.bankIds.length > 0 || t.tagIds.length > 0;
-  });
-
-  /** The topics an item belongs to: those it matches and all their ancestors, each once. */
-  const topicsOf = (bankIds: readonly string[], tagIds: readonly string[]): Set<number> => {
-    const hit = new Set<number>();
-    // An ancestor that is already in the set brought its own ancestors with it.
-    const climb = (from: number) => {
-      for (let at = from; at >= 0 && !hit.has(at); at = parent[at] as number) hit.add(at);
-    };
-    for (const id of bankIds) for (const i of byBank.get(id) ?? []) climb(i);
-    for (const id of tagIds) for (const i of byTag.get(id) ?? []) climb(i);
-    return hit;
-  };
+  // Tree shape, mapping, weights and membership: one definition, shared with the exam scope.
+  const {
+    children,
+    roots,
+    ownMapped,
+    descendantMapped,
+    subtreeMapped,
+    weight,
+    rel,
+    share,
+    topicsOf,
+  } = syllabusTopicIndex(topics);
 
   // Highlights.
   const highlights = new Array<number>(n).fill(0);
@@ -736,33 +832,6 @@ export function syllabusTopicCoverage(
     else logsByCard.set(l.cardId, [l]);
   }
 
-  // Shares: weights are relative among siblings.
-  const weightOf = (i: number): number => {
-    const w = (topics[i] as CoverageTopic).weight;
-    return typeof w === 'number' && Number.isFinite(w) && w > 0 ? w : 1;
-  };
-  const rel = new Array<number>(n).fill(0);
-  const normalise = (list: readonly number[]) => {
-    const total = list.reduce((sum, i) => sum + weightOf(i), 0);
-    for (const i of list) rel[i] = weightOf(i) / total;
-  };
-  normalise(roots);
-  for (const list of children) if (list.length > 0) normalise(list);
-  const share = new Array<number>(n).fill(0);
-  for (let i = 0; i < n; i += 1) {
-    const p = parent[i] as number;
-    share[i] = (p < 0 ? 1 : (share[p] as number)) * (rel[i] as number);
-  }
-
-  // Which topics have anything mapped at or below them.
-  const descendantMapped = new Array<boolean>(n).fill(false);
-  const subtreeMapped = new Array<boolean>(n).fill(false);
-  for (let i = n - 1; i >= 0; i -= 1) {
-    subtreeMapped[i] = (ownMapped[i] as boolean) || (descendantMapped[i] as boolean);
-    const p = parent[i] as number;
-    if (p >= 0 && subtreeMapped[i]) descendantMapped[p] = true;
-  }
-
   // Judging, bottom-up.
   const state = new Array<CoverageState>(n).fill('none');
   const covered = new Array<number>(n).fill(0);
@@ -803,7 +872,7 @@ export function syllabusTopicCoverage(
       depth: t.depth,
       parentId: t.parentId,
       hasChildren: (children[i] as number[]).length > 0,
-      weight: weightOf(i),
+      weight: weight[i] as number,
       share: share[i] as number,
       mapped: ownMapped[i] as boolean,
       subtreeMapped: subtreeMapped[i] as boolean,

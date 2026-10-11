@@ -2,9 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { MAX_NOTE_BODY_CHARS } from '@shared';
 import {
   BUDGET_MICROS,
+  MATH_MAX_FORMULAS,
+  MATH_MAX_FORMULA_CHARS,
+  MATH_MAX_TOTAL_CHARS,
   MAX_NESTING,
   RENDER_MAX_CHARS,
   inlineBudget,
+  mathBudget,
   renderBudget,
   runMicros,
 } from './markdownBudget';
@@ -239,4 +243,51 @@ describe('the estimators are linear and fast', () => {
       expect(elapsed).toBeLessThan(500);
     },
   );
+});
+
+describe('mathBudget: how many formulas are typeset', () => {
+  it('takes everything within the three caps', () => {
+    expect(mathBudget([])).toEqual([]);
+    expect(mathBudget([1, 50, MATH_MAX_FORMULA_CHARS])).toEqual([true, true, true]);
+  });
+
+  it('skips an empty formula and one over the per-formula cap, and takes the neighbours', () => {
+    expect(mathBudget([5, 0, 5, MATH_MAX_FORMULA_CHARS + 1, 5])).toEqual([
+      true,
+      false,
+      true,
+      false,
+      true,
+    ]);
+  });
+
+  it('stops at the formula count', () => {
+    const verdict = mathBudget(Array.from({ length: MATH_MAX_FORMULAS + 5 }, () => 3));
+    expect(verdict.filter(Boolean)).toHaveLength(MATH_MAX_FORMULAS);
+    expect(verdict.slice(0, MATH_MAX_FORMULAS).every(Boolean)).toBe(true);
+    expect(verdict.slice(MATH_MAX_FORMULAS).some(Boolean)).toBe(false);
+  });
+
+  it('stops at the total length, first fit: a small one after a refused one is still taken', () => {
+    const near = MATH_MAX_FORMULA_CHARS - 1;
+    // as many near-cap formulas as fit, leaving a few characters of the total
+    const fit = Math.floor(MATH_MAX_TOTAL_CHARS / near);
+    const left = MATH_MAX_TOTAL_CHARS - fit * near;
+    expect(fit).toBeGreaterThanOrEqual(2);
+    expect(left).toBeGreaterThanOrEqual(1);
+    const big = Array.from({ length: fit }, () => near);
+    expect(mathBudget([...big, near, left, 1])).toEqual([
+      ...big.map(() => true),
+      false, // one more near-cap formula does not fit
+      true, // a small one that exactly fills the rest does
+      false, // and then nothing does
+    ]);
+  });
+
+  it('is linear: a note of thousands of formulas is decided at once', () => {
+    const started = performance.now();
+    const verdict = mathBudget(Array.from({ length: 200_000 }, () => 4));
+    expect(verdict.filter(Boolean)).toHaveLength(MATH_MAX_FORMULAS);
+    expect(performance.now() - started).toBeLessThan(200);
+  });
 });

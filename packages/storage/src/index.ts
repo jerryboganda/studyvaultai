@@ -112,6 +112,8 @@ export {
   getDocumentBytes,
   removeDocumentBytes,
   saveOcrPage,
+  replaceOcrPage,
+  swapOcrReading,
   getOcrPages,
   clearOcr,
   setPdfWriteRestriction,

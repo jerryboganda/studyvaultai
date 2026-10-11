@@ -90,12 +90,20 @@ function providerCode(body: unknown): string {
   return parts.join(' ').toLowerCase();
 }
 
+/** The provider's message text, for classification only: it is never shown or stored. */
+function providerMessage(body: unknown): string {
+  const m = (body as { error?: { message?: unknown } } | null)?.error?.message;
+  return typeof m === 'string' ? m : '';
+}
+
 export function classifyHttp(status: number, body: unknown): AiErrorCode {
   const code = providerCode(body);
   // OpenAI answers an empty account with 429 + insufficient_quota: that is NOT a retryable rate limit.
+  // Anthropic answers one with 400 invalid_request_error whose only tell is the message text.
   if (
     status === 402 ||
-    /insufficient_quota|billing|credit|exceeded_current_quota|quota_exceeded/.test(code)
+    /insufficient_quota|billing|credit|exceeded_current_quota|quota_exceeded/.test(code) ||
+    (status === 400 && /credit balance is too low/i.test(providerMessage(body)))
   ) {
     return 'quota_exhausted';
   }

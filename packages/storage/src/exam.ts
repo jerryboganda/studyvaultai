@@ -6,6 +6,7 @@ import {
   StudyVaultError,
   Tag,
   tagNameKey,
+  type Syllabus,
 } from '@shared';
 import { Card, Deck, type DateInput, type DayBoundary } from '@study';
 import {
@@ -19,9 +20,12 @@ import {
   type ExamReviewItem,
   type ExamUniverse,
 } from '@study/exam';
+import type { ExamCardRefs } from '@study/examSyllabus';
 import { cmp, notNull, now as nowIso, parseRow, readBanks, unique } from './core';
 import { withDb, withWritableDb } from './db';
 import { reviewCard, undoLastReview } from './study';
+import { listSyllabi } from './syllabi';
+import { loadSyllabusCoverageData } from './syllabusCoverage';
 
 /**
  * Exam simulation, persistence side (ADR-020). The rules live in `@study/exam`; this file loads the
@@ -45,13 +49,32 @@ const HISTORY_KEY = 'examHistory';
 export interface ExamData extends ExamUniverse {
   /** Every live bank's name by id (the exam keeps the ones its questions are reported under). */
   bankNames: Record<string, string>;
+  /** Live syllabi by name, to offer a syllabus scope (their cards are read by `loadExamTopicRefs`). */
+  syllabi: Syllabus[];
+}
+
+/** The cards an exam may ask, the banks, folders and tags a scope can name, and the syllabi. */
+export async function loadExamData(): Promise<ExamData> {
+  const [universe, syllabi] = await Promise.all([readExamUniverse(), listSyllabi()]);
+  return { ...universe, syllabi };
+}
+
+/**
+ * What a syllabus scope needs to decide which cards belong to a topic: for every live card, the
+ * banks and tags it is in as ids. These are the facts syllabus coverage reads
+ * (`loadSyllabusCoverageData`), not a second reading of the same rules, so a topic holds the same
+ * cards here as in the coverage table. The review log is not needed (one day is read at most).
+ */
+export async function loadExamTopicRefs(): Promise<Map<string, ExamCardRefs>> {
+  const data = await loadSyllabusCoverageData({ sinceDays: 1 });
+  return new Map(data.cards.map((c) => [c.id, { bankIds: c.bankIds, tagIds: c.tagIds }] as const));
 }
 
 /**
  * The cards an exam may ask (live, not suspended, deck alive) with their bank, folder and tag
  * facts, and the banks and folders a scope can name. One read transaction, no writes.
  */
-export async function loadExamData(): Promise<ExamData> {
+async function readExamUniverse(): Promise<Omit<ExamData, 'syllabi'>> {
   return withDb((db) =>
     db.transaction(
       'r',
@@ -185,11 +208,13 @@ export async function loadExamData(): Promise<ExamData> {
 
 /**
  * The stored exam, if it is still valid and within its 24 hours. An expired or unreadable one is
- * removed (it can neither resume nor block a new exam); `expired` lets the caller say why it is gone.
+ * removed (it can neither resume nor block a new exam); `expired` and `unreadable` let the caller
+ * say why it is gone. A row of an older version is carried over (`upgradeExamSession`); one of a
+ * version this build does not know is `unreadable`, never a crash.
  */
 export async function loadExamSession(
   now: DateInput = Date.now(),
-): Promise<{ session: ExamSession | null; expired: boolean }> {
+): Promise<{ session: ExamSession | null; expired: boolean; unreadable?: true }> {
   const row = await withDb((db) => db.meta.get(SESSION_KEY));
   if (!row) return { session: null, expired: false };
   const found = parseExamSession(row.value, now);

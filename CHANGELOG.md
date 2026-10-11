@@ -9,19 +9,26 @@ copy it when a version is tagged.
 ## [Unreleased]
 
 Nothing has been released or submitted to a store. `package.json` is at 0.1.0. The entries below say
-what exists in the repository, not what has been proven. The first fully green `ci.yml` run is
-<https://github.com/jerryboganda/studyvaultai/actions/runs/38139836238> (2026-10-11, commit
-`d641515b1154aa46597e7ebb069d2341014c125c`): lint, typecheck, format, unit, build with the release gate,
-audit, stress and the e2e suite on Ubuntu and Windows (443 passed, 6 `test.fixme` skipped, 0 failed and
-0 flaky per OS) all succeeded; the 13 completed runs before it failed. It did not exercise branded
-Chrome or Edge, a real incognito window, Chrome's permission prompt, a hosted sign-in provider or a
-screen reader, and the manual checklist has not been run. The evidence for each privacy and store
-statement is tracked in `docs/PRIVACY_CLAIMS.md`.
+what exists in the repository, not what has been proven. The latest fully green `ci.yml` run is
+<https://github.com/jerryboganda/studyvaultai/actions/runs/38173629818> (2026-10-11, branch
+`feat/finish-all`, commit `79d8cbc38111bfcde0e621f37d4795fd3f38e736`): lint, typecheck, format, unit
+(266 files and 4,846 tests passed, 13 skipped), build with the release gate (content script 214 KB,
+6,662 KB without the OCR assets), audit, stress (39 tests) and the e2e suite on Ubuntu and Windows
+(546 passed, 6 `test.fixme` skipped, 0 failed and 0 flaky per OS) all succeeded. The first green run,
+<https://github.com/jerryboganda/studyvaultai/actions/runs/38139836238> (commit
+`d641515b1154aa46597e7ebb069d2341014c125c`; 443 passed per OS), predates the finish wave; the 13
+completed runs before it failed. Neither run exercised branded Chrome or Edge, a real incognito
+window, Chrome's permission prompt or folder picker, a hosted sign-in provider or a screen reader, and
+the manual checklist has not been run. The evidence for each privacy and store statement is tracked in
+`docs/PRIVACY_CLAIMS.md`.
 
-Entries marked **(finish wave)** were made on branch `feat/finish-all` after that run
-(`docs/plans/FINISH_BRIEF.md`, ADR-011 to ADR-020). No Actions run of that branch has concluded
-`success` yet: their unit files and loaded-extension specs are written and not yet executed by a
-passing run, so none of them is "verified" (ledger rows P20a to P20c, P26j, P33 to P44).
+Entries marked **(finish wave)** were made on branch `feat/finish-all` after the first green run
+(`docs/plans/FINISH_BRIEF.md`, ADR-011 to ADR-020). Run 38173629818 executed their unit files and
+loaded-extension specs and all of them passed (the 6 skipped e2e tests are `test.fixme` entries of
+earlier work, none of them a finish-wave test): ledger rows P20a to P20c, P26h to P26j, P33 to P39,
+P41 to P43 and P45 to P47 are `verified (CI 38173629818)` for what their specs assert and still name
+unit-only or manual parts; P40 (schema v4) and P44 (selection at start-up) have no loaded-extension
+spec and stay `unit-only`.
 
 ### Added
 
@@ -91,8 +98,20 @@ passing run, so none of them is "verified" (ledger rows P20a to P20c, P26j, P33 
   `study_outline`; chat with your notes with local retrieval and ticked passages (ADR-013).
 - **(finish wave)** Related highlights (lexical, on the device), TeX in notes shown as source text
   (ADR-015), a "JSON (for scripts)" readable export, and the `focus-search` command.
-- **(finish wave)** Eleven real public-domain PDFs as a test corpus with open, search, highlight, OCR
-  and memory specs (`tests/fixtures/pdf/real`).
+- **(finish wave)** Eleven real public-domain PDFs (United States government works, 20.7 MB, licence
+  basis in `tests/fixtures/pdf/real/SOURCES.md`) as a test corpus with open, search, highlight, OCR,
+  link and memory specs (`pdf-real.spec.ts`, `pdf-links.spec.ts`, `pdf-real-memory.spec.ts`) and an
+  always-on integration test. They hold no script, attachment, XFA or encryption: they are not a
+  hostile-PDF test.
+- **(finish wave)** Links in the PDF reader (ADR-006 amendment 3): a link to a place in the document
+  goes there and Back (button and Alt+Left) returns; a web address opens only after a dialog that shows
+  the whole address and the site, in a new tab with no opener and no referrer; every other scheme and
+  every script, file or form action is refused with a notice. Keyboard route (one tab stop and arrow
+  keys on a page with more than 40 links) and a Links list in the navigation pane.
+- **(finish wave)** Scans stored sideways or upside down are read by turning the page on the device
+  (ADR-006 amendment 4): a 30 ms ink check orders at most four full-size readings, a turned reading
+  must beat the upright one by 1.5 times the confidently read characters, and the outcome says the
+  page was turned. Optional `orientation` on the recognised page; no new bundled data.
 - **(finish wave)** Decisions ADR-011 to ADR-020 and `LICENSE` (proprietary, all rights reserved).
 
 ### Changed
@@ -135,7 +154,7 @@ passing run, so none of them is "verified" (ledger rows P20a to P20c, P26j, P33 
   total at 99.4% of its budget.
 - The per-deck settings form is no longer remounted when it is saved, so its confirmation stays
   (ADR-010 amendment 3).
-- **(finish wave)** The content script runs on Preact through `preact/compat` (209 KB, was 405 KB);
+- **(finish wave)** The content script runs on Preact through `preact/compat` (214 KB in the release gate of run 38173629818, 209 KB in the private build ADR-012 measured; was 405 KB);
   extension pages stay on React. Release-gate budgets: content script 220 KB (was 450), background
   450 KB (was 420), non-OCR total 6800 KB (was 6500) (ADR-012, `scripts/check-build.mjs`).
 - **(finish wave)** The optional `alarms` permission is also requested by the click that saves a daily
@@ -185,6 +204,17 @@ passing run, so none of them is "verified" (ledger rows P20a to P20c, P26j, P33 
   toolbar (the controller evaluates the selection once the overlay has mounted).
 - **(finish wave)** Links of a note or knowledge point whose highlight is in the Trash are hidden
   instead of leading nowhere (ADR-018 section 3).
+- **(finish wave)** PDF hyperlinks were not clickable: the reader drew no annotation layer (found by
+  the real-document corpus run; ledger U-22, ADR-006 amendment 3). Unit-tested; `pdf-links.spec.ts` (14
+  tests) passed in run 38173629818.
+- **(finish wave)** A scan stored sideways (the real NASA MSFC file, page 1) was recognised as shown
+  and saved 793 characters of noise under a green "Recognised 1 page"; it is now turned to be read and
+  the outcome says so (ADR-006 amendment 4). Pages recognised before this change keep their text.
+- **(finish wave)** A selection made on a PDF page whose text layer was still being put in order was
+  cut loose and no save bar followed; the spans are now selectable only once the layer is complete
+  (`.endOfContent` placed; ADR-006 amendment 4).
+- **(finish wave)** The reader's page box committed on blur even when nothing had been typed, so the
+  view could jump to the top of the page between a press and a release.
 
 ### Security
 
@@ -210,6 +240,11 @@ passing run, so none of them is "verified" (ledger rows P20a to P20c, P26j, P33 
 - **(finish wave)** A page cannot choose where a highlight is filed: it sends only a highlight id and
   the worker reads the placement from its own session record (ADR-017, C2.10). AI fallback recipients
   are part of the consent hash (ADR-013, C7.7).
+- **(finish wave)** A link inside a PDF is never opened by the click itself: only an absolute `http:`
+  or `https:` address of at most 2,048 characters, without credentials, is offered, after a
+  confirmation that shows the address, and it opens with `noopener,noreferrer`; `javascript:`,
+  `data:`, `file:`, `blob:`, `chrome-extension:`, `mailto:` and every other scheme are refused
+  (THREAT_MODEL C6.6, R31).
 
 ### Known issues
 
@@ -232,16 +267,23 @@ passing run, so none of them is "verified" (ledger rows P20a to P20c, P26j, P33 
   copyright holder's name in it, the privacy policy, the security contact and the store account
   details are owner-supplied `[USER-REQUIRED]` markers. `scripts/check-release-docs.mjs` does not scan
   `LICENSE` for its marker.
-- **(finish wave)** Not verified: nothing the wave added has a green Actions run (ledger rows P20a to
-  P20c, P26j, P33 to P44; `THREAT_MODEL.md` O15 to O17). Not driven by any automation: the folder
+- **(finish wave)** Not verified: run 38173629818 passed the wave's unit files and specs (ledger rows P20a to
+  P20c, P26h to P26j, P33 to P47; `THREAT_MODEL.md` O15 to O18), but nothing drives: the folder
   prompt on a real disk, reminders across a browser restart, a real private window for filing rules,
   real Word, PowerPoint and EPUB files, two real AI providers with Chrome's prompt for the second
   origin, the exam and the graph with a screen reader, the Preact overlay in branded Chrome
-  (`docs/MANUAL_TEST_CHECKLIST.md` MT-54 to MT-61).
+  (`docs/MANUAL_TEST_CHECKLIST.md` MT-54 to MT-61; the PDF reader's rows are MT-62 to MT-65).
 - **(finish wave)** Limits that are decisions: TeX is not typeset (a 164 KB renderer measured over
   the 120 KB ceiling); reminders need the browser running and are not system notifications; backups
   into a folder start from a click; the knowledge graph shows at most 60 items; related highlights
   match whole words (no stemming, no embeddings); an exam scope cannot be drawn from a syllabus topic;
   the Delete-all and backup-scope lists do not yet name the new kinds of data (ledger U-17).
+- **(finish wave)** PDF reader limits: only link annotations and four named actions (next, previous,
+  first and last page) are followed, and no JavaScript, form or layer action; scans are turned as a
+  whole (one orientation per page, no deskew, English only) and a blank page can cost four readings;
+  pages recognised before the turn was added keep their text until a re-run action exists (there is
+  none); the privacy policy and the store listing now say what a click on a PDF link does (ledger
+  U-23; the in-product Privacy section does not yet). Not verified: a real screen reader on links, the pop-up blocker on the new tab, a
+  physically sideways scan, forced colours (`docs/MANUAL_TEST_CHECKLIST.md` MT-62 to MT-65).
 
 [Unreleased]: https://github.com/jerryboganda/studyvaultai/commits/main

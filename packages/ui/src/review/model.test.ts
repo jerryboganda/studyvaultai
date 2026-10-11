@@ -335,6 +335,24 @@ describe('links and settings parsing', () => {
     });
   });
 
+  it('carries an exam on a syllabus topic through the address, and trusts nothing in it', () => {
+    const link = { view: 'exam', syllabusId: 'syllabus-0001', topicId: 'topic-000001' } as const;
+    expect(reviewSearch(link)).toBe('view=exam&syllabus=syllabus-0001&topic=topic-000001');
+    expect(parseReviewSearch(reviewSearch(link))).toEqual(link);
+    // The whole syllabus has no topic; a topic without its syllabus means nothing.
+    expect(reviewSearch({ view: 'exam', syllabusId: 'syllabus-0001' })).toBe(
+      'view=exam&syllabus=syllabus-0001',
+    );
+    expect(reviewSearch({ view: 'exam', topicId: 'topic-000001' })).toBe('view=exam');
+    expect(parseReviewSearch('?view=exam&topic=topic-000001')).toEqual({ view: 'exam' });
+    // Anything that is not an id is dropped.
+    expect(parseReviewSearch('?view=exam&syllabus=<img>&topic=../x')).toEqual({ view: 'exam' });
+    expect(parseReviewSearch('?view=exam&syllabus=syllabus-0001&topic=a b')).toEqual({
+      view: 'exam',
+      syllabusId: 'syllabus-0001',
+    });
+  });
+
   it('falls back field by field to defaults', () => {
     const s = parseStudySettings({ timeZone: 'Not/AZone', rolloverHour: 6, order: 'due', junk: 1 });
     expect(s.rolloverHour).toBe(6);

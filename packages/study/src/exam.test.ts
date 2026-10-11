@@ -1,12 +1,14 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import { Id } from '@shared/schema';
+import type { ExamSyllabusInput } from './examSyllabus';
 import { seededRandom } from './random';
 import {
   EXAM_HISTORY_LIMIT,
   EXAM_MAX_MINUTES,
   EXAM_MAX_QUESTIONS,
   EXAM_TTL_MS,
+  ExamHistoryEntry,
   ExamSession,
   chooseOption,
   correctAnswerText,
@@ -42,6 +44,7 @@ import {
   scoreOutcomes,
   tickExam,
   typeAnswer,
+  upgradeExamSession,
   validateExamConfig,
   withReviewApplied,
   withReviewUndone,
@@ -764,5 +767,163 @@ describe('determinism', () => {
     const run = (seed: number) => make(pool, { questions: 12 }, seededRandom(seed)());
     expect(run(1)).toEqual(run(1));
     expect(run(1).seed).not.toBe(run(2).seed);
+  });
+});
+
+describe('the persisted exam across versions', () => {
+  const plain = () => make(facts(3), { questions: 3, minutes: null });
+
+  it('carries a stored version 1 exam over: no syllabus, no topic on any question', () => {
+    const now = plain();
+    const old = JSON.parse(JSON.stringify(now)) as Record<string, unknown>;
+    old.version = 1;
+    delete old.syllabus;
+    for (const q of old.questions as Record<string, unknown>[]) delete q.topicId;
+    const loaded = parseExamSession(old, T0 + MIN);
+    expect(loaded.unreadable).toBeUndefined();
+    expect(loaded.session).toEqual(now);
+    // Upgrading is idempotent and leaves anything else alone.
+    expect(upgradeExamSession(upgradeExamSession(old))).toEqual(upgradeExamSession(old));
+    expect(upgradeExamSession('garbage')).toBe('garbage');
+    expect(upgradeExamSession({ version: 2, x: 1 })).toEqual({ version: 2, x: 1 });
+  });
+
+  it('says a row it cannot read was unreadable (another version, damage), and nothing for no row', () => {
+    const now = plain();
+    expect(parseExamSession({ ...now, version: 3 }, T0)).toEqual({
+      session: null,
+      expired: false,
+      unreadable: true,
+    });
+    expect(parseExamSession({ nonsense: true }, T0).unreadable).toBe(true);
+    expect(parseExamSession(undefined, T0)).toEqual({ session: null, expired: false });
+    // An old row that is also past its 24 hours is simply expired.
+    const old = { ...JSON.parse(JSON.stringify(now)), version: 1 } as Record<string, unknown>;
+    expect(parseExamSession(old, T0 + EXAM_TTL_MS)).toEqual({ session: null, expired: true });
+  });
+
+  it('rejects a syllabus exam that does not keep its outline, and a question of an unknown topic', () => {
+    const now = plain();
+    const scope = { kind: 'syllabus', syllabusId: 'syllabus-0001', topicId: null, weighted: false };
+    expect(parseExamSession({ ...now, scope }, T0).session).toBeNull();
+    const withSyllabus = {
+      ...now,
+      syllabus: { topics: [{ id: 'topic-001', title: 'Heart' }], skipped: [], undrawn: 0 },
+    };
+    expect(parseExamSession(withSyllabus, T0).session).toBeNull(); // not a syllabus scope
+    const asked = {
+      ...withSyllabus,
+      scope,
+      questions: now.questions.map((q, i) => (i === 0 ? { ...q, topicId: 'topic-999' } : q)),
+    };
+    expect(parseExamSession(asked, T0).session).toBeNull();
+    const fine = {
+      ...withSyllabus,
+      scope,
+      questions: now.questions.map((q, i) => (i === 0 ? { ...q, topicId: 'topic-001' } : q)),
+    };
+    expect(parseExamSession(fine, T0).session).not.toBeNull();
+  });
+});
+
+describe('an exam over a syllabus: results by topic', () => {
+  const topics = [
+    {
+      id: 'topic-0A',
+      title: 'Cardiology',
+      depth: 1,
+      parentId: null,
+      bankIds: ['bank-cardio'],
+      tagIds: [],
+    },
+    {
+      id: 'topic-0B',
+      title: 'Renal',
+      depth: 1,
+      parentId: null,
+      bankIds: ['bank-renal'],
+      tagIds: [],
+    },
+  ];
+  const cards: ExamCardFacts[] = [
+    ...facts(3, (i) => ({
+      bankIds: ['bank-cardio'],
+      bankId: 'bank-cardio',
+      tags: i === 1 ? ['Pearl'] : [],
+    })),
+    ...[4, 5].map((n) => ({
+      ...facts(1)[0]!,
+      cardId: cardId(n),
+      bankId: 'bank-renal',
+      bankIds: ['bank-renal'],
+    })),
+  ];
+  const syllabus: ExamSyllabusInput = {
+    topics,
+    refs: new Map(
+      cards.map((c) => [c.cardId, { bankIds: c.bankIds, tagIds: [] as string[] }] as const),
+    ),
+  };
+  const exam = () =>
+    createExam({
+      id: 'exam-0001',
+      now: T0,
+      random: () => 0.25,
+      config: {
+        scope: { kind: 'syllabus', syllabusId: 'syllabus-0001', topicId: null, weighted: false },
+        scopeLabel: 'Syllabus: Boards',
+        questions: 5,
+        minutes: null,
+        shuffle: false,
+      },
+      cards,
+      bankNames: { 'bank-cardio': 'Cardiology', 'bank-renal': 'Renal' },
+      syllabus,
+    });
+
+  it('breaks the score down per topic in outline order, each question under one topic', () => {
+    const e = exam();
+    const outcomes: ExamOutcome[] = ['correct', 'wrong', 'unanswered', 'correct', 'void'];
+    const rows = examBreakdown(e, outcomes).topics;
+    expect(rows.map((r) => [r.key, r.label, r.total, r.correct, r.wrong, r.unanswered])).toEqual([
+      ['topic-0A', 'Cardiology', 3, 1, 1, 1],
+      ['topic-0B', 'Renal', 1, 1, 0, 0],
+    ]);
+    // An exam of another scope has no topic rows.
+    expect(
+      examBreakdown(make(facts(3), { questions: 3 }), ['correct', 'wrong', 'void']).topics,
+    ).toEqual([]);
+  });
+
+  it('puts the topics in the Markdown and names the syllabus by id in the history', () => {
+    const e = exam();
+    const done = finishExam(
+      endAnswering(e, T0 + MIN),
+      ['correct', 'wrong', 'unanswered', 'correct', 'wrong'],
+      T0 + 2 * MIN,
+    );
+    const md = examToMarkdown(done, new Map());
+    expect(md).toContain('## By topic');
+    expect(md).toContain('| Cardiology | 3 | 1 | 33% |');
+    expect(historyEntry(done)).toMatchObject({
+      syllabusId: 'syllabus-0001',
+      scopeLabel: 'Syllabus: Boards',
+    });
+    expect(ExamHistoryEntry.safeParse(historyEntry(done)).success).toBe(true);
+    // Not part of other exams' summaries.
+    expect(
+      historyEntry(
+        finishExam(
+          endAnswering(make(facts(1), { questions: 1 }), T0 + MIN),
+          ['correct'],
+          T0 + 2 * MIN,
+        ),
+      ),
+    ).not.toHaveProperty('syllabusId');
+  });
+
+  it('survives a JSON round trip', () => {
+    const e = exam();
+    expect(ExamSession.parse(JSON.parse(JSON.stringify(e)))).toEqual(e);
   });
 });

@@ -90,6 +90,9 @@
   border-top: 1px solid var(--sv-border);
 }
 .rv-tablewrap {
+  /* The containing block of a visually hidden reason (a disabled button's) inside a cell: without
+     it the hidden text sits at the cell's x and widens the whole page past the wrapper's clip. */
+  position: relative;
   max-width: 100%;
   overflow-x: auto;
 }

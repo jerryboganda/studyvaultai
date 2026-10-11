@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { uuidv7 } from 'uuidv7';
 import type { Card } from '@study';
+import { coverageTopics } from '@study/analytics';
 import {
   chooseOption,
   createExam,
@@ -20,6 +21,7 @@ import {
   type ExamConfig,
   type ExamSession,
 } from '@study/exam';
+import type { ExamSyllabusInput } from '@study/examSyllabus';
 import { getCards } from '@storage';
 import {
   applyExamReview,
@@ -28,6 +30,7 @@ import {
   loadExamData,
   loadExamHistory,
   loadExamSession,
+  loadExamTopicRefs,
   recordExamHistory,
   saveExamSession,
   undoExamReview,
@@ -42,7 +45,7 @@ import {
   useAsync,
   useDataEpoch,
 } from '@ui';
-import { TID, toBoundary, type StudySettings } from '@ui/review';
+import { TID, toBoundary, type ExamTarget, type StudySettings } from '@ui/review';
 import { ExamMarking, ExamRun } from './ExamRun';
 import { ExamResults } from './ExamResults';
 import { ExamSetup } from './ExamSetup';
@@ -51,13 +54,18 @@ import { ExamSetup } from './ExamSetup';
  * Exam simulation (ADR-020). One exam at a time, kept in the device-local `meta` table after every
  * change, so a reload, a crash or a second window can continue it; the rules are the pure functions
  * of `@study/exam`, this component only wires them to the page and the clock.
+ *
+ * `target` opens the setup on a syllabus (and topic), as the coverage table's "Exam on this topic"
+ * and an address with `syllabus=` do; a running exam is not hidden by it (the setup says so).
  */
 export function ExamView({
   settings,
   onFocusMode,
+  target = null,
 }: {
   settings: StudySettings;
   onFocusMode(active: boolean): void;
+  target?: ExamTarget | null;
 }) {
   const stored = useAsync(() => loadExamSession(Date.now()), []);
   if (stored.error) {
@@ -78,6 +86,8 @@ export function ExamView({
       onFocusMode={onFocusMode}
       initial={stored.data.session}
       expired={stored.data.expired}
+      unreadable={stored.data.unreadable === true}
+      target={target}
     />
   );
 }
@@ -87,11 +97,15 @@ function ExamFlow({
   onFocusMode,
   initial,
   expired,
+  unreadable,
+  target,
 }: {
   settings: StudySettings;
   onFocusMode(active: boolean): void;
   initial: ExamSession | null;
   expired: boolean;
+  unreadable: boolean;
+  target: ExamTarget | null;
 }) {
   const boundary = toBoundary(settings);
   const epoch = useDataEpoch();
@@ -103,15 +117,18 @@ function ExamFlow({
   });
   const [exam, setExam] = useState<ExamSession | null>(boot.exam);
   const examRef = useRef<ExamSession | null>(boot.exam);
-  const [screen, setScreen] = useState<'setup' | 'exam'>(boot.exam ? 'exam' : 'setup');
+  // Opened on a syllabus topic: the setup comes first (an exam in progress is offered there).
+  const [screen, setScreen] = useState<'setup' | 'exam'>(boot.exam && !target ? 'exam' : 'setup');
   const [saveError, setSaveError] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState('');
   const [notice, setNotice] = useState<string | null>(
     expired
       ? 'The exam you left unfinished expired after 24 hours and was removed.'
-      : boot.timedOut
-        ? 'The time limit ran out while this page was closed. Your answers were kept.'
-        : null,
+      : unreadable
+        ? 'The exam you left unfinished could not be read (it may come from another version of StudyVault) and was removed.'
+        : boot.timedOut
+          ? 'The time limit ran out while this page was closed. Your answers were kept.'
+          : null,
   );
   const [reviewNote, setReviewNote] = useState<string | null>(null);
   const [asking, setAsking] = useState<'discard' | 'clear' | null>(null);
@@ -207,6 +224,13 @@ function ExamFlow({
   const start = useAction(async (config: ExamConfig) => {
     // Fresh facts: cards may have changed since the form was drawn.
     const data = await loadExamData();
+    let syllabus: ExamSyllabusInput | undefined;
+    const scope = config.scope;
+    if (scope.kind === 'syllabus') {
+      const found = data.syllabi.find((s) => s.id === scope.syllabusId);
+      if (!found) throw new Error('That syllabus was deleted. Choose another one.');
+      syllabus = { topics: coverageTopics(found.nodes), refs: await loadExamTopicRefs() };
+    }
     const created = createExam({
       id: uuidv7(),
       now: Date.now(),
@@ -214,6 +238,7 @@ function ExamFlow({
       config,
       cards: data.cards,
       bankNames: data.bankNames,
+      ...(syllabus ? { syllabus } : {}),
     });
     await saveExamSession(created);
     put(created);
@@ -307,6 +332,7 @@ function ExamFlow({
         loadError={setup.error}
         retry={setup.refresh}
         current={exam}
+        target={target}
         history={history.data ?? []}
         historyError={history.error}
         busy={start.busy}

@@ -103,7 +103,7 @@ transmission) hold for every delivered line; a line that is met only in part say
 | Bank manager: tree, move, merge, saved filters, bulk actions, multi-bank membership | Delivered, with a limit | Nesting depth is 32 (it was 8): "unlimited" in the text above is not literal |
 | Bank manager: smart rules | **Delivered in the finish wave** | Auto-filing rules that suggest and ask first by default (ADR-017, P33); new highlights only, no "apply to existing" |
 | Data management, trash, search, backup, import and export | Delivered | Markdown and CSV import joined by Word, PowerPoint, EPUB, HTML and Anki text (ADR-014, P26j); a single JSON file is a readable export, not a backup (P42) |
-| Integrated PDF.js reader, page-linked highlights, OCR of scans | Delivered | ADR-006; real-PDF corpus specs written (TEST_PLAN) |
+| Integrated PDF.js reader, page-linked highlights, OCR of scans | Delivered | ADR-006 (amendments 3 and 4 added link following and the turned reading of sideways scans: P45, P46). Eleven real public-domain PDFs (20.7 MB) are the test corpus, which meets the Phase 3 gate's "minimum 10 representative PDF fixtures" for matrix items 1 to 5, 9 and 10; items 6 (password) and 7 (remote PDF, redirect) are synthetic only (P47, TEST_PLAN). Links: web addresses only, after a confirmation; PDF actions beyond links and four named actions are not supported. Specs written, not yet run in CI |
 | Source-linked notes with immutable quote | Delivered | ADR-005 |
 | Offline-first storage, migrations | Delivered | Schema is at version 4 (ADR-011, P40) |
 | Keyboard shortcuts: open companion, quick-save, next and previous highlight, focus search | Delivered | Six commands; `previous-highlight` and `focus-search` have no suggested key because Chrome allows four (ADR-003, P43) |
@@ -120,7 +120,7 @@ transmission) hold for every delivered line; a line that is met only in part say
 | AI summary, facts, mnemonics, MCQs, short-viva, topic comparison, study outline | **Delivered in the finish wave** | Task kinds `mnemonic`, `short_viva` and `study_outline` joined the nine existing ones (P20c). There is no dedicated "differentials" task; `compare_topics` is the nearest |
 | Source-scoped question answering with citations and uncertainty | Delivered | `explain` and, new, chat with your notes (P20b) |
 | AI fact-check labels | Delivered | Checked only against the selected sources; "externally verified" is never produced and web retrieval is not built |
-| OCR for scanned PDFs and images | Delivered in part | Scanned PDFs, on the device, with correction and cancel. A standalone image file cannot be opened (the reader accepts PDFs) |
+| OCR for scanned PDFs and images | Delivered in part | Scanned PDFs, on the device, with correction and cancel; a scan stored sideways or upside down is turned to be read (one orientation per page, no deskew, English only; P46). A standalone image file cannot be opened (the reader accepts PDFs), and a page recognised earlier cannot be re-run |
 | Review analytics: backlog, counts by bank, retention, daily logs | Delivered | Review page, Analytics tab |
 | Review analytics: coverage against a custom syllabus | **Delivered in the finish wave** | Syllabus editor and coverage table (ADR-020 part 2, P37); an exam scope from a topic is not built |
 | Local full-text and fuzzy search, duplicate clusters | Delivered | MiniSearch index; Duplicates view |

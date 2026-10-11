@@ -45,10 +45,24 @@ export const XID = {
   close: 'rv-exam-close',
   history: 'rv-exam-history',
   historyClear: 'rv-exam-history-clear',
+  // exam over a syllabus
+  source: 'rv-exam-source',
+  sourceLibrary: 'rv-exam-source-library',
+  sourceSyllabus: 'rv-exam-source-syllabus',
+  syllabus: 'rv-exam-syllabus',
+  topic: 'rv-exam-topic',
+  weighted: 'rv-exam-weighted',
+  plan: 'rv-exam-plan',
+  syllabusNote: 'rv-exam-syllabus-note',
+  leftOut: 'rv-exam-left-out',
+  topics: 'rv-exam-topics',
 } as const;
 
 export const missedId = (index: number) => `rv-exam-missed-${index}`;
 export const jumpId = (index: number) => `rv-exam-jump-${index}`;
+/** "Study this topic" in the results, and "Exam on this topic" in the coverage table. */
+export const studyTopicId = (topicId: string) => `rv-exam-study-${topicId}`;
+export const examOnTopicId = (topicId: string) => `rv-syllabus-exam-${topicId}`;
 
 /** The exam as stored in the device-local meta table. */
 export interface StoredExam {
@@ -56,6 +70,12 @@ export interface StoredExam {
   id: string;
   phase: 'answering' | 'marking' | 'finished';
   scopeLabel: string;
+  scope: { kind: string; syllabusId?: string; topicId?: string | null; weighted?: boolean };
+  syllabus: {
+    topics: Array<{ id: string; title: string }>;
+    skipped: Array<{ id: string; title: string; reason: string }>;
+    undrawn: number;
+  } | null;
   minutes: number | null;
   startedAt: string;
   deadlineAt: string | null;
@@ -67,6 +87,7 @@ export interface StoredExam {
   questions: Array<{
     cardId: string;
     kind: 'mcq' | 'recall';
+    topicId: string | null;
     choiceId: string | null;
     text: string;
     mark: 'know' | 'dont' | null;
@@ -84,6 +105,7 @@ export interface StoredExam {
 export interface StoredHistory {
   id: string;
   scopeLabel: string;
+  syllabusId?: string;
   total: number;
   correct: number;
   wrong: number;
@@ -236,4 +258,25 @@ export async function expectNoFeedback(page: Page, hidden: readonly string[]): P
 export async function markQuestion(page: Page, n: number, mark: 'know' | 'dont'): Promise<void> {
   const name = mark === 'know' ? `I knew it (question ${n})` : `I did not know it (question ${n})`;
   await page.getByRole('radio', { name, exact: true }).check();
+}
+
+/** The text of every option of the topic picker, indentation and spacing removed. */
+export async function topicOptions(page: Page): Promise<string[]> {
+  return page
+    .getByTestId(XID.topic)
+    .evaluate((el) =>
+      Array.from((el as HTMLSelectElement).options).map((o) =>
+        (o.textContent ?? '').replace(/\s+/g, ' ').trim(),
+      ),
+    );
+}
+
+/** Switch the setup form to "A syllabus" and wait until the cards were read (counts are shown). */
+export async function chooseSyllabusSource(page: Page): Promise<void> {
+  const setup = page.getByTestId(XID.setup);
+  await setup.getByTestId(XID.sourceSyllabus).check();
+  await expect(setup.getByTestId(XID.topic)).toBeVisible();
+  await expect
+    .poll(async () => (await topicOptions(page))[0], { message: 'the topic counts were read' })
+    .toMatch(/^The whole syllabus \(\d+ cards?\)$/);
 }

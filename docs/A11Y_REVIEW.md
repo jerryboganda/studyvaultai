@@ -16,6 +16,28 @@
 > those remain `docs/MANUAL_TEST_CHECKLIST.md` MT-17, MT-18 and MT-42 to MT-44, MT-53. The sections
 > "Verification actually run" and "Where the e2e suites may need a look (not run)" below describe the
 > original code-and-jsdom pass and are not rewritten; the specs they name did run in that CI run.
+>
+> **Status, 2026-10-12 (CI evidence for the finish wave and the PDF links; the findings are unchanged).**
+> The axe checks of the surfaces added since this review ran and passed in Actions run 38173629818
+> (<https://github.com/jerryboganda/studyvaultai/actions/runs/38173629818>, commit
+> `79d8cbc38111bfcde0e621f37d4795fd3f38e736`, branch `feat/finish-all`) on Ubuntu and Windows (546 e2e
+> tests per OS passed, none failed or retried; 6 `test.fixme` tests skipped, none of them an
+> accessibility test), with the same `wcag2a`, `wcag2aa`, `wcag21aa` and `wcag22aa` tags against the e2e
+> build in Playwright's bundled Chromium, in light and dark where the spec says so: `rules.spec.ts` (the
+> manager and its dialog), `syllabus.spec.ts` (the import dialog, the editor, the coverage section and its
+> empty state), `graph.spec.ts` (the links section and the graph view), `exam.spec.ts` (setup, a recall
+> and a multiple-choice question, marking, results, history), `ai-extras.spec.ts` (the provider list, the
+> chat view and its consent dialog), `math.spec.ts` (rendered and previewed math), `backup-folder.spec.ts`
+> (each state of the folder panel and the reminder), `import-formats.spec.ts` (at rest, a dry run, a
+> refusal), `related.spec.ts`, `reminders.spec.ts` (the settings section with the permission held and
+> missing, the popup and side-panel notice), `polish.spec.ts` (the JSON export) and `pdf-links.spec.ts`
+> (the page with its links, the Links list and the confirmation dialog). The keyboard-only steps of those
+> specs (Alt+Arrow reordering, the graph walk, links by Tab and Enter, S and Enter in the reader) ran in
+> the same run. The two addenda of 2026-10-12 below were written before it and are not rewritten: where
+> they say "written and not yet run in CI", read run 38173629818. Passing axe is not a conformance claim.
+> **Manual items remain, all of them:** no screen reader, forced-colours, 400% zoom, OS reduced-motion,
+> caret-browsing or touch pass has been made (`docs/MANUAL_TEST_CHECKLIST.md` MT-17, MT-18, MT-42 to
+> MT-44 as extended, MT-53, MT-55, MT-57, MT-58 and MT-62 to MT-65).
 
 Target: WCAG 2.2 AA (UX_DESIGN.md, "Accessibility contract"). Method: reading the code and CSS of
 the surfaces below, computing contrast from the real token files, and unit tests (jsdom) for every
@@ -166,7 +188,7 @@ Method: the code, the ADRs (011 to 020) and the titles of the unit and e2e tests
 Playwright, axe, screen reader or real-browser run was made for this addendum. **None of the changes
 below has a green Actions run** (no run of branch `feat/finish-all` has concluded `success`; the axe
 runs in the status paragraph at the top predate them). "Fixed" again means "changed and unit-tested";
-the matching e2e specs are written and not yet run in CI.
+the matching e2e specs were written and not yet run in CI at that time; run 38173629818 has since executed them (status paragraph at the top, 2026-10-12).
 
 ### Findings above that moved
 
@@ -181,8 +203,8 @@ N4, N6, N7, N8, N9: unchanged and not re-examined).
 
 ### New or changed surfaces and what they do for accessibility (design, from ADR-011 to ADR-020)
 
-None of these was part of the original review; each has axe checks in its own spec (written, not run
-in CI) and a manual row.
+None of these was part of the original review; each has axe checks in its own spec (run in CI 38173629818: see the status paragraph at the top)
+and a manual row.
 
 | Surface | What the code does | Needs a real browser |
 | --- | --- | --- |
@@ -201,3 +223,32 @@ in CI) and a manual row.
   surfaces), MT-53, MT-55, MT-57 and MT-58.
 - The `Alt+Up` / `Alt+Down` and `F2` shortcuts of the new trees and lists are modified keys, so
   2.1.4 does not apply; the exam has none by design.
+
+## Addendum, 2026-10-12: links in the PDF reader (ADR-006 amendment 3)
+
+Method: the code, the ADR and the titles of the unit and e2e tests were read; no Playwright, axe, screen
+reader or real-browser run was made for this addendum. **None of it has a green Actions run**: the unit
+files (`packages/pdf/src/links.test.ts`, `linkLayer.test.ts`, `entrypoints/pdf-reader/links.test.tsx`)
+were written with the code, and `tests/e2e/pdf-links.spec.ts` (14 tests, one of them axe over the page,
+the Links list and the dialog) was written and not yet run in CI when this addendum was made; it passed in run 38173629818 (status paragraph at the top). Before this change a link inside a PDF
+did nothing, for the keyboard and for assistive technology as well.
+
+| Surface | What the code does | Needs a real browser |
+| --- | --- | --- |
+| Link anchors on a page | One transparent `<a role="link">` per link, placed over the link's own rectangle in percent of the page (so zoom and rotation need no recomputation), with an accessible name: "Link to page N", "External link to {host}" or "Link that StudyVault will not open". There is no `href`. The focus ring is a `:focus-visible` outline plus a tint (the e2e asserts an outline of at least 2 px) and `Highlight` in forced colours | A screen reader's rendering of a `role="link"` with no `href` (MT-62); the ring under Windows contrast themes (MT-65) |
+| **Tab order rule** | A page with **at most 40** links puts every link in the tab order, in reading order. A page with **more than 40** has **one tab stop** (the first link) and the arrow keys, Home and End move between the rest (roving `tabindex`); the layer is a `role="group"` whose label says so, and the **Links** list is the way through the page. Enter follows the focused link. Anchors exist only for drawn pages, so the lazy window bounds them: at most about 160 tab stops (40 on each of four drawn pages), never the 3,779 links of the CDC guideline | The roving group with NVDA, JAWS and VoiceOver (MT-62) |
+| Links list | The navigation pane's "Links (N)" tab lists "Links on this page" for the page in view: each link by its accessible name, the address as text, "will not be opened" for a refused one, and "Page N has no links." when empty. It follows a link through the same code as a click | The same pass |
+| After a link is followed | The page element takes keyboard focus (`tabindex="-1"`, not a tab stop; the viewer's own keys keep working there); the polite status region says "Went to page N."; **Back** is a toolbar button (`aria-disabled` with the title "No link has been followed yet." until one is) and **Alt+Left**, which is always handled in the reader and says "Nothing to go back to: no link has been followed yet." with an empty stack, so the browser's own Alt+Left never leaves the page and the open document | Back and Alt+Left with a screen reader's virtual cursor (MT-62) |
+| Confirmation dialog | `ConfirmDialog`: focus trapped, Cancel focused, Escape cancels; the whole address and the site are text in a list; "Always allow this site ({host}) in this reader session" is an unchecked checkbox; the status line says "Opening {host} in a new tab." | Whether Chrome's pop-up blocker lets the tab open: the reader cannot tell and says it is opening either way (MT-63) |
+| A link that is refused | An `InlineNotice` (`role="status"`, "Link not opened") with the reason and a Dismiss button; nothing opens | The announcement once, not doubled |
+| Pointer | The anchors take no pointer events, so a drag that starts on a link selects text and a click never follows a link during or after a selection; the cursor is a pointer over a link | Touch (not exercised) |
+
+Also fixed on the way: the toolbar's page box committed on blur even when nothing had been typed, so the
+view could jump back to the top of the page between a press and a release (`Toolbar.tsx`; unit-tested in
+`links.test.tsx`).
+
+Not changed, and why: the reading order is geometric, not column-aware, so on a two-column page the tab
+order can interleave the columns; a link wrapped over lines has one tab stop and one focus ring around
+the union of its lines; a link whose action pdf.js does not turn into a destination has no anchor, so
+nothing tells the person it exists; no target-size (WCAG 2.5.8) assessment was made, the boxes being the
+links' own rectangles. Manual rows: MT-62, MT-63 and MT-65.

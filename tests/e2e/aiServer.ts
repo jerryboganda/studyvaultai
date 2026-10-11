@@ -22,6 +22,24 @@ import type { AddressInfo } from 'node:net';
  *
  * No real key, no internet: the canned answers are computed from the request itself (the data
  * blocks the product put into the prompt), so a quote is always a verbatim span of what was sent.
+ *
+ * ANTHROPIC MODE (`startFakeProvider({ api: 'anthropic' })`): the same server speaks the Anthropic
+ * Messages API instead, as the product's `anthropic` adapter sends and expects it:
+ *
+ *   POST {base}/v1/messages, content-type application/json, `x-api-key: <key>` (never Authorization),
+ *        `anthropic-version`, `anthropic-dangerous-direct-browser-access: true` (recorded, not required)
+ *   body   { model, max_tokens, system?, messages: [{role: 'user'|'assistant', content}], temperature? }
+ *          anything else is refused like the real API refuses it (`Extra inputs are not permitted`), as
+ *          is a `system` role inside `messages` and a first message that is not `user`
+ *   200    { id, type: 'message', role: 'assistant', model, content: [{type: 'text', text}],
+ *            stop_reason, stop_sequence, usage: { input_tokens, output_tokens } }
+ *   errors { type: 'error', error: { type, message }, request_id } with 401 authentication_error,
+ *          429 rate_limit_error, 529 overloaded_error ... (`anthropicFailure`)
+ *
+ * `baseUrl` is then the origin itself (the adapter appends /v1/messages). `Seen.chat` is the request
+ * normalised to the chat shape (the `system` text first) so `dataBlocks`, `taskOf` and the canned
+ * answers work unchanged; `Seen.anthropic` is the validated body as it came. In this mode the `ok`
+ * reply's `finishReason` is the `stop_reason` (default `end_turn`).
  */
 
 export interface ChatMessage {
@@ -39,6 +57,15 @@ export interface ChatRequest {
   response_format?: { type: string };
 }
 
+/** The body of POST /v1/messages that the fake accepts (Anthropic mode). */
+export interface AnthropicRequest {
+  model: string;
+  max_tokens: number;
+  system?: string;
+  messages: { role: 'user' | 'assistant'; content: string }[];
+  temperature?: number;
+}
+
 /** One request the provider saw (every method and path, not only completions). */
 export interface Seen {
   n: number;
@@ -48,6 +75,8 @@ export interface Seen {
   body: string;
   /** The parsed, validated body (null when the request was not a valid completion). */
   chat: ChatRequest | null;
+  /** Anthropic mode only: the validated Messages API body as it came (absent otherwise). */
+  anthropic?: AnthropicRequest;
   /** The client dropped the connection before an answer was written (cancel or timeout). */
   clientClosed: boolean;
   /** Status written, `'hang'` while held open, null while still being read. */
@@ -59,7 +88,10 @@ export type Reply =
       kind: 'ok';
       /** The model's message content (a JSON document for a well-behaved model). */
       content: string;
+      /** OpenAI `finish_reason` (default `stop`); in Anthropic mode the `stop_reason` (`end_turn`). */
       finishReason?: string;
+      /** Token counts the answer reports; absent: derived from the text sizes (4 characters each). */
+      usage?: { inputTokens: number; outputTokens: number };
     }
   | {
       kind: 'http';
@@ -73,8 +105,15 @@ export type Reply =
 export type ReplyFor = Reply | ((chat: ChatRequest) => Reply);
 
 /** An answer whose message content is `content` (an object is sent as its JSON text). */
-export function ok(content: unknown): Reply {
-  return { kind: 'ok', content: typeof content === 'string' ? content : JSON.stringify(content) };
+export function ok(
+  content: unknown,
+  extra: { finishReason?: string; usage?: { inputTokens: number; outputTokens: number } } = {},
+): Reply {
+  return {
+    kind: 'ok',
+    content: typeof content === 'string' ? content : JSON.stringify(content),
+    ...extra,
+  };
 }
 
 /** An OpenAI-shaped error answer. */
@@ -87,6 +126,24 @@ export function failure(
     kind: 'http',
     status,
     body: { error: { message: error.message ?? `${error.code} (e2e fake provider)`, ...error } },
+    headers,
+  };
+}
+
+/** An Anthropic-shaped error answer: `{type: 'error', error: {type, message}, request_id}`. */
+export function anthropicFailure(
+  status: number,
+  error: { type: string; message?: string },
+  headers: Record<string, string> = {},
+): Reply {
+  return {
+    kind: 'http',
+    status,
+    body: {
+      type: 'error',
+      error: { type: error.type, message: error.message ?? `${error.type} (e2e fake provider)` },
+      request_id: 'req_e2e_fake',
+    },
     headers,
   };
 }
@@ -219,17 +276,25 @@ export function cannedAnswer(chat: ChatRequest): string {
 // ---------------------------------------------------------------------------------------------
 
 export interface FakeProvider {
+  /** Which wire format this server speaks. */
+  readonly api: 'openai' | 'anthropic';
   /** http://127.0.0.1:PORT */
   readonly origin: string;
-  /** `${origin}/v1`: what a person types as the provider address. */
+  /**
+   * What a person types as the provider address: `${origin}/v1` for the OpenAI format, the origin
+   * itself for the Anthropic one (the adapter appends /v1/messages).
+   */
   readonly baseUrl: string;
   /** 127.0.0.1:PORT (what the product prints as the provider). */
   readonly host: string;
   /** Every request, any method or path, in arrival order. */
   readonly seen: readonly Seen[];
-  /** POST /v1/chat/completions only. */
+  /** POST /v1/chat/completions only (POST /v1/messages in Anthropic mode). */
   completions(): Seen[];
-  /** The bearer key the server accepts; undefined accepts any request (a keyless local model). */
+  /**
+   * The bearer key the server accepts (`x-api-key` in Anthropic mode); undefined accepts any request
+   * (a keyless local model; in Anthropic mode any non-empty key, as that API always wants one).
+   */
   setKey(key: string | undefined): void;
   /** Replies for the next completions, in order, before the default answer applies again. */
   queue(...replies: ReplyFor[]): void;
@@ -264,11 +329,127 @@ function validChat(raw: unknown): ChatRequest | null {
   return raw as ChatRequest;
 }
 
-export async function startFakeProvider(opts: { apiKey?: string } = {}): Promise<FakeProvider> {
+/** The only fields the product's Anthropic adapter may send (an unknown one is a 400, as live). */
+const ANTHROPIC_FIELDS: ReadonlySet<string> = new Set([
+  'model',
+  'max_tokens',
+  'system',
+  'messages',
+  'temperature',
+]);
+
+/** The Messages API checks the adapter must pass; the message is what the real API would say. */
+function validAnthropic(
+  raw: unknown,
+): { ok: true; req: AnthropicRequest } | { ok: false; message: string } {
+  const bad = (message: string) => ({ ok: false as const, message });
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return bad('body: Input should be a valid dictionary');
+  }
+  const o = raw as Record<string, unknown>;
+  for (const k of Object.keys(o)) {
+    if (!ANTHROPIC_FIELDS.has(k)) return bad(`${k}: Extra inputs are not permitted`);
+  }
+  if (typeof o.model !== 'string' || o.model === '') return bad('model: Field required');
+  if (typeof o.max_tokens !== 'number' || !Number.isInteger(o.max_tokens) || o.max_tokens < 1) {
+    return bad('max_tokens: Field required');
+  }
+  if (o.system !== undefined && typeof o.system !== 'string') {
+    return bad('system: Input should be a valid string');
+  }
+  if (
+    o.temperature !== undefined &&
+    (typeof o.temperature !== 'number' || o.temperature < 0 || o.temperature > 1)
+  ) {
+    return bad('temperature: Input should be a number between 0 and 1');
+  }
+  if (!Array.isArray(o.messages) || o.messages.length === 0) return bad('messages: Field required');
+  for (const [i, m] of o.messages.entries()) {
+    const x = m as Record<string, unknown> | null;
+    if (typeof x !== 'object' || x === null) {
+      return bad(`messages.${i}: Input should be a valid dictionary`);
+    }
+    if (x.role !== 'user' && x.role !== 'assistant') {
+      return bad(`messages.${i}.role: Input should be 'user' or 'assistant'`);
+    }
+    if (typeof x.content !== 'string' || x.content.trim() === '') {
+      return bad(`messages.${i}.content: must be a non-empty string`);
+    }
+  }
+  if ((o.messages[0] as { role: string }).role !== 'user') {
+    return bad('messages: first message must use the "user" role');
+  }
+  return { ok: true, req: raw as AnthropicRequest };
+}
+
+export async function startFakeProvider(
+  opts: { apiKey?: string; api?: 'openai' | 'anthropic' } = {},
+): Promise<FakeProvider> {
   let key = opts.apiKey;
+  const api = opts.api ?? 'openai';
   const seen: Seen[] = [];
   const queue: ReplyFor[] = [];
   let fallback: (chat: ChatRequest) => Reply = (chat) => ok(cannedAnswer(chat));
+
+  type Send = (status: number, payload: unknown, headers?: Record<string, string>) => void;
+
+  /** One request in Anthropic mode: headers, body, then the same queue as the OpenAI mode. */
+  const answerAnthropic = (entry: Seen, send: Send): void => {
+    const refuse = (status: number, type: string, message: string): void =>
+      send(status, { type: 'error', error: { type, message }, request_id: 'req_e2e_fake' });
+    if (entry.path !== '/v1/messages') {
+      return refuse(404, 'not_found_error', `Unknown URL ${entry.path}`);
+    }
+    if (entry.method !== 'POST') return refuse(405, 'invalid_request_error', 'Method not allowed');
+    const sent = entry.headers['x-api-key'];
+    if (typeof sent !== 'string' || sent === '') {
+      return refuse(401, 'authentication_error', 'x-api-key header is required');
+    }
+    if (key !== undefined && sent !== key) {
+      return refuse(401, 'authentication_error', 'invalid x-api-key');
+    }
+    if (!entry.headers['anthropic-version']) {
+      return refuse(400, 'invalid_request_error', 'anthropic-version: header is required');
+    }
+    const parsed = validAnthropic(parseJson(entry.body));
+    if (!parsed.ok) return refuse(400, 'invalid_request_error', parsed.message);
+    const { req } = parsed;
+    const chat: ChatRequest = {
+      model: req.model,
+      max_tokens: req.max_tokens,
+      ...(req.temperature === undefined ? {} : { temperature: req.temperature }),
+      messages: [...(req.system ? [{ role: 'system', content: req.system }] : []), ...req.messages],
+    };
+    entry.chat = chat;
+    entry.anthropic = req;
+
+    let reply: Reply;
+    try {
+      const next = queue.shift();
+      reply = typeof next === 'function' ? next(chat) : (next ?? fallback(chat));
+    } catch (e) {
+      return refuse(400, 'invalid_request_error', String((e as Error).message));
+    }
+    if (reply.kind === 'hang') {
+      entry.answered = 'hang';
+      return; // held open: `close` fires when the client aborts or the server stops
+    }
+    if (reply.kind === 'http') return send(reply.status, reply.body, reply.headers);
+    const chars = chat.messages.reduce((n, m) => n + m.content.length, 0);
+    send(200, {
+      id: `msg_e2e_${entry.n}`,
+      type: 'message',
+      role: 'assistant',
+      model: chat.model,
+      content: [{ type: 'text', text: reply.content }],
+      stop_reason: reply.finishReason ?? 'end_turn',
+      stop_sequence: null,
+      usage: {
+        input_tokens: reply.usage?.inputTokens ?? Math.ceil(chars / 4),
+        output_tokens: reply.usage?.outputTokens ?? Math.ceil(reply.content.length / 4),
+      },
+    });
+  };
 
   const server = http.createServer((req, res) => {
     const chunks: Buffer[] = [];
@@ -298,6 +479,8 @@ export async function startFakeProvider(opts: { apiKey?: string } = {}): Promise
         });
         res.end(text);
       };
+
+      if (api === 'anthropic') return answerAnthropic(entry, send);
 
       if (entry.path !== '/v1/chat/completions') {
         return send(404, error(`Unknown URL ${entry.path}`, 'invalid_request_error', 'not_found'));
@@ -330,8 +513,8 @@ export async function startFakeProvider(opts: { apiKey?: string } = {}): Promise
       }
       if (reply.kind === 'http') return send(reply.status, reply.body, reply.headers);
       const chars = chat.messages.reduce((n, m) => n + m.content.length, 0);
-      const prompt = Math.ceil(chars / 4);
-      const completion = Math.ceil(reply.content.length / 4);
+      const prompt = reply.usage?.inputTokens ?? Math.ceil(chars / 4);
+      const completion = reply.usage?.outputTokens ?? Math.ceil(reply.content.length / 4);
       return send(200, {
         id: `chatcmpl-e2e-${entry.n}`,
         object: 'chat.completion',
@@ -355,12 +538,14 @@ export async function startFakeProvider(opts: { apiKey?: string } = {}): Promise
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
   const origin = `http://127.0.0.1:${port}`;
+  const completionPath = api === 'anthropic' ? '/v1/messages' : '/v1/chat/completions';
   return {
+    api,
     origin,
-    baseUrl: `${origin}/v1`,
+    baseUrl: api === 'anthropic' ? origin : `${origin}/v1`,
     host: `127.0.0.1:${port}`,
     seen,
-    completions: () => seen.filter((s) => s.method === 'POST' && s.path === '/v1/chat/completions'),
+    completions: () => seen.filter((s) => s.method === 'POST' && s.path === completionPath),
     setKey: (next) => {
       key = next;
     },

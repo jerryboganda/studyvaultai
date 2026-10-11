@@ -1,6 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { HOSTILE_MARKDOWN } from './markdownHostile';
 import { MATH_DISPLAY_MAX, MATH_INLINE_MAX } from './markdownMath';
 import { renderMarkdown, renderMarkdownToHtml } from './markdownRender';
+
+// This file is about the source-text rendering of TeX: what a note shows while the typesetter loads,
+// and what it keeps whenever the typesetter refuses a formula. The lazily loaded typesetter is replaced
+// by one that refuses everything, so the renderer's own contract is what is asserted; the real
+// typesetter has mathTypeset.test.ts and markdownRender.math.test.ts.
+vi.mock('./mathTypeset', () => ({ typeset: () => null }));
 
 const ALLOWED = new Set([
   'p',
@@ -96,64 +103,9 @@ describe('renderMarkdown', () => {
     expect(holder.textContent).toContain('a diagram');
   });
 
-  const hostile: Array<[string, string]> = [
-    ['script tag', '<script>alert(1)</script>'],
-    ['img onerror', '<img src=x onerror=alert(1)>'],
-    ['svg onload', '<svg onload=alert(1)></svg>'],
-    ['svg script', '<svg><script>alert(1)</script></svg>'],
-    ['iframe', '<iframe src="https://evil.example"></iframe>'],
-    ['iframe srcdoc', '<iframe srcdoc="<script>alert(1)</script>"></iframe>'],
-    ['object', '<object data="javascript:alert(1)"></object>'],
-    ['embed', '<embed src="javascript:alert(1)">'],
-    ['style', '<style>body{display:none}</style>'],
-    ['inline style', '<p style="background:url(javascript:alert(1))">x</p>'],
-    ['form', '<form action="https://evil.example"><input name=a><button>go</button></form>'],
-    ['details ontoggle', '<details open ontoggle=alert(1)>x</details>'],
-    ['math', '<math><mi xlink:href="javascript:alert(1)">x</mi></math>'],
-    ['meta refresh', '<meta http-equiv="refresh" content="0;url=javascript:alert(1)">'],
-    ['base', '<base href="https://evil.example/">'],
-    ['link', '<link rel="stylesheet" href="https://evil.example/x.css">'],
-    ['anchor javascript raw', '<a href="javascript:alert(1)">x</a>'],
-    ['anchor onclick raw', '<a href="https://ok.example" onclick="alert(1)">x</a>'],
-    ['md javascript', '[x](javascript:alert(1))'],
-    ['md javascript mixed case', '[x](JaVaScRiPt:alert(1))'],
-    ['md javascript entity', '[x](&#106;avascript:alert(1))'],
-    ['md javascript tab', '[x](java\tscript:alert(1))'],
-    ['md data', '[x](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)'],
-    ['md vbscript', '[x](vbscript:msgbox(1))'],
-    ['md blob', '[x](blob:https://example.com/uuid)'],
-    ['md file', '[x](file:///etc/passwd)'],
-    ['md mailto', '[x](mailto:someone@example.com)'],
-    ['md relative', '[x](/relative/path)'],
-    ['md protocol relative', '[x](//evil.example/x)'],
-    ['md fragment', '[x](#anchor)'],
-    ['md title injection', '[x](https://ok.example "t\\" onmouseover=\\"alert(1)")'],
-    ['md autolink javascript', '<javascript:alert(1)>'],
-    ['md reference javascript', '[x][r]\n\n[r]: javascript:alert(1)'],
-    ['nested in emphasis', '**<img src=x onerror=alert(1)>**'],
-    ['html in table', '| a |\n|---|\n| <img src=x onerror=alert(1)> |'],
-    ['html in heading', '# <script>alert(1)</script>'],
-    ['code span stays text', '`<script>alert(1)</script>`'],
-    // TeX that a typesetter would act on, and attempts to leave the math element (ADR-015): all text.
-    ['tex href', '$\\href{javascript:alert(1)}{x}$'],
-    ['tex url', '$\\url{javascript:alert(1)}$'],
-    ['tex includegraphics', '$\\includegraphics{https://tracker.example/pixel.png}$'],
-    ['tex style', '$\\style{background:url(https://tracker.example/x)}{x}$'],
-    ['tex class', '$\\class{x}{y}$'],
-    ['tex htmlId', '$\\htmlId{x}{y}$'],
-    ['tex mathml', '$<math><mi xlink:href="javascript:alert(1)">x</mi></math>$'],
-    ['tex svg in display', '$$\n<svg onload=alert(1)></svg>\n$$'],
-    ['tex script in display', '$$<script>alert(1)</script>$$'],
-    ['tex element breakout', '$</code><img src=x onerror=alert(1)><code>$'],
-    ['tex attribute breakout', '$x" class="math" onmouseover="alert(1)$'],
-    ['tex entities', '$&lt;script&gt;alert(1)&lt;/script&gt;$'],
-    ['raw code with math class', '<code class="math" onclick="alert(1)">x</code>'],
-    ['raw paragraph with math class', '<p class="math math-display">x</p>'],
-    ['fence language math', '```math\n<script>alert(1)</script>\n```'],
-    ['fence language injection', '```"onmouseover="alert(1)\nx\n```'],
-  ];
-
-  it.each(hostile)('neutralises %s', (_name, source) => {
+  // The battery is shared with the typeset-math tests (markdownHostile.ts). In this file the typesetter
+  // is never loaded, so these are the sources as shown while it loads and when it refuses a formula.
+  it.each(HOSTILE_MARKDOWN)('neutralises %s', (_name, source) => {
     const holder = audit(source);
     // No script can run: nothing outside the allow-list and no handler attribute exists (audit).
     expect(

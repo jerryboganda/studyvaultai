@@ -137,9 +137,11 @@ const total = walk(prod)
 // non-OCR total to ~6.3 MB after the Preact content script (-200 KB, docs/adr/012). The finish wave
 // (filing rules, syllabus, graph, AI router and chat, exam, reminders, import formats, backup folder,
 // related, bounded Markdown) measured 6643 KB in Actions run 38165977562 before the rules UI landed, so
-// 6800 KB leaves ~2% headroom. OCR assets are budgeted separately above. Raise this only with a reason
-// in the commit.
-const TOTAL_BUDGET_KB = 6800;
+// 6800 KB leaves ~2% headroom. Typeset math (docs/adr/015) added the lazily loaded mathTypeset chunk
+// (temml 0.14.0 with mhchem, ~207 KB minified, ~61 KB gzip, fetched only when a note holds a formula)
+// and 2 KB of its stylesheet: measured 6662 KB before it, so 7000 KB keeps ~2% headroom. OCR assets are
+// budgeted separately above. Raise this only with a reason in the commit.
+const TOTAL_BUDGET_KB = 7000;
 if (total > TOTAL_BUDGET_KB * KB)
   fail(`total extension size ${Math.round(total / KB)} KB exceeds ${TOTAL_BUDGET_KB} KB`);
 

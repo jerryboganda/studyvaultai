@@ -569,3 +569,50 @@ export function inlineBudget(
   }
   return accept(micros);
 }
+
+/**
+ * Typeset TeX (mathTypeset.ts, ADR-015) has its own cap, applied to the formulas the two passes above
+ * found, before temml sees any of them. The scanner already bounds each span (500 characters inline,
+ * 10,000 displayed) and the passes above refuse a note with too many `$`; what is left is the cost of
+ * turning the surviving spans into MathML: temml, the nodes, DOMPurify and the validation walk.
+ *
+ * Measured in Chromium 1248 (Playwright, Windows, 4 CPUs shared with other work, `typeset` called
+ * directly, median of five; two runs, the first on a busier machine): 50 formulas of about 60
+ * characters and 25 elements each take 147 ms and 103 ms, 100 of them 275 ms and 170 ms; the first
+ * call after the chunk loads 14 ms and 11 ms; a dense formula (a matrix, `x^2+x^2+...`, 1,000 to
+ * 2,000 elements) costs 85 us and 40 us per element, so 170 ms for 2,000 characters on the first run
+ * and 40 ms for 1,000 on the second; a 1,000-character mhchem formula (`\ce{...}`) makes 1,990
+ * elements in 105 ms, and a 2,000-character one that was then refused for its size cost 340 ms before
+ * the size check existed. So a formula costs about 0.3 ms plus 40 to 85 us per output element, and
+ * the caps hold a note to about a quarter second (the budget of the passes above): 60 ordinary
+ * formulas are 100 to 170 ms, the dense worst case at 3,000 characters 120 to 255 ms. What does not
+ * fit stays as the source text it was before typesetting.
+ */
+export const MATH_MAX_FORMULAS = 60;
+/** One formula longer than this is left as source text (mathTypeset.ts has the same cap). */
+export const MATH_MAX_FORMULA_CHARS = 1_000;
+/** All the TeX of one note that is typeset. */
+export const MATH_MAX_TOTAL_CHARS = 3_000;
+
+/**
+ * Which formulas to typeset: `lengths` are the TeX lengths (delimiters excluded) in document order.
+ * First fit: a formula that does not fit the remaining budget is skipped and a shorter one after it may
+ * still be taken. Pure and linear.
+ */
+export function mathBudget(lengths: readonly number[]): boolean[] {
+  let formulas = 0;
+  let chars = 0;
+  return lengths.map((length) => {
+    if (
+      length <= 0 ||
+      length > MATH_MAX_FORMULA_CHARS ||
+      formulas >= MATH_MAX_FORMULAS ||
+      chars + length > MATH_MAX_TOTAL_CHARS
+    ) {
+      return false;
+    }
+    formulas++;
+    chars += length;
+    return true;
+  });
+}

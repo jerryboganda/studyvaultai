@@ -240,7 +240,8 @@
   padding: 0;
   background: transparent;
 }
-/* TeX is shown as written (markdownMath.ts): left-to-right whatever the note's direction. */
+/* TeX as written (markdownMath.ts): what shows while the typesetter loads and for a formula it refuses
+   (typeset formulas are <math>, styled by the lazy math.css). Left-to-right whatever the note's direction. */
 .sv-md code.math {
   direction: ltr;
   unicode-bidi: isolate;

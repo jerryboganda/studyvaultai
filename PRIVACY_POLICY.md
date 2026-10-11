@@ -28,6 +28,18 @@
 > loaded-extension specs not yet run in CI. This revision also corrects two older sentences that the
 > code had already made untrue: "Delete all StudyVault data" does give back the optional `identity`
 > and `alarms` permissions and does remove the display preferences (`docs/PRIVACY_CLAIMS.md` P15).
+>
+> Revised 2026-10-12 (fourth pass), after Actions run 38173629818
+> (https://github.com/jerryboganda/studyvaultai/actions/runs/38173629818, commit
+> `79d8cbc38111bfcde0e621f37d4795fd3f38e736`, branch `feat/finish-all`), in which every job
+> concluded `success`. That run supersedes the third-pass sentence above that no run had: it
+> executed the loaded-extension specs of the finish wave in Playwright's bundled Chromium on
+> Ubuntu and Windows, and `docs/PRIVACY_CLAIMS.md` records, row by row, what it backs (several
+> rows are now `verified` for what a spec asserts) and what it does not: branded Chrome or Edge,
+> a real incognito window, Chrome's permission prompts and folder picker, a hosted sign-in
+> provider, a screen reader and the Chrome Web Store review. The rows still name unit-only or
+> manual parts, so this document is still a draft. This revision adds one sentence about links
+> inside a PDF (in "Opening a PDF from a web address"; open item U-23).
 
 [USER-REQUIRED: legal review of this policy, the effective date, and the legal name and postal address
 of the publisher. Delete this line when done.]
@@ -166,6 +178,13 @@ makes those requests runs only behind the feature switches and your action descr
 - **What is not sent:** nothing of yours is uploaded. The downloaded file is read and shown in
   memory; it is kept on your device only if you choose to keep a copy. Files you pick from your own
   computer are read locally and are never fetched or uploaded.
+- **Links inside a PDF.** Links inside a PDF that point to a web address open only after you
+  confirm the full address in the reader (unless you chose "Always allow this site" in that
+  reader tab), in a new tab; StudyVault makes no request for a link itself, and mail, script
+  and file links are not opened. The site you then open learns your visit as it would for any
+  link opened in a tab (your IP address, the address and the usual browser headers); the new
+  tab is not told which page it came from. A link to a place in the same PDF only moves the
+  view.
 
 ### AI help (optional, off by default)
 

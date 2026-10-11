@@ -73,6 +73,19 @@ export interface SaveOcrPageInput {
   orientation?: 0 | 90 | 180 | 270;
 }
 
+/** The one reading a re-recognition replaced, kept on the page for a single step back. */
+export interface StoredPreviousReading {
+  text: string;
+  correctedText: string | null;
+  words: OcrStoredWord[];
+  language: string;
+  engine: string;
+  confidence: number | null;
+  orientation?: 0 | 90 | 180 | 270;
+  /** ISO time the reading stopped being the page's current one. */
+  replacedAt: string;
+}
+
 export interface StoredOcrPage {
   pageNumber: number;
   text: string;
@@ -80,6 +93,8 @@ export interface StoredOcrPage {
   words: OcrStoredWord[];
   /** Absent for pages recognised before orientation checks: 0. */
   orientation?: 0 | 90 | 180 | 270;
+  /** Absent when the page was never re-recognised (or the slot was used up). */
+  previousReading?: StoredPreviousReading;
 }
 
 /** A document whose bytes StudyVault keeps (user-approved), for the stored-copy manager. */
@@ -121,6 +136,14 @@ export interface PdfStore {
   /** Recognised text of scanned pages (see ocr.ts). Present only when OCR results can be kept. */
   saveOcrPage?(input: SaveOcrPageInput): Promise<unknown>;
   getOcrPages?(documentId: string): Promise<StoredOcrPage[]>;
+  /**
+   * A NEW reading of a page in place of the stored one, in one transaction: the stored reading moves
+   * to `previousReading` (one step back) and `correctedText` is the corrections carried over.
+   * Absent: a re-recognition falls back to `saveOcrPage` and the step back lasts this session.
+   */
+  replaceOcrPage?(input: SaveOcrPageInput): Promise<StoredOcrPage>;
+  /** Swap the page's current reading with its `previousReading` (so the swap can be swapped back). */
+  swapOcrReading?(documentId: string, pageNumber: number): Promise<StoredOcrPage>;
   listBanks(): Promise<BankLite[]>;
   createBank(name: string): Promise<BankLite>;
   /** Absent: the reader never mentions filing rules. */

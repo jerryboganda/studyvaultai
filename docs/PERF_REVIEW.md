@@ -23,6 +23,28 @@
 > ranked findings and the recommended items below (the seconds-long search-index serialise and
 > restore, the eager dashboard index, the parsing of due cards, the bundle total at 99.4% of its
 > budget) are not changed by this paragraph.
+>
+> **Status, 2026-10-12 (CI evidence, second run; the findings and numbers below are unchanged).** Actions
+> run 38173629818 (<https://github.com/jerryboganda/studyvaultai/actions/runs/38173629818>, commit
+> `79d8cbc38111bfcde0e621f37d4795fd3f38e736`, branch `feat/finish-all`) concluded `success` in every job.
+> Its `stress (perf suites, SV_PERF=1)` job (advisory, `continue-on-error`, no step failed) found seven
+> suites, the six above plus `packages/search/src/related.perf.test.ts` (related highlights answer with p95
+> under 50 ms over 10,000 documents), and reported "perf run ok: 39 tests"; every budget held on a shared
+> ubuntu-latest runner. Its `build` job passed `scripts/check-build.mjs` against the new budgets (content
+> script 220 KB, background 450 KB, non-OCR total 6,800 KB): "content script 214 KB; total 6662 KB", with the
+> OCR assets, 5,870 KB, under their own budget; the production-build figures of the addendum of
+> 2026-10-12 below were private e2e-variant builds and this is the gate asserting the whole finish wave in CI. `dashboard.spec.ts` "perf: 10,000 highlights" and `lifecycle.spec.ts` "performance evidence" passed
+> again on Ubuntu and Windows. `pdf-real-memory.spec.ts` ran in the `e2e` shards on both systems and printed
+> its own numbers (`[real-pdf-memory]` lines): the 192-page file grew the main-thread heap by +7.1 MB on
+> Ubuntu and +6.9 MB on Windows over the first page (x1.52 and x1.50), the 76-page file by +0.9 MB on both
+> (x1.09), the 70-page scan by -3.5 MB and -3.4 MB (x0.75; the heap peaked at 32.8 MB and 34.8 MB
+> mid-way), with at most 4 canvases and 4 text layers alive at once, DOM growth of -943, +274 and -4,492
+> nodes, and 26.0 s, 3.9 s and 19.6 s (Ubuntu) and 22.9 s, 3.7 s and 21.7 s (Windows) to bring every page
+> on screen. They agree with the development-machine table in the addendum "long real documents" to within
+> 0.4 MB, and the spec's bounds (growth under 24 MB, factor under 2.5, 2,500 nodes) held. **These are
+> GitHub-hosted runner numbers, not user hardware, and none is a Chrome profile:** a DevTools
+> performance and memory pass on real hardware, the pdf.js worker's own heap and GPU memory remain
+> unmeasured, and the ranked findings and recommended items are not changed by this run.
 
 Review date: 2026-10-11. Scope: content script cost on arbitrary pages, service-worker cold start,
 IndexedDB access patterns, search index build / persistence, UI list and re-render behaviour, PDF
@@ -271,14 +293,14 @@ author recorded from a private e2e-variant build (`scripts/build-e2e.mjs`, the s
 minifier as production plus loopback hosts and the e2e hook) or from the header of the module they
 describe. **They are not one baseline-to-head comparison**: each was measured against a copy of the
 tree with that change taken out, while other work was in the tree. Nothing here was measured in Chrome
-by this addendum and no run of branch `feat/finish-all` has passed the `build` or `stress` job with
-these changes, so the budgets in `scripts/check-build.mjs` have not yet asserted them.
+by this addendum and no run of branch `feat/finish-all` had passed the `build` or `stress` job with
+these changes, so the budgets in `scripts/check-build.mjs` had not yet asserted them (run 38173629818 has since: status paragraph at the top).
 
 ### Findings above that moved
 
 | ID | Was | Now | Evidence | Status |
 | --- | --- | --- | --- | --- |
-| P1-06 | Content script 405 KB, 53% React and react-dom | `react` and `react-dom` resolve to `preact/compat` for the content-script entrypoint only: 414,404 B to 214,393 B (-200,011 B, -48.3%), gzip 127,826 B to 68,246 B; the pages keep React | ADR-012; `modules/content-script-preact.ts`; budget 220 KB | **FIXED** (private build; the gate has not run on the branch's production build) |
+| P1-06 | Content script 405 KB, 53% React and react-dom | `react` and `react-dom` resolve to `preact/compat` for the content-script entrypoint only: 414,404 B to 214,393 B (-200,011 B, -48.3%), gzip 127,826 B to 68,246 B; the pages keep React | ADR-012; `modules/content-script-preact.ts`; budget 220 KB | **FIXED** (private build; the gate has since passed on the branch's production build in run 38173629818: content script 214 KB) |
 | P1-07 | Total 6,464 KB of 6,500 (99.4%) | The wave added about 44 KB for the AI router and chat alone (ADR-013: 6,486.9 to 6,530.9 KB) and the whole wave measured 6,643 KB in a CI `build` job before the rules UI landed (comment in `scripts/check-build.mjs`); budgets are now content script 220 KB, background 450 KB, non-OCR total 6,800 KB (about 2% headroom) | `scripts/check-build.mjs` | **Budget raised with a recorded reason**, not fixed: the margin is thin again, and the follow-up named in P1-07 (load bcmaps on demand) was not done |
 | P1-02 | The dashboard opens the search index on mount although browse mode does not use it | Unchanged (`Dashboard.tsx` still calls `host.start()` on mount). The same index now also serves "Related", the link picker and chat retrieval, so the eager start is less of a pure cost | `entrypoints/dashboard/Dashboard.tsx` | RECOMMENDED, unchanged |
 | P1-09 | `assertNoNewerRows` scans four tables in full on the first write per connection | Not taken in schema v4 (ADR-011: "No existing table changes"), and the scan now also covers `filingRules`, `syllabi` and `relations` (small tables) | ADR-011 section 1 | RECOMMENDED, slightly larger |
@@ -312,9 +334,10 @@ Added by the real-PDF fixtures work. Measured, not estimated: `tests/e2e/pdf-rea
 the three real documents of 50 or more pages in `tests/fixtures/pdf/real/` (listed, with their licence
 basis, in `tests/fixtures/pdf/real/SOURCES.md`). Machine: Windows 11, 4 CPUs shared with other
 agents, Node 24, Playwright 1.64 with its bundled Chromium 1248 (new headless, extension loaded
-unpacked, `--enable-precise-memory-info`), e2e build of this tree. The Linux and Windows CI runs will
-produce their own numbers in the `e2e` job logs (`[real-pdf-memory]` lines) and as attached
-`memory-*.json`; they are not in this table until a run is cited here.
+unpacked, `--enable-precise-memory-info`), e2e build of this tree. The Linux and Windows CI runs produced
+their own numbers in the `e2e` job logs (`[real-pdf-memory]` lines) and as attached
+`memory-*.json`; those of Actions run 38173629818 are in the status paragraph at the top, and this
+table keeps the development machine's numbers.
 
 What the spec does: opens the file through the real file chooser, reads the heap after page 1 is drawn,
 then brings every page on screen one after the other (setting the viewer's scroll position, waiting for

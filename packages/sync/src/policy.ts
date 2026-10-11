@@ -101,7 +101,12 @@ export const STUDYVAULT_SYNC_POLICY: SyncPolicy = {
   },
   reviewLogs: { appendOnly: true, local: LOCAL },
   documents: { text: ['title'], local: LOCAL },
-  ocrPages: { immutable: ['documentId', 'pageNumber'], text: ['correctedText'], local: LOCAL },
+  ocrPages: {
+    immutable: ['documentId', 'pageNumber'],
+    text: ['correctedText'],
+    // `previousReading` is the one-step undo of a re-recognition: this device's only.
+    local: [...LOCAL, 'previousReading'],
+  },
   // Organisation records (schema v4, ADR-011). A rule's conditions and target and a syllabus tree are
   // structured user data: a concurrent edit keeps both versions. `enabled`, `order` and
   // `requireConfirm` are last-writer-wins scalars. A relation's five identity fields never change

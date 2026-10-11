@@ -67,6 +67,7 @@ export {
   parseReviewSearch,
   reviewPageUrl,
   reviewSearch,
+  type ExamTarget,
   type ReviewLink,
   type ReviewView,
 } from './links';

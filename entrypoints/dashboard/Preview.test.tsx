@@ -343,7 +343,7 @@ describe('Preview: notes', () => {
     expect(preview.querySelectorAll('li')).toHaveLength(1);
   });
 
-  it('previews TeX as its source and saves the body exactly as typed', async () => {
+  it('previews TeX (source first, typeset once loaded) and saves the body exactly as typed', async () => {
     const body = String.raw`Rate: $v_1 * t_2$ and area
 
 $$
@@ -357,14 +357,18 @@ $$
     fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
 
     const preview = screen.getByTestId('note-preview');
-    const math = [...preview.querySelectorAll('code.math')];
-    expect(math.map((m) => m.className)).toEqual(['math', 'math math-display']);
-    expect(math[0]!.textContent).toBe(String.raw`$v_1 * t_2$`);
-    expect(math[1]!.textContent).toBe(String.raw`$$
-A = \int_0^1 f(x)\,dx
-$$`);
+    // Typeset math is a lazily loaded chunk: the preview shows the formulas as source text first and
+    // as MathML once it has loaded (or at once, when an earlier test in this file loaded it).
+    await waitFor(() => expect(preview.querySelectorAll('math')).toHaveLength(2));
+    expect(preview.querySelector('code.math')).toBeNull();
+    const [inline, display] = [...preview.querySelectorAll('math')];
+    expect(inline!.hasAttribute('display')).toBe(false);
+    expect(inline!.querySelector('msub')).not.toBeNull();
+    expect(display!.getAttribute('display')).toBe('block');
+    expect(display!.querySelector('msubsup')).not.toBeNull();
+    // the markup and the price are still text
     expect(preview.querySelector('em, img, script')).toBeNull();
-    expect(preview.textContent).toContain('costs $5 and $10');
+    expect(preview.textContent).toContain('<img src=x onerror=alert(1)> costs $5 and $10');
 
     // What is stored is the Markdown body, not the rendered text.
     fireEvent.click(screen.getByRole('button', { name: 'Back to editing' }));

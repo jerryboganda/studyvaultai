@@ -36,6 +36,36 @@ Test behaviors in actual MV3 contexts. jsdom alone cannot validate extension per
 9. Local imported file; close/reopen document with stable fingerprint.
 10. Annotation selection across line wraps and multiple text-layer spans, duplicate text occurrences.
 
+**Covered by real files (2026-10-12).** Eleven public-domain United States government PDFs, 20,718,079
+bytes (20.7 MB), are committed in `tests/fixtures/pdf/real/`; `SOURCES.md` there lists each file's
+address, licence basis and the pages, text status, outline and rotation counts the tests assert, and is
+the source of this table. **Items 6 and 7 stay on the synthetic fixtures** (no public-domain
+password-protected PDF was available, and the real files are read from disk, never fetched); item 8
+likewise, since it is not applicable to public files. Status: `real.integration.test.ts` (71 tests)
+ran in the `unit` job and `pdf-real.spec.ts` (20 tests per OS) and `pdf-real-memory.spec.ts` (3) ran in
+the `e2e` shards of Actions run 38173629818, on Ubuntu and Windows; the unit assertions are
+`unit-only` by the ledger's rules (`docs/PRIVACY_CLAIMS.md` P47).
+
+| # | Item | Real file(s) | Where it is asserted |
+| --- | --- | --- | --- |
+| 1 | Plain selectable text | `cdc-mmwr-vaccination-coverage-2023` (8 pp), `nist-tn1297-uncertainty-1994` (25 pp), `cdc-covid-sick-korean-2020` | unit: text status and page text; e2e: open, draw, search and (the smallest three plus the Korean one) save and reopen |
+| 2 | Multi-column, tables, equations, superscripts | `cdc-mmwr-vaccination-coverage-2023` (two columns, symbol footnotes), `nist-tn1297-uncertainty-1994`, `naca-tr1135-compressible-flow-1953`, `cdc-sti-guidelines-2021` | e2e "real layouts": a mouse drag over three lines of one column never picks up the other column |
+| 3 | Rotated pages, zoom, landscape | `cdc-child-immunization-schedule-2025` (18 landscape pages), `naca-sr256-ground-speed-1943` (22 pages `/Rotate 270`, 11 displayed landscape) | unit: geometry counts; e2e: draw, navigate, highlight alignment on the rotated stamp, OCR of a rotated scan |
+| 4 | 100+ pages, memory pressure, lazy render | `cdc-sti-guidelines-2021` (192 pp); also `nist-sp800-63-3-digital-identity` (76 pp) and `naca-tr1135-compressible-flow-1953` (70 pp of 8.4-megapixel images) | `pdf-real-memory.spec.ts`: canvases alive at once (at most 4), heap and DOM growth over a full traversal (numbers: `docs/PERF_REVIEW.md`) |
+| 5 | Scanned, image-only | `nasa-msfc-60k-combustion-testbed-2000` (all pages; page 1 is stored sideways), `naca-sr256-ground-speed-1943` (partly) | unit: `scanned` / `partial`; e2e: the header says so, search says "No matches", OCR recognises one page; the sideways scan is read by turning it and its highlight is found again after a reload |
+| 6 | Password-protected | none | synthetic fixtures in `pdf.spec.ts` only |
+| 7 | Remote public PDF, redirect, content type without `.pdf` | none (the real files are read from disk) | `pdf.spec.ts` "web open" with a loopback server only |
+| 8 | Authenticated content, manual upload fallback | not applicable to public files | `pdf.spec.ts` only |
+| 9 | Local imported file; close and reopen with a stable fingerprint | all | unit: the document id equals the file's SHA-256; e2e: reload, choose the file again, the highlight is back on the same words |
+| 10 | Selection across line wraps, several spans, a page boundary | `cdc-mmwr-vaccination-coverage-2023`, `nist-cswp29-csf-2-0`, `nist-tn1297-uncertainty-1994`, `cdc-child-immunization-schedule-2025`, `cdc-covid-sick-korean-2020` | e2e: a two-line passage saved and found again; a real mouse drag over three lines of one column; one highlight per page for a range across a boundary |
+
+Other properties the files carry: bookmarks (22, 46 nested, 12) in `cdc-sti-guidelines-2021`,
+`nist-sp800-63-3-digital-identity` and `nist-cswp29-csf-2-0`; hyperlinks (103 and 4,131 link annotations
+of which 3,779 are clickable) in `nist-cswp29-csf-2-0` and `cdc-sti-guidelines-2021`, followed by
+`pdf-links.spec.ts`; CJK (Hangul, Simplified Chinese) in the two COVID-19 notices; large embedded images
+in `naca-tr1135-compressible-flow-1953`, `naca-sr256-ground-speed-1943` and
+`nasa-msfc-60k-combustion-testbed-2000`.
+
 ## Review and AI matrix
 - Deterministic known FSRS fixtures with Again/Hard/Good/Easy.
 - UTC/DST/timezone changes, user clock drift and backlog behavior.
@@ -50,15 +80,15 @@ Test behaviors in actual MV3 contexts. jsdom alone cannot validate extension per
 - Avoid unconditional full-document extraction or constant DOM polling; debounce and scope mutation processing.
 - Lazy load PDF pages and OCR work; virtualize large highlight lists; bound queues and memory use.
 - Track extension bundle size, page script footprint, median/p95 CPU/memory under representative tests. These are goals, not verified measurements.
-- Measured so far (Node, jsdom and fake IndexedDB on a shared 4-CPU Windows machine, plus one e2e-variant bundle build) and the ranked findings are in `docs/PERF_REVIEW.md`; none is a Chrome number. The `stress` CI job (`scripts/run-perf.mjs`, `SV_PERF=1`) and `dashboard.spec.ts` "perf: 10,000 highlights" are the regression guards; both ran and passed in Actions run 38139836238 (38 tests in six suites on an ubuntu-latest runner; the dashboard spec on Ubuntu and Windows).
-- Size budgets changed in the finish wave (`scripts/check-build.mjs`): content script 220 KB (was 450; Preact, ADR-012), background 450 KB (was 420), non-OCR total 6800 KB (was 6500). The committed gate asserts them only when a `build` job runs on this branch; the numbers in `docs/PERF_REVIEW.md` (addendum of 2026-10-12) are private e2e-variant builds.
+- Measured so far (Node, jsdom and fake IndexedDB on a shared 4-CPU Windows machine, plus one e2e-variant bundle build) and the ranked findings are in `docs/PERF_REVIEW.md`; none is a Chrome number. The `stress` CI job (`scripts/run-perf.mjs`, `SV_PERF=1`) and `dashboard.spec.ts` "perf: 10,000 highlights" are the regression guards; both ran and passed in Actions runs 38139836238 (38 tests in six suites on an ubuntu-latest runner; the dashboard spec on Ubuntu and Windows) and 38173629818 (39 tests in seven suites, the seventh being the related-highlights suite; the dashboard spec again).
+- Size budgets changed in the finish wave (`scripts/check-build.mjs`): content script 220 KB (was 450; Preact, ADR-012), background 450 KB (was 420), non-OCR total 6800 KB (was 6500). The gate passed in the `build` job of run 38173629818 ("content script 214 KB; total 6662 KB"); the numbers in `docs/PERF_REVIEW.md` (addendum of 2026-10-12) are private e2e-variant builds.
 
 ## Test areas added by the hardening changes (2026-10-11)
 Written together with the code fixes S1 to S7 (docs/adr/010-module-seams.md amendments 1 and 2,
 THREAT_MODEL.md section 7). Each file below is an ordinary Vitest suite picked up by `vitest.config.ts`
 (`packages/**`, `entrypoints/**`), so the CI job `unit` runs it when `pnpm test` runs. **Status of all
 of them: the `unit` job of Actions run 38139836238 executed every file below and passed (3,693 tests
-passed, 12 skipped, none of the skipped in these files); the e2e rows are in the next section**
+passed, 12 skipped, none of the skipped in these files), and so did the `unit` job of run 38173629818 (266 files, 4,846 tests passed, 13 skipped); the e2e rows are in the next section**
 (docs/PRIVACY_CLAIMS.md "Evidence (F-01)"). Locally, only the touched file may be run:
 `pnpm exec vitest run <file>` (AGENTS.md rule 1).
 
@@ -112,11 +142,14 @@ Specs not in the table that also ran and passed in that run, per OS: `a11y.spec.
 `compat.spec.ts` (72), `lifecycle.spec.ts` (17), `overlay.spec.ts` (18 passed, 1 `test.fixme`
 skipped), `permissions.spec.ts` (25), `resilience.spec.ts` (14), `gate10.spec.ts` (3),
 `capture.spec.ts` (1), `phase0-smoke.spec.ts` (5) and `screenshots.spec.ts` (8). Totals per OS: 449
-scheduled, 443 passed, 6 skipped, 0 failed, 0 flaky.
+scheduled, 443 passed, 6 skipped, 0 failed, 0 flaky. **CI, run 38173629818 (finish wave included):**
+every count in this table and in the line above ran again with the same result per OS, and the files of
+"Test areas added by the finish wave" ran with them: 552 scheduled, 546 passed, 6 skipped (the same six
+`test.fixme` entries), 0 failed, 0 flaky, on Ubuntu and on Windows.
 
 ### Gaps the plan still owes
-- Done for Playwright's Chromium on Linux and Windows: a green Actions run of every row above (run
-  38139836238). Still owed: a branded Chrome and Edge pass by hand.
+- Done for Playwright's Chromium on Linux and Windows: a green Actions run of every row above (runs
+  38139836238 and 38173629818). Still owed: a branded Chrome and Edge pass by hand.
 - A real private window, a real second window blocking "Delete all data", two restores started from
   two extension pages, and a content script that writes `chrome.storage.local`: no automated spec
   can; they are manual rows MT-45, MT-50 and MT-51 (and MT-41a for `storage.session`).
@@ -125,16 +158,21 @@ scheduled, 443 passed, 6 skipped, 0 failed, 0 flaky.
 - Forced colours, 400% zoom and screen readers on the newer surfaces: MT-42 to MT-44
   (`docs/A11Y_REVIEW.md`).
 - Chrome numbers for the performance budgets: `docs/PERF_REVIEW.md` is Node and jsdom on a shared
-  Windows box, not Chrome; the CI `stress` job (green in run 38139836238, on a Linux runner, still
+  Windows box, not Chrome; the CI `stress` job (green in runs 38139836238 and 38173629818, on a Linux runner, still
   Node, jsdom and fake IndexedDB) is the regression guard.
 
 ## Test areas added by the finish wave (2026-10-12)
 Written with the code of ADR-011 to ADR-020 (`docs/plans/FINISH_BRIEF.md`) on branch `feat/finish-all`.
-**Status of everything in this section: written, not yet run in an Actions run that concluded
-`success`.** Run 38139836238 predates it and its counts above do not include any of these files; the
-`unit` job and the `e2e` shards of this branch have to execute them before a row in
-`docs/PRIVACY_CLAIMS.md` can say more than `unit-only` for them. Counts are test call sites in the
-file; a loop over a scheme or a fixture runs a test more than once.
+**Status of everything in this section: ran and passed in Actions run 38173629818**
+(https://github.com/jerryboganda/studyvaultai/actions/runs/38173629818, branch `feat/finish-all`, commit
+`79d8cbc38111bfcde0e621f37d4795fd3f38e736`, 2026-10-11): the `unit` job executed every Vitest file below
+(266 files passed; the 5 skipped files are environment-gated suites that no ledger row cites) and the
+`e2e` shards executed every Playwright file in the second table, each of its tests passing on Ubuntu and
+on Windows. That is Playwright's bundled Chromium against the e2e build variant, not branded Chrome or
+Edge. `docs/PRIVACY_CLAIMS.md` says per row what a spec asserts and what stays `unit-only` or manual
+(two titles say more than their bodies assert: P43). Counts are test call sites in the file; a loop
+over a scheme or a fixture runs a test more than once, and the last column of the second table gives the
+executed count per OS.
 
 ### Unit and integration (Vitest, jsdom or fake IndexedDB)
 
@@ -152,7 +190,9 @@ file; a loop over a scheme or a fixture runs a test more than once.
 | Markdown, math and the render budget | `packages/ui/src/vault/markdownRender.test.ts` ("renderMarkdown: TeX math as source text"), `markdownRender.budget.test.ts`, `markdownBudget.test.ts`; `entrypoints/dashboard/Preview.markdownBudget.test.tsx`; `packages/backup/src/exports.test.ts` | timing in Chrome (jsdom's DOM is far slower, so its bounds are not Chrome numbers) |
 | Preact content script | the overlay and controller suites under `entrypoints/highlighter.content` (`ui/testHarness.ts` routes them through Preact's `act`; `vitest.config.ts` redirects `react*` for that folder) | the production bundle size (asserted by `scripts/check-build.mjs` in the `build` job only) |
 | Interface polish | `packages/ui/src/AsyncSwitch.test.tsx`, `feedback.test.tsx` ("Toast: time limits (WCAG 2.2.1)"), `vault/VirtualList.test.tsx` (text spacing); `entrypoints/background/commands.test.ts` ("focus-search command"); `entrypoints/pdf-reader/selectionGate.test.ts`; `entrypoints/highlighter.content/controller.test.ts` ("shows the toolbar for text that was already selected when the script started") | the native shortcut key; caret browsing |
-| Real PDF corpus | `tests/fixtures/pdf/real/real.integration.test.ts` (eleven public-domain documents through the reader's own open path: page count, identity, text status, outline, geometry) | rendering (the e2e specs below) |
+| Real PDF corpus | `tests/fixtures/pdf/real/real.integration.test.ts` (eleven public-domain documents through the reader's own open path: page count, identity, text status, outline, geometry; and, suite "links of real documents", the link annotations of the NIST CSF 2.0 (103) and the CDC STI guidelines (3,779 clickable, 48 dense pages)); `SOURCES.md` is the manifest the file reads | rendering (the e2e specs below) |
+| PDF links | `packages/pdf/src/links.test.ts` ("userRectToFrame: the same frame and rotation as pdf.js", "vetExternalUrl: what may be offered for opening", "back stack", "order and hit test", "buildPageLinks: classification (injected resolver)", "through the real pdf.js"); `packages/pdf/src/linkLayer.test.ts` ("link layer: the anchors", "link layer: the pointer"); `entrypoints/pdf-reader/links.test.tsx` ("following an address", "a link that is refused", "a place in the document, and Back", "the Links list of the navigation pane", "the toolbar: Back, and the page box") | a real screen reader; Chrome's pop-up blocker; touch; forced colours |
+| OCR of scans stored sideways | `packages/ocr/src/orientation.test.ts` (20 tests: "lineDirectionFromProfiles", "attemptOrder", "readingOf and chooseReading", "recognizeUpright"); `packages/ocr/src/runner.test.ts` ("runOcrJob: scans stored sideways or upside down"); `image.test.ts` ("inkLineDirection"); `engine.test.ts` ("turning a page that is stored sideways or upside down"); `geometry.test.ts` ("a page turned after it was rendered (sideways and upside-down scans)"); `packages/storage/src/pdf.test.ts` ("records the turn a sideways scan needed, keeps it through a correction and an omitted value"); `entrypoints/pdf-reader/ocrModel.test.ts` ("orientation in stored rows") | the real engine's turned readings (the unit files use a fake engine and a fake worker; the real engine is exercised by the e2e spec on two real scans only); a physically scanned page; any language but English |
 
 ### Loaded-extension e2e (Playwright 1.64, the built e2e extension, Playwright's bundled Chromium)
 
@@ -161,27 +201,34 @@ permission prompt; an open overlay shadow root; `e2e.settings.patch`).
 
 | File | Level and harness | What it covers | What it cannot drive | Status |
 | --- | --- | --- | --- | --- |
-| `tests/e2e/rules.spec.ts` (8) | e2e; the dashboard manager, a real capture, the page toasts, the side panel; worker stopped with CDP `ServiceWorker.stopWorker` | a rule made in the manager suggests after a capture, files on File and undoes; one that does not ask files at once with Undo; order and its persistence across a reload; a suggestion that waits in the side panel and survives a suspended worker; a named bank is never overridden and nothing happens while a rule or the switch is off; the "Test a rule" panel and a rule whose bank was deleted; axe with the dialog open; Delete all data | a real private window; an idle-timeout suspension; two windows; the PDF reader path | written, not yet run in CI |
-| `tests/e2e/syllabus.spec.ts` (5) | e2e; vault seeded before first load (`helpers.syllabus.ts`), expected numbers computed from the seed | an outline becomes a syllabus, topics are mapped to banks and tags and the coverage equals the seeded vault, offline with no request and axe clean; sorting and thresholds kept across a reload; "Show" opens exactly the counted highlights; 320 px reflow; delete with Undo and Delete all data | a screen reader; the exam scope from a topic (not built) | written, not yet run in CI |
-| `tests/e2e/graph.spec.ts` (5) | e2e; links made through the preview (first test) or written into the vault (the others) | links are made, shown on the other end, drawn and walked by keyboard offline; type, note and removal are undoable; an end in the trash hides a link in every window, restore brings it back, purge removes it; the whole-vault view lists instead of drawing; Delete all data | NVDA, JAWS or VoiceOver | written, not yet run in CI |
-| `tests/e2e/exam.spec.ts` (8) | e2e; Playwright's clock, IndexedDB read to assert what was persisted | no feedback before the end, recall marked by the person, a score, Markdown export, the schedule untouched, offline; "Leave exam"; the deadline moving to marking and being announced once; a reload mid-exam (also with the worker stopped) and one after the deadline; the 24 h expiry; count as review (Good or Again once each) with undo and the history; "Jump to source"; axe on every step | the timer with a screen reader | written, not yet run in CI |
-| `tests/e2e/reminders.spec.ts` (5) | e2e; the real `chrome.action` badge, `chrome.permissions` (granted without a prompt in this build), `chrome.alarms` | off by default; the count follows the due cards and an answer; review off pauses it; the daily time asks for `alarms` from the click, the alarm that fires (created under the extension's name a few seconds ahead) raises the icon, popup and side panel notice and Dismiss clears each; no permission means the count works and the time is idle; Delete all data | a real wall-clock time; the first-lifetime alarm miss; the toolbar as the operating system draws it | written, not yet run in CI |
-| `tests/e2e/import-formats.spec.ts` (2) | e2e; files built in Node, the Options page's own file input, every request of the page recorded | Word, PowerPoint, EPUB, HTML and Anki files import as highlights of their own after a dry run, no script ran and no request left, searchable, never on a captured page, removed by Delete all data; refusals write nothing | files over 50 MB (Playwright's upload limit); files made by real applications | written, not yet run in CI |
-| `tests/e2e/backup-folder.spec.ts` (6) | e2e; `showDirectoryPicker` replaced by an OPFS directory (`helpers.backupFolder.ts`), permission answers set on the handle prototype | dated files, checked, restoring through the wizard, Delete all data forgetting the folder; keeping the newest N and deleting nothing else; an encrypted `.svbackup`; a lapsed permission, a full drive and a removed folder each explained and retryable; the reminder and no write by itself; a browser without the picker | Chrome's folder prompt on a real disk; a really full drive; a background write (none exists) | written, not yet run in CI |
-| `tests/e2e/ai-extras.spec.ts` (10) | e2e; two local fake providers (`aiServer.ts`) | a 503 moving the request to the fallback named in the preview with exactly the previewed text and every attempt counted; a rejected key, no quota and a rate limit stopping at the first provider; a routed task starting with its own provider; keys of extra providers in IndexedDB only; memory aids, short viva and study outline; chat retrieval, ticking, citation flags and "cannot answer"; axe on the list, the chat view and its dialog in light and dark | Chrome's prompt for a second origin; real https providers | written, not yet run in CI |
-| `tests/e2e/related.spec.ts` (3) | e2e | lists what shares words with the words named, opens one, offline; an honest empty state; follows an edit | meaning-based relatedness (not built) | written, not yet run in CI |
-| `tests/e2e/polish.spec.ts` (10) | e2e | the JSON export; pending switches (AI, a setting, "Turn on sync"); the `/` and `?` keys off and kept; row growth under a text-spacing override; folders nested at the depth limit at 320 px; toasts closing, waiting and staying; the reader's S and Enter route to the save bar; `focus-search` in the side panel and the dashboard | the native `focus-search` shortcut key (the spec writes the worker's hand-over value); caret browsing (F7) | written, not yet run in CI |
-| `tests/e2e/math.spec.ts` (3, one runs in two colour schemes) | e2e | a note with inline and display math keeps its source through render, edit, reload and search; hostile TeX and markup stay inert; axe | typeset output (not built) | written, not yet run in CI |
-| `tests/e2e/pdf-real.spec.ts` (5), `pdf-real-memory.spec.ts` (1) | e2e; eleven real public-domain PDFs (`tests/fixtures/pdf/real`, `SOURCES.md`), each through the file chooser | opening, drawing page 1, outline and page navigation, search, a saved highlight found again on the same words after a reload, one OCR page, two-column and page-boundary selections; lazy-window and heap bounds while every page of the long documents is visited (PDF compatibility matrix item 4) | pdf.js's worker heap and GPU memory; branded Chrome | written, not yet run in CI (the harness is still being changed) |
+| `tests/e2e/rules.spec.ts` (8) | e2e; the dashboard manager, a real capture, the page toasts, the side panel; worker stopped with CDP `ServiceWorker.stopWorker` | a rule made in the manager suggests after a capture, files on File and undoes; one that does not ask files at once with Undo; order and its persistence across a reload; a suggestion that waits in the side panel and survives a suspended worker; a named bank is never overridden and nothing happens while a rule or the switch is off; the "Test a rule" panel and a rule whose bank was deleted; axe with the dialog open; Delete all data | a real private window; an idle-timeout suspension; two windows; the PDF reader path | CI 38173629818: 8 passed per OS |
+| `tests/e2e/syllabus.spec.ts` (5) | e2e; vault seeded before first load (`helpers.syllabus.ts`), expected numbers computed from the seed | an outline becomes a syllabus, topics are mapped to banks and tags and the coverage equals the seeded vault, offline with no request and axe clean; sorting and thresholds kept across a reload; "Show" opens exactly the counted highlights; 320 px reflow; delete with Undo and Delete all data | a screen reader; the exam scope from a topic (not built) | CI 38173629818: 5 passed per OS |
+| `tests/e2e/graph.spec.ts` (5) | e2e; links made through the preview (first test) or written into the vault (the others) | links are made, shown on the other end, drawn and walked by keyboard offline; type, note and removal are undoable; an end in the trash hides a link in every window, restore brings it back, purge removes it; the whole-vault view lists instead of drawing; Delete all data | NVDA, JAWS or VoiceOver | CI 38173629818: 5 passed per OS |
+| `tests/e2e/exam.spec.ts` (8) | e2e; Playwright's clock, IndexedDB read to assert what was persisted | no feedback before the end, recall marked by the person, a score, Markdown export, the schedule untouched, offline; "Leave exam"; the deadline moving to marking and being announced once; a reload mid-exam (also with the worker stopped) and one after the deadline; the 24 h expiry; count as review (Good or Again once each) with undo and the history; "Jump to source"; axe on every step | the timer with a screen reader | CI 38173629818: 8 passed per OS |
+| `tests/e2e/reminders.spec.ts` (5) | e2e; the real `chrome.action` badge, `chrome.permissions` (granted without a prompt in this build), `chrome.alarms` | off by default; the count follows the due cards and an answer; review off pauses it; the daily time asks for `alarms` from the click, the alarm that fires (created under the extension's name a few seconds ahead) raises the icon, popup and side panel notice and Dismiss clears each; no permission means the count works and the time is idle; Delete all data | a real wall-clock time; the first-lifetime alarm miss; the toolbar as the operating system draws it | CI 38173629818: 5 passed per OS |
+| `tests/e2e/import-formats.spec.ts` (2) | e2e; files built in Node, the Options page's own file input, every request of the page recorded | Word, PowerPoint, EPUB, HTML and Anki files import as highlights of their own after a dry run, no script ran and no request left, searchable, never on a captured page, removed by Delete all data; refusals write nothing | files over 50 MB (Playwright's upload limit); files made by real applications | CI 38173629818: 2 passed per OS |
+| `tests/e2e/backup-folder.spec.ts` (6) | e2e; `showDirectoryPicker` replaced by an OPFS directory (`helpers.backupFolder.ts`), permission answers set on the handle prototype | dated files, checked, restoring through the wizard, Delete all data forgetting the folder; keeping the newest N and deleting nothing else; an encrypted `.svbackup`; a lapsed permission, a full drive and a removed folder each explained and retryable; the reminder and no write by itself; a browser without the picker | Chrome's folder prompt on a real disk; a really full drive; a background write (none exists) | CI 38173629818: 6 passed per OS |
+| `tests/e2e/ai-extras.spec.ts` (10) | e2e; two local fake providers (`aiServer.ts`) | a 503 moving the request to the fallback named in the preview with exactly the previewed text and every attempt counted; a rejected key, no quota and a rate limit stopping at the first provider; a routed task starting with its own provider; keys of extra providers in IndexedDB only; memory aids, short viva and study outline; chat retrieval, ticking, citation flags and "cannot answer"; axe on the list, the chat view and its dialog in light and dark | Chrome's prompt for a second origin; real https providers | CI 38173629818: 10 passed per OS |
+| `tests/e2e/related.spec.ts` (3) | e2e | lists what shares words with the words named, opens one, offline; an honest empty state; follows an edit | meaning-based relatedness (not built) | CI 38173629818: 3 passed per OS |
+| `tests/e2e/polish.spec.ts` (10) | e2e | the JSON export; pending switches (AI, a setting, "Turn on sync"); the `/` and `?` keys off and kept; row growth under a text-spacing override; folders nested at the depth limit at 320 px; toasts closing, waiting and staying; the reader's S and Enter route to the save bar; `focus-search` in the side panel and the dashboard | the native `focus-search` shortcut key (the spec writes the worker's hand-over value); caret browsing (F7) | CI 38173629818: 10 passed per OS |
+| `tests/e2e/math.spec.ts` (3, one runs in two colour schemes) | e2e | a note with inline and display math keeps its source through render, edit, reload and search; hostile TeX and markup stay inert; axe | typeset output (not built) | CI 38173629818: 4 passed per OS |
+| `tests/e2e/pdf-real.spec.ts` (7 call sites, 20 tests), `pdf-real-memory.spec.ts` (1 call site, 3 tests) | e2e; eleven real public-domain PDFs (`tests/fixtures/pdf/real`, `SOURCES.md`), each through the file chooser; three of the call sites in `pdf-real.spec.ts` run once per file | opening, drawing page 1, outline and page navigation, search; a saved highlight found again on the same words after a reload (four files); one OCR page of each of the two scans; two-column, page-boundary and off-screen selections; the sideways scan read by turning it, with its highlight found again after a reload; lazy-window and heap bounds while every page of the documents of 50 pages or more is visited (matrix item 4; measured values in `docs/PERF_REVIEW.md`) | pdf.js's worker heap and GPU memory; branded Chrome; matrix items 6 and 7 | CI 38173629818: 20 passed per OS for the first file and 3 for the second |
+| `tests/e2e/pdf-links.spec.ts` (14) | e2e; generated PDFs with exactly known links (`tests/fixtures/pdf/docs.ts`) and two real files (the NIST CSF 2.0 and the CDC STI guidelines); every address a test may open is answered by a stub (`stubWeb`), so nothing leaves the machine | a link to a page and one to a named destination go there, focus the page, are announced, and Back returns (button and Alt+Left); an address opens only after a dialog that shows it whole, in a new tab with no opener and no referrer; Cancel and Escape open nothing; "always allow this site" lasts for one page load of the reader; a `javascript:` and a `mailto:` address are refused with a notice; a drag across a link selects and follows nothing; Tab and Enter, and the page's own keys after a jump; the Links list; a link on a `/Rotate 90` page keeps its place after rotating and zooming; a page with more than 40 links is one tab stop with arrow keys and a list; axe on the page, the list and the dialog; on the real files a contents entry and Back, a web address and a `mailto:`, a drag across a link, and a reference page with dozens of links | a real screen reader (MT-62); Chrome's pop-up blocker (MT-63); forced colours (MT-65); the harness cannot see a window opened with `noopener` as its opener's popup, so it waits for the context's `page` event | CI 38173629818: 14 passed per OS |
 
 ### Gaps this wave leaves
-- A green Actions run of every file above (`docs/PRIVACY_CLAIMS.md` P20a to P20c, P26j, P33 to P44).
+- Done for Playwright's Chromium on Linux and Windows: a green Actions run of every file above (run
+  38173629818; `docs/PRIVACY_CLAIMS.md` P20a to P20c, P26h to P26j, P33 to P47). Still owed: the manual
+  rows below.
 - Branded Chrome and Edge, a real folder prompt, a real reminder across a browser restart and a
   real wall-clock time, real Word, PowerPoint and EPUB files, two real AI providers and Chrome's
   prompt for the second origin, the exam and the graph with a screen reader, the Preact overlay on
   real sites: `docs/MANUAL_TEST_CHECKLIST.md` MT-54 to MT-61.
 - A real Chrome upgrade of a v3 profile and two contexts racing a write on the new tables
   (`THREAT_MODEL.md` O17).
+- PDF reader: a real screen reader on links, Chrome's pop-up blocker on the new tab, a physically
+  scanned sideways page and the forced-colours focus ring on links: `docs/MANUAL_TEST_CHECKLIST.md`
+  MT-62 to MT-65 (`THREAT_MODEL.md` O18). Matrix items 6 and 7 have no real file and stay synthetic.
+  No hostile-PDF fixture exists (the real files hold no script, attachment, XFA or encryption; O7).
 
 ## Exit reports
 Every phase handoff must provide: completed workflows; test commands actually executed + pass/fail counts; screenshots; browser/OS tested; permissions tested; 5 most serious unresolved defects; rollback strategy; exact next task. Never mark skipped tests as passed.

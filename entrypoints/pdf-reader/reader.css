@@ -648,6 +648,17 @@ body,
   flex-direction: column;
   gap: var(--sv-space-2);
 }
+/* "Read the text again": its own region under the lines, full width so it reflows at 320 px. */
+.sv-ocr-rerun {
+  width: 100%;
+  min-width: 0;
+  padding-block-start: var(--sv-space-3);
+  border-block-start: 1px solid var(--sv-border);
+  overflow-wrap: anywhere;
+}
+.sv-ocr-rerun h3 {
+  margin: 0;
+}
 /* Confidence bands: shading is the second cue; the first is the words in the legend and the
    screen-reader text after each marked word. */
 .sv-ocr-word[data-band='medium'] {

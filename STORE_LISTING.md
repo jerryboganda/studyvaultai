@@ -16,6 +16,17 @@
 > The manifest did not change. No run of the branch that holds the wave has concluded `success`, so
 > every statement about those features is `unit-only` with its e2e spec not yet run in CI; run 38139836238
 > predates them.
+>
+> Revised 2026-10-12 (second pass): run 38173629818
+> (https://github.com/jerryboganda/studyvaultai/actions/runs/38173629818, commit
+> `79d8cbc38111bfcde0e621f37d4795fd3f38e736`, branch `feat/finish-all`) concluded `success` in
+> every job and executed the loaded-extension specs of the finish wave in Playwright's bundled
+> Chromium on Ubuntu and Windows, which supersedes the sentence above that no run had.
+> `docs/PRIVACY_CLAIMS.md` records which statements that run backs and which it does not
+> (branded Chrome or Edge, a real incognito window, Chrome's prompts and folder picker, a hosted
+> sign-in provider, a screen reader, the Web Store review); its rows still name unit-only or
+> manual parts, so this listing is still a draft. This revision adds one sentence about links
+> inside a PDF to the description and to "PDF limitations" (open item U-23).
 
 Working copy of everything the Chrome Web Store dashboard asks for. Text here is written to be pasted
 into the dashboard. Fields only the account owner can supply carry a bracketed USER-REQUIRED marker;
@@ -110,6 +121,10 @@ PRIVACY AND CONTROL
   separately).
 - The PDF reader saves nothing from a private window unless you allow it, and gives back the site
   access it asked for once a download is over.
+- Links inside a PDF that point to a web address open only after you confirm the full address
+  in the reader (unless you chose "Always allow this site" in that reader tab), in a new tab;
+  StudyVault makes no request for a link itself, and mail, script and file links are not
+  opened.
 - It does not read your browsing history and does not capture text typed into form fields.
 
 ACCESSIBILITY
@@ -297,6 +312,10 @@ Optional: small promo tile 440 x 280 and marquee 1400 x 560 (not generated;
   for access to that one site and gives that access back when the download ends, unless you already
   had it. If the address redirects to another site, the browser follows it, but the reader reads the
   file from that site only if you allow it. Nothing of yours is uploaded.
+- Links inside a PDF that point to a web address open only after you confirm the full address
+  in the reader (unless you chose "Always allow this site" in that reader tab), in a new tab;
+  StudyVault makes no request for a link itself, and mail, script and file links are not
+  opened.
 - In a private window (or one the reader cannot identify) the reader opens and shows the PDF but
   stores nothing (no document record, highlights, recognised text or kept copy) unless "Save from
   private windows" is on.

@@ -5,36 +5,56 @@
 **Pre-release, version 0.1.0, not published.** The repository (<https://github.com/jerryboganda/studyvaultai>)
 holds a Manifest V3 extension. Code exists for each phase of `ROADMAP.md` (Phase 6 covers optional
 sync against a server you operate only: there is no account system and no hosted service), but
-verification is partial. On 2026-10-11 the first fully green GitHub Actions run of `ci.yml` completed
-(https://github.com/jerryboganda/studyvaultai/actions/runs/38139836238, branch `ci/wave-c`, commit `d641515b1154aa46597e7ebb069d2341014c125c`): lint, typecheck,
-format, the unit suite, the production and e2e builds with the release gate, the advisory audit and
-the seeded stress suites all concluded `success`, and the Playwright suite passed on Ubuntu and Windows
-(443 tests per OS; 6 `test.fixme` tests were skipped and are not evidence; none failed or needed its
-retry). That run drove Playwright's bundled Chromium against the e2e build of the extension. It does
-not prove behaviour in branded Chrome or Edge, in a real incognito window, with Chrome's native
-permission prompt, with a hosted OpenID Connect provider, with a screen reader or in the Chrome Web
-Store review. The release workflows (`release.yml`, `reproducible-build.yml`, `stress.yml`) have never
-run and the manual checklist has not been run. Read `docs/PRIVACY_CLAIMS.md` for what each privacy
-and store statement is actually backed by, and treat `PRIVACY_POLICY.md` and `STORE_LISTING.md` as
-drafts.
+verification is partial. The latest fully green GitHub Actions run of `ci.yml` is
+https://github.com/jerryboganda/studyvaultai/actions/runs/38173629818 (branch `feat/finish-all`, commit
+`79d8cbc38111bfcde0e621f37d4795fd3f38e736`, 2026-10-11): lint, typecheck, format, the unit suite (266
+files, 4,846 tests), the production and e2e builds with the release gate (content script 214 KB, 6,662 KB
+without the OCR assets), the advisory audit and the seeded stress suites (39 tests) all concluded
+`success`, and the Playwright suite passed on Ubuntu and Windows (546 tests per OS; 6 `test.fixme`
+tests were skipped and are not evidence; none failed or needed its retry). The first green run was
+https://github.com/jerryboganda/studyvaultai/actions/runs/38139836238 (branch `ci/wave-c`, commit
+`d641515b1154aa46597e7ebb069d2341014c125c`, 443 tests per OS). Both drove Playwright's bundled Chromium
+against the e2e build of the extension (loopback host permissions, an open overlay shadow root). They
+do not prove behaviour in branded Chrome or Edge, in a real incognito window, with Chrome's native
+permission prompt or folder picker, with a hosted OpenID Connect provider, with a screen reader or in
+the Chrome Web Store review. The release workflows (`release.yml`, `reproducible-build.yml`,
+`stress.yml`) have never run and the manual checklist has not been run. Read
+`docs/PRIVACY_CLAIMS.md` for what each privacy and store statement is actually backed by, and treat
+`PRIVACY_POLICY.md` and `STORE_LISTING.md` as drafts.
 
-**Finish wave (branch `feat/finish-all`, 2026-10-12).** After that run the branch added: schema v4
+**Finish wave (branch `feat/finish-all`, 2026-10-12).** After the first green run the branch added: schema v4
 (auto-filing rules, syllabi and links; ADR-011), auto-filing rules that suggest and ask first
 (ADR-017), a knowledge graph with a table equivalent (ADR-018), syllabus coverage and an exam
 simulation (ADR-020), opt-in study reminders (ADR-019), backups into a folder you choose (ADR-016),
 Word, PowerPoint, EPUB, HTML and Anki text import (ADR-014), an AI provider router with fallbacks,
 three more task kinds and chat with your notes (ADR-013), lexical related highlights, TeX in notes
-shown as source text rather than typeset (ADR-015), the content script on Preact (209 KB, was 405 KB;
-ADR-012), a JSON readable export and interface polish. **No Actions run of this branch has
-concluded `success` yet**, so every statement about these features is `unit-only` with its
-loaded-extension spec written and not yet run in CI (`docs/PRIVACY_CLAIMS.md` P20a to P20c, P26j, P33
-to P44; inventory in `TEST_PLAN.md`); the run above predates all of it. Owner decisions of
-2026-10-11: the licence is proprietary, all rights reserved (`LICENSE`, `package.json`
+shown as source text rather than typeset (ADR-015), the content script on Preact (214 KB in the
+release gate of the latest run, was 405 KB; ADR-012), a JSON readable export and interface polish.
+That run covers the wave: its loaded-extension specs (`rules`, `syllabus`, `graph`, `exam`,
+`reminders`, `import-formats`, `backup-folder`, `ai-extras`, `related`, `polish`, `math`) passed in
+Playwright's Chromium on Ubuntu and Windows, and `docs/PRIVACY_CLAIMS.md` (P20a to P20c, P26h to
+P26j, P33 to P47) says, row by row, what each asserts and what stays `unit-only` or manual (the
+fake-backed unit parts, Chrome's own prompts and folder picker, screen readers; inventory in
+`TEST_PLAN.md`). Owner decisions of 2026-10-11: the licence is proprietary, all rights reserved (`LICENSE`, `package.json`
 `UNLICENSED`; the copyright holder's name is still an owner-supplied marker), and the v0.1 listing is
 the local-first core, with AI and sync as optional advanced features that are off by default and no
 hosted service claimed or implied. Not built, with reasons (`docs/plans/FINISH_BRIEF.md`, `PRD.md`
 "Delivery status"): shared or collaborative banks, calendar and cloud-drive sync, YouTube captions,
 semantic (embedding) search, image occlusion, a reading view, and Edge automation.
+
+**PDF reader, late changes (2026-10-12).** Three more changes to the extension-owned reader, on the
+same branch: links inside a PDF are followed (a place in the document, with Back; a web address only
+after a confirmation that shows it, in a new tab with no opener and no referrer; mail, script and
+file links refused: ADR-006 amendment 3); scans stored sideways or upside down are turned to be read
+(amendment 4); and eleven real public-domain United States government PDFs (20.7 MB,
+`tests/fixtures/pdf/real/SOURCES.md`) are the test corpus. Status: the unit and integration files,
+`pdf-links.spec.ts` (14 tests), `pdf-real.spec.ts` (20) and `pdf-real-memory.spec.ts` (3) passed in the
+latest run on Ubuntu and Windows, and the memory spec's heap bounds held there
+(`docs/PERF_REVIEW.md`); a screen reader, branded Chrome and a document scanned on paper were not tried
+(`docs/PRIVACY_CLAIMS.md` P45 to P47). The real files cover PDF matrix items 1 to 5, 9 and
+10; items 6 (password-protected) and 7 (remote PDF, redirect) have only synthetic fixtures. Not
+supported: PDF actions beyond links and four named actions, pages of mixed orientation, and a re-run
+of OCR on a page recognised earlier (`RELEASE.md` "Known limitations").
 
 **Stack in use** (exact pins in `package.json`, rationale in ADR-002): WXT 0.21.4, Vite 8.3.4, React
 19.3.0 (extension pages) and Preact 10.29.8 (the content script only, ADR-012), TypeScript 6.0.3,

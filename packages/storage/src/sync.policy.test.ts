@@ -1,7 +1,7 @@
 // @vitest-environment node
 import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
-import { STUDYVAULT_SYNC_POLICY, checkPolicy } from '@sync';
+import { STUDYVAULT_SYNC_POLICY, checkPolicy, serializeRow } from '@sync';
 import './ai'; // registers the aiResults schema
 import './study'; // registers decks, knowledgePoints, cards and reviewLogs
 import { tableRegistry, unregisteredTables } from './registry';
@@ -138,6 +138,21 @@ describe('sync policy against every registered schema', () => {
     expect(policy.relations!.immutable).toEqual(
       expect.arrayContaining(['fromKind', 'fromId', 'toKind', 'toId', 'type']),
     );
+  });
+
+  it('the one-step undo of a re-recognition never leaves the device', () => {
+    const active = activeSyncPolicy();
+    expect(active.policy.ocrPages!.local).toContain('previousReading');
+    const spec = active.tables.find((t) => t.name === 'ocrPages')!;
+    expect(spec.derivedFields).toContain('previousReading');
+    const wire = serializeRow(spec, {
+      documentId: 'd'.repeat(64),
+      pageNumber: 1,
+      text: 'the cat sat',
+      previousReading: { text: 'tbe cat sat', replacedAt: '2026-01-01T00:00:00.000Z' },
+    });
+    expect(wire.fields).toMatchObject({ text: 'the cat sat' });
+    expect(wire.fields).not.toHaveProperty('previousReading');
   });
 
   it('every table that is registered but not in the policy is deliberately local or unsynchronised', () => {

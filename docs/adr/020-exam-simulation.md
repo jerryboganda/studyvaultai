@@ -235,10 +235,9 @@ database by "Delete all data". No new permission, no network path, no AI: everyt
   for highlights); it is refreshed on data changes, not on a timer.
 - A 100,000-review vault is read through the 365-day window only; older reviews do not count towards
   topic retention (the page says "last 12 months").
-- Not decided here and not built: an exam scope drawn from a syllabus topic ("weak areas feeding an
-  exam", the half the reservation of this section mentioned). It needs `ExamScope` and the exam
-  persistence (Part 1) to learn a `syllabus` kind; the persisted exam row is versioned, so that is
-  additive and left to a follow-up that owns the exam code.
+- An exam scope drawn from a syllabus topic ("weak areas feeding an exam", the half the reservation
+  of this section mentioned) was not part of this slice. It needed `ExamScope` and the exam
+  persistence (Part 1) to learn a `syllabus` kind; it is built, see "Part 2 addendum" below.
 
 ### Tests
 `packages/study/src/analytics.test.ts` ("syllabusTopicCoverage": counted once, trashed and
@@ -266,3 +265,119 @@ pulled 12 KB of query parser into the review page. The eager part (a nav entry, 
 test ids, the link and deep-link parsers) is estimated at about 2 KB of JavaScript across the
 dashboard and review entry chunks and 2.2 KB of CSS (about 0.6 KB gzip); it was not measured against a
 baseline build.
+
+## Part 2 addendum: an exam over a syllabus topic
+
+**Status:** accepted · **Date:** 2026-10-12. Closes the reservation above. Additive to Part 1: no
+exam that was possible before changes, and no scheduling side effect is added (decision 9 of Part 1
+holds as written).
+
+### Decisions
+
+**1. A fifth scope kind.** `{ kind: 'syllabus', syllabusId, topicId | null, weighted }`. A topic means
+the topic and everything below it (a node points at banks and tags, so a subtree is the union of
+their mappings); `null` is the whole syllabus. It is picked on the setup form, next to the library
+scopes, as "My banks, folders and tags" or "A syllabus" (a radio group, shown when at least one
+syllabus exists; without one the form says how to get one and offers the editor).
+
+**2. Membership is the coverage's, not a second reading of it.** The tree, the mapping and the
+"which topics does this item belong to" rule were lifted out of `syllabusTopicCoverage` into
+`syllabusTopicIndex` (`packages/study/src/analytics.ts`); coverage and the exam both call it, and
+`coverageTopics` is the one place a stored outline becomes that list. The facts are the ones the
+coverage table reads (`loadSyllabusCoverageData`, through `loadExamTopicRefs`, read only when the
+syllabus scope is in use). The candidates are those cards intersected with the exam's own universe
+(live, not suspended, deck alive), each once. A storage test asserts that the card count of every
+topic equals the coverage table's "Cards" column, before and after a card is suspended. The topic
+picker shows those counts.
+
+**3. Units and shared cards.** A *unit* is what coverage judges by its own cards: a topic without
+subtopics, or whose subtopics point at nothing. A card that belongs to several units is counted
+under exactly ONE of them, so each question has one topic and the per-topic results add up: scarcest
+cards first, each to the unit with the fewest cards so far (ties by outline order), a function of
+the card ids and the seed only. A card reached only through the own mapping of a topic that has
+subtopics counts under the deepest topic it reaches.
+
+**4. Weighted by topic weight.** Questions are shared between the units that have cards by *largest
+remainder* with caps (`allocateByWeight`): a unit never gets more questions than cards, and what it
+cannot take goes to the others in the same proportion; ties go to the earlier unit in the outline.
+The weight of a unit is its **share of the syllabus** (the product of the normalised sibling weights
+down the tree, the number the coverage table shows), not its raw `weight`, because weights are only
+meaningful among siblings; absent means equal. The cards of a unit are drawn with a seeded shuffle.
+A unit that got no question is reported, never silently dropped: `nocards` (nothing in it),
+`shared` (every card it holds counts under another unit) or `noshare` (cards, but fewer questions
+than its weight earns). Cards only a parent's own mapping reaches are not drawn in a weighted exam
+(they have no unit) and are counted and said (`undrawn`). Unweighted exams draw from the whole pool
+with the same seeded shuffle every scope uses.
+
+**5. What you see is what is drawn.** The setup form keeps one seed for its lifetime and shows the
+plan (a table: topic, share, cards, questions, and "Left out: ...") computed from it by the same
+pure functions; `ExamConfig.seed` carries it into `createExam`, so the draw equals the plan unless
+the cards changed in between. Library scopes still draw a fresh seed at start.
+
+**6. Persistence, additively.** The exam row is `version: 2`: `scope` may be a syllabus scope,
+`syllabus: { topics, skipped, undrawn } | null` (the titles as they were, in outline order, and what
+was left out; never card text) and `topicId` on every question (null outside a syllabus exam). A
+refinement ties them together (a syllabus exam keeps its outline, only it does, and a question names
+a known topic). **Migration:** `upgradeExamSession` carries a stored version 1 row over (no
+syllabus, `topicId: null`), so an exam in flight when the extension updates continues, answers and
+clock intact. A row that is neither version (damaged, or a version this build does not know) is
+removed as before, and now reported (`unreadable`): the page says it "could not be read ... and was
+removed" instead of dropping it silently. History entries gain the optional `syllabusId` (an id,
+never a title or card text); the scope label already names the syllabus and topic and is capped at
+300 characters. Still device-local, not in backups, not synced (Part 1, decision 10).
+
+**7. Results by topic.** A "By topic" table in outline order (a question counts under one topic; the
+screen says so) with a "Study this topic" button per row (its aria-label names the topic). It reads
+the syllabus as it is now and opens the same dashboard list the coverage table's "Show" opens
+(`subtreeMappings` and `topicLibraryTarget`: the bank, or a search over the banks and tags). A topic
+that was removed, a syllabus deleted since, or mappings that are gone leave the button disabled with
+the reason. The Markdown export has a "By topic" table.
+
+**8. Entry points.** The coverage table has an "Exam on this topic" button per topic (disabled with a
+reason when the topic has no cards; the column is absent where the host has no exam) and the review
+address accepts `?view=exam&syllabus=<id>&topic=<id>` (ids validated like the other parameters; a
+topic is ignored without its syllabus). Both land on the setup with the syllabus radio on, the topic
+chosen and focus on the form's heading; the address is rewritten so a reload keeps it, and the
+preselection is forgotten when another tab is chosen. An exam in progress is not hidden: the setup
+opens with its "Continue the exam / Discard" notice and Start explains why it is off. A syllabus or
+topic that is gone says so and falls back to the first syllabus or the whole syllabus.
+
+### Consequences
+- A card in several topics counts under one of them, chosen by balance and not by the person; the
+  setup and the results say so.
+- The setup reads every card's filing a second time (the coverage facts) when the syllabus scope is
+  used; the work is lazy and local, and the review log is not read.
+- Not built: time limits per topic, an adaptive "weakest topics first" draw from retention (the
+  coverage already shows retention; feeding it back into a draw is a separate decision), and
+  per-topic marks from the results page.
+- `.rv-tablewrap` became `position: relative`: a visually hidden reason inside a table cell (a
+  disabled button's) was positioned against the page and widened it past the wrapper's clip at
+  320 px; the coverage table's new column exposed it.
+
+### Tests
+`packages/study/src/examSyllabus.test.ts` (largest-remainder allocation with caps and invariants
+over 300 random shapes, membership counted once like coverage, a topic's subtree, shared cards
+balanced under one topic, empty and shared topics reported, deterministic with the seed and
+independent of input order, parent-own-mapping cards, `createExam` over a syllabus),
+`packages/study/src/exam.test.ts` (version 1 carried over, unreadable reported, outline consistency,
+results by topic, Markdown, history), `packages/storage/src/exam.test.ts` (counts equal the coverage
+table's, suspended cards, a syllabus exam kept and resumed, the summary has an id and no text, a
+version 1 row in the database), `entrypoints/review/ExamSyllabus.test.tsx` (setup counts and plan,
+topic exam, results by topic and the study link, the address, a gone topic or syllabus, the coverage
+button, no syllabus, an empty topic, an exam of the previous version continues and an unknown one is
+reported), `entrypoints/review/SyllabusCoverage.test.tsx` (the button, by keyboard, disabled with a
+reason, absent without a host), `packages/ui/src/review/model.test.ts` (the address),
+`tests/e2e/exam.spec.ts` (loaded extension: an outline imported in the editor and mapped, the exam
+started from a topic, counts equal to the seeded vault, offline with no request, results by topic,
+"Study this topic" opens exactly the counted highlights, "Exam on this topic" by keyboard, the
+address after a reload, a weighted exam and what it left out, axe WCAG 2.2 AA on setup and results).
+
+### Size
+Measured against a build of the commit this work started from (private e2e builds, minified,
+unzipped): the lazy `Exam-*.js` chunk 45,443 B -> 61,099 B (+15,656 B; gzip +4,607 B), fetched only
+on the Exam tab; the storage coverage loader moved into a shared lazy chunk (`syllabusCoverage-*.js`,
+2,866 B) that `SyllabusCoverage-*.js` (14,895 B -> 12,371 B) and `Exam` both use, so that pair grew
+by 342 B; the eager part is about 1 KB in the review entry (test ids, the address parser, the tab
+wiring), `links-*.js` +227 B and 18 B of CSS. The added code is in neither the service worker nor
+the content script (its distinctive identifiers are absent from `background.js` and
+`content-scripts/highlighter.js`).

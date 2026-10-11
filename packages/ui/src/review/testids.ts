@@ -161,6 +161,19 @@ export const TID = {
   examClose: 'rv-exam-close',
   examHistory: 'rv-exam-history',
   examHistoryClear: 'rv-exam-history-clear',
+  // exam over a syllabus (setup and results)
+  examSource: 'rv-exam-source',
+  examSourceLibrary: 'rv-exam-source-library',
+  examSourceSyllabus: 'rv-exam-source-syllabus',
+  examSyllabus: 'rv-exam-syllabus',
+  examTopic: 'rv-exam-topic',
+  examWeighted: 'rv-exam-weighted',
+  examPlan: 'rv-exam-plan',
+  examSyllabusNone: 'rv-exam-syllabus-none',
+  examSyllabusEdit: 'rv-exam-syllabus-edit',
+  examSyllabusNote: 'rv-exam-syllabus-note',
+  examTopics: 'rv-exam-topics',
+  examLeftOut: 'rv-exam-left-out',
 
   // syllabus coverage (Analytics)
   syllabus: 'rv-syllabus',
@@ -201,6 +214,9 @@ export const bankRowId = (bankId: string | null) => `rv-bank-${bankId ?? 'none'}
 export const syllabusRowId = (topicId: string) => `rv-syllabus-row-${topicId}`;
 export const syllabusShowId = (topicId: string) => `rv-syllabus-show-${topicId}`;
 export const syllabusSortId = (key: string) => `rv-syllabus-sort-${key}`;
+/** "Exam on this topic" in the coverage table, and "Study this topic" in an exam's results. */
+export const syllabusExamId = (topicId: string) => `rv-syllabus-exam-${topicId}`;
+export const examStudyTopicId = (topicId: string) => `rv-exam-study-${topicId}`;
 /** Exam: 0-based question index in exam order. */
 export const examChoiceId = (index: number) => `rv-exam-choice-${index}`;
 export const examMarkId = (index: number, mark: 'know' | 'dont') => `rv-exam-mark-${index}-${mark}`;

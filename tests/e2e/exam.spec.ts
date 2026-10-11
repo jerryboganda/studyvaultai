@@ -1,6 +1,26 @@
 import type { Page } from '@playwright/test';
 import { test } from './helpers.pages';
 import { downloadOf } from './helpers.backup';
+import {
+  expectRenderedSet,
+  expectTotal,
+  openDashboard,
+  pageErrors as dashboardErrors,
+  settle,
+} from './helpers.dashboard';
+import {
+  OUTLINE,
+  SID,
+  mapTopic,
+  openSyllabusView,
+  pasteOutline,
+  putSyllabus,
+  seedSyllabusVault,
+  syllabusRows,
+  topicId,
+  topicsByTitle,
+  topicsTree,
+} from './helpers.syllabus';
 import { recordRequests, stopWorker } from './helpers.lifecycle';
 import {
   MINUTE,
@@ -19,11 +39,14 @@ import {
   readStudyDb,
   saveEditor,
   setClock,
+  tableRows,
   type Captured,
   type Ctx,
 } from './helpers.review';
 import {
   XID,
+  chooseSyllabusSource,
+  examOnTopicId,
   expectNoFeedback,
   finishExam,
   heading,
@@ -34,6 +57,8 @@ import {
   readExamMeta,
   scheduleOf,
   startExam,
+  studyTopicId,
+  topicOptions,
   walkExam,
 } from './helpers.exam';
 
@@ -540,6 +565,232 @@ test.describe('accessibility', () => {
     await page.getByTestId(XID.close).click();
     await expect(page.getByTestId(XID.history)).toContainText('33%');
     await expectAccessible(page, 'exam setup with a history');
+    noErrors(page);
+  });
+});
+
+test.describe('an exam from a syllabus topic', () => {
+  test('an imported outline, mapped to banks and tags, gives an exam on a topic with the seeded counts, results by topic and a study link; offline, no request, axe clean', async ({
+    env,
+  }) => {
+    const ctx: Ctx = env;
+    const seed = await seedSyllabusVault(env);
+
+    // ---- the syllabus is made in the editor: an outline is pasted, then topics are mapped --------
+    const editor = await openDashboard(env);
+    await openSyllabusView(editor);
+    await editor.getByTestId(SID.import).click();
+    const dialog = await pasteOutline(editor, OUTLINE);
+    await dialog.getByTestId('dialog-confirm').click();
+    await expect(dialog).toHaveCount(0);
+    await expect(topicsTree(editor).getByRole('treeitem')).toHaveCount(6);
+    await mapTopic(editor, 'Heart failure', { banks: ['Cardiology'] });
+    await mapTopic(editor, 'Renal', { banks: ['Renal'], tags: ['High Yield'] });
+    await mapTopic(editor, 'Misc notes', { banks: ['Inbox'] });
+    await expect
+      .poll(async () => {
+        const t = await topicsByTitle(seed.ctrl);
+        return [t.get('Heart failure')?.bankIds, t.get('Renal')?.bankIds, t.get('Renal')?.tagIds];
+      })
+      .toEqual([[seed.id.cardio], [seed.id.renal], [seed.id.hy]]);
+    const topics = await topicsByTitle(seed.ctrl);
+    const renal = topics.get('Renal')!;
+    const syllabusId = (await syllabusRows(seed.ctrl))[0]!.id;
+
+    await ctx.context.setOffline(true);
+    const requests = recordRequests(ctx.context);
+    try {
+      const page = await openReview(ctx, { query: '?view=exam', settings: UTC_DAY });
+      const setup = page.getByTestId(XID.setup);
+      await expect(setup).toBeVisible();
+      await chooseSyllabusSource(page);
+
+      // The counts are the seeded vault's: k1 and k2 (Cardiology), k3 and k2 again (the tag) in
+      // Renal; the suspended k4 is never asked, and the Inbox has a highlight but no card.
+      expect(await topicOptions(page)).toEqual([
+        'The whole syllabus (3 cards)',
+        'Cardiology (2 cards)',
+        'Heart failure (2 cards)',
+        'Rhythm (0 cards)',
+        'Renal (2 cards)',
+        'Misc notes (0 cards)',
+        'Not started (0 cards)',
+      ]);
+      await expectAccessible(page, 'exam setup on a syllabus');
+
+      await setup.getByTestId(XID.topic).selectOption(renal.id);
+      await expect(setup.getByTestId(XID.syllabusNote)).toContainText(
+        '2 cards belong to “Renal” and its subtopics.',
+      );
+      await setup.getByTestId(XID.questions).fill('5');
+      await expect(setup).toContainText(
+        'Only 2 cards can be asked in this scope, so the exam has 2 questions.',
+      );
+      await startExam(page, { questions: 5 });
+
+      const started = await readExamMeta(page);
+      expect(started.session).toMatchObject({
+        scopeLabel: 'Syllabus: Cardiorenal exam / Renal',
+        scope: { kind: 'syllabus', syllabusId, topicId: renal.id, weighted: false },
+      });
+      expect(started.session?.questions.map((q) => q.cardId).sort()).toEqual([
+        'e2e-card-k2',
+        'e2e-card-k3',
+      ]);
+      expect(started.session?.questions.every((q) => q.topicId === renal.id)).toBe(true);
+
+      await walkExam(page, []);
+      await finishExam(page);
+      await markQuestion(page, 1, 'know');
+      await markQuestion(page, 2, 'dont');
+      await page.getByTestId(XID.showResults).click();
+
+      const results = page.getByTestId(XID.results);
+      await expect(results.getByTestId(XID.score)).toContainText('50%');
+      // The topic is read from the syllabus as it is now; the link is live once that is done.
+      await expect(results.getByTestId(studyTopicId(renal.id))).not.toHaveAttribute(
+        'aria-disabled',
+        'true',
+      );
+      expect(await tableRows(results.getByTestId(XID.topics).locator('table'))).toEqual([
+        ['Renal', '2', '1', '1', '0', '50%', 'Study this topic'],
+      ]);
+      await expectAccessible(page, 'exam results by topic');
+
+      // "Study this topic" opens the dashboard list the coverage table's "Show" opens.
+      // The dashboard tab the editor used is still open: the product reuses it for the list.
+      await results.getByTestId(studyTopicId(renal.id)).click();
+      const list = editor;
+      await list.waitForURL(/[?&]q=/);
+      await expect(list.getByTestId('dashboard')).toBeVisible();
+      await settle(list);
+      expect(new URL(list.url()).searchParams.get('q')).toBe('(bank:"Renal" OR tag:"High Yield")');
+      await expectTotal(list, 4);
+      const { hl } = seed.ds.id;
+      await expectRenderedSet(list, [hl('c3'), hl('r1'), hl('c2'), hl('t1')]);
+      expect(dashboardErrors(list)).toEqual([]);
+
+      // The summary names the syllabus by id, and holds no card text.
+      await page.bringToFront();
+      await page.getByTestId(XID.close).click();
+      await expect(page.getByTestId(XID.history)).toContainText(
+        'Syllabus: Cardiorenal exam / Renal',
+      );
+      const { history } = await readExamMeta(page);
+      expect(history[0]?.syllabusId).toBe(syllabusId);
+      expect(JSON.stringify(history)).not.toContain('Preload');
+      noErrors(page);
+    } finally {
+      requests.stop();
+      await ctx.context.setOffline(false);
+    }
+    const outside = requests.urls.filter(
+      (u) =>
+        !u.startsWith('chrome-extension://') && !u.startsWith('data:') && !u.startsWith('blob:'),
+    );
+    expect(outside, 'no request left the extension').toEqual([]);
+  });
+
+  test('"Exam on this topic" in the coverage table and the address open the setup on the topic; a weighted exam shares the questions and says what it left out', async ({
+    env,
+  }) => {
+    const ctx: Ctx = env;
+    const seed = await seedSyllabusVault(env);
+    await putSyllabus(seed);
+    const syllabusId = 'e2e-syllabus-0001';
+
+    // ---- from the coverage table, by keyboard ---------------------------------------------------
+    const page = await openReview(ctx, { query: '?view=analytics', settings: UTC_DAY });
+    await expect(page.getByTestId(SID.rvTable)).toBeVisible();
+    // A topic with nothing to ask is explained, not a dead button.
+    const rhythm = page.getByTestId(examOnTopicId(topicId('rhythm')));
+    await expect(rhythm).toHaveAttribute('aria-disabled', 'true');
+    await expect(rhythm).toHaveAttribute('title', /no cards to ask/);
+
+    const renal = page.getByTestId(examOnTopicId(topicId('renal')));
+    await renal.focus();
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('tab', { name: 'Exam', exact: true })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    const topic = page.getByTestId(XID.topic);
+    await expect(topic).toHaveValue(topicId('renal'));
+    await expect(page.getByTestId(XID.sourceSyllabus)).toBeChecked();
+    expect(new URL(page.url()).search).toBe(
+      `?view=exam&syllabus=${syllabusId}&topic=${topicId('renal')}`,
+    );
+    await expect(page.getByRole('heading', { name: 'Exam simulation' })).toBeFocused();
+    await expect(page.getByTestId(XID.syllabusNote)).toContainText(
+      '2 cards belong to “Renal” and its subtopics.',
+    );
+
+    // ---- the address does the same after a reload -------------------------------------------------
+    await page.reload();
+    await expect(page.getByTestId(XID.topic)).toHaveValue(topicId('renal'));
+    await expect(page.getByRole('heading', { name: 'Exam simulation' })).toBeFocused();
+
+    // ---- the whole syllabus, weighted -------------------------------------------------------------
+    await page.getByTestId(XID.topic).selectOption('');
+    await page.getByTestId(XID.weighted).check();
+    const plan = page.getByTestId(XID.plan);
+    await plan.locator('summary').click();
+    // Heart failure 0.1875 and Renal 0.375 of the syllabus: a third and two thirds of what can be
+    // asked; the topics with no cards have no share and are listed as left out.
+    await expect
+      .poll(async () => (await tableRows(plan.locator('table'))).map((r) => [r[0], r[1]]))
+      .toEqual([
+        ['Heart failure', '33.3%'],
+        ['Rhythm', '0.0%'],
+        ['Renal', '66.7%'],
+        ['Misc notes', '0.0%'],
+        ['Not started', '0.0%'],
+      ]);
+    const rows = await tableRows(plan.locator('table'));
+    const num = (r: string[] | undefined, i: number) => Number(r?.[i] ?? Number.NaN);
+    // Every card once (k2 is in Heart failure and Renal, and counts under one of them).
+    expect(rows.reduce((n, r) => n + num(r, 2), 0)).toBe(3);
+    expect(rows.reduce((n, r) => n + num(r, 3), 0)).toBe(3);
+    for (const r of rows) expect(num(r, 3)).toBeLessThanOrEqual(num(r, 2));
+    await expect(page.getByTestId(XID.leftOut)).toHaveText(
+      'Left out: Rhythm (no cards); Misc notes (no cards); Not started (no cards).',
+    );
+    await expectAccessible(page, 'exam setup, weighted, with the plan open');
+
+    await startExam(page, {});
+    const { session } = await readExamMeta(page);
+    expect(session?.scope).toEqual({
+      kind: 'syllabus',
+      syllabusId,
+      topicId: null,
+      weighted: true,
+    });
+    expect(session?.questions.map((q) => q.cardId).sort()).toEqual([
+      'e2e-card-k1',
+      'e2e-card-k2',
+      'e2e-card-k3',
+    ]);
+    expect(session?.syllabus?.skipped.map((s) => s.title)).toEqual([
+      'Rhythm',
+      'Misc notes',
+      'Not started',
+    ]);
+
+    await walkExam(page, []);
+    await finishExam(page);
+    for (const n of [1, 2, 3]) await markQuestion(page, n, 'know');
+    await page.getByTestId(XID.showResults).click();
+    const results = page.getByTestId(XID.results);
+    await expect(results.getByTestId(XID.score)).toContainText('100%');
+    await expect(results.getByTestId(studyTopicId(topicId('renal')))).not.toHaveAttribute(
+      'aria-disabled',
+      'true',
+    );
+    const byTopic = await tableRows(results.getByTestId(XID.topics).locator('table'));
+    expect(byTopic.map((r) => r[0])).toEqual(['Heart failure', 'Renal']);
+    expect(byTopic.reduce((n, r) => n + Number(r[1]), 0)).toBe(3);
+    await expect(results.getByTestId(XID.leftOut)).toContainText('Rhythm (no cards)');
+    await expectAccessible(page, 'weighted exam results by topic');
     noErrors(page);
   });
 });

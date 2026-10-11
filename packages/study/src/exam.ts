@@ -1,7 +1,9 @@
 import '@shared/zodConfig';
 import { z } from 'zod';
-import { Id, IsoDate } from '@shared/schema';
+import { Id, IsoDate, MAX_SYLLABUS_NODES, MAX_SYLLABUS_TITLE_CHARS } from '@shared/schema';
 import { tagNameKey } from '@shared/vault';
+import { drawSyllabusExam, syllabusExamPool } from './examSyllabus';
+import type { ExamSyllabusInput } from './examSyllabus';
 import { hashSeed, seededRandom, shuffled } from './random';
 import type { Random } from './random';
 import { ChoiceId, LIMITS, Rating } from './schema';
@@ -10,7 +12,8 @@ import { DAY_MS, HOUR_MS, MINUTE_MS, toIso, toMs } from './time';
 import type { DateInput } from './time';
 
 /**
- * Exam simulation (ADR-020): a timed run over a bank, folder or tag with no feedback until the end.
+ * Exam simulation (ADR-020): a timed run over a bank, folder, tag or syllabus topic with no feedback
+ * until the end.
  *
  * Everything here is a pure function of its arguments: the clock arrives as `now`, chance as a
  * `Random`, cards as plain facts or views. An exam is a plain value (`ExamSession`) that the caller
@@ -37,6 +40,14 @@ export const ExamScope = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('bank'), bankId: Id }),
   z.object({ kind: z.literal('folder'), bankId: Id, folderId: Id }),
   z.object({ kind: z.literal('tag'), tag: z.string().trim().min(1).max(LIMITS.tag) }),
+  z.object({
+    kind: z.literal('syllabus'),
+    syllabusId: Id,
+    /** null: the whole syllabus. Otherwise the topic and everything below it. */
+    topicId: Id.nullable(),
+    /** Questions are shared between the lowest-level topics in proportion to their weights. */
+    weighted: z.boolean(),
+  }),
 ]);
 export type ExamScope = z.infer<typeof ExamScope>;
 
@@ -66,6 +77,10 @@ export function inExamScope(facts: ExamCardFacts, scope: ExamScope): boolean {
       const key = tagNameKey(scope.tag);
       return facts.tags.some((t) => tagNameKey(t) === key);
     }
+    case 'syllabus':
+      // Needs the outline and what each card is filed under, not just the card: `createExam`
+      // resolves it with `syllabusExamPool`.
+      return false;
   }
 }
 
@@ -139,6 +154,11 @@ export interface ExamConfig {
   /** Time limit in whole minutes (1-480), or null for none. */
   minutes: number | null;
   shuffle: boolean;
+  /**
+   * Seed of the draw. Omitted: drawn from the `Random` given to `createExam`. The setup form keeps
+   * one so that the plan it shows for a syllabus exam is the one that is drawn.
+   */
+  seed?: number;
 }
 
 export type ExamConfigCheck =
@@ -183,6 +203,8 @@ const ExamQuestion = z.object({
   /** mcq: scored by the key. recall: answered by typing or thinking, marked by the person. */
   kind: z.enum(['mcq', 'recall']),
   bankId: Id.nullable(),
+  /** Syllabus exams: the topic the question counts under (null for every other exam). */
+  topicId: Id.nullable(),
   tags: z.array(z.string().max(LIMITS.tag)).max(LIMITS.tags),
   /** Multiple choice: the option picked. */
   choiceId: ChoiceId.nullable(),
@@ -203,15 +225,41 @@ const ReviewApplied = z.object({
 });
 export type ExamReviewApplied = z.infer<typeof ReviewApplied>;
 
+/** What a syllabus exam keeps of its outline: titles as they were, and what was left out. */
+const ExamSyllabusFacts = z.object({
+  /** The topics that have a question, in outline order, with the title they had. */
+  topics: z
+    .array(z.object({ id: Id, title: z.string().max(MAX_SYLLABUS_TITLE_CHARS) }))
+    .max(MAX_SYLLABUS_NODES),
+  /** Lowest-level topics that got no question, and why. */
+  skipped: z
+    .array(
+      z.object({
+        id: Id,
+        title: z.string().max(MAX_SYLLABUS_TITLE_CHARS),
+        reason: z.enum(['nocards', 'shared', 'noshare']),
+      }),
+    )
+    .max(MAX_SYLLABUS_NODES),
+  /** Cards of the scope no lowest-level topic holds, so a weighted draw could not use them. */
+  undrawn: z.number().int().min(0),
+});
+export type ExamSyllabusFacts = z.infer<typeof ExamSyllabusFacts>;
+
+/** The persisted exam's version. 1 had no syllabus scope: `upgradeExamSession` carries it over. */
+export const EXAM_SESSION_VERSION = 2;
+
 export const ExamSession = z
   .object({
-    version: z.literal(1),
+    version: z.literal(EXAM_SESSION_VERSION),
     id: Id,
     phase: z.enum(['answering', 'marking', 'finished']),
     scope: ExamScope,
     scopeLabel: z.string().min(1).max(300),
     /** Names of the banks the questions are reported under, as they were when the exam began. */
     bankNames: z.record(Id, z.string().max(200)),
+    /** Set for (and only for) an exam over a syllabus. */
+    syllabus: ExamSyllabusFacts.nullable(),
     minutes: z.number().int().min(1).max(EXAM_MAX_MINUTES).nullable(),
     shuffle: z.boolean(),
     /** Derives which cards, in which order, and the order of each multiple-choice list. */
@@ -250,16 +298,49 @@ export const ExamSession = z
       bad('answering ended without a time');
     }
     if ((e.minutes === null) !== (e.deadlineAt === null)) bad('limit and deadline disagree');
+    if ((e.scope.kind === 'syllabus') !== (e.syllabus !== null)) {
+      bad('a syllabus exam keeps its outline, and only a syllabus exam does');
+    }
+    const known = new Set(e.syllabus?.topics.map((t) => t.id));
+    if (e.questions.some((q) => q.topicId !== null && !known.has(q.topicId))) {
+      bad('a question counts under a topic the exam does not know');
+    }
   });
 export type ExamSession = z.infer<typeof ExamSession>;
 
-/** Valid, unexpired exam from storage; `expired` tells the caller to say why it is gone. */
+/**
+ * A stored exam of an older version, brought to the current shape (or the value unchanged when it
+ * is not one). Version 1 had no syllabus scope, so it gains exactly the empty parts.
+ */
+export function upgradeExamSession(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null) return value;
+  const v = value as Record<string, unknown>;
+  if (v.version !== 1 || !Array.isArray(v.questions)) return value;
+  return {
+    ...v,
+    version: EXAM_SESSION_VERSION,
+    syllabus: null,
+    questions: v.questions.map((q: unknown) =>
+      typeof q === 'object' && q !== null ? { ...q, topicId: null } : q,
+    ),
+  };
+}
+
+/**
+ * Valid, unexpired exam from storage. `expired` tells the caller to say why it is gone; `unreadable`
+ * says a row was there that is not a valid exam (damaged, or written by a version this one does not
+ * know), so the caller can tell the person it was dropped instead of crashing or going silent.
+ */
 export function parseExamSession(
   value: unknown,
   now: DateInput,
-): { session: ExamSession | null; expired: boolean } {
-  const parsed = ExamSession.safeParse(value);
-  if (!parsed.success) return { session: null, expired: false };
+): { session: ExamSession | null; expired: boolean; unreadable?: true } {
+  const parsed = ExamSession.safeParse(upgradeExamSession(value));
+  if (!parsed.success) {
+    return value === null || value === undefined
+      ? { session: null, expired: false }
+      : { session: null, expired: false, unreadable: true };
+  }
   if (Date.parse(parsed.data.expiresAt) <= toMs(now)) return { session: null, expired: true };
   return { session: parsed.data, expired: false };
 }
@@ -280,27 +361,66 @@ export function createExam(input: {
   /** The whole universe of cards; the scope is applied here. */
   cards: readonly ExamCardFacts[];
   bankNames?: Readonly<Record<string, string>>;
+  /** Required for (and only used by) a syllabus scope: the outline and what each card is filed under. */
+  syllabus?: ExamSyllabusInput;
 }): ExamSession {
   const { config } = input;
-  const pool = input.cards.filter((c) => inExamScope(c, config.scope)).sort(byCardId);
-  const check = validateExamConfig(config, pool.length);
+  const scope = config.scope;
+  const seed =
+    config.seed === undefined
+      ? Math.min(0xffffffff, Math.floor(input.random() * 0x100000000))
+      : config.seed >>> 0;
+  let pool: ExamCardFacts[] = [];
+  let syllabusPool: ReturnType<typeof syllabusExamPool> | null = null;
+  if (scope.kind === 'syllabus') {
+    if (input.syllabus === undefined) throw new RangeError('The syllabus could not be read.');
+    syllabusPool = syllabusExamPool({
+      syllabus: input.syllabus,
+      topicId: scope.topicId,
+      weighted: scope.weighted,
+      cards: input.cards,
+      seed,
+    });
+  } else {
+    pool = input.cards.filter((c) => inExamScope(c, scope)).sort(byCardId);
+  }
+  const check = validateExamConfig(config, syllabusPool ? syllabusPool.drawable : pool.length);
   if (!check.ok) throw new RangeError(Object.values(check.errors).join(' '));
   const startedMs = toMs(input.now);
-  const seed = Math.min(0xffffffff, Math.floor(input.random() * 0x100000000));
-  const picked = shuffled(pool, seededRandom(seed)).slice(0, check.count);
-  const ordered = config.shuffle ? picked : picked.sort(byCardId);
+  let picked: ExamCardFacts[];
+  const topicOf = new Map<string, string>();
+  let syllabus: ExamSyllabusFacts | null = null;
+  if (syllabusPool) {
+    const draw = drawSyllabusExam(syllabusPool, check.count);
+    picked = draw.picked.map((p) => p.facts);
+    for (const p of draw.picked) topicOf.set(p.facts.cardId, p.topicId);
+    const used = new Set(draw.picked.map((p) => p.topicId));
+    // The topics a question counts under, in outline order (units first appear in outline order).
+    const order = [...syllabusPool.titles.keys()];
+    syllabus = {
+      topics: order
+        .filter((id) => used.has(id))
+        .map((id) => ({ id, title: syllabusPool.titles.get(id) ?? id })),
+      skipped: draw.skipped.map((s) => ({ id: s.topicId, title: s.title, reason: s.reason })),
+      undrawn: syllabusPool.inScope - syllabusPool.drawable,
+    };
+  } else {
+    picked = shuffled(pool, seededRandom(seed)).slice(0, check.count);
+  }
+  const ordered = config.shuffle ? picked : [...picked].sort(byCardId);
   const names: Record<string, string> = {};
   for (const f of ordered) {
     const name = f.bankId === null ? undefined : input.bankNames?.[f.bankId];
     if (f.bankId !== null && name !== undefined) names[f.bankId] = name;
   }
   return {
-    version: 1,
+    version: EXAM_SESSION_VERSION,
     id: input.id,
     phase: 'answering',
     scope: config.scope,
     scopeLabel: config.scopeLabel,
     bankNames: names,
+    syllabus,
     minutes: config.minutes,
     shuffle: config.shuffle,
     seed,
@@ -316,6 +436,7 @@ export function createExam(input: {
       cardId: f.cardId,
       kind: f.cardType === 'mcq' ? ('mcq' as const) : ('recall' as const),
       bankId: f.bankId,
+      topicId: topicOf.get(f.cardId) ?? null,
       tags: f.tags.slice(0, LIMITS.tags).map((t) => t.slice(0, LIMITS.tag)),
       choiceId: null,
       text: '',
@@ -639,13 +760,18 @@ export interface BreakdownRow {
   unanswered: number;
 }
 
-/** Per bank and per tag. A question with several tags counts under each of them. Void is left out. */
+/**
+ * Per bank, per tag and (syllabus exams) per topic. A question with several tags counts under each
+ * of them; a question counts under exactly one topic. Void is left out. Topics come in outline order.
+ */
 export function examBreakdown(
   exam: ExamSession,
   outcomes: readonly ExamOutcome[],
-): { banks: BreakdownRow[]; tags: BreakdownRow[] } {
+): { banks: BreakdownRow[]; tags: BreakdownRow[]; topics: BreakdownRow[] } {
   const banks = new Map<string, BreakdownRow>();
   const tags = new Map<string, BreakdownRow>();
+  const topics = new Map<string, BreakdownRow>();
+  const topicTitle = new Map((exam.syllabus?.topics ?? []).map((t) => [t.id, t.title] as const));
   const add = (map: Map<string, BreakdownRow>, key: string, label: string, o: ExamOutcome) => {
     if (o === 'void') return;
     const row = map.get(key) ?? { key, label, total: 0, correct: 0, wrong: 0, unanswered: 0 };
@@ -658,9 +784,15 @@ export function examBreakdown(
     const bank = q.bankId === null ? undefined : exam.bankNames[q.bankId];
     add(banks, q.bankId ?? 'none', bank ?? 'No bank', o);
     for (const t of q.tags) add(tags, tagNameKey(t), t, o);
+    if (q.topicId !== null) add(topics, q.topicId, topicTitle.get(q.topicId) ?? 'Removed topic', o);
   });
   const byLabel = (a: BreakdownRow, b: BreakdownRow) => a.label.localeCompare(b.label);
-  return { banks: [...banks.values()].sort(byLabel), tags: [...tags.values()].sort(byLabel) };
+  const outline = [...topicTitle.keys()];
+  return {
+    banks: [...banks.values()].sort(byLabel),
+    tags: [...tags.values()].sort(byLabel),
+    topics: [...topics.values()].sort((a, b) => outline.indexOf(a.key) - outline.indexOf(b.key)),
+  };
 }
 
 export interface ExamTiming {
@@ -745,6 +877,8 @@ export const ExamHistoryEntry = z.object({
   startedAt: IsoDate,
   finishedAt: IsoDate,
   scopeLabel: z.string().min(1).max(300),
+  /** Present for an exam over a syllabus (an id, never a title or card text). */
+  syllabusId: Id.optional(),
   total: z.number().int().min(1).max(EXAM_MAX_QUESTIONS),
   correct: z.number().int().min(0),
   wrong: z.number().int().min(0),
@@ -767,6 +901,7 @@ export function historyEntry(exam: ExamSession): ExamHistoryEntry | null {
     startedAt: exam.startedAt,
     finishedAt: exam.finishedAt,
     scopeLabel: exam.scopeLabel,
+    ...(exam.scope.kind === 'syllabus' ? { syllabusId: exam.scope.syllabusId } : {}),
     total: score.total,
     correct: score.correct,
     wrong: score.wrong,
@@ -875,6 +1010,7 @@ export function examToMarkdown(
     }
     lines.push('');
   };
+  table('By topic', 'Topic', parts.topics);
   table('By bank', 'Bank', parts.banks);
   table('By tag', 'Tag', parts.tags);
 

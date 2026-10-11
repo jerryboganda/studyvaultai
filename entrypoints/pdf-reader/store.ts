@@ -13,10 +13,12 @@ import {
   listDocuments,
   listPdfHighlights,
   removeDocumentBytes,
+  replaceOcrPage,
   restoreHighlight,
   saveOcrPage,
   savePdfHighlight,
   softDeleteHighlight,
+  swapOcrReading,
   undoFiling,
   updateHighlight,
   upsertDocument,
@@ -71,6 +73,8 @@ export function createStorageStore(): PdfStore {
     getDocumentBytes: (documentId) => getDocumentBytes(documentId),
     removeDocumentBytes: (documentId) => removeDocumentBytes(documentId),
     saveOcrPage: (input) => saveOcrPage(input),
+    replaceOcrPage: (input) => replaceOcrPage(input),
+    swapOcrReading: (documentId, pageNumber) => swapOcrReading(documentId, pageNumber),
     getOcrPages: (documentId) => getOcrPages(documentId),
     listStoredCopies: async () =>
       (await listDocuments())

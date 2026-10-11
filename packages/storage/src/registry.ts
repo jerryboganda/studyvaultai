@@ -159,6 +159,9 @@ const SPECS: readonly Spec[] = [
     schema: OcrPage,
     softDelete: false,
     references: [{ field: 'documentId', table: 'documents' }],
+    // The reading a re-run replaced (one undo step): device-local, so not synchronised, not in the
+    // checksums, and left out of a backup file (`BACKUP_LOCAL_FIELDS` in backupTarget.ts).
+    derivedFields: ['previousReading'],
   },
   { name: 'syncOps', primaryKey: 'id', schema: keyedRow, softDelete: false, localOnly: true },
   { name: 'meta', primaryKey: 'key', schema: MetaRowSchema, softDelete: false, localOnly: true },

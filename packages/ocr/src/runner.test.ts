@@ -143,6 +143,66 @@ describe('runOcrJob', () => {
     expect(first).toMatchObject({ phase: 'skipped', completed: 2, total: 4, progress: 0.5 });
   });
 
+  describe('force: reading stored pages again', () => {
+    it('reads every requested page, skips nothing and does not ask the store what it has', async () => {
+      const t = setup((n) => pageFor(n, `new ${n}`), [1, 2]);
+      const asked = vi.spyOn(t.store, 'storedPageNumbers');
+      const summary = await t.run([1, 2, 3], { force: true });
+      expect(summary).toMatchObject({ status: 'completed', skipped: [], saved: [1, 2, 3] });
+      expect(t.calls).toEqual([1, 2, 3]);
+      expect(asked).not.toHaveBeenCalled();
+      expect(t.saved.map((p) => p.text)).toEqual(['new 1', 'new 2', 'new 3']);
+      expect(t.events.some((e) => e.phase === 'skipped')).toBe(false);
+      expect(t.events.at(-1)).toMatchObject({ phase: 'done', completed: 3, total: 3, progress: 1 });
+    });
+
+    it('saves a page only after its new reading succeeded: a failing page is never touched', async () => {
+      const t = setup(
+        (n) => {
+          if (n === 2) throw new OcrError('out-of-memory');
+          return pageFor(n, `new ${n}`);
+        },
+        [1, 2, 3],
+      );
+      const summary = await t.run([1, 2, 3], { force: true });
+      expect(summary.status).toBe('partial');
+      expect(summary.failed.map((f) => f.pageNumber)).toEqual([2]);
+      // page 2 was never handed to the store, so whatever it holds is still there
+      expect(t.saved.map((p) => p.pageNumber)).toEqual([1, 3]);
+      expect(summary.saved).toEqual([1, 3]);
+    });
+
+    it('a cancel leaves the pages that were not reached untouched', async () => {
+      const controller = new AbortController();
+      const t = setup(
+        (n) => {
+          if (n === 3) {
+            controller.abort();
+            throw new OcrError('cancelled');
+          }
+          return pageFor(n, `new ${n}`);
+        },
+        [1, 2, 3, 4],
+      );
+      const summary = await t.run([1, 2, 3, 4], { force: true, signal: controller.signal });
+      expect(summary.status).toBe('cancelled');
+      expect(t.saved.map((p) => p.pageNumber)).toEqual([1, 2]);
+      expect(t.calls).toEqual([1, 2, 3]); // page 4 was never read
+    });
+
+    it('a render failure keeps the stored page and the run goes on', async () => {
+      const t = setup((n) => pageFor(n, `new ${n}`), [1, 2]);
+      t.renderPage.mockImplementation(async (n: number) => {
+        if (n === 1) throw new Error('render exploded');
+        return { image: new Uint8Array([n]), width: 100, height: 50 };
+      });
+      const summary = await t.run([1, 2], { force: true });
+      expect(summary.saved).toEqual([2]);
+      expect(summary.failed.map((f) => f.pageNumber)).toEqual([1]);
+      expect(t.saved.map((p) => p.pageNumber)).toEqual([2]);
+    });
+  });
+
   it('completes immediately when everything is already stored', async () => {
     const t = setup((n) => pageFor(n), [1, 2]);
     const summary = await t.run([1, 2]);

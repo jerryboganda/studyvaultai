@@ -377,6 +377,33 @@ describe('Anthropic provider', () => {
     expect(
       (await failure(mk(json({ error: { type: 'billing_error' } }, 402)).complete(req, {}))).code,
     ).toBe('quota_exhausted');
+    // An empty Anthropic account is a 400 whose message is the only tell; another 400 is not quota.
+    const empty = await failure(
+      mk(
+        json(
+          {
+            type: 'error',
+            error: {
+              type: 'invalid_request_error',
+              message:
+                'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.',
+            },
+          },
+          400,
+        ),
+      ).complete(req, {}),
+    );
+    expect([empty.code, empty.retryable, empty.status]).toEqual(['quota_exhausted', false, 400]);
+    expect(empty.message).not.toContain('credit balance');
+    const other = await failure(
+      mk(
+        json(
+          { type: 'error', error: { type: 'invalid_request_error', message: 'max_tokens: 0' } },
+          400,
+        ),
+      ).complete(req, {}),
+    );
+    expect(other.code).toBe('bad_request');
     expect(
       (await failure(mk(json({ content: [], stop_reason: 'max_tokens' })).complete(req, {}))).code,
     ).toBe('output_truncated');

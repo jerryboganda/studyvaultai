@@ -4,10 +4,10 @@ import {
   DEFAULT_COVERAGE_THRESHOLDS,
   MAX_COVERAGE_THRESHOLD,
   MIN_TOPIC_RETENTION_REVIEWS,
+  coverageTopics,
   syllabusTopicCoverage,
   type CoverageThresholds,
   type CoverageState,
-  type CoverageTopic,
   type TopicCoverage,
 } from '@study/analytics';
 import { listSyllabi } from '@storage';
@@ -22,10 +22,12 @@ import {
   clockKey,
   formatWhen,
   percent,
+  syllabusExamId,
   syllabusRowId,
   syllabusShowId,
   syllabusSortId,
   toClock,
+  type ExamTarget,
   type StudySettings,
 } from '@ui/review';
 import { openDashboard, type DashboardTarget } from '@ui/vault/dashboardLink';
@@ -97,7 +99,14 @@ function parseThreshold(
 
 const pct = (share: number): number => Math.round(share * 100);
 
-export default function SyllabusCoverage({ settings }: { settings: StudySettings }) {
+export default function SyllabusCoverage({
+  settings,
+  onExamOnTopic,
+}: {
+  settings: StudySettings;
+  /** Opens the exam setup on a topic. Without it (a host that has no exam) the button is absent. */
+  onExamOnTopic?: ((target: ExamTarget) => void) | undefined;
+}) {
   const epoch = useDataEpoch();
   const key = clockKey(settings);
   const selectId = useId();
@@ -159,22 +168,13 @@ export default function SyllabusCoverage({ settings }: { settings: StudySettings
   const nodes = syllabus?.nodes;
   const flat = useMemo(() => (nodes ? flattenSyllabus(nodes) : []), [nodes]);
   const report = useMemo(() => {
-    if (!data || flat.length === 0) return null;
-    const topics: CoverageTopic[] = flat.map(({ node, depth, parentId }) => ({
-      id: node.id,
-      title: node.title,
-      depth,
-      parentId,
-      ...(node.weight === undefined ? {} : { weight: node.weight }),
-      bankIds: node.bankIds,
-      tagIds: node.tagIds,
-    }));
+    if (!data || !nodes || flat.length === 0) return null;
     return syllabusTopicCoverage(
-      topics,
+      coverageTopics(nodes),
       { highlights: data.highlights, cards: data.cards, logs: data.logs },
       { now: data.now, boundary: data.boundary, thresholds },
     );
-  }, [data, flat, thresholds]);
+  }, [data, nodes, flat, thresholds]);
 
   const names = useMemo(
     () => ({
@@ -474,6 +474,7 @@ export default function SyllabusCoverage({ settings }: { settings: StudySettings
                     </th>
                   ))}
                   <th scope="col">Highlights list</th>
+                  {onExamOnTopic ? <th scope="col">Exam</th> : null}
                 </tr>
               </thead>
               <tbody>
@@ -542,6 +543,24 @@ export default function SyllabusCoverage({ settings }: { settings: StudySettings
                           </Button>
                         )}
                       </td>
+                      {onExamOnTopic ? (
+                        <td>
+                          <Button
+                            disabledReason={
+                              t.cards === 0
+                                ? 'This topic has no cards to ask yet (suspended and deleted cards are not asked).'
+                                : undefined
+                            }
+                            onClick={() =>
+                              onExamOnTopic({ syllabusId: syllabus.id, topicId: t.id })
+                            }
+                            aria-label={`Exam on this topic: ${t.title}`}
+                            data-testid={syllabusExamId(t.id)}
+                          >
+                            Exam on this topic
+                          </Button>
+                        </td>
+                      ) : null}
                     </tr>
                   );
                 })}

@@ -1,4 +1,10 @@
-import { ocrLineNumbers, type OcrWordInput, type SaveOcrPageInput, type StoredOcrPage } from '@pdf';
+import {
+  ocrLineNumbers,
+  type OcrWordInput,
+  type SaveOcrPageInput,
+  type StoredOcrPage,
+  type StoredPreviousReading,
+} from '@pdf';
 import {
   applyCorrections,
   emptyCorrections,
@@ -25,6 +31,11 @@ import type { OcrLine, OcrPage, OcrWord } from '@ocr/types';
 export interface PageOcr {
   page: OcrPage;
   corrections: OcrCorrections;
+  /**
+   * The reading a re-recognition replaced, kept for one step back (ADR-006 Amendment 5). Absent when
+   * the page was never read again. It is not part of the page's text: nothing reads it but "Restore".
+   */
+  previous?: StoredPreviousReading;
 }
 
 /** Size of the virtual image of a rebuilt page; boxes are normalised, so any size is exact. */
@@ -73,7 +84,10 @@ function linesFromText(text: string, words: readonly string[]): number[] | null 
 
 /** Rebuilds the in-memory page from a vault row (the inverse of `storedInputFrom`). */
 export function pageOcrFromStored(
-  stored: Pick<StoredOcrPage, 'pageNumber' | 'text' | 'correctedText' | 'words' | 'orientation'> & {
+  stored: Pick<
+    StoredOcrPage,
+    'pageNumber' | 'text' | 'correctedText' | 'words' | 'orientation' | 'previousReading'
+  > & {
     language?: string;
     engine?: string;
     confidence?: number | null;
@@ -145,6 +159,41 @@ export function pageOcrFromStored(
       recognizedAt: new Date(0).toISOString(),
     },
     corrections,
+    ...(stored.previousReading ? { previous: stored.previousReading } : {}),
+  };
+}
+
+/** The page's current reading, text and corrections, as the one step back it becomes when replaced. */
+export function readingFrom(po: PageOcr, replacedAt: string): StoredPreviousReading {
+  const s = storedInputFrom('', po);
+  return {
+    text: s.text,
+    correctedText: s.correctedText ?? null,
+    words: s.words,
+    language: s.language,
+    engine: s.engine,
+    confidence: s.confidence,
+    ...(s.orientation === undefined ? {} : { orientation: s.orientation }),
+    replacedAt,
+  };
+}
+
+/** The page as it reads when its kept earlier reading is put back (and the current one is kept). */
+export function swapReading(po: PageOcr, replacedAt: string): PageOcr | null {
+  const was = po.previous;
+  if (!was) return null;
+  return {
+    ...pageOcrFromStored({
+      pageNumber: po.page.pageNumber,
+      text: was.text,
+      correctedText: was.correctedText,
+      words: was.words,
+      language: was.language,
+      engine: was.engine,
+      confidence: was.confidence,
+      ...(was.orientation === undefined ? {} : { orientation: was.orientation }),
+    }),
+    previous: readingFrom(po, replacedAt),
   };
 }
 
@@ -230,10 +279,53 @@ export interface OcrOutcome {
   detail: string;
   /** Distinct error codes behind the outcome (taxonomy of @ocr). */
   codes: OcrErrorCode[];
+  /** Itemised results (dropped corrections, highlights that could not be placed), one per line. */
+  lines?: string[];
 }
 
-const plural = (n: number, one: string): string => `${n} ${n === 1 ? one : `${one}s`}`;
-const MACHINE = 'The text is machine-recognised and may be wrong. Check it before you rely on it.';
+export const plural = (n: number, one: string): string => `${n} ${n === 1 ? one : `${one}s`}`;
+export const MACHINE =
+  'The text is machine-recognised and may be wrong. Check it before you rely on it.';
+
+// What reading the pages again costs (the reader asks before it starts).
+
+/** Used until a run on this device has measured a page: a text page took about 6 s, a turned one 15 s. */
+export const ASSUMED_MS_PER_PAGE = 8_000;
+
+export function formatDuration(ms: number): string {
+  const seconds = Math.max(1, Math.round(ms / 1000));
+  if (seconds < 90) return plural(seconds, 'second');
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 90) return plural(minutes, 'minute');
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? plural(hours, 'hour') : `${plural(hours, 'hour')} ${plural(rest, 'minute')}`;
+}
+
+export interface RerunEstimate {
+  pages: number;
+  totalMs: number;
+  perPageMs: number;
+  /** False: nothing has been timed on this device yet, so the figure is an assumption. */
+  measured: boolean;
+  text: string;
+}
+
+export function estimateRerun(pages: number, measuredMsPerPage: number | null): RerunEstimate {
+  const measured = measuredMsPerPage !== null && measuredMsPerPage > 0;
+  const perPageMs = measured ? (measuredMsPerPage as number) : ASSUMED_MS_PER_PAGE;
+  const totalMs = pages * perPageMs;
+  const basis = measured
+    ? `${formatDuration(perPageMs)} a page, as measured on this device in your last run`
+    : `an assumed ${formatDuration(perPageMs)} a page, because no page has been timed on this device yet`;
+  return {
+    pages,
+    totalMs,
+    perPageMs,
+    measured,
+    text: `About ${formatDuration(totalMs)} for ${plural(pages, 'page')} (${basis}). A page that is stored sideways takes longer.`,
+  };
+}
 
 /** How a page that needed a turn is stored, in words (the turn is the clockwise one that read it). */
 export const ORIENTATION_TEXT: Record<90 | 180 | 270, string> = {

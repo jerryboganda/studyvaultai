@@ -20,10 +20,13 @@ import {
   listDocuments,
   listPdfHighlights,
   removeDocumentBytes,
+  replaceOcrPage,
   saveOcrPage,
   savePdfHighlight,
+  swapOcrReading,
   upsertDocument,
 } from './pdf';
+import { createBackupTarget, createSnapshotSource } from './backupTarget';
 import { getStorageUsage } from './usage';
 import { createNote } from './notes';
 import { attachTags, createTag } from './tags';
@@ -487,6 +490,155 @@ describe('OCR pages', () => {
 
     // only quarter turns are stored
     await expect(saveOcrPage({ ...base, orientation: 45 as never })).rejects.toThrow();
+  });
+
+  describe('reading a page again', () => {
+    const word = (text: string, y: number) => ({
+      text,
+      x: 0.1,
+      y,
+      w: 0.2,
+      h: 0.02,
+      confidence: 0.8,
+    });
+    const first = {
+      documentId: DOC,
+      pageNumber: 1,
+      text: 'tbe cat sat',
+      words: [word('tbe', 0.1), word('cat', 0.14), word('sat', 0.18)],
+      language: 'eng',
+      engine: 'tesseract-7',
+      confidence: 0.8,
+    };
+    const second = {
+      ...first,
+      text: 'the cat sat',
+      words: [word('the', 0.1), word('cat', 0.14), word('sat', 0.18)],
+      confidence: 0.9,
+    };
+
+    it('puts the new reading in place and keeps the replaced one, corrections and turn included', async () => {
+      await saveOcrPage({ ...first, correctedText: 'the cat sat', orientation: 90 });
+      const put = vi.spyOn((await getDb()).ocrPages, 'put');
+      const row = await replaceOcrPage({ ...second, orientation: 0 });
+      // new text and the replaced reading are ONE write
+      expect(put).toHaveBeenCalledTimes(1);
+      expect(put.mock.calls[0]![0]).toMatchObject({
+        text: 'the cat sat',
+        previousReading: { text: 'tbe cat sat' },
+      });
+      put.mockRestore();
+      expect(row).toMatchObject({
+        text: 'the cat sat',
+        correctedText: null, // the old correction belongs to the old reading
+        orientation: 0,
+        previousReading: {
+          text: 'tbe cat sat',
+          correctedText: 'the cat sat',
+          orientation: 90,
+          confidence: 0.8,
+          engine: 'tesseract-7',
+        },
+      });
+      expect(row.previousReading!.words.map((w) => w.text)).toEqual(['tbe', 'cat', 'sat']);
+      expect(row.previousReading!.replacedAt).toBe(row.updatedAt);
+      expect((await getOcrPages(DOC))[0]).toEqual(row);
+    });
+
+    it('carries the corrections the caller mapped, and a first reading has no earlier one', async () => {
+      const fresh = await replaceOcrPage({ ...first, correctedText: 'the cat sat' });
+      expect(fresh.previousReading).toBeUndefined();
+      expect('previousReading' in fresh).toBe(false);
+      const again = await replaceOcrPage({ ...second, correctedText: 'The cat sat.' });
+      expect(again.correctedText).toBe('The cat sat.');
+      expect(again.previousReading?.text).toBe('tbe cat sat');
+    });
+
+    it('is one transaction: a write that fails leaves the stored reading as it was', async () => {
+      await saveOcrPage({ ...first, correctedText: 'fixed' });
+      const before = (await getOcrPages(DOC))[0]!;
+      const db = await getDb();
+      const put = vi.spyOn(db.ocrPages, 'put').mockRejectedValueOnce(new Error('disk full'));
+      await expect(replaceOcrPage(second)).rejects.toThrow();
+      put.mockRestore();
+      expect((await getOcrPages(DOC))[0]).toEqual(before);
+      expect(before.previousReading).toBeUndefined();
+    });
+
+    it('validates before it writes: a bad box changes nothing', async () => {
+      await saveOcrPage(first);
+      await expect(
+        replaceOcrPage({ ...second, words: [{ ...word('x', 0.1), x: 4 }] }),
+      ).rejects.toMatchObject({ code: 'invalid_request' });
+      expect((await getOcrPages(DOC))[0]).toMatchObject({ text: 'tbe cat sat' });
+    });
+
+    it('keeps the earlier reading through a correction and swaps both ways without losing either', async () => {
+      await saveOcrPage({ ...first, correctedText: 'old fix' });
+      await replaceOcrPage(second);
+      const edited = await saveOcrPage({ ...second, correctedText: 'new fix' });
+      expect(edited.previousReading?.text).toBe('tbe cat sat'); // a correction does not use it up
+
+      const back = await swapOcrReading(DOC, 1);
+      expect(back).toMatchObject({
+        text: 'tbe cat sat',
+        correctedText: 'old fix',
+        words: first.words,
+        previousReading: { text: 'the cat sat', correctedText: 'new fix', confidence: 0.9 },
+      });
+      const forward = await swapOcrReading(DOC, 1);
+      expect(forward).toMatchObject({
+        text: 'the cat sat',
+        correctedText: 'new fix',
+        previousReading: { text: 'tbe cat sat', correctedText: 'old fix' },
+      });
+    });
+
+    it('refuses a swap with nothing to swap, an unknown page and an unknown document', async () => {
+      await saveOcrPage(first);
+      await expect(swapOcrReading(DOC, 1)).rejects.toMatchObject({ code: 'not_found' });
+      await expect(swapOcrReading(DOC, 9)).rejects.toMatchObject({ code: 'not_found' });
+      await expect(swapOcrReading('z'.repeat(64), 1)).rejects.toMatchObject({ code: 'not_found' });
+      await expect(swapOcrReading(DOC, 0)).rejects.toMatchObject({ code: 'invalid_request' });
+    });
+
+    it('a damaged slot reads as absent and never makes the page unreadable', async () => {
+      await saveOcrPage(first);
+      await replaceOcrPage(second);
+      const db = await getDb();
+      await db.ocrPages.update([DOC, 1], { previousReading: { text: 7 } as never });
+      const [page] = await getOcrPages(DOC);
+      expect(page).toMatchObject({ text: 'the cat sat' });
+      expect(page!.previousReading).toBeUndefined();
+    });
+
+    it('never goes into a backup, but the rest of the row does', async () => {
+      await saveOcrPage(first);
+      await replaceOcrPage(second);
+      const kept = await (await getDb()).ocrPages.get([DOC, 1]);
+      expect(kept?.previousReading?.text).toBe('tbe cat sat'); // it is stored...
+
+      const snapshot = await createSnapshotSource();
+      const exported = (await snapshot.readTable('ocrPages', {
+        limit: 10,
+      })) as readonly Record<string, unknown>[];
+      expect(exported).toHaveLength(1);
+      expect(exported[0]).toMatchObject({ text: 'the cat sat', pageNumber: 1 });
+      expect('previousReading' in exported[0]!).toBe(false); // ...and left out of the archive
+
+      const live = (await createBackupTarget().readTable('ocrPages', {
+        limit: 10,
+      })) as readonly Record<string, unknown>[];
+      expect('previousReading' in live[0]!).toBe(false);
+    });
+
+    it('goes with the page when its text is cleared', async () => {
+      await saveOcrPage(first);
+      await replaceOcrPage(second);
+      expect(await clearOcr(DOC, [1])).toBe(1);
+      expect(await getOcrPages(DOC)).toEqual([]);
+      expect(await (await getDb()).ocrPages.count()).toBe(0);
+    });
   });
 
   it('validates word boxes and the document', async () => {
