@@ -47,6 +47,7 @@ export const createCaptureUi: CreateCaptureUi = async (ctx, host) => {
     showToolbar: (selection) => mounted.showToolbar(selection),
     hideToolbar: () => mounted.hideToolbar(),
     showHighlightPopover: (highlight, anchor) => mounted.showHighlightPopover(highlight, anchor),
+    refreshHighlightPopover: (latest) => mounted.refreshHighlightPopover(latest),
     toast: (notice) => mounted.toast(notice),
     applySettings: (settings) => mounted.applySettings(settings),
     focusToolbar: () => mounted.focusToolbar(),

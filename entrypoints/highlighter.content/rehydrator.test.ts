@@ -141,6 +141,27 @@ describe('refresh: what gets painted', () => {
   });
 });
 
+describe('onLoaded', () => {
+  it('runs after each load that replaced the views, not after a failed one', async () => {
+    setBody('<p>Alpha beta gamma delta epsilon zeta eta theta.</p>');
+    const h = storedHighlight('beta gamma delta');
+    const notes: Array<string | undefined> = [];
+    const r = rig([h], {
+      onLoaded: () => notes.push(r.rehydrator.viewOf(h.id)?.userComment),
+    });
+    await r.rehydrator.refresh();
+
+    // A note typed in the side panel: the next load has the view with it, already readable.
+    r.rows = [{ ...h, userComment: 'written in the side panel' }];
+    await r.rehydrator.refresh();
+    expect(notes).toEqual(['', 'written in the side panel']);
+
+    r.fetch.mockRejectedValueOnce(new Error('Extension context invalidated'));
+    await r.rehydrator.refresh();
+    expect(notes).toHaveLength(2);
+  });
+});
+
 describe('resolution reports', () => {
   it('reports resolved at once and unresolved only after the page has settled', async () => {
     setBody(

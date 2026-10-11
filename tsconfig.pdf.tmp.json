@@ -1,0 +1,4 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [".wxt/wxt.d.ts", "packages/pdf", "entrypoints/pdf-reader"]
+}

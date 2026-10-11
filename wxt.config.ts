@@ -7,6 +7,13 @@ const alias = {
   '@storage': 'packages/storage/src',
   '@highlights': 'packages/highlights/src',
   '@ui': 'packages/ui/src',
+  '@search': 'packages/search/src',
+  '@study': 'packages/study/src',
+  '@ai': 'packages/ai/src',
+  '@pdf': 'packages/pdf/src',
+  '@ocr': 'packages/ocr/src',
+  '@sync': 'packages/sync/src',
+  '@backup': 'packages/backup/src',
 };
 
 // The e2e variant (scripts/build-e2e.mjs sets SV_E2E=1) is the SAME production build plus loopback host
@@ -57,9 +64,11 @@ export default defineConfig({
     },
     // Defence in depth for "nothing leaves the device": extension pages may only talk to themselves.
     // Sync/AI phases must add their endpoints here deliberately.
+    // 'wasm-unsafe-eval' permits compiling WebAssembly ONLY (the OCR engine and PDF decoders need it);
+    // it does not allow eval()/new Function(), which stay blocked. See docs/adr/008.
     content_security_policy: {
       extension_pages:
-        "script-src 'self'; object-src 'self'; base-uri 'self'; connect-src 'self'; frame-src 'none'; form-action 'none'",
+        "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; base-uri 'self'; connect-src 'self'; frame-src 'none'; form-action 'none'",
     },
   },
   hooks: {

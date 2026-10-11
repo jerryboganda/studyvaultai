@@ -27,6 +27,16 @@ export const Settings = z.object({
   highlightStyle: z.enum(['auto', 'normal', 'strong']),
   /** Save from private (incognito) windows. Off by default: the database is shared with normal windows. */
   allowIncognitoCapture: z.boolean(),
+  /**
+   * Feature flags (ROADMAP: later phases behind accurate flags). ai and sync default OFF and run no
+   * code, fetch nothing and schedule nothing until the user turns them on with an explanation.
+   */
+  features: z.object({
+    review: z.boolean(),
+    pdfReader: z.boolean(),
+    ai: z.boolean(),
+    sync: z.boolean(),
+  }),
 });
 export type Settings = z.infer<typeof Settings>;
 
@@ -44,6 +54,7 @@ export function defaultSettings(): Settings {
     paintHighlights: true,
     highlightStyle: 'auto',
     allowIncognitoCapture: false,
+    features: { review: true, pdfReader: true, ai: false, sync: false },
   };
 }
 
@@ -74,5 +85,6 @@ export function parseSettings(raw: unknown): Settings {
     paintHighlights: pick('paintHighlights'),
     highlightStyle: pick('highlightStyle'),
     allowIncognitoCapture: pick('allowIncognitoCapture'),
+    features: pick('features'),
   };
 }

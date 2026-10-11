@@ -1,0 +1,11 @@
+#separator:Comma
+#html:true
+#guid column:1
+#notetype column:2
+#deck column:3
+#tags column:7
+sv-card-001,StudyVault Basic,Cardiology::Pharm,What does aspirin inhibit?,COX-1 (irreversibly).,"<small>Source: <a href=""https://example.com/a?utm=1"">Aspirin [mechanism] *notes*</a> · text offset 110–178</small>",pharm high_yield
+sv-card-002,StudyVault Cloze,Cardiology::Pharm,Aspirin inhibits COX-1 and {{c1::thromboxane A2}} synthesis,Extra: dose matters,"<small>Source: <a href=""https://example.com/a?utm=1"">Aspirin [mechanism] *notes*</a> · text offset 110–178</small>",pharm high_yield
+sv-card-003,StudyVault Cloze,Loose,{{c1::One}} and {{c1::two}},,<small>Source quote: One and two are numbers &lt;b&gt;</small>,pharm high_yield
+sv-card-004,StudyVault Basic,Cardiology::Pharm,Which enzyme?<br>A. COX-1<br>B. LOX,A. COX-1<br><br>Irreversible acetylation.,"<small>Source: <a href=""https://example.com/a?utm=1"">Aspirin [mechanism] *notes*</a> · text offset 110–178</small>",pharm high_yield
+sv-card-005,StudyVault Basic,Cardiology::Pharm,'=cmd|' /C calc'!A0,&quot;quoted&quot;    and tab<br>newline,"<small>Source: <a href=""https://example.com/a?utm=1"">Aspirin [mechanism] *notes*</a> · text offset 110–178</small>",pharm high_yield

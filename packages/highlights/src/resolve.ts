@@ -620,8 +620,18 @@ export interface ResolveManyOptions {
   siblings?: readonly AnchorSet[];
 }
 
-const quoteOf = (anchor: AnchorSet): string | undefined =>
-  (anchor as Partial<HtmlAnchorSet>).textQuote?.exact;
+const quoteOf = (anchor: HtmlAnchorSet): string => anchor.textQuote.exact;
+
+const isHtml = (anchor: AnchorSet): anchor is HtmlAnchorSet => anchor.type === 'html';
+
+/** The text-stream engine resolves HTML anchors only; a PDF anchor belongs to the PDF reader. */
+const NOT_HTML: Resolution = {
+  status: 'orphaned',
+  confidence: 0,
+  range: null,
+  method: 'none',
+  candidateCount: 0,
+};
 
 /**
  * Resolves many anchors against one stream. Shares the stream, its lazily computed signature and
@@ -637,11 +647,14 @@ export function resolveMany(
   options: ResolveManyOptions = {},
 ): Map<string, Resolution> {
   const shared: Shared = { occurrences: new Map() };
-  const results = entries.map((e) => resolveExact(e.anchorSet, stream, shared));
+  const results = entries.map((e) =>
+    isHtml(e.anchorSet) ? resolveExact(e.anchorSet, stream, shared) : NOT_HTML,
+  );
 
   if (results.includes(null)) {
     const claims: Claims = { ranges: [], texts: new Set() };
     const claim = (anchor: AnchorSet, resolution: Resolution | null): void => {
+      if (!isHtml(anchor)) return;
       const quote = quoteOf(anchor);
       if (quote) claims.texts.add(quote);
       const span = resolution?.status === 'resolved' ? spans.get(resolution) : undefined;
@@ -649,12 +662,12 @@ export function resolveMany(
     };
     entries.forEach((e, i) => claim(e.anchorSet, results[i]!));
     for (const sibling of options.siblings ?? []) {
-      claim(sibling, resolveExact(sibling, stream, shared));
+      if (isHtml(sibling)) claim(sibling, resolveExact(sibling, stream, shared));
     }
 
     const fuzzy: number[] = [];
     entries.forEach((e, i) => {
-      if (results[i] !== null) return;
+      if (results[i] !== null || !isHtml(e.anchorSet)) return;
       results[i] = fuzzyResolve(e.anchorSet, stream, claims);
       if (results[i]!.status === 'changed') fuzzy.push(i);
     });
@@ -664,7 +677,9 @@ export function resolveMany(
       for (let b = a + 1; b < fuzzy.length; b++) {
         const i = fuzzy[a]!;
         const j = fuzzy[b]!;
-        if (quoteOf(entries[i]!.anchorSet) === quoteOf(entries[j]!.anchorSet)) continue;
+        const qi = entries[i]!.anchorSet;
+        const qj = entries[j]!.anchorSet;
+        if (isHtml(qi) && isHtml(qj) && quoteOf(qi) === quoteOf(qj)) continue;
         const [s1, e1] = spans.get(results[i]!)!;
         const [s2, e2] = spans.get(results[j]!)!;
         const overlap = Math.min(e1, e2) - Math.max(s1, s2);

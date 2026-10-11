@@ -3,6 +3,8 @@ export const SCHEMA_VERSION = 1 as const;
 
 /** Version of the text-stream algorithm used for anchors; stored on every anchor. */
 export const TEXT_ALGORITHM = 'sv-text-v1' as const;
+/** Page text-stream algorithm of the PDF reader (page text items, whitespace-collapsed). */
+export const PDF_TEXT_ALGORITHM = 'sv-pdf-text-v1' as const;
 
 export const MAX_QUOTE_CHARS = 10_000;
 export const MAX_CONTEXT_CHARS = 64;

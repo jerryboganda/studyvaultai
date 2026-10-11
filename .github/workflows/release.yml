@@ -1,0 +1,146 @@
+name: Release
+
+# Builds the distributable extension for a version tag and attaches checksums, an SBOM and the licence
+# report. It NEVER publishes to the Chrome Web Store: that needs the owner's developer account and is
+# a documented manual step (RELEASE.md). The only thing it creates is a DRAFT GitHub release, which
+# nobody sees until it is published by hand.
+#
+# Tag `vX.Y.Z` is a publishable release: the store documents must have no USER-REQUIRED markers left.
+# Tag `vX.Y.Z-rc.N` (any suffix) is a candidate: the same artifacts, markers allowed.
+# `gh workflow run release.yml --ref <branch>` is a dry run: everything except the draft release.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: 24
+
+jobs:
+  ci-green:
+    # The required gates (lint, typecheck, unit, build, e2e on Linux and Windows) are ci.yml's job.
+    # A release must be exactly a commit on which that workflow already succeeded.
+    name: CI is green for this commit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Require a successful ci.yml run for this exact commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          sha="$(git rev-parse HEAD)"
+          url="$(gh run list --workflow ci.yml --commit "$sha" --status success --limit 1 --json url --jq '.[0].url // empty')"
+          if [ -z "$url" ]; then
+            echo "::error::No successful ci.yml run exists for $sha. Let CI finish on this commit before tagging."
+            exit 1
+          fi
+          echo "CI run: $url"
+          {
+            echo '### CI gate'
+            echo "Commit \`$sha\` has a successful ci.yml run: $url"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: build, package, checksums, SBOM
+    needs: ci-green
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Tag matches package.json version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          tag="${GITHUB_REF_NAME%%-*}"
+          if [ "$tag" != "v$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $version"
+            exit 1
+          fi
+
+      - run: pnpm build
+      - name: Release gate (manifest, CSP, remote code, size budgets)
+        run: node scripts/check-build.mjs
+
+      - name: Licence audit
+        run: |
+          node scripts/license-report.mjs --self-test
+          mkdir -p release
+          node scripts/license-report.mjs --json release/licenses.json --markdown release/THIRD_PARTY_LICENSES.md
+
+      - name: Store documents match the built manifest
+        run: |
+          strict=""
+          if [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then strict="--strict"; fi
+          node scripts/check-release-docs.mjs $strict
+
+      - run: pnpm zip
+
+      - name: Checksums and SBOM
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          cp .output/studyvault-ai-*-chrome.zip release/
+          zip_file="$(ls release/studyvault-ai-*-chrome.zip)"
+          node scripts/sbom.mjs --out "release/studyvault-ai-${version}.cdx.json" \
+            --artifact "$zip_file" --timestamp "$(git log -1 --format=%cI)"
+          cd release
+          find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\n' | sort | xargs sha256sum > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          {
+            echo '### Release artifacts'
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release
+          path: release
+          if-no-files-found: error
+
+  reproducible:
+    name: reproducible build
+    needs: ci-green
+    permissions:
+      contents: read
+    uses: ./.github/workflows/reproducible-build.yml
+
+  draft-release:
+    name: draft GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, reproducible]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: release
+          path: release
+      - name: Create a DRAFT release (review it, then publish by hand)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          flags="--draft --verify-tag --generate-notes"
+          case "$GITHUB_REF_NAME" in *-*) flags="$flags --prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" release/* --title "StudyVault AI $GITHUB_REF_NAME" $flags

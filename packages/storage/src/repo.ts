@@ -1,17 +1,12 @@
-import type { z } from 'zod';
 import { uuidv7 } from 'uuidv7';
-import { bumpDataEpoch, bumpResolutionEpoch, revokeAllSiteAccess } from '@runtime';
+import { revokeAllSiteAccess } from '@runtime';
 import { browser } from 'wxt/browser';
 import {
   Bank,
   CaptureInput,
   COLOR_IDS,
   Highlight,
-  HighlightBank,
   HighlightPatch,
-  Id,
-  INBOX_BANK_ID,
-  INBOX_BANK_NAME,
   MAX_QUOTE_CHARS,
   MAX_URL_CHARS,
   ResolutionReport,
@@ -21,327 +16,41 @@ import {
   redactUrl,
   sourceKeys,
   trustedCanonical,
-  type AnchorSet,
   type BankLite,
+  type BankRecord,
   type CaptureResult,
   type HighlightView,
 } from '@shared';
-import { deleteDatabase, withDb, withWritableDb, type StudyVaultDb } from './db';
+import {
+  addMembership,
+  allTables,
+  cmp,
+  ensureInbox,
+  isDeleted,
+  isPrimary,
+  liveHighlight,
+  liveHighlightsOf,
+  matchSources,
+  now,
+  parseInput,
+  parseRow,
+  readBanks,
+  requireId,
+  keysWhereIn,
+  resolveTargetBank,
+  samePlace,
+  signalChange,
+  signalResolution,
+  toItems,
+  toLite,
+  toViews,
+} from './core';
+import { deleteDatabase, withDb, withWritableDb } from './db';
 import { normalizeQuote, quoteHash } from './normalize';
-import { normaliseRow } from './rows';
 import type { BankWithCount, HighlightListItem, RepoApi } from './types';
 
 // ---------------------------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------------------------
-
-const now = () => new Date().toISOString();
-const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
-const notNull = <T>(v: T | null): v is T => v !== null;
-const isDeleted = (row: { deletedAt?: unknown }) => typeof row.deletedAt === 'string';
-const allTables = (db: StudyVaultDb) => [db.banks, db.sources, db.highlights, db.highlightBanks];
-
-function parseInput<T>(schema: z.ZodType<T>, value: unknown, what: string): T {
-  const result = schema.safeParse(value);
-  if (!result.success) {
-    throw new StudyVaultError('invalid_request', `Invalid ${what}: ${result.error.message}`);
-  }
-  return result.data;
-}
-
-const requireId = (id: string) => parseInput(Id, id, 'id');
-
-/**
- * Rows are validated on the way out (after `normaliseRow`, so every schemaVersion >= 1 is read);
- * a corrupt row is skipped (and logged), never fatal. A row that fails here is only ever skipped:
- * no code path may write over a row it could not read.
- */
-function parseRow<T>(schema: z.ZodType<T>, row: unknown, table: string): T | null {
-  const result = schema.safeParse(normaliseRow(row));
-  if (result.success) return result.data;
-  const id = (row as { id?: unknown } | null | undefined)?.id;
-  console.warn(`[StudyVault] skipping invalid ${table} row`, id, result.error.message);
-  return null;
-}
-
-/**
- * Tell other contexts something changed. Serialised so two quick writes cannot read the same
- * counter value and collapse into one notification. Never throws: liveness must not fail a write.
- */
-function signaller(bump: () => Promise<void>, name: string): () => Promise<void> {
-  let chain: Promise<void> = Promise.resolve();
-  return () => {
-    chain = chain
-      .then(bump)
-      .catch((err: unknown) => console.warn(`[StudyVault] ${name} failed`, err));
-    return chain;
-  };
-}
-
-/** Highlights, notes or banks changed: every viewer re-fetches. */
-const signalChange = signaller(bumpDataEpoch, 'bumpDataEpoch');
-/** Only resolver outcomes changed: panels refresh their badges, content scripts are not woken. */
-const signalResolution = signaller(bumpResolutionEpoch, 'bumpResolutionEpoch');
-
-// ---------------------------------------------------------------------------------------------
-// banks
-// ---------------------------------------------------------------------------------------------
-
-const defaultInbox = (ts: string): Bank => ({
-  id: INBOX_BANK_ID,
-  schemaVersion: SCHEMA_VERSION,
-  createdAt: ts,
-  updatedAt: ts,
-  deletedAt: null,
-  name: INBOX_BANK_NAME,
-  color: 'blue',
-  position: 0,
-  isInbox: true,
-});
-
-const toLite = (b: Bank): BankLite => ({
-  id: b.id,
-  name: b.name,
-  color: b.color,
-  isInbox: b.isInbox,
-});
-
-/**
- * Live banks in display order. Reads never write (Dexie forbids writes inside liveQuery), so an
- * Inbox that has not been persisted yet is reported virtually; saveCapture/createBank persist it.
- */
-async function readBanks(db: StudyVaultDb): Promise<Bank[]> {
-  const rows = await db.banks.toArray();
-  const banks = rows
-    .map((r) => parseRow(Bank, r, 'bank'))
-    .filter(notNull)
-    .filter((b) => b.deletedAt === null);
-  if (!banks.some((b) => b.id === INBOX_BANK_ID))
-    banks.push(defaultInbox(new Date(0).toISOString()));
-  return banks.sort(
-    (a, b) => a.position - b.position || cmp(a.createdAt, b.createdAt) || cmp(a.id, b.id),
-  );
-}
-
-/**
- * Idempotent. Call only inside a readwrite transaction that includes `banks`. A row that exists is
- * never replaced: a deleted Inbox is revived field by field, and one that cannot be read stops the
- * write instead of being overwritten by a fresh default (which would also hide the data in it).
- */
-async function ensureInbox(db: StudyVaultDb, ts: string): Promise<Bank> {
-  const stored = await db.banks.get(INBOX_BANK_ID);
-  if (stored === undefined) {
-    const inbox = defaultInbox(ts);
-    await db.banks.add(inbox);
-    return inbox;
-  }
-  const parsed = parseRow(Bank, stored, 'bank');
-  if (!parsed) {
-    throw new StudyVaultError(
-      'storage_unavailable',
-      'The Inbox record in the local database could not be read, so nothing was saved and nothing was overwritten. Choose another bank, or export your data and report this.',
-    );
-  }
-  if (parsed.deletedAt === null && parsed.isInbox) return parsed;
-  const revived = { isInbox: true, deletedAt: null, updatedAt: ts };
-  await db.banks.update(INBOX_BANK_ID, revived);
-  return { ...parsed, ...revived };
-}
-
-async function resolveTargetBank(
-  db: StudyVaultDb,
-  bankId: string | null,
-  ts: string,
-): Promise<Bank> {
-  if (bankId && bankId !== INBOX_BANK_ID) {
-    const stored = await db.banks.get(bankId);
-    const parsed = stored ? parseRow(Bank, stored, 'bank') : null;
-    if (parsed && parsed.deletedAt === null) return parsed;
-  }
-  return ensureInbox(db, ts);
-}
-
-// ---------------------------------------------------------------------------------------------
-// joins
-// ---------------------------------------------------------------------------------------------
-
-const toView = (h: Highlight, bankIds: string[]): HighlightView => ({
-  id: h.id,
-  sourceId: h.sourceId,
-  exactQuote: h.exactQuote,
-  anchorSet: h.anchorSet,
-  kind: h.kind,
-  color: h.color,
-  priority: h.priority,
-  userComment: h.userComment,
-  headingContext: h.headingContext,
-  bankIds,
-  capturedAt: h.capturedAt,
-  resolveStatus: h.resolveStatus,
-  resolveConfidence: h.resolveConfidence,
-});
-
-/** highlightId -> ids of the live banks it is filed in, oldest membership first. */
-async function bankIdsByHighlight(
-  db: StudyVaultDb,
-  highlightIds: string[],
-  liveBankIds: ReadonlySet<string>,
-): Promise<Map<string, string[]>> {
-  const out = new Map<string, string[]>();
-  if (highlightIds.length === 0) return out;
-  const rows = await db.highlightBanks.where('highlightId').anyOf(highlightIds).toArray();
-  const members = rows
-    .map((r) => parseRow(HighlightBank, r, 'highlightBank'))
-    .filter(notNull)
-    .filter((m) => liveBankIds.has(m.bankId))
-    .sort((a, b) => cmp(a.addedAt, b.addedAt) || cmp(a.bankId, b.bankId));
-  for (const m of members) {
-    const list = out.get(m.highlightId) ?? [];
-    list.push(m.bankId);
-    out.set(m.highlightId, list);
-  }
-  return out;
-}
-
-async function toViews(db: StudyVaultDb, rows: Highlight[]): Promise<HighlightView[]> {
-  // Nothing to join: touching the database again would run requests across a gap in which an
-  // idle read transaction auto-commits (Dexie PrematureCommit seen on CI for an empty page).
-  if (rows.length === 0) return [];
-  const banks = await readBanks(db);
-  const memberships = await bankIdsByHighlight(
-    db,
-    rows.map((r) => r.id),
-    new Set(banks.map((b) => b.id)),
-  );
-  return rows.map((r) => toView(r, memberships.get(r.id) ?? []));
-}
-
-async function toItems(db: StudyVaultDb, rows: Highlight[]): Promise<HighlightListItem[]> {
-  if (rows.length === 0) return []; // see toViews: no database work for an empty result
-  const banks = new Map((await readBanks(db)).map((b) => [b.id, b]));
-  const memberships = await bankIdsByHighlight(
-    db,
-    rows.map((r) => r.id),
-    new Set(banks.keys()),
-  );
-  const sourceRows = await db.sources.bulkGet([...new Set(rows.map((r) => r.sourceId))]);
-  const sources = new Map<string, Source>();
-  for (const row of sourceRows) {
-    const source = row ? parseRow(Source, row, 'source') : null;
-    if (source) sources.set(source.id, source);
-  }
-  const items: HighlightListItem[] = [];
-  for (const row of rows) {
-    const source = sources.get(row.sourceId);
-    if (!source) {
-      console.warn('[StudyVault] skipping highlight without a source', row.id);
-      continue;
-    }
-    const bankIds = memberships.get(row.id) ?? [];
-    items.push({
-      highlight: toView(row, bankIds),
-      source: {
-        id: source.id,
-        title: source.title,
-        host: source.host,
-        originalUrl: source.originalUrl,
-        canonicalUrl: source.canonicalUrl,
-        urlKey: source.urlKey,
-      },
-      banks: bankIds.flatMap((id) => {
-        const bank = banks.get(id);
-        return bank ? [toLite(bank)] : [];
-      }),
-    });
-  }
-  return items;
-}
-
-// ---------------------------------------------------------------------------------------------
-// sources & duplicate detection
-// ---------------------------------------------------------------------------------------------
-
-interface PageKeys {
-  urlKey: string;
-  visitedKey: string;
-}
-
-/**
- * Every live source that may be this page: its urlKey or visitedKey equals either key of the
- * page. Ordered best-first (urlKey match, then visitedKey match, then cross matches), so the
- * first "primary" entry is the one a capture is filed under.
- */
-async function matchSources(db: StudyVaultDb, keys: PageKeys): Promise<Source[]> {
-  const probe = [...new Set([keys.urlKey, keys.visitedKey])];
-  const found = new Map<string, Source>();
-  for (const index of ['urlKey', 'visitedKey'] as const) {
-    for (const row of await db.sources.where(index).anyOf(probe).toArray()) found.set(row.id, row);
-  }
-  const rank = (s: Source) =>
-    s.urlKey === keys.urlKey ? 0 : s.visitedKey === keys.visitedKey ? 1 : 2;
-  return [...found.values()]
-    .map((r) => parseRow(Source, r, 'source'))
-    .filter(notNull)
-    .filter((s) => s.deletedAt === null)
-    .sort((a, b) => rank(a) - rank(b) || cmp(a.createdAt, b.createdAt) || cmp(a.id, b.id));
-}
-
-const isPrimary = (s: Source, keys: PageKeys) =>
-  s.urlKey === keys.urlKey || s.visitedKey === keys.visitedKey;
-
-/** Live highlights of the given sources in document order. */
-async function liveHighlightsOf(db: StudyVaultDb, sourceIds: string[]): Promise<Highlight[]> {
-  const out: Highlight[] = [];
-  for (const sourceId of sourceIds) {
-    for (const row of await db.highlights.where('sourceId').equals(sourceId).toArray()) {
-      if (isDeleted(row)) continue;
-      const parsed = parseRow(Highlight, row, 'highlight');
-      if (parsed) out.push(parsed);
-    }
-  }
-  return out.sort(
-    (a, b) =>
-      a.anchorSet.textPosition.start - b.anchorSet.textPosition.start ||
-      cmp(a.capturedAt, b.capturedAt) ||
-      cmp(a.id, b.id),
-  );
-}
-
-/**
- * Same quote at "the same place". Offsets only mean something inside one version of the document,
- * so they count only when both captures saw the same text stream (equal signature and length): an
- * edited page shifts every offset, and an unrelated repeat of the sentence can land on an old range.
- *  - same document: overlapping ranges, or identical context on both sides (a repeated block);
- *  - otherwise: the text just before OR just after must match (the page changed on one side).
- */
-function samePlace(a: AnchorSet, b: AnchorSet): boolean {
-  if (a.type !== 'html' || b.type !== 'html') return false;
-  const sameStream =
-    a.contentSignature === b.contentSignature && a.documentTextLength === b.documentTextLength;
-  if (sameStream) {
-    const overlap =
-      a.textPosition.start < b.textPosition.end && b.textPosition.start < a.textPosition.end;
-    return (
-      overlap ||
-      (a.textQuote.prefix === b.textQuote.prefix && a.textQuote.suffix === b.textQuote.suffix)
-    );
-  }
-  return a.textQuote.prefix === b.textQuote.prefix || a.textQuote.suffix === b.textQuote.suffix;
-}
-
-async function addMembership(
-  db: StudyVaultDb,
-  highlightId: string,
-  bankId: string,
-  ts: string,
-): Promise<boolean> {
-  if (await db.highlightBanks.get([highlightId, bankId])) return false;
-  await db.highlightBanks.put({ highlightId, bankId, folderId: null, addedAt: ts });
-  return true;
-}
-
-// ---------------------------------------------------------------------------------------------
-// RepoApi
+// RepoApi (Phase 1 contract). Shared helpers live in ./core.
 // ---------------------------------------------------------------------------------------------
 
 export async function saveCapture(input: CaptureInput): Promise<CaptureResult> {
@@ -492,13 +201,6 @@ export async function getPageHighlights(
   );
 }
 
-async function liveHighlight(db: StudyVaultDb, id: string): Promise<Highlight> {
-  const row = await db.highlights.get(id);
-  const parsed = row && !isDeleted(row) ? parseRow(Highlight, row, 'highlight') : null;
-  if (!parsed) throw new StudyVaultError('not_found', 'Highlight not found');
-  return parsed;
-}
-
 export async function updateHighlight(id: string, patch: HighlightPatch): Promise<HighlightView> {
   requireId(id);
   const parsed = parseInput(HighlightPatch, patch, 'highlight patch');
@@ -619,7 +321,7 @@ export async function createBank(name: string): Promise<BankLite> {
       // number sorts last in IndexedDB) cannot make us write a bank that fails validation.
       const top = Math.max(0, ...(await readBanks(db)).map((b) => b.position));
       const position = Math.floor(top) + 1;
-      const row: Bank = {
+      const row: BankRecord = {
         id: uuidv7(),
         schemaVersion: SCHEMA_VERSION,
         createdAt: ts,
@@ -685,23 +387,28 @@ export async function listBanksWithCounts(): Promise<BankWithCount[]> {
   return withDb((db) =>
     db.transaction('r', [db.banks, db.highlights, db.highlightBanks], async () => {
       const banks = await readBanks(db);
-      // Keys only: counting must not deserialise every highlight body. A corrupt row that a list
-      // would skip still counts here.
-      const live = new Set<unknown>(await db.highlights.toCollection().primaryKeys());
-      for (const key of await db.highlights.where('deletedAt').above('').primaryKeys()) {
-        live.delete(key);
+      // Index counts (no row is deserialised: a corrupt row that a list would skip still counts),
+      // minus the memberships of the few highlights that are in the trash.
+      const trashed = (await db.highlights.where('deletedAt').above('').primaryKeys()) as string[];
+      // Keys only: a membership's primary key is [highlightId, bankId].
+      const gone = (await keysWhereIn(db.highlightBanks, 'highlightId', trashed)) as Array<
+        [string, string]
+      >;
+      const out: BankWithCount[] = [];
+      for (const bank of banks) {
+        const all = await db.highlightBanks.where('bankId').equals(bank.id).count();
+        const trashedHere = gone.filter((k) => k[1] === bank.id).length;
+        out.push({ bank: toLite(bank), count: Math.max(0, all - trashedHere) });
       }
-      const counts = new Map<string, number>();
-      await db.highlightBanks.each((m) => {
-        if (live.has(m.highlightId)) counts.set(m.bankId, (counts.get(m.bankId) ?? 0) + 1);
-      });
-      return banks.map((b) => ({ bank: toLite(b), count: counts.get(b.id) ?? 0 }));
+      return out;
     }),
   );
 }
 
 export async function wipeAllData(): Promise<void> {
   // The database first: if it cannot be deleted (another window holds it) nothing else is touched.
+  // Deleting the database drops every table of every schema version (vault, study, ai, sync, PDF
+  // bytes and OCR text included); the next use recreates it empty.
   await deleteDatabase();
   await browser.storage.local.clear();
   await browser.storage.session?.clear();

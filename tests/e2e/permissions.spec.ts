@@ -814,7 +814,7 @@ prodTest.describe('production build', () => {
     // Extension pages may only talk to themselves (SECURITY_PRIVACY: "nothing leaves the device").
     expect(manifest.content_security_policy).toEqual({
       extension_pages:
-        "script-src 'self'; object-src 'self'; base-uri 'self'; connect-src 'self'; frame-src 'none'; form-action 'none'",
+        "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; base-uri 'self'; connect-src 'self'; frame-src 'none'; form-action 'none'",
     });
     expect(Object.keys(manifest.commands ?? {}).sort()).toEqual([
       'focus-toolbar',

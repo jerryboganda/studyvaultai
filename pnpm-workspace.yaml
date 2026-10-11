@@ -1,2 +1,5 @@
 minimumReleaseAgeExclude:
   - prettier@3.9.10
+# Dependency install scripts are denied unless listed. tesseract.js only prints a donation banner.
+allowBuilds:
+  tesseract.js: false

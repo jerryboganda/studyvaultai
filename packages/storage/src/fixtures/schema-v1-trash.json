@@ -1,0 +1,287 @@
+{
+  "_note": "Frozen snapshot of what the schema-version-1 build wrote. Never regenerate: it exists to prove that current code still reads, upgrades and extends real v1 data. This one has soft-deleted highlights, a deleted bank, a highlight filed in no bank and one quote saved from two pages.",
+  "banks": [
+    {
+      "id": "inbox-default",
+      "schemaVersion": 1,
+      "createdAt": "2026-09-01T08:00:00.000Z",
+      "updatedAt": "2026-09-01T08:00:00.000Z",
+      "deletedAt": null,
+      "name": "Inbox",
+      "color": "blue",
+      "position": 0,
+      "isInbox": true
+    },
+    {
+      "id": "bank-renal-0001",
+      "schemaVersion": 1,
+      "createdAt": "2026-09-02T08:00:00.000Z",
+      "updatedAt": "2026-09-02T08:00:00.000Z",
+      "deletedAt": null,
+      "name": "Renal",
+      "color": "teal",
+      "position": 1,
+      "isInbox": false
+    },
+    {
+      "id": "bank-gone-00001",
+      "schemaVersion": 1,
+      "createdAt": "2026-09-03T08:00:00.000Z",
+      "updatedAt": "2026-09-03T08:00:00.000Z",
+      "deletedAt": "2026-09-20T08:00:00.000Z",
+      "name": "Abandoned",
+      "color": "red",
+      "position": 2,
+      "isInbox": false
+    }
+  ],
+  "sources": [
+    {
+      "id": "src-a-0000001",
+      "schemaVersion": 1,
+      "createdAt": "2026-09-01T09:00:00.000Z",
+      "updatedAt": "2026-09-01T09:00:00.000Z",
+      "deletedAt": null,
+      "type": "web",
+      "urlKey": "https://example.org/endocrine",
+      "visitedKey": "https://example.org/endocrine",
+      "originalUrl": "https://example.org/endocrine",
+      "canonicalUrl": null,
+      "host": "example.org",
+      "title": "Endocrine notes"
+    },
+    {
+      "id": "src-b-0000001",
+      "schemaVersion": 1,
+      "createdAt": "2026-09-04T09:00:00.000Z",
+      "updatedAt": "2026-09-04T09:00:00.000Z",
+      "deletedAt": null,
+      "type": "web",
+      "urlKey": "https://example.com/diabetes",
+      "visitedKey": "https://example.com/diabetes",
+      "originalUrl": "https://example.com/diabetes",
+      "canonicalUrl": null,
+      "host": "example.com",
+      "title": "Diabetes overview"
+    }
+  ],
+  "highlights": [
+    {
+      "id": "hl-live-0000001",
+      "schemaVersion": 1,
+      "createdAt": "2026-09-01T09:10:00.000Z",
+      "updatedAt": "2026-09-01T09:10:00.000Z",
+      "deletedAt": null,
+      "sourceId": "src-a-0000001",
+      "exactQuote": "Metformin lowers hepatic glucose output.",
+      "normalizedQuote": "metformin lowers hepatic glucose output.",
+      "quoteHash": "0c6a04f27514eee2078b2a776ec6ad164a94e9b95438b52b965a5c3c67f29fb3",
+      "anchorSet": {
+        "type": "html",
+        "textAlgorithm": "sv-text-v1",
+        "textQuote": {
+          "exact": "Metformin lowers hepatic glucose output.",
+          "prefix": "before ",
+          "suffix": " after"
+        },
+        "textPosition": {
+          "start": 200,
+          "end": 240
+        },
+        "structuralPath": null,
+        "contentSignature": "sig-v1",
+        "documentTextLength": 5000
+      },
+      "kind": "essential",
+      "color": "amber",
+      "priority": 3,
+      "userComment": "",
+      "headingContext": null,
+      "captureMethod": "toolbar",
+      "capturedAt": "2026-09-01T09:10:00.000Z",
+      "resolveStatus": "resolved",
+      "resolveConfidence": 1,
+      "lastResolvedAt": "2026-09-01T09:10:00.000Z"
+    },
+    {
+      "id": "hl-bankless-001",
+      "schemaVersion": 1,
+      "createdAt": "2026-09-02T09:10:00.000Z",
+      "updatedAt": "2026-09-02T09:10:00.000Z",
+      "deletedAt": null,
+      "sourceId": "src-a-0000001",
+      "exactQuote": "Sulfonylureas close K-ATP channels.",
+      "normalizedQuote": "sulfonylureas close k-atp channels.",
+      "quoteHash": "741afee8c0949a37a430bc91325edc621c649acddda5844067211a99503f15be",
+      "anchorSet": {
+        "type": "html",
+        "textAlgorithm": "sv-text-v1",
+        "textQuote": {
+          "exact": "Sulfonylureas close K-ATP channels.",
+          "prefix": "before ",
+          "suffix": " after"
+        },
+        "textPosition": {
+          "start": 900,
+          "end": 935
+        },
+        "structuralPath": null,
+        "contentSignature": "sig-v1",
+        "documentTextLength": 5000
+      },
+      "kind": "formula",
+      "color": "blue",
+      "priority": 4,
+      "userComment": "",
+      "headingContext": null,
+      "captureMethod": "toolbar",
+      "capturedAt": "2026-09-02T09:10:00.000Z",
+      "resolveStatus": "resolved",
+      "resolveConfidence": 1,
+      "lastResolvedAt": "2026-09-02T09:10:00.000Z"
+    },
+    {
+      "id": "hl-trashed-0001",
+      "schemaVersion": 1,
+      "createdAt": "2026-09-05T09:10:00.000Z",
+      "updatedAt": "2026-09-21T10:00:00.000Z",
+      "deletedAt": "2026-09-21T10:00:00.000Z",
+      "sourceId": "src-a-0000001",
+      "exactQuote": "Insulin glargine has no pronounced peak.",
+      "normalizedQuote": "insulin glargine has no pronounced peak.",
+      "quoteHash": "ccf8736791cf9a4c1abf783ab042f71ceda99df07911931ce1878c618beae580",
+      "anchorSet": {
+        "type": "html",
+        "textAlgorithm": "sv-text-v1",
+        "textQuote": {
+          "exact": "Insulin glargine has no pronounced peak.",
+          "prefix": "before ",
+          "suffix": " after"
+        },
+        "textPosition": {
+          "start": 1500,
+          "end": 1540
+        },
+        "structuralPath": null,
+        "contentSignature": "sig-v1",
+        "documentTextLength": 5000
+      },
+      "kind": "exception",
+      "color": "red",
+      "priority": 3,
+      "userComment": "",
+      "headingContext": null,
+      "captureMethod": "toolbar",
+      "capturedAt": "2026-09-05T09:10:00.000Z",
+      "resolveStatus": "resolved",
+      "resolveConfidence": 1,
+      "lastResolvedAt": "2026-09-05T09:10:00.000Z"
+    },
+    {
+      "id": "hl-trashed-0002",
+      "schemaVersion": 1,
+      "createdAt": "2026-09-06T09:10:00.000Z",
+      "updatedAt": "2026-09-22T10:00:00.000Z",
+      "deletedAt": "2026-09-22T10:00:00.000Z",
+      "sourceId": "src-b-0000001",
+      "exactQuote": "Metformin is contraindicated in severe renal failure.",
+      "normalizedQuote": "metformin is contraindicated in severe renal failure.",
+      "quoteHash": "141601d3653166452d80657185137526b561cc2c5fb079be8f5c2892e08921e2",
+      "anchorSet": {
+        "type": "html",
+        "textAlgorithm": "sv-text-v1",
+        "textQuote": {
+          "exact": "Metformin is contraindicated in severe renal failure.",
+          "prefix": "before ",
+          "suffix": " after"
+        },
+        "textPosition": {
+          "start": 400,
+          "end": 453
+        },
+        "structuralPath": null,
+        "contentSignature": "sig-v1",
+        "documentTextLength": 5000
+      },
+      "kind": "weak_area",
+      "color": "orange",
+      "priority": 5,
+      "userComment": "",
+      "headingContext": null,
+      "captureMethod": "toolbar",
+      "capturedAt": "2026-09-06T09:10:00.000Z",
+      "resolveStatus": "resolved",
+      "resolveConfidence": 1,
+      "lastResolvedAt": "2026-09-06T09:10:00.000Z"
+    },
+    {
+      "id": "hl-repeat-00001",
+      "schemaVersion": 1,
+      "createdAt": "2026-09-04T09:10:00.000Z",
+      "updatedAt": "2026-09-04T09:10:00.000Z",
+      "deletedAt": null,
+      "sourceId": "src-b-0000001",
+      "exactQuote": "Metformin lowers hepatic glucose output.",
+      "normalizedQuote": "metformin lowers hepatic glucose output.",
+      "quoteHash": "0c6a04f27514eee2078b2a776ec6ad164a94e9b95438b52b965a5c3c67f29fb3",
+      "anchorSet": {
+        "type": "html",
+        "textAlgorithm": "sv-text-v1",
+        "textQuote": {
+          "exact": "Metformin lowers hepatic glucose output.",
+          "prefix": "overview: ",
+          "suffix": " (mechanism)"
+        },
+        "textPosition": {
+          "start": 120,
+          "end": 160
+        },
+        "structuralPath": null,
+        "contentSignature": "sig-b",
+        "documentTextLength": 3000
+      },
+      "kind": "essential",
+      "color": "amber",
+      "priority": 3,
+      "userComment": "same fact, other page",
+      "headingContext": null,
+      "captureMethod": "toolbar",
+      "capturedAt": "2026-09-04T09:10:00.000Z",
+      "resolveStatus": "resolved",
+      "resolveConfidence": 1,
+      "lastResolvedAt": "2026-09-04T09:10:00.000Z"
+    }
+  ],
+  "highlightBanks": [
+    {
+      "highlightId": "hl-live-0000001",
+      "bankId": "bank-renal-0001",
+      "folderId": null,
+      "addedAt": "2026-09-01T09:10:00.000Z"
+    },
+    {
+      "highlightId": "hl-live-0000001",
+      "bankId": "inbox-default",
+      "folderId": null,
+      "addedAt": "2026-09-01T09:11:00.000Z"
+    },
+    {
+      "highlightId": "hl-trashed-0001",
+      "bankId": "bank-gone-00001",
+      "folderId": null,
+      "addedAt": "2026-09-05T09:10:00.000Z"
+    },
+    {
+      "highlightId": "hl-trashed-0002",
+      "bankId": "inbox-default",
+      "folderId": null,
+      "addedAt": "2026-09-06T09:10:00.000Z"
+    },
+    {
+      "highlightId": "hl-repeat-00001",
+      "bankId": "inbox-default",
+      "folderId": null,
+      "addedAt": "2026-09-04T09:10:00.000Z"
+    }
+  ]
+}

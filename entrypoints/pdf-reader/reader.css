@@ -1,0 +1,392 @@
+/*
+ * PDF reader (UX_DESIGN surface 5). Tokens come from @ui; page paper stays white in dark mode because
+ * the document is what it is, only the chrome around it themes. Meaning never relies on colour alone:
+ * every highlight kind has an underline style (KIND_DECORATION) and a list entry with a label.
+ */
+html,
+body,
+#root {
+  height: 100%;
+}
+.sv-app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Open screen ------------------------------------------------------------------------------ */
+.sv-open {
+  width: min(44rem, 100%);
+  margin: 0 auto;
+  padding: var(--sv-space-6) var(--sv-space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-4);
+}
+.sv-open__card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sv-space-3);
+  padding: var(--sv-space-4);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface);
+}
+.sv-drop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: var(--sv-space-5);
+  border: 4px dashed var(--sv-accent);
+  background: color-mix(in srgb, var(--sv-bg) 82%, var(--sv-accent));
+  color: var(--sv-text);
+  font-size: var(--sv-text-lg);
+  font-weight: 600;
+  text-align: center;
+  pointer-events: none;
+}
+
+/* Document shell --------------------------------------------------------------------------- */
+.sv-doc {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.sv-doc > .sv-notice {
+  margin: var(--sv-space-2) var(--sv-space-4) 0;
+}
+.sv-doc__head {
+  padding: var(--sv-space-2) var(--sv-space-4) 0;
+}
+.sv-doc__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sv-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sv-space-2) var(--sv-space-4);
+  padding: var(--sv-space-2) var(--sv-space-4);
+  border-bottom: 1px solid var(--sv-border);
+  background: var(--sv-bg);
+}
+.sv-toolbar__group {
+  display: flex;
+  align-items: center;
+  gap: var(--sv-space-1);
+}
+.sv-toolbar__end {
+  margin-inline-start: auto;
+}
+.sv-toolbar__page {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sv-space-1);
+  white-space: nowrap;
+}
+.sv-toolbar__pageinput {
+  width: 4.5rem;
+}
+.sv-toolbar__zoom {
+  width: auto;
+  min-width: 8rem;
+}
+.sv-toolbar__search .sv-control {
+  width: 13rem;
+}
+.sv-toolbar__count {
+  min-width: 6rem;
+}
+
+.sv-doc__main {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+}
+.sv-doc__main--split {
+  grid-template-columns: minmax(0, 1fr) minmax(18rem, 24rem);
+}
+@media (max-width: 900px) {
+  .sv-doc__main--split {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(0, 40%);
+  }
+  .sv-companion {
+    border-inline-start: 0;
+    border-block-start: 1px solid var(--sv-border);
+  }
+}
+
+/* Pages ------------------------------------------------------------------------------------ */
+.sv-viewer {
+  position: relative;
+  min-height: 0;
+  overflow: auto;
+  padding: var(--sv-space-4);
+  background: var(--sv-surface);
+  scroll-behavior: auto;
+}
+.sv-pages {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sv-space-3);
+  min-width: min-content;
+}
+.sv-slot {
+  flex: none;
+}
+.sv-page {
+  position: relative;
+  background: #ffffff;
+  box-shadow:
+    0 0 0 1px var(--sv-border),
+    0 2px 8px rgba(15, 23, 42, 0.15);
+  overflow: hidden;
+}
+.sv-slot__note {
+  margin-top: var(--sv-space-1);
+  color: var(--sv-text-muted);
+  text-align: center;
+}
+.sv-slot__warn {
+  color: var(--sv-warning);
+  font-weight: 600;
+}
+.sv-pdf-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+
+/* Text layer: the subset of pdf.js's .textLayer rules this reader needs, scoped to our class. */
+.sv-textlayer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: clip;
+  opacity: 1;
+  text-align: initial;
+  line-height: 1;
+  letter-spacing: normal;
+  word-spacing: normal;
+  text-size-adjust: none;
+  -webkit-text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  caret-color: CanvasText;
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+.sv-textlayer :is(span, br) {
+  position: absolute;
+  color: transparent;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.sv-textlayer > span {
+  --font-height: 0;
+  --scale-x: 1;
+  --rotate: 0deg;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+.sv-textlayer ::selection {
+  background: rgba(0, 0, 255, 0.25);
+  background: color-mix(in srgb, AccentColor, transparent 50%);
+  color: transparent;
+}
+.sv-textlayer br::selection {
+  background: transparent;
+}
+.sv-textlayer .endOfContent {
+  display: block;
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: 0;
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.sv-textlayer.selecting .endOfContent {
+  top: 0;
+}
+/* The layer is laid out in the raw page frame and rotated as a block (pdf.js does the same). */
+.sv-textlayer[data-main-rotation='90'] {
+  transform: rotate(90deg) translateY(-100%);
+}
+.sv-textlayer[data-main-rotation='180'] {
+  transform: rotate(180deg) translate(-100%, -100%);
+}
+.sv-textlayer[data-main-rotation='270'] {
+  transform: rotate(270deg) translateX(-100%);
+}
+
+/* Overlays: highlights, search matches, the pending selection. */
+.sv-pdf-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+.sv-pdf-hl {
+  position: absolute;
+  background: var(--sv-hl-fill);
+  mix-blend-mode: multiply;
+  pointer-events: none;
+}
+.sv-pdf-hl__rule {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  height: calc(var(--sv-hl-w) + 6px);
+  border-bottom: var(--sv-hl-w) solid var(--sv-hl-solid);
+  mix-blend-mode: normal;
+  pointer-events: auto;
+  cursor: pointer;
+}
+.sv-pdf-hl[data-deco='double'] .sv-pdf-hl__rule {
+  border-bottom-style: double;
+}
+.sv-pdf-hl[data-deco='dotted'] .sv-pdf-hl__rule {
+  border-bottom-style: dotted;
+}
+.sv-pdf-hl[data-deco='dashed'] .sv-pdf-hl__rule {
+  border-bottom-style: dashed;
+}
+.sv-pdf-hl[data-deco='wavy'] .sv-pdf-hl__rule {
+  border-bottom: 0;
+  background: var(--sv-hl-solid);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='4'%3E%3Cpath d='M0 3 Q2 0 4 3 T8 3' fill='none' stroke='black' stroke-width='1.6'/%3E%3C/svg%3E")
+    repeat-x left bottom / 8px 4px;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='4'%3E%3Cpath d='M0 3 Q2 0 4 3 T8 3' fill='none' stroke='black' stroke-width='1.6'/%3E%3C/svg%3E")
+    repeat-x left bottom / 8px 4px;
+}
+.sv-pdf-hl[data-selected='true'] {
+  outline: 2px solid var(--sv-focus);
+  outline-offset: 1px;
+}
+.sv-pdf-find {
+  position: absolute;
+  background: rgba(255, 200, 0, 0.45);
+  outline: 1px solid #b45309;
+}
+.sv-pdf-find[data-current='true'] {
+  background: rgba(255, 140, 0, 0.55);
+  outline: 2px solid #7c2d12;
+}
+.sv-pdf-pending {
+  position: absolute;
+  background: rgba(37, 99, 235, 0.22);
+  outline: 1px dashed #1d4ed8;
+}
+@media (prefers-contrast: more) {
+  .sv-pdf-hl__rule {
+    border-bottom-width: calc(var(--sv-hl-w) + 1px);
+  }
+}
+@media (forced-colors: active) {
+  .sv-pdf-hl,
+  .sv-pdf-pending {
+    background: transparent;
+    mix-blend-mode: normal;
+  }
+  .sv-pdf-hl__rule {
+    border-bottom-color: CanvasText;
+  }
+  .sv-pdf-hl[data-deco='wavy'] .sv-pdf-hl__rule {
+    -webkit-mask: none;
+    mask: none;
+    background: none;
+    border-bottom: var(--sv-hl-w) groove CanvasText;
+  }
+  .sv-pdf-find {
+    background: transparent;
+    outline: 2px solid Highlight;
+  }
+  .sv-pdf-find[data-current='true'] {
+    outline-width: 4px;
+  }
+  .sv-pdf-pending {
+    outline: 2px dashed Highlight;
+  }
+}
+
+/* Save bar --------------------------------------------------------------------------------- */
+.sv-savebar {
+  position: fixed;
+  z-index: 40;
+  width: min(23rem, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+  padding: var(--sv-space-3);
+  border: 1px solid var(--sv-border-strong);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface-raised);
+  color: var(--sv-text);
+  box-shadow: var(--sv-shadow);
+}
+.sv-savebar__quote {
+  max-height: 6rem;
+  overflow: auto;
+}
+.sv-savebar__fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+}
+
+/* Companion -------------------------------------------------------------------------------- */
+.sv-companion {
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-3);
+  padding: var(--sv-space-3);
+  border-inline-start: 1px solid var(--sv-border);
+  background: var(--sv-bg);
+}
+.sv-companion__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-3);
+}
+.sv-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+  padding: var(--sv-space-3);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface-raised);
+  min-width: 0;
+}
+.sv-card--selected {
+  border-color: var(--sv-focus);
+  box-shadow: 0 0 0 2px var(--sv-focus);
+}
+.sv-card__kind {
+  width: auto;
+  max-width: 100%;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sv-viewer {
+    scroll-behavior: auto;
+  }
+}

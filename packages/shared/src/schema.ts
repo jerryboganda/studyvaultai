@@ -10,6 +10,7 @@ import {
   MAX_QUOTE_CHARS,
   MAX_TITLE_CHARS,
   MAX_URL_CHARS,
+  PDF_TEXT_ALGORITHM,
   SCHEMA_VERSION,
   TEXT_ALGORITHM,
 } from './constants';
@@ -67,8 +68,41 @@ export const HtmlAnchorSet = z.object({
 });
 export type HtmlAnchorSet = z.infer<typeof HtmlAnchorSet>;
 
-/** Union leaves room for the PDF anchor in Phase 3 without a breaking schema change. */
-export const AnchorSet = z.discriminatedUnion('type', [HtmlAnchorSet]);
+/** Normalised rectangle on a PDF page: 0..1 of the page box, origin top-left, rotation 0. */
+export const PdfRect = z.object({
+  x: z.number().min(0).max(1),
+  y: z.number().min(0).max(1),
+  w: z.number().min(0).max(1),
+  h: z.number().min(0).max(1),
+});
+export type PdfRect = z.infer<typeof PdfRect>;
+
+/**
+ * Anchor inside the extension-owned PDF reader (ADR-006). Field names that overlap HtmlAnchorSet
+ * (textQuote, textPosition, contentSignature, documentTextLength) keep their meaning but refer to
+ * the page text stream of ONE page, so generic code (duplicate detection, ordering) works on both.
+ */
+export const PdfAnchorSet = z.object({
+  type: z.literal('pdf'),
+  textAlgorithm: z.literal(PDF_TEXT_ALGORITHM),
+  /** Content fingerprint of the document (sha-256 hex of the bytes, or PDF.js fingerprint fallback). */
+  documentFingerprint: z.string().min(8).max(128),
+  /** 1-based page number. */
+  pageNumber: z.number().int().min(1),
+  /** Page rotation (degrees, 0/90/180/270) when the rects were captured. */
+  rotation: z.number().int(),
+  /** Highlight rectangles, one per selected line box, in reading order. */
+  rects: z.array(PdfRect).min(1).max(256),
+  textQuote: TextQuoteSelector,
+  /** Offsets within this page's text stream. */
+  textPosition: TextPositionSelector,
+  contentSignature: z.string().max(32),
+  /** Length of the page text stream at capture time. */
+  documentTextLength: z.number().int().min(0),
+});
+export type PdfAnchorSet = z.infer<typeof PdfAnchorSet>;
+
+export const AnchorSet = z.discriminatedUnion('type', [HtmlAnchorSet, PdfAnchorSet]);
 export type AnchorSet = z.infer<typeof AnchorSet>;
 
 // ---------------------------------------------------------------------------------------------
@@ -88,7 +122,10 @@ export type Bank = z.infer<typeof Bank>;
 export const Source = z.object({
   id: Id,
   ...recordMeta,
-  type: z.literal('web'),
+  /** 'pdf' sources are keyed by `documentId` (urlKey is `pdf:<documentId>`), see packages/storage. */
+  type: z.enum(['web', 'pdf']),
+  /** Set for type 'pdf': id of the `documents` row (content fingerprint of the file). */
+  documentId: Id.optional(),
   /** Normalised identity of the page (canonical URL when trustworthy, else the page URL). */
   urlKey: z.string().max(MAX_URL_CHARS),
   /** Normalised URL the user actually visited; secondary lookup key. */
@@ -99,6 +136,32 @@ export const Source = z.object({
   title: z.string().max(MAX_TITLE_CHARS),
 });
 export type Source = z.infer<typeof Source>;
+
+/** User-defined metadata on a highlight (PRD "Custom fields"). Keys and values are plain text/numbers. */
+export const MAX_CUSTOM_FIELDS = 32;
+export const MAX_CUSTOM_FIELD_KEY_CHARS = 64;
+export const MAX_CUSTOM_FIELD_VALUE_CHARS = 500;
+
+export const CustomFieldKey = z
+  .string()
+  .min(1)
+  .max(MAX_CUSTOM_FIELD_KEY_CHARS)
+  .refine(
+    (key) =>
+      key === key.trim() &&
+      key !== '__proto__' &&
+      ![...key].some((ch) => ch.charCodeAt(0) < 0x20 || ch.charCodeAt(0) === 0x7f),
+    'invalid custom field name',
+  );
+export const CustomFieldValue = z.union([
+  z.string().max(MAX_CUSTOM_FIELD_VALUE_CHARS),
+  z.number(),
+  z.boolean(),
+]);
+export const CustomFields = z
+  .record(CustomFieldKey, CustomFieldValue)
+  .refine((r) => Object.keys(r).length <= MAX_CUSTOM_FIELDS, `at most ${MAX_CUSTOM_FIELDS} fields`);
+export type CustomFields = z.infer<typeof CustomFields>;
 
 export const Highlight = z.object({
   id: Id,
@@ -126,6 +189,8 @@ export const Highlight = z.object({
    */
   capturedUrl: HttpUrl.optional(),
   capturedTitle: z.string().max(MAX_TITLE_CHARS).optional(),
+  /** User metadata (modality, system, exam frequency ...). Never part of the immutable provenance. */
+  customFields: CustomFields.optional(),
 });
 export type Highlight = z.infer<typeof Highlight>;
 

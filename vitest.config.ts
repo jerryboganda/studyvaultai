@@ -10,6 +10,7 @@ export default defineConfig({
       'packages/**/*.test.tsx',
       'entrypoints/**/*.test.ts',
       'entrypoints/**/*.test.tsx',
+      'server/**/*.test.ts',
     ],
     restoreMocks: true,
   },

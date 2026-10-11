@@ -43,6 +43,12 @@ export function HighlightPopover({
   const id = highlight.id;
 
   const [view, setView] = useState(highlight);
+  // An edit made elsewhere (a note typed in the side panel) arrives as a new `highlight`: follow it.
+  const [seen, setSeen] = useState(highlight);
+  if (seen !== highlight) {
+    setSeen(highlight);
+    setView(highlight);
+  }
   const [status, setStatus] = useState<Status>({ state: 'idle' });
   const [deleting, setDeleting] = useState(false);
 

@@ -22,6 +22,7 @@ export default tseslint.config(
       'node_modules/**',
       'playwright-report/**',
       'test-results/**',
+      'public/ocr/**', // generated at build time by modules/ocr-assets.ts
     ],
   },
   js.configs.recommended,
@@ -57,7 +58,17 @@ export default tseslint.config(
     rules: { 'react-hooks/rules-of-hooks': 'off' },
   },
   {
-    files: ['packages/shared/**', 'packages/highlights/**'],
+    files: [
+      'packages/shared/**',
+      'packages/highlights/**',
+      'packages/search/**',
+      'packages/study/**',
+      'packages/ai/**',
+      'packages/pdf/**',
+      'packages/ocr/**',
+      'packages/sync/**',
+      'packages/backup/**',
+    ],
     rules: { 'no-restricted-imports': ['error', pureDomain] },
   },
   {

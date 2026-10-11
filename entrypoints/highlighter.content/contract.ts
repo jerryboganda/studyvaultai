@@ -60,6 +60,12 @@ export interface CaptureUi {
   hideToolbar(): void;
   /** Popover for an existing highlight (opened by clicking it on the page). */
   showHighlightPopover(highlight: HighlightView, anchor: DOMRect): void;
+  /**
+   * The stored highlights were just reloaded (an edit made in the side panel or another tab has
+   * arrived). If a popover is open, it shows `latest(id)` for its highlight instead of what it was
+   * opened with; an undefined answer leaves it as it is. Never opens, moves or focuses anything.
+   */
+  refreshHighlightPopover(latest: (id: string) => HighlightView | undefined): void;
   /** Transient, accessible notice. `action` renders an Undo-style button. */
   toast(notice: {
     text: string;

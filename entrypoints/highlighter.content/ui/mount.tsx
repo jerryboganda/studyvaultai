@@ -103,6 +103,12 @@ export function mountCaptureUi({ container, shadowHost, host }: MountOptions): C
       if (destroyed) return;
       store.set({ popover: { highlight, anchor } });
     },
+    refreshHighlightPopover(latest) {
+      const open = store.get().popover;
+      if (destroyed || !open) return;
+      const highlight = latest(open.highlight.id);
+      if (highlight && highlight !== open.highlight) store.set({ popover: { ...open, highlight } });
+    },
     toast(notice) {
       if (destroyed) return;
       pushToast(store, notice);

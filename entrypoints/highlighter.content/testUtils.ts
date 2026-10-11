@@ -181,6 +181,8 @@ export class FakeUi implements CaptureUi {
   toolbar: SelectionInfo[] = [];
   hidden = 0;
   popovers: Array<{ view: HighlightView; anchor: DOMRect }> = [];
+  /** What the last-shown popover would display after each refreshHighlightPopover(). */
+  refreshed: HighlightView[] = [];
   toasts: Notice[] = [];
   announcements: string[] = [];
   applied: Settings[] = [];
@@ -197,6 +199,11 @@ export class FakeUi implements CaptureUi {
   }
   showHighlightPopover(view: HighlightView, anchor: DOMRect): void {
     this.popovers.push({ view, anchor });
+  }
+  refreshHighlightPopover(latest: (id: string) => HighlightView | undefined): void {
+    const open = this.popovers.at(-1);
+    const next = open && latest(open.view.id);
+    if (next) this.refreshed.push(next);
   }
   toast(notice: Notice): void {
     this.toasts.push(notice);

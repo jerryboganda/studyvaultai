@@ -1,0 +1,51 @@
+name: Stress
+
+# Seeded 10k-row performance and round-trip suites (TEST_PLAN.md "Performance targets").
+# Heavy by design, so it is not part of the required CI gate (AGENTS.md Rule 1): it runs nightly on
+# the default branch and on demand (`gh workflow run stress.yml --ref <branch>`).
+#
+# What fails the job: any failed budget assertion inside a suite, a suite that was skipped or never
+# ran, an expected area (storage, search, study, backup) without a suite, and the coarse wall-time
+# ceilings in scripts/run-perf.mjs. Timings are uploaded as perf-results/timings.json and shown as a
+# table in the job summary.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '23 2 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stress-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: 24
+
+jobs:
+  perf:
+    name: perf (seeded suites, SV_PERF=1)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Runner self-test
+        run: node scripts/run-perf.mjs --self-test
+      - name: Seeded perf and round-trip suites
+        env:
+          SV_PERF: '1'
+        run: node scripts/run-perf.mjs --out perf-results
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: perf-results
+          path: perf-results
+          if-no-files-found: ignore

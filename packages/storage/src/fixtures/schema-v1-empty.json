@@ -1,0 +1,7 @@
+{
+  "_note": "Frozen snapshot of what the schema-version-1 build wrote. Never regenerate: it exists to prove that current code still reads, upgrades and extends real v1 data. This one is a v1 database with no rows.",
+  "banks": [],
+  "sources": [],
+  "highlights": [],
+  "highlightBanks": []
+}

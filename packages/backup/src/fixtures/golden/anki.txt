@@ -1,0 +1,10 @@
+#separator:tab
+#html:true
+#guid column:1
+#notetype column:2
+#deck column:3
+#tags column:6
+sv-card-001	Basic	Cardiology::Pharm	What does aspirin inhibit?	"COX-1 (irreversibly).<br><br><small>Source: <a href=""https://example.com/a?utm=1"">Aspirin [mechanism] *notes*</a> · text offset 110–178</small>"	pharm high_yield
+sv-card-002	Cloze	Cardiology::Pharm	Aspirin inhibits COX-1 and {{c1::thromboxane A2}} synthesis	"Extra: dose matters<br><br><small>Source: <a href=""https://example.com/a?utm=1"">Aspirin [mechanism] *notes*</a> · text offset 110–178</small>"	pharm high_yield
+sv-card-003	Cloze	Loose	{{c1::One}} and {{c1::two}}	<small>Source quote: One and two are numbers &lt;b&gt;</small>	pharm high_yield
+sv-card-004	Basic	Cardiology::Pharm	Which enzyme?<br>A. COX-1<br>B. LOX	"A. COX-1<br><br>Irreversible acetylation.<br><br><small>Source: <a href=""https://example.com/a?utm=1"">Aspirin [mechanism] *notes*</a> · text offset 110–178</small>"	pharm high_yield

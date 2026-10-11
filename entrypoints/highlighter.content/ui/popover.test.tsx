@@ -191,6 +191,38 @@ describe('the note', () => {
     const { dialog } = open(m, { userComment: 'x' });
     expect(dialog.querySelector('input, textarea, [contenteditable]')).toBeNull();
   });
+
+  it('follows a note written elsewhere while the popover is open, in the same dialog', () => {
+    const m = mountUi();
+    const { dialog } = open(m, { userComment: '' });
+    expect(within(dialog).getByText('No note yet.')).toBeTruthy();
+
+    // The side panel saved a note; the page's next load carries it (controller -> refresh).
+    const written = makeHighlight({ userComment: 'typed in the side panel' });
+    act(() => m.ui.refreshHighlightPopover((id) => (id === written.id ? written : undefined)));
+
+    expect(within(dialog).getByText('typed in the side panel')).toBeTruthy();
+    expect(within(dialog).queryByText('No note yet.')).toBeNull();
+    expect(m.q.getByRole('dialog', { name: 'Highlight details' })).toBe(dialog);
+    expect(m.shadow.activeElement).toBe(dialog); // focus and place are kept
+
+    // A highlight the page no longer has leaves what is shown as it is.
+    act(() => m.ui.refreshHighlightPopover(() => undefined));
+    expect(within(dialog).getByText('typed in the side panel')).toBeTruthy();
+  });
+
+  it('a refresh never opens a popover, and ignores a popover that is shut', () => {
+    const m = mountUi();
+    const latest = vi.fn(() => makeHighlight({ userComment: 'ignored' }));
+    act(() => m.ui.refreshHighlightPopover(latest));
+    expect(m.q.queryByRole('dialog')).toBeNull();
+
+    open(m);
+    fireEvent.click(m.q.getByRole('button', { name: 'Close' }));
+    act(() => m.ui.refreshHighlightPopover(latest));
+    expect(m.q.queryByRole('dialog')).toBeNull();
+    expect(latest).not.toHaveBeenCalled();
+  });
 });
 
 describe('editing', () => {

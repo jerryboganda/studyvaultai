@@ -779,6 +779,8 @@ export function startController(deps: ControllerDeps): Controller {
       report: (items) => rpc('highlight.reportResolution', { items }),
       paintEnabled: () => settings.paintHighlights,
       alive,
+      // A note written in the side panel reaches this tab with a load: an open popover follows it.
+      onLoaded: () => session?.ui?.refreshHighlightPopover((id) => rehydrator.viewOf(id)),
     });
     const s: Session = { painter, rehydrator, ui: null, cleanups: [], revealTimer: undefined };
     session = s;

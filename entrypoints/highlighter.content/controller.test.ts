@@ -1200,6 +1200,23 @@ describe('click on a highlight', () => {
     expect(h.ui.popovers).toHaveLength(0);
   });
 
+  it('an open popover follows a note written elsewhere when the data-change refresh lands', async () => {
+    const { h, stored, driver } = await withHighlight();
+    driver.click(document.getElementById('lnk')!);
+    expect(h.ui.popovers[0]!.view.userComment).toBe('');
+    expect(h.ui.refreshed).toHaveLength(0);
+
+    // Typed in the side panel after the popover was opened (inside the 250 ms refresh debounce).
+    h.background.rows.set(stored.id, { ...stored, userComment: 'typed in the side panel' });
+    h.background.bump();
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(h.ui.refreshed.at(-1)).toMatchObject({
+      id: stored.id,
+      userComment: 'typed in the side panel',
+    });
+  });
+
   it('anchors the popover to the highlight, or to the click point when it has no geometry', async () => {
     const { h, driver } = await withHighlight();
     driver.click(document.getElementById('lnk')!, { clientX: 33, clientY: 44 });

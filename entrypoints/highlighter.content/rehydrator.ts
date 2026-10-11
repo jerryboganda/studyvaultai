@@ -57,6 +57,11 @@ export interface RehydratorDeps {
    * the page): the timer then does nothing, so an orphaned script winds down by itself.
    */
   alive?: () => boolean;
+  /**
+   * Called after a load has replaced the stored views: an edit made in another context (a note typed
+   * in the side panel) is in `viewOf()` now. Not called for a failed, stale or destroyed load.
+   */
+  onLoaded?: () => void;
 }
 
 type State = ResolutionStatus | 'pending';
@@ -234,6 +239,7 @@ export class Rehydrator {
     this.resolve(fresh);
     this.repaint();
     this.flush();
+    this.deps.onLoaded?.();
   }
 
   // -------------------------------------------------------------------------------------------
