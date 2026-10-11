@@ -51,7 +51,12 @@ async function measure(runs: number, fn: (i: number) => Promise<unknown>): Promi
 }
 
 const report: string[] = [];
-/** Print one line; returns the CPU p95 the budget is asserted on. */
+/**
+ * Print one line; returns the WALL p95 the budget is asserted on: the latency a person waits, which is
+ * what the requirement states. CPU time is reported beside it but not asserted: `process.cpuUsage`
+ * counts V8's helper threads (GC), and one collection in 15 samples (p95 = the maximum) made a
+ * 62 ms wall p95 read as a 146 ms CPU p95 in Actions run 38183107751.
+ */
 const note = (label: string, s: Samples, budget?: number) => {
   const f = (n: number) => n.toFixed(1).padStart(7);
   report.push(
@@ -61,7 +66,7 @@ const note = (label: string, s: Samples, budget?: number) => {
       percentile(s.cpu, 95),
     )} ms${budget ? `  (budget ${budget} ms p95)` : ''}`,
   );
-  return percentile(s.cpu, 95);
+  return percentile(s.wall, 95);
 };
 
 describe.skipIf(!process.env.SV_PERF)('10k seeded vault (SV_PERF)', () => {
