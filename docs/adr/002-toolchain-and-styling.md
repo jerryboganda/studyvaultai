@@ -31,3 +31,14 @@ Dependency upgrades are deliberate; Dependabot/Renovate are out of scope until r
   weekly, grouped), so the "out of scope until release hardening" clause no longer applies. Updates
   arrive as pull requests and still go through `ci.yml`, the licence allow-list and the exact-pin
   rule; the TypeScript 6.0.3 pin keeps its reason above.
+- **2026-10-12 (finish wave).** One production dependency was added: `preact` **10.29.8**, exact-pinned
+  in `dependencies` (it ships in the bundle, and the SBOM and licence report scope "production" by that
+  field) and used by the content script only through an alias to `preact/compat` (ADR-012); the pages
+  keep React 19.3.0. 10.29.8 is the newest 10.x (published 2026-08-01); 11.0.0 (2026-09-30) and 11.0.1
+  (2026-10-08) are younger than the two-week age these pins respect, so 11 is a later bump. Nothing
+  else was added for the wave: the document import readers reuse `fflate` and the browser's own
+  `DOMParser` (ADR-014) and TeX is shown as source text, so no `temml` or similar was added
+  (ADR-015, which records the 164 KB measurement against a 120 KB ceiling). Dependency pins are
+  otherwise unchanged. The licence of the repository is proprietary (`LICENSE`, `package.json`
+  `"license": "UNLICENSED"`, owner decision 2026-10-11); the licence report still lists third-party
+  components under their own licences.

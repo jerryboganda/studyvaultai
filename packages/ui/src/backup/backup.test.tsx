@@ -179,16 +179,33 @@ describe('explainBackupError', () => {
 });
 
 describe('what a backup says it holds', () => {
-  const HOLDS = ['banks', 'highlights', 'notes', 'tags', 'folders', 'flashcards', 'AI drafts'];
+  const HOLDS = [
+    'banks',
+    'highlights',
+    'notes',
+    'tags',
+    'folders',
+    'flashcards',
+    'AI drafts',
+    'auto-filing rules',
+    'syllabi',
+    'links between items',
+  ];
   const LEAVES_OUT = [
     'settings',
     'blocked sites',
     'appearance',
     'study-day',
+    'study reminder',
     'AI provider',
     'key',
+    'fallback providers and their keys',
     'sync account',
     'saved searches',
+    'coverage thresholds of your syllabi',
+    'exam in progress and your exam history',
+    'backup folder you chose',
+    'auto-filing suggestions that are waiting',
   ];
 
   it('the export panel names what is in the file and what is not, and never says "everything"', async () => {

@@ -284,7 +284,7 @@ function PreviewBody({
             <span className="sv-muted sv-small">({timeZoneName()})</span>
           </dd>
           <dt>Captured with</dt>
-          <dd>{describeCaptureMethod(detail.captureMethod)}</dd>
+          <dd>{describeCaptureMethod(detail.captureMethod, detail.customFields)}</dd>
           {highlight.headingContext ? (
             <>
               <dt>Under</dt>

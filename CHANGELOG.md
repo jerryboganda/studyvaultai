@@ -18,6 +18,11 @@ Chrome or Edge, a real incognito window, Chrome's permission prompt, a hosted si
 screen reader, and the manual checklist has not been run. The evidence for each privacy and store
 statement is tracked in `docs/PRIVACY_CLAIMS.md`.
 
+Entries marked **(finish wave)** were made on branch `feat/finish-all` after that run
+(`docs/plans/FINISH_BRIEF.md`, ADR-011 to ADR-020). No Actions run of that branch has concluded
+`success` yet: their unit files and loaded-extension specs are written and not yet executed by a
+passing run, so none of them is "verified" (ledger rows P20a to P20c, P26j, P33 to P44).
+
 ### Added
 
 - Capture and recall of highlights on web pages: selection toolbar in a Shadow DOM overlay, saving
@@ -61,6 +66,34 @@ statement is tracked in `docs/PRIVACY_CLAIMS.md`.
 - `docs/A11Y_REVIEW.md` (27 findings, 18 fixed in code and CSS) and `docs/PERF_REVIEW.md` (23
   findings; 8 have a fix with a test, 3 of those only in part; the rest are recommended with their
   reasons).
+- **(finish wave)** Schema v4: auto-filing rules, syllabi and links between highlights, notes and
+  knowledge points, in one additive Dexie bump with backup, sync classification, integrity checks and
+  purge cascade (ADR-011).
+- **(finish wave)** Auto-filing rules: a manager with order, switches, duplicate and undo, a "Test a
+  rule" panel, and suggestion or filing after a capture in the page, the side panel and the PDF reader.
+  A rule asks first by default and never overrides a bank the capture named (ADR-017).
+- **(finish wave)** Links and a knowledge graph: a Links section on every highlight, "Link as Related"
+  and "Link as Contradicts", a graph limited to 60 items with a Connections table and keyboard walk
+  (ADR-018).
+- **(finish wave)** Syllabus editor and coverage table (ADR-020 part 2); exam simulation with seeded
+  draw, a timer, self-marked recall, results by bank and tag, optional "count as review" with undo, a
+  history of the last 20 exams (ADR-020 part 1).
+- **(finish wave)** Opt-in study reminders: the number of cards due on the toolbar icon and a daily
+  in-extension notice; no system notifications (ADR-019).
+- **(finish wave)** Backups into a folder you choose (File System Access): dated files, read back and
+  checked, the newest N kept and nothing else deleted, an optional passphrase and an in-app reminder;
+  no background backup (ADR-016).
+- **(finish wave)** Import of Word (.docx), PowerPoint (.pptx), EPUB, HTML and Anki "Notes in Plain
+  Text" files, parsed locally and inertly with fixed limits, with a dry run and undo to the Trash
+  (ADR-014).
+- **(finish wave)** AI: up to three fallback providers with consent over every recipient origin and
+  failover only after a network failure, a 5xx or a timeout; task kinds `mnemonic`, `short_viva` and
+  `study_outline`; chat with your notes with local retrieval and ticked passages (ADR-013).
+- **(finish wave)** Related highlights (lexical, on the device), TeX in notes shown as source text
+  (ADR-015), a "JSON (for scripts)" readable export, and the `focus-search` command.
+- **(finish wave)** Eleven real public-domain PDFs as a test corpus with open, search, highlight, OCR
+  and memory specs (`tests/fixtures/pdf/real`).
+- **(finish wave)** Decisions ADR-011 to ADR-020 and `LICENSE` (proprietary, all rights reserved).
 
 ### Changed
 
@@ -102,6 +135,20 @@ statement is tracked in `docs/PRIVACY_CLAIMS.md`.
   total at 99.4% of its budget.
 - The per-deck settings form is no longer remounted when it is saved, so its confirmation stays
   (ADR-010 amendment 3).
+- **(finish wave)** The content script runs on Preact through `preact/compat` (209 KB, was 405 KB);
+  extension pages stay on React. Release-gate budgets: content script 220 KB (was 450), background
+  450 KB (was 420), non-OCR total 6800 KB (was 6500) (ADR-012, `scripts/check-build.mjs`).
+- **(finish wave)** The optional `alarms` permission is also requested by the click that saves a daily
+  reminder time, not only by "Turn on sync". The manifest did not change; PRIVACY_POLICY.md,
+  STORE_LISTING.md and SECURITY_PRIVACY.md say so (ADR-019).
+- **(finish wave)** Folders can nest 32 deep (it was 8). Markdown that is too expensive to format is
+  shown as plain text with a note; the stored body is not changed (ADR-015).
+- **(finish wave)** A backup holds auto-filing rules, syllabi and links; the exam in progress, exam
+  history, syllabus thresholds, the backup-folder reference and reminder settings are not in it.
+- **(finish wave)** Interface: switches backed by an async write show their choice at once and are busy
+  until stored; toasts wait under the pointer or focus and can be kept until closed on extension
+  pages; result rows grow under text-spacing overrides; the PDF reader opens its save bar from the
+  keyboard.
 
 ### Fixed
 
@@ -134,6 +181,10 @@ statement is tracked in `docs/PRIVACY_CLAIMS.md`.
 - The Backup section's introduction follows the sync setting (U-2); the reader's redirect advice says
   the other site may already have received the request (U-14); Settings lists the origins granted to
   AI, sync and other features under "Other access" and can revoke each one (U-9, list and revoke).
+- **(finish wave)** Text that was already selected when the content script started now shows the
+  toolbar (the controller evaluates the selection once the overlay has mounted).
+- **(finish wave)** Links of a note or knowledge point whose highlight is in the Trash are hidden
+  instead of leading nowhere (ADR-018 section 3).
 
 ### Security
 
@@ -148,7 +199,17 @@ statement is tracked in `docs/PRIVACY_CLAIMS.md`.
   enforces are no longer read from content-script-writable storage; setting up or rotating E2EE no
   longer re-encrypts server-supplied plaintext as authentic; a server that stops presenting the key
   profile cannot downgrade a device (SR-3, SR-4, SR-7).
-- Open items remain in `THREAT_MODEL.md` section 6 and the residual risks R14 to R23.
+- Open items remain in `THREAT_MODEL.md` section 6 and the residual risks R14 to R30.
+- **(finish wave)** A render budget keeps a hostile, synced or imported note from freezing a page
+  (marked took tens of seconds on some 100,000-character inputs); TeX is source text and the
+  sanitiser allows `class` only on `<code>` as `math` or `math math-display` (ADR-015,
+  THREAT_MODEL C3.7).
+- **(finish wave)** Document parsers: central-directory listing before any read, size, entry and ratio
+  limits, exact-length inflate, unsafe names refused, DOCTYPE and ENTITY refused before XML parsing,
+  HTML parsed inert and never attached (ADR-014, C5.11).
+- **(finish wave)** A page cannot choose where a highlight is filed: it sends only a highlight id and
+  the worker reads the placement from its own session record (ADR-017, C2.10). AI fallback recipients
+  are part of the consent hash (ADR-013, C7.7).
 
 ### Known issues
 
@@ -164,9 +225,23 @@ statement is tracked in `docs/PRIVACY_CLAIMS.md`.
   Site access, "Other access" lists them and can revoke each one, but nothing removes them for the
   person (`docs/PRIVACY_CLAIMS.md` "Open items", U-9 remainder).
 - The sync alarm is not registered in the worker lifetime in which `alarms` was granted (ADR-010
-  amendment 3, MT-49); no Settings control exports the single-file JSON backup (the engine and its
-  unit tests exist; `tests/e2e/backup.spec.ts` header).
-- No licence file exists (owner decision); the privacy policy, security contact and store account
-  details are owner-supplied `[USER-REQUIRED]` markers.
+  amendment 3, MT-49); no Settings control exports the restorable single-file JSON backup (the engine
+  and its unit tests exist; `tests/e2e/backup.spec.ts` header). The "JSON (for scripts)" readable
+  export added by the finish wave is a different file: highlights only, not read back.
+- The licence is proprietary, all rights reserved (`LICENSE`, owner decision of 2026-10-11); the
+  copyright holder's name in it, the privacy policy, the security contact and the store account
+  details are owner-supplied `[USER-REQUIRED]` markers. `scripts/check-release-docs.mjs` does not scan
+  `LICENSE` for its marker.
+- **(finish wave)** Not verified: nothing the wave added has a green Actions run (ledger rows P20a to
+  P20c, P26j, P33 to P44; `THREAT_MODEL.md` O15 to O17). Not driven by any automation: the folder
+  prompt on a real disk, reminders across a browser restart, a real private window for filing rules,
+  real Word, PowerPoint and EPUB files, two real AI providers with Chrome's prompt for the second
+  origin, the exam and the graph with a screen reader, the Preact overlay in branded Chrome
+  (`docs/MANUAL_TEST_CHECKLIST.md` MT-54 to MT-61).
+- **(finish wave)** Limits that are decisions: TeX is not typeset (a 164 KB renderer measured over
+  the 120 KB ceiling); reminders need the browser running and are not system notifications; backups
+  into a folder start from a click; the knowledge graph shows at most 60 items; related highlights
+  match whole words (no stemming, no embeddings); an exam scope cannot be drawn from a syllabus topic;
+  the Delete-all and backup-scope lists do not yet name the new kinds of data (ledger U-17).
 
 [Unreleased]: https://github.com/jerryboganda/studyvaultai/commits/main

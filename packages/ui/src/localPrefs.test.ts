@@ -9,6 +9,10 @@ const ROOT = join(__dirname, '..', '..', '..');
 const NOT_LOCAL_STORAGE: Record<string, string> = {
   'sv.pendingFocus': 'chrome.storage.session (PENDING_FOCUS_KEY, packages/shared)',
   'sv.pendingSearch': 'chrome.storage.session (PENDING_SEARCH_KEY, packages/shared)',
+  // Per-highlight filing records: prefixes of chrome.storage.session keys (packages/shared/filingSession).
+  'sv.filing.suggest.':
+    'chrome.storage.session (filingSession.ts, 24 h, cleared by Delete all data)',
+  'sv.filing.undo.': 'chrome.storage.session (filingSession.ts, 24 h, cleared by Delete all data)',
 };
 
 function sources(dir: string): string[] {

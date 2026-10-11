@@ -16,8 +16,9 @@ export function Privacy({ syncOn }: { syncOn: boolean }) {
         <strong>Everything stays on this device by default.</strong> StudyVault has no account, no
         analytics and no server of its own, and it does not send your highlights, notes or browsing
         anywhere. Optional features can send data, and only after you turn them on here and see what
-        would be sent: AI assistance (the highlights you select, to the AI provider you choose) and
-        sync (your study data, to a sync server you choose). Both are off by default.
+        would be sent: AI assistance (the highlights you select, to the AI provider you choose and
+        any fallback providers you add, each address listed before anything is sent) and sync (your
+        study data, to a sync server you choose). Both are off by default.
       </p>
       {syncOn ? (
         <p>
@@ -67,12 +68,15 @@ export function Privacy({ syncOn }: { syncOn: boolean }) {
         </ul>
         <p>
           If you use the other features, this device also holds: flashcards and your review history;
-          PDF documents you opened in the reader (title, page count, any text recognised from scans,
-          and a copy of the file only if you chose to keep one); AI suggestions, which are labelled
-          unverified, the provider address and model you set, a usage count and, if you saved one,
-          your API key kept in the extension&apos;s storage without extra encryption (it is never
-          written to backups); and, if you turn sync on, the server address and a record of what has
-          been sent.
+          your auto-filing rules, syllabi and the links you draw between items; an exam in progress
+          and your exam history; the daily study reminder setting; a reference to the backup folder
+          you chose (the backup files stay in that folder); PDF documents you opened in the reader
+          (title, page count, any text recognised from scans, and a copy of the file only if you
+          chose to keep one); AI suggestions, which are labelled unverified, the address and model
+          of each AI provider you set (the main one and any fallbacks), a usage count and, if you
+          saved them, your API keys kept in the extension&apos;s storage without extra encryption
+          (they are never written to backups); and, if you turn sync on, the server address and a
+          record of what has been sent.
         </p>
         <p>
           <strong>Deleted highlights stay in the trash on this device</strong> until you empty the

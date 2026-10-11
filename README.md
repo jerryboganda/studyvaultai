@@ -1,6 +1,6 @@
 # StudyVault AI - Claude Code Development Blueprint
 
-## Current status and documents (2026-10-11)
+## Current status and documents (2026-10-12)
 
 **Pre-release, version 0.1.0, not published.** The repository (<https://github.com/jerryboganda/studyvaultai>)
 holds a Manifest V3 extension. Code exists for each phase of `ROADMAP.md` (Phase 6 covers optional
@@ -18,8 +18,27 @@ run and the manual checklist has not been run. Read `docs/PRIVACY_CLAIMS.md` for
 and store statement is actually backed by, and treat `PRIVACY_POLICY.md` and `STORE_LISTING.md` as
 drafts.
 
+**Finish wave (branch `feat/finish-all`, 2026-10-12).** After that run the branch added: schema v4
+(auto-filing rules, syllabi and links; ADR-011), auto-filing rules that suggest and ask first
+(ADR-017), a knowledge graph with a table equivalent (ADR-018), syllabus coverage and an exam
+simulation (ADR-020), opt-in study reminders (ADR-019), backups into a folder you choose (ADR-016),
+Word, PowerPoint, EPUB, HTML and Anki text import (ADR-014), an AI provider router with fallbacks,
+three more task kinds and chat with your notes (ADR-013), lexical related highlights, TeX in notes
+shown as source text rather than typeset (ADR-015), the content script on Preact (209 KB, was 405 KB;
+ADR-012), a JSON readable export and interface polish. **No Actions run of this branch has
+concluded `success` yet**, so every statement about these features is `unit-only` with its
+loaded-extension spec written and not yet run in CI (`docs/PRIVACY_CLAIMS.md` P20a to P20c, P26j, P33
+to P44; inventory in `TEST_PLAN.md`); the run above predates all of it. Owner decisions of
+2026-10-11: the licence is proprietary, all rights reserved (`LICENSE`, `package.json`
+`UNLICENSED`; the copyright holder's name is still an owner-supplied marker), and the v0.1 listing is
+the local-first core, with AI and sync as optional advanced features that are off by default and no
+hosted service claimed or implied. Not built, with reasons (`docs/plans/FINISH_BRIEF.md`, `PRD.md`
+"Delivery status"): shared or collaborative banks, calendar and cloud-drive sync, YouTube captions,
+semantic (embedding) search, image occlusion, a reading view, and Edge automation.
+
 **Stack in use** (exact pins in `package.json`, rationale in ADR-002): WXT 0.21.4, Vite 8.3.4, React
-19.3.0, TypeScript 6.0.3, Dexie 4.4.6 on IndexedDB, Zod 4.6.5, `pdfjs-dist` 6.4.299 (legacy build,
+19.3.0 (extension pages) and Preact 10.29.8 (the content script only, ADR-012), TypeScript 6.0.3,
+Dexie 4.4.6 on IndexedDB, Zod 4.6.5, `pdfjs-dist` 6.4.299 (legacy build,
 bundled), `tesseract.js` 7.0.0 with bundled language data, `ts-fsrs` 5.4.2, MiniSearch 7.2.0,
 `marked` with DOMPurify, Vitest 5.0.3 and Playwright 1.64.0 on pnpm. Styling is plain CSS with custom
 properties inside a Shadow DOM for the page overlay; **Tailwind was not adopted** (ADR-002).
@@ -48,8 +67,9 @@ a single failing Playwright spec with one worker; do not run the full `pnpm test
 | Security and privacy | `SECURITY_PRIVACY.md` (rules), `THREAT_MODEL.md`, `SECURITY.md` (reporting), `PRIVACY_POLICY.md` (draft), `docs/PRIVACY_CLAIMS.md` (evidence ledger) |
 | Release | `RELEASE.md`, `STORE_LISTING.md` (draft), `CHANGELOG.md`, `docs/MANUAL_TEST_CHECKLIST.md` |
 | Reviews | `docs/A11Y_REVIEW.md` (accessibility: findings fixed in code and unit-tested, what needs a real browser), `docs/PERF_REVIEW.md` (measured in Node and jsdom, not Chrome; ranked findings) |
-| Plans | `docs/plans/EXECUTION_BRIEF.md`, `prompts/` |
-| Decisions | `docs/adr/001` module layout; `002` toolchain pins and styling; `003` least-privilege site access and injection; `004` text anchoring and highlight rendering; `005` free text only in extension-origin surfaces; `006` PDF reader; `007` release pipeline and store-document gates; `008` `'wasm-unsafe-eval'`; `009` network egress for AI and sync; `010` module seams |
+| Plans | `docs/plans/EXECUTION_BRIEF.md`, `docs/plans/FINISH_BRIEF.md`, `prompts/` |
+| Licence | `LICENSE` (proprietary, all rights reserved) |
+| Decisions | `docs/adr/001` module layout; `002` toolchain pins and styling; `003` least-privilege site access and injection; `004` text anchoring and highlight rendering; `005` free text only in extension-origin surfaces; `006` PDF reader; `007` release pipeline and store-document gates; `008` `'wasm-unsafe-eval'`; `009` network egress for AI and sync; `010` module seams; `011` schema v4 (rules, syllabi, relations); `012` Preact in the content script; `013` AI router and new task kinds; `014` import formats; `015` math shown as source text; `016` backups into a folder; `017` auto-filing rules; `018` links and the knowledge graph; `019` reminders; `020` exam simulation and syllabus coverage |
 
 The blueprint below is the original product description of 2026-10-10 and is kept as written. Where
 it differs from this section (creating a new repository, Tailwind), this section is current.

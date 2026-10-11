@@ -130,9 +130,11 @@ test.describe('import formats', () => {
       });
       expect(h.sourceId, 'never the Source a capture made').not.toBe(realSourceId);
     }
+    // The locator is the paragraph's place in the file: the fixture's second paragraph is the
+    // decorative '* * *' separator (skipped), so the next quote is paragraph 3, as Word counts it.
     expect(word.map((h) => h.customFields?.importedLocator).sort()).toEqual([
       'Paragraph 1',
-      'Paragraph 2',
+      'Paragraph 3',
     ]);
 
     // ---- PowerPoint -------------------------------------------------------------------------
@@ -270,7 +272,7 @@ test.describe('import formats', () => {
     const refusals: Array<[ImportFile, string | RegExp, string]> = [
       [
         apkg(),
-        /Anki \.apkg packages are not supported: .* Notes in Plain Text/,
+        /Anki \.apkg packages are not supported: .*Notes in Plain Text/,
         'This file cannot be imported',
       ],
       [

@@ -14,6 +14,14 @@
 > checklist has not been run. The hardening changes of the second pass (CHANGELOG.md, Unreleased) have
 > unit and integration tests and e2e specs that passed in that run, and have not been seen in branded
 > Chrome or Edge. Do not read "the pipeline proves X" as "X has been proven".
+>
+> Finish wave, 2026-10-12: branch `feat/finish-all` added ADR-011 to ADR-020 (schema v4, filing rules,
+> graph, reminders, exam and syllabus, backup folder, import formats, AI router, Preact content script).
+> No `ci.yml` run of that branch has concluded `success` yet, so none of it is covered by the status
+> above; the pipeline described below is unchanged (same jobs, same gates; only the numbers in
+> `scripts/check-build.mjs` moved). Each new row in `docs/PRIVACY_CLAIMS.md` is `unit-only` with its
+> e2e spec written and not yet run in CI, and `docs/MANUAL_TEST_CHECKLIST.md` MT-54 to MT-61 hold what
+> only a person can check for it.
 
 How a version gets from `main` to the Chrome Web Store, what the pipeline proves on the way, and
 what only the account owner can do. The pipeline never publishes to the store: that needs the
@@ -63,8 +71,9 @@ Scripts (all plain Node, no remote code): `scripts/check-build.mjs`, `scripts/ch
    `release` artifact and verify: `sha256sum -c SHA256SUMS`; open the zip's `manifest.json`;
    skim `licenses.json` and the SBOM.
 4. **Manual checks.** Install the zip unpacked in branded Chrome and Edge and fill in
-   `docs/MANUAL_TEST_CHECKLIST.md` (the upgrade check needs the previous release). Attach the
-   evidence table to the draft release. Blocker failures stop the release.
+   `docs/MANUAL_TEST_CHECKLIST.md` (the upgrade check needs the previous release; MT-54 to MT-61 cover
+   the finish wave and need real folders, real office files, two real AI providers and a screen
+   reader). Attach the evidence table to the draft release. Blocker failures stop the release.
 5. **Tag.** `git tag -a vX.Y.Z -m "StudyVault AI X.Y.Z" && git push origin vX.Y.Z`. `release.yml`
    builds again from the tag and creates the draft release with the zip, `SHA256SUMS`, SBOM and
    licence report.
@@ -127,7 +136,7 @@ The pipeline cannot do these; none of them should be skipped or delegated to an 
 | 4 | Provide a monitored **support email or issue-tracker URL**, and a vulnerability-reporting address (fill the marker in `SECURITY.md`; `check-release-docs.mjs` also scans `SECURITY.md` and `README.md` for markers, and `--strict` fails while one remains) | Listing, policy, security |
 | 5 | Resolve every `[USER-REQUIRED: ...]` marker in `PRIVACY_POLICY.md` and `STORE_LISTING.md` (legal name, effective date, operator of any hosted AI or sync service, deletion process, minimum age) and have the policy reviewed by someone qualified | `check-release-docs.mjs --strict` |
 | 6 | Choose and compose the store screenshots (1280 x 800, flattened PNG or JPEG) from the CI `screenshots-*` artifact, and decide whether to make promo tiles | Listing |
-| 7 | Choose a `LICENSE` for the repository (none exists today, so the code is "all rights reserved" regardless of being public) | Repository |
+| 7 | ~~Choose a `LICENSE`~~ **Decided 2026-10-11: proprietary, all rights reserved** (`LICENSE`; `package.json` says `UNLICENSED`). What remains is the copyright holder's legal name in `LICENSE`, an owner-supplied marker that `scripts/check-release-docs.mjs` does not scan, so `--strict` will not catch it: fill it by hand | Repository |
 | 8 | Run `docs/MANUAL_TEST_CHECKLIST.md` on real Chrome and Edge, and a screen reader, and sign off the evidence | Gate |
 | 9 | Upload the zip, paste the permission justifications, remote-code answer and data-usage answers from `STORE_LISTING.md`, submit, and choose deferred publishing | Dashboard |
 | 10 | Optional: Microsoft Partner Center account to list the same zip on Edge Add-ons | Edge |
@@ -176,9 +185,10 @@ Written 2026-10-11 for 0.1.x. Modules still being integrated are listed separate
 
 ### Keyboard
 
-- Chrome allows four suggested shortcuts; "previous highlight" has none until the user assigns one.
-  `Alt+Shift+]` and `Alt+Shift+[` work only while the page has focus because `[` and `]` are not
-  valid manifest keys (`wxt.config.ts`).
+- Chrome allows four suggested shortcuts; "previous highlight" and "search your highlights"
+  (`focus-search`, the sixth command) have none until the user assigns one. `Alt+Shift+]` and
+  `Alt+Shift+[` work only while the page has focus because `[` and `]` are not valid manifest keys
+  (`wxt.config.ts`).
 
 ### Data
 
@@ -239,11 +249,43 @@ Written 2026-10-11 for 0.1.x. Modules still being integrated are listed separate
   (`wxt.config.ts`, `SV_E2E`). The production manifest is asserted separately.
 - **Performance budgets** are engineering goals measured on CI runners (TEST_PLAN.md), not
   guarantees on every machine.
-- **Size budgets** in `scripts/check-build.mjs` (content script, worker, total) apply to the Phase 1
-  bundle; the PDF reader and OCR assets add large static files and that script must be revisited with
-  them.
+- **Size budgets** in `scripts/check-build.mjs` are regression guards: content script 220 KB (Preact,
+  ADR-012; it was 450), worker 450 KB (was 420) and non-OCR total 6800 KB (was 6500), with the OCR
+  assets budgeted apart. They were set from private e2e-variant builds and an earlier run's `build`
+  job; they have not passed a `build` job on the finish-wave branch.
 - **Build provenance attestation** is not generated (THREAT_MODEL O10).
 - **TypeScript 6.0.3**, not 7.x, until typescript-eslint supports it (ADR-002).
+
+### Finish wave (2026-10-12)
+
+Taken from ADR-011 to ADR-020 and the code; remove an entry only when the code changes.
+
+- **Math is not typeset.** `$..$` and `$$..$$` are kept and shown as styled TeX source (ADR-015).
+  Do not describe it as math rendering.
+- **Reminders** are a toolbar count and an in-extension notice, only while the browser runs, with no
+  system notification and no `notifications` permission. The daily time needs the optional `alarms`
+  permission, asked from the click that saves it; the first daily notice after the grant can be
+  missed until a StudyVault page is opened or the browser restarts (ADR-019).
+- **Backups into a folder** start from a click on an extension page; nothing runs in the background.
+  The grant is Chrome's per-folder File System Access permission, not a manifest entry; where the
+  browser has no folder picker the page says so (ADR-016).
+- **Auto-filing rules** look at new highlights only, ask first by default, never override a bank the
+  capture named and need the worker (ADR-017). A rule that matches on tags cannot match at capture.
+- **Imports** read `.docx`, `.pptx`, EPUB, HTML and Anki "Notes in Plain Text"; `.apkg`, `.doc`,
+  `.ppt`, password-protected and DRM files are refused, and imported rows have no position on a page
+  (ADR-014).
+- **The graph** draws at most 60 items; **related highlights** match whole words with no stemming
+  and no embeddings; an **exam** is scored by the person for recall questions, and its history is
+  device-only, outside backups and sync (ADR-018, ADR-020).
+- **AI fallbacks** hand over only after a network failure, a 5xx or a timeout, and a provider that
+  timed out may already hold the text (ADR-013).
+- **Not built, with reasons** (`docs/plans/FINISH_BRIEF.md`, `PRD.md` "Delivery status"): shared or
+  collaborative banks, calendar and cloud-drive sync, YouTube captions, semantic search, image
+  occlusion, a reading view. Edge automation is not possible: Edge ignores `--load-extension`.
+- **Verification state:** unit files and e2e specs are written and have not run in a passing Actions
+  run; the manual rows MT-54 to MT-61 are the only check of the real folder prompt, real office files,
+  two real providers, screen readers on the exam and the graph, and the Preact overlay in branded
+  Chrome. `docs/PRIVACY_CLAIMS.md` P20a to P20c, P26j and P33 to P44.
 
 ### Modules still being integrated (2026-10-11)
 

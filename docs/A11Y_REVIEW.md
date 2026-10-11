@@ -159,3 +159,45 @@ Local, scoped (AGENTS.md rule 1); the full suite, lint, typecheck and e2e run on
   "Appearance" command (`single-keys-toggle`); `toggle-tree` now moves focus into the tree.
 - `review.spec.ts`: the session shows a "Turn single-key shortcuts off" button after the key hint.
 - `a11y.spec.ts` (options): `main.opt__main` has `tabindex="-1"`.
+
+## Addendum, 2026-10-12: what changed since this review (finish wave)
+
+Method: the code, the ADRs (011 to 020) and the titles of the unit and e2e tests were read; no
+Playwright, axe, screen reader or real-browser run was made for this addendum. **None of the changes
+below has a green Actions run** (no run of branch `feat/finish-all` has concluded `success`; the axe
+runs in the status paragraph at the top predate them). "Fixed" again means "changed and unit-tested";
+the matching e2e specs are written and not yet run in CI.
+
+### Findings above that moved
+
+| # | Was | Now | Evidence | Status |
+| --- | --- | --- | --- | --- |
+| N1 | The PDF reader's save bar could be reached by keyboard only after a selection existed, and the page did not say how to make one | `S`, or `Enter` on a selection, opens the save bar with focus in it, `Escape` returns focus, and with nothing selected the page says how to select | `entrypoints/pdf-reader/Viewer.tsx`, `selectionGate.ts` (`flush`); `selectionGate.test.ts` "flush (a keyboard command asks for the selection now)"; `tests/e2e/polish.spec.ts` "S or Enter on a selection opens the save bar with focus in it, Escape gives focus back, and nothing selected says how to select" | **Partly fixed.** Making a selection with the keyboard alone still needs caret browsing (F7): MT-53 |
+| N2 | Result rows had a fixed height with clipped lines, so a text-spacing override clipped them (1.4.12) | Rows grow to the tallest content, never shrink back, keep the first visible row when the height changes, and watch each row | `packages/ui/src/vault/VirtualList.tsx`; `VirtualList.test.tsx` suite "VirtualList row height under text-spacing overrides (WCAG 1.4.12)"; `polish.spec.ts` "rows grow under a text-spacing override instead of clipping their text (WCAG 1.4.12)" | **Fixed in code**, unit-tested; a real user stylesheet is MT-53 |
+| N5 | Toasts closed after 5 s (10 s with an action); hovering or focusing paused them; no way to keep them | Pointer and focus pause independently; `Escape` closes the toast under the pointer or holding focus; Settings > Appearance has "Keep notifications on screen until I close them" (`sv.toasts.keep`, per viewer, removed by Delete all data); errors always stay. The in-page overlay's toasts pause on pointer and focus and close on `Escape` but have no keep setting (the content script cannot read the extension page's `localStorage`) | `packages/ui/src/Toast.tsx`; `packages/ui/src/feedback.test.tsx` suite "Toast: time limits (WCAG 2.2.1)"; `entrypoints/highlighter.content/ui/Toasts.tsx`; `polish.spec.ts` "notifications close on their own, wait under the pointer, and stay when asked to" | **Fixed on extension pages**; the overlay has no keep setting |
+
+Counts of the original 27: fixed 20 (the 18 above, N2, N5), partly fixed 1 (N1), not changed 6 (N3,
+N4, N6, N7, N8, N9: unchanged and not re-examined).
+
+### New or changed surfaces and what they do for accessibility (design, from ADR-011 to ADR-020)
+
+None of these was part of the original review; each has axe checks in its own spec (written, not run
+in CI) and a manual row.
+
+| Surface | What the code does | Needs a real browser |
+| --- | --- | --- |
+| Auto-filing rules manager and dialog | Reorder by Move up and Move down buttons and `Alt+Up` / `Alt+Down` (focus stays on the control); "On" switch with `expectedVersion`; chip fields validated with the reason; Delete with Undo; problems written in each row; toasts for suggestions have File and Not now and pause under the pointer or focus | NVDA on the chip fields and the toasts; MT-56 |
+| Syllabus editor and coverage | The shared ARIA `Tree`: arrows, `Alt+Up/Down` reorder, `Alt+Right/Left` indent, `F2`, `Delete`, Menu key; every action is also a button, and one that cannot act is `aria-disabled` with the reason (no drag-only action); coverage table is the primary view with sortable column buttons and `aria-sort`; the chart is a picture of it with a text summary; state is glyph and word, never colour alone | 320 px reflow is in the spec; screen reader and forced colours: MT-42, MT-43, MT-44 |
+| Knowledge graph | The "Connections" table is always in the DOM and carries every item and link in words; the diagram is one tab stop (roving `tabindex`), each node a named `role="button"`; shapes and letters say the kind, dash patterns and weight say the link type, with a legend; keys reach every connected item without geometry (arrows follow links, so they are not spatial: revisit if users expect up and down to be spatial); zoom is a scrolling region; nothing animates; forced-colour rules use `CanvasText`, `Canvas` and `Highlight` | NVDA, JAWS, VoiceOver (MT-58); forced colours (MT-42) |
+| Exam | The visible clock is `role="timer"` with `aria-live="off"`; milestones at 50 %, 10 %, one minute and the end go through ONE polite region that outlives each screen, so "time is up" is heard when the screen is replaced; no single-key shortcut (2.1.4); a picked option has a heavier border and a checked radio (not colour alone); recall answers appear only in marking | The announcements with NVDA and VoiceOver (MT-57) |
+| Reminders | The notice is a live region with a Dismiss button in the popup and the side panel; the toolbar badge text is not read by assistive technology, so the tooltip carries the same sentence; the badge colours were computed at 4.5:1 against the white text | The tooltip and badge as the operating system draws them (MT-55) |
+| Provider list, consent dialog with several addresses, chat view | `AsyncSwitch` is `aria-busy` while a write is pending; the dialog lists every address and each passage and earlier turn with a checkbox above the exact text; "Send" is disabled with its reason when nothing is ticked; axe in light and dark in `ai-extras.spec.ts` | The dialog with a screen reader (MT-44 extended; MT-60) |
+| Backup folder, import panel, math in notes | The panels use the existing native `<dialog>` and notice primitives; math is a `<code>` element read as TeX source (no `role="math"`: the element is not math markup, ADR-015) | Screen reader on the folder panel and a formula (MT-44 extended) |
+
+### Not changed
+
+- The toolbar badge and the tooltip, the graph, the exam timer and every other finish-wave surface
+  are unverified with assistive technology; the rows are MT-42 to MT-44 (extended to the new
+  surfaces), MT-53, MT-55, MT-57 and MT-58.
+- The `Alt+Up` / `Alt+Down` and `F2` shortcuts of the new trees and lists are modified keys, so
+  2.1.4 does not apply; the exam has none by design.

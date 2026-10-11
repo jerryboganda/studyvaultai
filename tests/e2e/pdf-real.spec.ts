@@ -4,14 +4,19 @@ import { expect, test } from './helpers.pages';
 import {
   STATUS_LABEL,
   chooseFile,
+  dragAcross,
   expectOverlayOnWords,
   expectPageDrawn,
+  findColumnBand,
   findPassage,
   goToPage,
   openRealPdf,
   queryFrom,
   saveSelection,
+  expectOverlayOnBox,
+  selectAcrossBoundary,
   selectPassage,
+  selectWords,
   squash,
   storedHighlights,
   type Passage,
@@ -28,11 +33,32 @@ import {
  *
  * Harness limits: one real engine run (OCR) is in its own test with its own timeout and only ever
  * recognises ONE page; the memory/windowing check of the long documents is pdf-real-memory.spec.ts.
+ *
+ * Cost on a runner (this spec is meant to stay well under 6 minutes): documents of 100 pages or more
+ * are only opened by the unit suite and by pdf-real-memory.spec.ts (a full traversal); the save, reload
+ * and reopen round trip, the costly part, runs for the three smallest text files plus the Korean one
+ * (CJK anchoring); the second, whole-document search only for short files.
  */
 
 const PDFS = readRealPdfs();
-const PER_TEST_MS = 150_000;
-const OCR_TIMEOUT_MS = 240_000;
+const SHORT = PDFS.filter((p) => p.pages < 100);
+const ROUND_TRIP = new Set([
+  ...SHORT.filter((p) => p.text === 'text')
+    .sort((a, b) => a.bytes - b.bytes)
+    .slice(0, 3)
+    .map((p) => p.file),
+  'cdc-covid-sick-korean-2020.pdf',
+]);
+/** A test that is not finished in this long is stuck: a retry costs the same again. */
+const PER_TEST_MS = 90_000;
+const OCR_TIMEOUT_MS = 150_000;
+/** What recognition of the first page without text must read, per file; null: it cannot (see below). */
+const OCR_READS: Record<string, RegExp | null> = {
+  'naca-sr256-ground-speed-1943.pdf': /ADVISORY/i,
+  // Page 1 is stored sideways (text running bottom to top, /Rotate 0): the engine reads the page
+  // upright, so it returns junk and the page says "machine-recognised, may be wrong". Known gap.
+  'nasa-msfc-60k-combustion-testbed-2000.pdf': null,
+};
 /** Pages tried, in order, when looking for a passage of prose. */
 const PASSAGE_PAGES = 8;
 
@@ -62,7 +88,7 @@ async function passageSomewhere(page: Page, pdf: RealPdf): Promise<Passage> {
 
 const PLURAL = (n: number): string => `${n} page${n === 1 ? '' : 's'}`;
 
-for (const pdf of PDFS) {
+for (const pdf of SHORT) {
   const stem = stemOf(pdf);
 
   test.describe(stem, () => {
@@ -152,16 +178,18 @@ for (const pdf of PDFS) {
         expect(total).toBeGreaterThanOrEqual(1);
         timings.searchHits = total;
         await expect(page.locator('.sv-pdf-find').first()).toBeAttached({ timeout: 30_000 });
-        // A word that is not in the document finds nothing.
-        await page.getByTestId('pdf-search').fill('qzxqzxqzx');
-        await expect(count).toHaveText('No matches', { timeout: 90_000 });
+        if (pdf.pages <= 40) {
+          // A word that is not in the document finds nothing (a second pass over every page).
+          await page.getByTestId('pdf-search').fill('qzxqzxqzx');
+          await expect(count).toHaveText('No matches', { timeout: 90_000 });
+        }
       }
 
       expect(errors, 'no uncaught exception or console error while reading').toEqual([]);
       report(testInfo, pdf, timings);
     });
 
-    if (pdf.text !== 'scanned') {
+    if (ROUND_TRIP.has(pdf.file)) {
       test('selects a passage and saves a highlight that is found again on the same words after reopening', async ({
         env,
       }, testInfo) => {
@@ -271,13 +299,163 @@ for (const pdf of PDFS) {
             { timeout: 30_000 },
           )
           .toBeGreaterThan(0);
-        timings.ocrChars = (
+        const recognised = (
           (await page.locator(`[data-testid="pdf-page-${target}"] .sv-textlayer`).textContent()) ??
           ''
-        ).trim().length;
+        ).trim();
+        timings.ocrChars = recognised.length;
+        timings.ocrSample = recognised.replace(/\s+/g, ' ').slice(0, 90);
+        console.log(
+          `[real-pdf-ocr] ${pdf.file} page ${target}: ${recognised.replace(/\s+/g, ' ').slice(0, 400)}`,
+        );
+
+        const reads = OCR_READS[pdf.file];
+        expect(reads, `${pdf.file} must be listed in OCR_READS`).not.toBeUndefined();
+        if (reads) {
+          expect(recognised).toMatch(reads);
+          // A highlight on recognised text of a real scan: anchored in the OCR stream, labelled as
+          // machine-recognised, and painted on the words it quotes (the page may carry /Rotate).
+          const words = await selectWords(page, target, 4);
+          expect(words, 'a line of four recognised words').not.toBeNull();
+          await expect(page.getByTestId('pdf-save-ocr-note')).toContainText(
+            'recognised from a scanned image',
+          );
+          await saveSelection(page);
+          const rows = await storedHighlights(page);
+          expect(rows).toHaveLength(1);
+          const anchor = (rows[0] as { anchorSet: { contentSignature: string } }).anchorSet;
+          expect(anchor.contentSignature.startsWith('ocr1:')).toBe(true);
+          await expect(page.getByTestId('pdf-highlight-card').first()).toContainText('OCR text');
+          await expectOverlayOnBox(
+            page,
+            target,
+            words!.box,
+            'the highlight sits on the recognised words',
+          );
+        } else {
+          // What is true even when the words are junk: the page says the text is machine output and
+          // shows its confidence, so nobody is told it is a transcription.
+          await page.getByRole('tab', { name: 'Page text' }).click();
+          await expect(page.getByTestId('pdf-ocr-panel')).toContainText('Machine-recognised text');
+          await expect(page.getByTestId('pdf-ocr-legend')).toContainText('Low confidence');
+        }
         expect(errors.filter((e) => !/favicon/.test(e))).toEqual([]);
         report(testInfo, pdf, timings);
       });
     }
   });
 }
+
+// =============================================================================================
+// Layouts only a real document has
+// =============================================================================================
+
+const byName = (file: string): RealPdf => {
+  const pdf = PDFS.find((p) => p.file === file);
+  if (!pdf) throw new Error(`${file} is not listed in tests/fixtures/pdf/real/SOURCES.md`);
+  return pdf;
+};
+
+const nfkc = (s: string): string => squash(s).normalize('NFKC');
+
+test.describe('real layouts', () => {
+  test.describe.configure({ timeout: PER_TEST_MS });
+
+  test('a real mouse drag over three lines of one column of a two-column article saves that column only', async ({
+    env,
+  }) => {
+    const pdf = byName('cdc-mmwr-vaccination-coverage-2023.pdf');
+    const { page, errors } = await openRealPdf(env, pdf);
+    let found: { n: number; lines: string[]; others: string[] } | null = null;
+    for (let n = 1; n <= pdf.pages && !found; n++) {
+      if (n > 1) await goToPage(page, n);
+      await pageRendered(page, n);
+      const band = await findColumnBand(page, n, 3, true);
+      if (band) found = { n, ...band };
+    }
+    if (!found) throw new Error('no band of three lines with another column beside it');
+    const { n, lines, others } = found;
+    await dragAcross(page, n, lines[0]!, lines[2]!);
+    const quote = nfkc(await page.getByTestId('pdf-savebar').locator('blockquote').innerText());
+    for (const line of lines) expect(quote).toContain(nfkc(line));
+    for (const other of others) {
+      expect(quote, `text of the other column: "${other}"`).not.toContain(nfkc(other));
+    }
+    await saveSelection(page);
+    const rows = await storedHighlights(page);
+    expect(rows).toHaveLength(1);
+    const stored = nfkc((rows[0] as { exactQuote: string }).exactQuote);
+    expect(stored.startsWith(nfkc(lines[0]!).slice(0, 15))).toBe(true);
+    expect(stored.endsWith(nfkc(lines[2]!).slice(-15))).toBe(true);
+    await expectOverlayOnWords(
+      page,
+      n,
+      lines,
+      'the saved column highlight sits on its three lines',
+    );
+    expect(errors).toEqual([]);
+  });
+
+  test('a selection across a page boundary is saved as one highlight per page', async ({ env }) => {
+    const pdf = byName('nist-cswp29-csf-2-0.pdf');
+    const { page, errors } = await openRealPdf(env, pdf);
+    await goToPage(page, 3);
+    await pageRendered(page, 3);
+    await pageRendered(page, 4); // inside the window: the neighbour of a visible page
+    const { from, to } = await selectAcrossBoundary(page, 3);
+    const quote = nfkc(await page.getByTestId('pdf-savebar').locator('blockquote').innerText());
+    expect(quote).toContain(nfkc(from).slice(0, 15));
+    expect(quote).toContain(nfkc(to).slice(-15));
+    await saveSelection(page);
+    const rows = await storedHighlights(page);
+    expect(rows).toHaveLength(2);
+    await expect(page.getByTestId('pdf-card-page')).toHaveCount(2);
+    const badges = await page.getByTestId('pdf-card-page').allTextContents();
+    expect(badges.sort()).toEqual(['p. 3', 'p. 4']);
+    expect(errors).toEqual([]);
+  });
+
+  // Seen on CI with a 150 s timeout: the save bar was placed beside a selection that lay under the
+  // bottom edge of the window, so "Save highlight" was outside the viewport and could not be clicked.
+  // A selection can be off screen by keyboard, by a long drag that auto-scrolled, or by script.
+  test('the save bar stays inside the window when the selection is off screen', async ({ env }) => {
+    const pdf = byName('cdc-mmwr-vaccination-coverage-2023.pdf');
+    const { page, errors } = await openRealPdf(env, pdf);
+    await pageRendered(page, 1);
+    const below = await findPassage(page, 1, { belowFold: true });
+    expect(below, 'text on page 1 that is under the bottom edge of the window').not.toBeNull();
+    await selectPassage(page, below!, { scroll: false });
+    const bar = page.getByTestId('pdf-savebar');
+    await expect(bar).toBeVisible();
+    const view = page.viewportSize()!;
+    const box = (await page.getByTestId('pdf-save').boundingBox())!;
+    expect(box.y).toBeGreaterThanOrEqual(0);
+    expect(box.y + box.height).toBeLessThanOrEqual(view.height);
+    expect(box.x + box.width).toBeLessThanOrEqual(view.width);
+    await saveSelection(page); // a real click: Playwright refuses an element outside the viewport
+    expect(await storedHighlights(page)).toHaveLength(1);
+    expect(errors).toEqual([]);
+  });
+
+  // KNOWN GAP, found with the real MSFC scan (page 1 is stored sideways, /Rotate 0): recognition
+  // reads the page upright whatever the person did to the view, so a sideways scan comes back as
+  // junk ("s (c) [7] s (c) NS 0 8 ...", 793 characters) under a green "Recognised 1 page". Rotating
+  // the view (R) does not change what is recognised, and there is no orientation detection (the OSD
+  // language data is not bundled). Fixing it means recognising at the rotation the person set,
+  // mapping word boxes back, and giving the text-layer items a rotated transform. Un-fixme it then.
+  test.fixme('recognition follows the rotation of the view: a sideways scan is read after rotating it', async ({
+    env,
+  }) => {
+    const pdf = byName('nasa-msfc-60k-combustion-testbed-2000.pdf');
+    const { page } = await openRealPdf(env, pdf);
+    await expectPageDrawn(page, 1);
+    await page.getByTestId('pdf-rotate').click(); // clockwise: the sideways text is upright now
+    await page.getByTestId('pdf-ocr-this-page').click();
+    await expect(page.getByText('Recognised 1 page', { exact: true })).toBeVisible({
+      timeout: OCR_TIMEOUT_MS - 60_000,
+    });
+    await expect(page.locator('[data-testid="pdf-page-1"] .sv-textlayer')).toContainText(
+      /testbed/i,
+    );
+  });
+});

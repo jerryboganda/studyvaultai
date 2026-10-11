@@ -199,65 +199,87 @@ export interface Passage {
 /**
  * Find a passage of real prose on page `n`: two consecutive, vertically adjacent lines of the same
  * column (a wrapped sentence), else one line. Spans must be unique on the page, so a box measured
- * by text means exactly them. Returns null when the page has nothing worth selecting.
+ * by text means exactly them. Returns null when the page has nothing worth selecting. With
+ * `belowFold` only text that is wholly under the bottom edge of the window qualifies.
  */
-export async function findPassage(page: Page, n: number): Promise<Passage | null> {
-  return page.evaluate((pageNumber) => {
-    const leafs = [
-      ...document.querySelectorAll<HTMLElement>(
-        `[data-testid="pdf-page-${pageNumber}"] .sv-textlayer span`,
-      ),
-    ].filter((sp) => sp.firstChild?.nodeType === 3 && sp.children.length === 0);
-    const raw = leafs.map((sp) => sp.textContent ?? '');
-    const count = new Map<string, number>();
-    for (const t of raw) count.set(t, (count.get(t) ?? 0) + 1);
-    const letters = (t: string): number => (t.match(/\p{L}/gu) ?? []).length;
-    const rects = leafs.map((sp) => sp.getBoundingClientRect());
-    const usable = (i: number, min: number): boolean => {
-      const t = raw[i]!;
-      const r = rects[i]!;
-      return (
-        count.get(t) === 1 &&
-        t.trim() === t &&
-        t.length <= 200 &&
-        letters(t) >= min &&
-        r.width > 8 &&
-        r.height > 4
-      );
-    };
-    for (let i = 0; i + 1 < leafs.length; i++) {
-      if (!usable(i, 12) || !usable(i + 1, 8)) continue;
-      const a = rects[i]!;
-      const b = rects[i + 1]!;
-      const below = b.top > a.top + a.height * 0.5;
-      const sameColumn = Math.abs(b.left - a.left) < 60;
-      const adjacent = b.top - a.bottom < a.height * 2;
-      if (below && sameColumn && adjacent) {
-        return { pageNumber, first: raw[i]!, last: raw[i + 1]! };
+export async function findPassage(
+  page: Page,
+  n: number,
+  opts: { belowFold?: boolean } = {},
+): Promise<Passage | null> {
+  return page.evaluate(
+    ({ pageNumber, belowFold }) => {
+      const leafs = [
+        ...document.querySelectorAll<HTMLElement>(
+          `[data-testid="pdf-page-${pageNumber}"] .sv-textlayer span`,
+        ),
+      ].filter((sp) => sp.firstChild?.nodeType === 3 && sp.children.length === 0);
+      const raw = leafs.map((sp) => sp.textContent ?? '');
+      const count = new Map<string, number>();
+      for (const t of raw) count.set(t, (count.get(t) ?? 0) + 1);
+      const letters = (t: string): number => (t.match(/\p{L}/gu) ?? []).length;
+      const rects = leafs.map((sp) => sp.getBoundingClientRect());
+      const usable = (i: number, min: number): boolean => {
+        const t = raw[i]!;
+        const r = rects[i]!;
+        return (
+          count.get(t) === 1 &&
+          t.trim() === t &&
+          t.length <= 200 &&
+          letters(t) >= min &&
+          r.width > 8 &&
+          r.height > 4 &&
+          (!belowFold || r.top > window.innerHeight + 40)
+        );
+      };
+      for (let i = 0; i + 1 < leafs.length; i++) {
+        if (!usable(i, 12) || !usable(i + 1, 8)) continue;
+        const a = rects[i]!;
+        const b = rects[i + 1]!;
+        const below = b.top > a.top + a.height * 0.5;
+        const sameColumn = Math.abs(b.left - a.left) < 60;
+        const adjacent = b.top - a.bottom < a.height * 2;
+        if (below && sameColumn && adjacent) {
+          return { pageNumber, first: raw[i]!, last: raw[i + 1]! };
+        }
       }
-    }
-    for (let i = 0; i < leafs.length; i++) {
-      if (usable(i, 10)) return { pageNumber, first: raw[i]!, last: raw[i]! };
-    }
-    return null;
-  }, n);
+      for (let i = 0; i < leafs.length; i++) {
+        if (usable(i, 10)) return { pageNumber, first: raw[i]!, last: raw[i]! };
+      }
+      return null;
+    },
+    { pageNumber: n, belowFold: opts.belowFold === true },
+  );
 }
 
-/** Select a passage by range (first span's start to last span's end), as a drag would. */
-export async function selectPassage(page: Page, p: Passage): Promise<void> {
-  await page.evaluate(({ pageNumber, first, last }) => {
-    const leafs = [
-      ...document.querySelectorAll<HTMLElement>(
-        `[data-testid="pdf-page-${pageNumber}"] .sv-textlayer span`,
-      ),
-    ].filter((sp) => sp.firstChild?.nodeType === 3);
-    const a = leafs.find((sp) => sp.textContent === first);
-    const b = leafs.find((sp) => sp.textContent === last);
-    if (!a?.firstChild || !b?.firstChild) throw new Error('passage is not on the page any more');
-    document
-      .getSelection()!
-      .setBaseAndExtent(a.firstChild, 0, b.firstChild, (b.textContent ?? '').length);
-  }, p);
+/**
+ * Select a passage by range (first span's start to last span's end), as a drag would. By default the
+ * passage is first scrolled to the middle of the window (a person selects what is on screen);
+ * `scroll: false` selects it where it is, even if that is off screen.
+ */
+export async function selectPassage(
+  page: Page,
+  p: Passage,
+  opts: { scroll?: boolean } = {},
+): Promise<void> {
+  await page.evaluate(
+    ({ pageNumber, first, last, scroll }) => {
+      const leafs = [
+        ...document.querySelectorAll<HTMLElement>(
+          `[data-testid="pdf-page-${pageNumber}"] .sv-textlayer span`,
+        ),
+      ].filter((sp) => sp.firstChild?.nodeType === 3);
+      const a = leafs.find((sp) => sp.textContent === first);
+      const b = leafs.find((sp) => sp.textContent === last);
+      if (!a?.firstChild || !b?.firstChild) throw new Error('passage is not on the page any more');
+      // Instantly: a smooth scroll would move the passage again under the save bar.
+      if (scroll) a.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+      document
+        .getSelection()!
+        .setBaseAndExtent(a.firstChild, 0, b.firstChild, (b.textContent ?? '').length);
+    },
+    { ...p, scroll: opts.scroll !== false },
+  );
   await expect(page.getByTestId('pdf-savebar')).toBeVisible();
 }
 
@@ -398,3 +420,269 @@ export async function sampleHeap(context: BrowserContext, page: Page): Promise<H
 }
 
 export const mb = (bytes: number): number => Math.round((bytes / 1048576) * 10) / 10;
+
+// ---------------------------------------------------------------------------------------------
+// Real mouse input and cross-page selection
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * `count` consecutive, vertically adjacent, unique lines of one column on page `n` (the raw text of
+ * their spans, top to bottom) together with the texts of the spans that sit beside them in the
+ * band they cover but outside their column, or null. Reading order is the DOM order of the text
+ * layer. With `needOthers` only a band that really has another column beside it qualifies.
+ */
+export async function findColumnBand(
+  page: Page,
+  n: number,
+  count: number,
+  needOthers: boolean,
+): Promise<{ lines: string[]; others: string[] } | null> {
+  return page.evaluate(
+    ({ n, count, needOthers }) => {
+      const leafs = [
+        ...document.querySelectorAll<HTMLElement>(
+          `[data-testid="pdf-page-${n}"] .sv-textlayer span`,
+        ),
+      ].filter((sp) => sp.firstChild?.nodeType === 3 && sp.children.length === 0);
+      const raw = leafs.map((sp) => sp.textContent ?? '');
+      const seen = new Map<string, number>();
+      for (const t of raw) seen.set(t, (seen.get(t) ?? 0) + 1);
+      const rects = leafs.map((sp) => sp.getBoundingClientRect());
+      const ok = (i: number): boolean =>
+        seen.get(raw[i]!) === 1 &&
+        raw[i]!.trim() === raw[i] &&
+        (raw[i]!.match(/\p{L}/gu) ?? []).length >= 8 &&
+        rects[i]!.width > 20 &&
+        rects[i]!.height > 4;
+      for (let i = 0; i + count <= leafs.length; i++) {
+        let good = true;
+        for (let k = 0; k < count && good; k++) {
+          if (!ok(i + k)) good = false;
+          if (good && k > 0) {
+            const a = rects[i + k - 1]!;
+            const b = rects[i + k]!;
+            good =
+              b.top > a.top + a.height * 0.5 &&
+              Math.abs(b.left - a.left) < 40 &&
+              b.top - a.bottom < a.height * 1.5;
+          }
+        }
+        if (!good) continue;
+        const band = rects.slice(i, i + count);
+        const x0 = Math.min(...band.map((r) => r.left));
+        const x1 = Math.max(...band.map((r) => r.right));
+        const y0 = Math.min(...band.map((r) => r.top));
+        const y1 = Math.max(...band.map((r) => r.bottom));
+        const others: string[] = [];
+        rects.forEach((r, j) => {
+          if (j >= i && j < i + count) return;
+          const beside = r.left > x1 + 5 || r.right < x0 - 5;
+          const sameBand = r.bottom > y0 && r.top < y1;
+          if (beside && sameBand && (raw[j] ?? '').trim().length >= 3) others.push(raw[j]!);
+        });
+        if (needOthers && others.length < 2) continue;
+        return { lines: raw.slice(i, i + count), others };
+      }
+      return null;
+    },
+    { n, count, needOthers },
+  );
+}
+
+/** Scroll the span with this exact text to the middle of the viewer (instantly). */
+export async function scrollSpanIntoView(page: Page, n: number, text: string): Promise<void> {
+  await page.evaluate(
+    ({ n, text }) => {
+      const sp = [
+        ...document.querySelectorAll<HTMLElement>(
+          `[data-testid="pdf-page-${n}"] .sv-textlayer span`,
+        ),
+      ].find((s) => s.textContent === text);
+      if (!sp) throw new Error('span not found');
+      sp.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+    },
+    { n, text },
+  );
+}
+
+/** Real mouse drag from the start of the span `from` to the end of the span `to` (horizontal text). */
+export async function dragAcross(page: Page, n: number, from: string, to: string): Promise<void> {
+  await scrollSpanIntoView(page, n, from);
+  // Boxes are read after the scroll and the redraw it may cause have stopped moving them.
+  let a = await spanBox(page, n, from);
+  let b = await spanBox(page, n, to);
+  for (let i = 0; i < 20; i++) {
+    await page.waitForTimeout(100);
+    const a2 = await spanBox(page, n, from);
+    const b2 = await spanBox(page, n, to);
+    const still = Math.abs(a2.x - a.x) + Math.abs(a2.y - a.y) + Math.abs(b2.y - b.y) < 1;
+    a = a2;
+    b = b2;
+    if (still) break;
+  }
+  await page.mouse.move(a.x + 1, a.y + a.h / 2);
+  await page.mouse.down();
+  await page.mouse.move(b.x + b.w - 1, b.y + b.h / 2, { steps: 12 });
+  await page.mouse.up();
+  await expect(page.getByTestId('pdf-savebar')).toBeVisible();
+}
+
+/**
+ * Select from the last text of page `n` to the first text of page `n + 1` (a range across the page
+ * boundary, as dragging over it would make). Returns the two texts.
+ */
+export async function selectAcrossBoundary(
+  page: Page,
+  n: number,
+): Promise<{ from: string; to: string }> {
+  const picked = await page.evaluate((n) => {
+    const leafsOf = (p: number): HTMLElement[] =>
+      [
+        ...document.querySelectorAll<HTMLElement>(
+          `[data-testid="pdf-page-${p}"] .sv-textlayer span`,
+        ),
+      ].filter(
+        (sp) =>
+          sp.firstChild?.nodeType === 3 &&
+          sp.children.length === 0 &&
+          (sp.textContent ?? '').trim().length >= 3,
+      );
+    const before = leafsOf(n);
+    const after = leafsOf(n + 1);
+    const a = before[before.length - 1];
+    const b = after[0];
+    if (!a?.firstChild || !b?.firstChild) return null;
+    a.scrollIntoView({ block: 'end', inline: 'nearest', behavior: 'instant' });
+    document
+      .getSelection()!
+      .setBaseAndExtent(a.firstChild, 0, b.firstChild, (b.textContent ?? '').length);
+    return { from: a.textContent ?? '', to: b.textContent ?? '' };
+  }, n);
+  if (!picked) throw new Error(`no text on pages ${n} and ${n + 1}`);
+  await expect(page.getByTestId('pdf-savebar')).toBeVisible();
+  return picked;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Words of recognised (OCR) text
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Select `count` consecutive words of recognised text on page `n`, all on one line, starting about a
+ * third of the way into the page's words (past any heading). Recognised text is one span per word, and
+ * words repeat, so the passage is addressed by position and its box is returned relative to the page
+ * (stable under scrolling). Null when the page has no such run.
+ */
+export async function selectWords(
+  page: Page,
+  n: number,
+  count: number,
+): Promise<{ text: string; box: Box } | null> {
+  const picked = await page.evaluate(
+    ({ n, count }) => {
+      const host = document.querySelector<HTMLElement>(`[data-testid="pdf-page-${n}"] .sv-page`);
+      const leafs = [
+        ...document.querySelectorAll<HTMLElement>(
+          `[data-testid="pdf-page-${n}"] .sv-textlayer span`,
+        ),
+      ].filter((sp) => sp.firstChild?.nodeType === 3 && sp.children.length === 0);
+      if (!host || leafs.length < count) return null;
+      const rects = leafs.map((sp) => sp.getBoundingClientRect());
+      const word = (i: number): boolean =>
+        (leafs[i]!.textContent ?? '').trim().length >= 3 &&
+        rects[i]!.width > 4 &&
+        rects[i]!.height > 4;
+      const start = Math.floor(leafs.length / 3);
+      for (let k = 0; k < leafs.length; k++) {
+        const i = (start + k) % Math.max(1, leafs.length - count + 1);
+        let good = true;
+        for (let j = 0; j < count && good; j++) {
+          if (!word(i + j)) good = false;
+          else if (j > 0) {
+            const a = rects[i + j - 1]!;
+            const b = rects[i + j]!;
+            good = Math.abs(b.top - a.top) < a.height * 0.5 && b.left >= a.left;
+          }
+        }
+        if (!good) continue;
+        const first = leafs[i]!;
+        const last = leafs[i + count - 1]!;
+        first.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' });
+        document
+          .getSelection()!
+          .setBaseAndExtent(
+            first.firstChild!,
+            0,
+            last.firstChild!,
+            (last.textContent ?? '').length,
+          );
+        const band = leafs.slice(i, i + count).map((sp) => sp.getBoundingClientRect());
+        const h = host.getBoundingClientRect();
+        const x0 = Math.min(...band.map((r) => r.left));
+        const y0 = Math.min(...band.map((r) => r.top));
+        return {
+          text: leafs
+            .slice(i, i + count)
+            .map((sp) => sp.textContent ?? '')
+            .join(''),
+          box: {
+            x: x0 - h.left,
+            y: y0 - h.top,
+            w: Math.max(...band.map((r) => r.right)) - x0,
+            h: Math.max(...band.map((r) => r.bottom)) - y0,
+          },
+        };
+      }
+      return null;
+    },
+    { n, count },
+  );
+  if (picked) await expect(page.getByTestId('pdf-savebar')).toBeVisible();
+  return picked;
+}
+
+/** The painted highlight of page `n` sits on `box` (relative to the page), within the tolerance. */
+export async function expectOverlayOnBox(
+  page: Page,
+  n: number,
+  box: Box,
+  label: string,
+  timeout = 20_000,
+): Promise<void> {
+  await expect
+    .poll(
+      async () => {
+        const rel = await page.evaluate((pageNumber) => {
+          const host = document.querySelector<HTMLElement>(
+            `[data-testid="pdf-page-${pageNumber}"] .sv-page`,
+          );
+          const nodes = [
+            ...document.querySelectorAll<HTMLElement>(
+              `[data-testid="pdf-page-${pageNumber}"] .sv-pdf-hl`,
+            ),
+          ];
+          if (!host || nodes.length === 0) return null;
+          const h = host.getBoundingClientRect();
+          const rects = nodes.map((el) => el.getBoundingClientRect());
+          const x0 = Math.min(...rects.map((r) => r.left));
+          const y0 = Math.min(...rects.map((r) => r.top));
+          return {
+            x: x0 - h.left,
+            y: y0 - h.top,
+            w: Math.max(...rects.map((r) => r.right)) - x0,
+            h: Math.max(...rects.map((r) => r.bottom)) - y0,
+          };
+        }, n);
+        if (!rel) return 'no overlay';
+        const off = Math.max(
+          Math.abs(rel.x - box.x),
+          Math.abs(rel.y - box.y),
+          Math.abs(rel.x + rel.w - (box.x + box.w)),
+          Math.abs(rel.y + rel.h - (box.y + box.h)),
+        );
+        return off <= ALIGN_TOLERANCE_PX ? 'aligned' : `off by ${Math.round(off)}px`;
+      },
+      { message: label, timeout },
+    )
+    .toBe('aligned');
+}

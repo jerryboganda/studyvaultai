@@ -26,6 +26,7 @@ import {
   readTable,
   renderOutbound,
   routingOf,
+  saveBlock,
   saveHighlight,
   setUpAi,
   storageDump,
@@ -395,8 +396,10 @@ test.describe('chat with your notes', () => {
   }) => {
     const options = await openExt(env, 'options');
     await setUpAi(options, provider);
-    await saveHighlight(env, options, '#p-pearl');
-    const { page } = await saveHighlight(env, options, '#p-second');
+    // Both on ONE page: the harness finds a tab to activate by its address, so a second tab at the
+    // same address would never get the content script.
+    const { page } = await saveHighlight(env, options, '#p-pearl');
+    await saveBlock(options, page, '#p-second');
     const rows = await highlightsOf(options, page.url());
     const pearl = rows.find((r) => r.exactQuote.startsWith('The sinoatrial node sets'));
     const vagal = rows.find((r) => r.exactQuote.startsWith('Parasympathetic stimulation'));

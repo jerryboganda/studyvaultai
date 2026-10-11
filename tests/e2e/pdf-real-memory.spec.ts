@@ -34,12 +34,20 @@ import {
 
 /** Pages held at once: the pages in view plus one neighbour on each side, two pages in view at most. */
 const MAX_CANVASES = 4;
-/** The heap may grow by this much over the first-page reading (MB), whatever the page count. */
-const MAX_HEAP_GROWTH_MB = 80;
-/** ... and by at most this factor. */
-const MAX_HEAP_FACTOR = 3;
-/** Live DOM nodes after the traversal vs after the first page (a text layer is ~hundreds of nodes). */
-const MAX_DOM_GROWTH = 4000;
+/**
+ * The heap after the traversal may exceed the heap after the first page by this much (MB) ...
+ * Measured on the 192-page CDC guideline (Windows, Chromium 1248, 2026-10-12, three runs within 0.1 MB):
+ * +6.8 MB (x1.5, about 36 KB per page, in steps); on the 76-page NIST document +0.9 MB (x1.09); on the
+ * 70-page 8-megapixel scan -3.5 MB (x0.74), whose heap peaks at 33 MB mid-way while the 24-page text
+ * cache holds the densest OCR layers (the cache is bounded in pages, not in bytes). The bound is about
+ * 3.5 times the largest final growth, so runner noise passes and a leak that keeps one text layer or
+ * one decoded page image per page visited (tens of MB on these files) does not.
+ */
+const MAX_HEAP_GROWTH_MB = 24;
+/** ... and by at most this factor (largest measured: 1.5). */
+const MAX_HEAP_FACTOR = 2.5;
+/** Live DOM nodes after the traversal minus after the first page (largest measured: +306). */
+const MAX_DOM_GROWTH = 2500;
 
 const LONG = readRealPdfs().filter((p) => p.pages >= 50 && p.text !== 'scanned');
 
@@ -71,43 +79,67 @@ async function measure(
   await page.evaluate(() => document.fonts.ready.then(() => undefined));
   const first = await sampleHeap(fixture.context, page);
 
+  // The traversal runs in quarters, with a forced collection and a heap reading after each: a curve,
+  // so "grows with the pages visited" is shown as linear or flat, not guessed from two points.
   const t0 = Date.now();
-  const traversal: Traversal = await page.evaluate(async (pages) => {
-    const scroller = document.querySelector<HTMLElement>('[data-testid="pdf-viewer"]');
-    if (!scroller) throw new Error('no viewer');
-    let maxCanvases = 0;
-    let maxTextLayers = 0;
-    const look = (): void => {
-      maxCanvases = Math.max(maxCanvases, document.querySelectorAll('canvas.sv-pdf-canvas').length);
-      maxTextLayers = Math.max(maxTextLayers, document.querySelectorAll('.sv-textlayer').length);
-    };
-    const watcher = new MutationObserver(look);
-    watcher.observe(scroller, { childList: true, subtree: true });
-    const drawn = (n: number): Promise<void> =>
-      new Promise((resolve, reject) => {
-        const since = performance.now();
-        const tick = (): void => {
-          look();
-          const done = document.querySelector(
-            `[data-testid="pdf-page-${n}"] .sv-textlayer .endOfContent`,
+  const traversal: Traversal = { steps: 0, maxCanvases: 0, maxTextLayers: 0, ms: 0 };
+  const curve: Array<{ pages: number; heapMB: number }> = [];
+  const QUARTERS = 4;
+  for (let q = 1; q <= QUARTERS; q++) {
+    const from = Math.floor(((q - 1) * pdf.pages) / QUARTERS) + 1;
+    const to = Math.floor((q * pdf.pages) / QUARTERS);
+    const part = await page.evaluate(
+      async ({ from, to }) => {
+        const scroller = document.querySelector<HTMLElement>('[data-testid="pdf-viewer"]');
+        if (!scroller) throw new Error('no viewer');
+        let maxCanvases = 0;
+        let maxTextLayers = 0;
+        const look = (): void => {
+          maxCanvases = Math.max(
+            maxCanvases,
+            document.querySelectorAll('canvas.sv-pdf-canvas').length,
           );
-          if (done) resolve();
-          else if (performance.now() - since > 90_000) reject(new Error(`page ${n} was not drawn`));
-          else setTimeout(tick, 15);
+          maxTextLayers = Math.max(
+            maxTextLayers,
+            document.querySelectorAll('.sv-textlayer').length,
+          );
         };
-        tick();
-      });
-    let steps = 0;
-    for (let n = 1; n <= pages; n++) {
-      const slot = document.querySelector<HTMLElement>(`[data-testid="pdf-page-${n}"]`);
-      if (!slot) throw new Error(`no slot for page ${n}`);
-      scroller.scrollTop = Math.max(0, slot.offsetTop - 8);
-      await drawn(n);
-      steps++;
-    }
-    watcher.disconnect();
-    return { steps, maxCanvases, maxTextLayers, ms: 0 };
-  }, pdf.pages);
+        const watcher = new MutationObserver(look);
+        watcher.observe(scroller, { childList: true, subtree: true });
+        const drawn = (n: number): Promise<void> =>
+          new Promise((resolve, reject) => {
+            const since = performance.now();
+            const tick = (): void => {
+              look();
+              const done = document.querySelector(
+                `[data-testid="pdf-page-${n}"] .sv-textlayer .endOfContent`,
+              );
+              if (done) resolve();
+              else if (performance.now() - since > 90_000) {
+                reject(new Error(`page ${n} was not drawn`));
+              } else setTimeout(tick, 15);
+            };
+            tick();
+          });
+        let steps = 0;
+        for (let n = from; n <= to; n++) {
+          const slot = document.querySelector<HTMLElement>(`[data-testid="pdf-page-${n}"]`);
+          if (!slot) throw new Error(`no slot for page ${n}`);
+          scroller.scrollTop = Math.max(0, slot.offsetTop - 8);
+          await drawn(n);
+          steps++;
+        }
+        watcher.disconnect();
+        return { steps, maxCanvases, maxTextLayers };
+      },
+      { from, to },
+    );
+    traversal.steps += part.steps;
+    traversal.maxCanvases = Math.max(traversal.maxCanvases, part.maxCanvases);
+    traversal.maxTextLayers = Math.max(traversal.maxTextLayers, part.maxTextLayers);
+    const at = await sampleHeap(fixture.context, page);
+    curve.push({ pages: to, heapMB: mb(at.heapBytes) });
+  }
   traversal.ms = Date.now() - t0;
 
   await expect(page.getByTestId('pdf-page-input')).toHaveValue(String(pdf.pages));
@@ -126,6 +158,9 @@ async function measure(
     ...sampleFields('afterTraversal', last),
     ...sampleFields('afterReturnToPage1', back),
     heapGrowthMB: growthMB,
+    heapKBPerPage: Math.round(((last.heapBytes - first.heapBytes) / 1024 / pdf.pages) * 10) / 10,
+    heapCurve: curve,
+    heapPeakMB: Math.max(...curve.map((c) => c.heapMB)),
     heapFactor: Math.round((last.heapBytes / first.heapBytes) * 100) / 100,
     domGrowth: last.domNodes - first.domNodes,
     maxCanvasesAtOnce: traversal.maxCanvases,

@@ -263,3 +263,110 @@ SV_PERF=1 node node_modules/vitest/vitest.mjs run packages/storage/src/perf.test
 
 Library sizes were measured by minifying one entry per package with rolldown (the bundler Vite 8
 uses) and summing, with React built for production; they are a decomposition, not a second build.
+
+## Addendum, 2026-10-12: what changed since this review (finish wave)
+
+Method: the ADRs (011 to 020) and the code were read; the figures below are the ones each ADR's
+author recorded from a private e2e-variant build (`scripts/build-e2e.mjs`, the same Vite build and
+minifier as production plus loopback hosts and the e2e hook) or from the header of the module they
+describe. **They are not one baseline-to-head comparison**: each was measured against a copy of the
+tree with that change taken out, while other work was in the tree. Nothing here was measured in Chrome
+by this addendum and no run of branch `feat/finish-all` has passed the `build` or `stress` job with
+these changes, so the budgets in `scripts/check-build.mjs` have not yet asserted them.
+
+### Findings above that moved
+
+| ID | Was | Now | Evidence | Status |
+| --- | --- | --- | --- | --- |
+| P1-06 | Content script 405 KB, 53% React and react-dom | `react` and `react-dom` resolve to `preact/compat` for the content-script entrypoint only: 414,404 B to 214,393 B (-200,011 B, -48.3%), gzip 127,826 B to 68,246 B; the pages keep React | ADR-012; `modules/content-script-preact.ts`; budget 220 KB | **FIXED** (private build; the gate has not run on the branch's production build) |
+| P1-07 | Total 6,464 KB of 6,500 (99.4%) | The wave added about 44 KB for the AI router and chat alone (ADR-013: 6,486.9 to 6,530.9 KB) and the whole wave measured 6,643 KB in a CI `build` job before the rules UI landed (comment in `scripts/check-build.mjs`); budgets are now content script 220 KB, background 450 KB, non-OCR total 6,800 KB (about 2% headroom) | `scripts/check-build.mjs` | **Budget raised with a recorded reason**, not fixed: the margin is thin again, and the follow-up named in P1-07 (load bcmaps on demand) was not done |
+| P1-02 | The dashboard opens the search index on mount although browse mode does not use it | Unchanged (`Dashboard.tsx` still calls `host.start()` on mount). The same index now also serves "Related", the link picker and chat retrieval, so the eager start is less of a pure cost | `entrypoints/dashboard/Dashboard.tsx` | RECOMMENDED, unchanged |
+| P1-09 | `assertNoNewerRows` scans four tables in full on the first write per connection | Not taken in schema v4 (ADR-011: "No existing table changes"), and the scan now also covers `filingRules`, `syllabi` and `relations` (small tables) | ADR-011 section 1 | RECOMMENDED, slightly larger |
+| P1-03 | Zod parse of every card that can be due, on a backlogged vault, in the popup and review page | Also on a worker path now: with reminders on, the worker calls `getDueSummary` at start and on each `dataEpoch`, `studySettings` and `settings` change, through one single-flight pass with a re-run flag; it reads only cards that can be due today (an index range). Nothing is read at start while the feature is off beyond one `storage.local` key | ADR-019; `entrypoints/background/reminders.ts` | RECOMMENDED, more reachable: a slim queue-row reader would help the worker too |
+| P1-04 | Every card answer bumps `dataEpoch` and wakes every tab | Unchanged; the reminders service is one more listener in the worker, active only when the feature is on | ADR-019 | RECOMMENDED |
+| P1-01 | Seconds-long search-index serialise and restore | Unchanged | | RECOMMENDED (mitigation only) |
+
+### New items
+
+| ID | Sev | Where | Figures and evidence | Status |
+| --- | --- | --- | --- | --- |
+| P1-24 | Medium | Content script: Zod | After Preact, Zod is about 86 KB of the 209 KB content script, on the path through `@shared` and message validation. A throw-away bundle of an equivalent small schema set measured 91.6 KB with `zod` and 26.4 KB with `zod/mini` (about -65 KB), but `zod/mini` has no method chaining, so it means rewriting the `@shared` schemas, which guard storage reads, backups and messages. Three more schema blocks (rules, syllabi, relations) add about 2.9 KB minified (1.2 KB gzip) to any bundle that keeps `schema.ts` whole, and the content script does (ADR-011) | RECOMMENDED: its own ADR (migrate `@shared` to `zod/mini`, or split a content-script schema surface; moving the new block to a subpath such as `@shared/organisation` would take the 2.9 KB out) |
+| P1-25 | Medium | Worker bundle | Filing code +12,352 B (412,550 to 424,902 B; gzip +3,683, ADR-017); reminders +11,762 B (`getDueSummary` brings the queue builder, ADR-019); router +3.7 KB (ADR-013). Measured about 425 KB against a 450 KB budget (comment in `scripts/check-build.mjs`) | Budget raised. ADR-011 says only the table specs, the upgrade step and the purge cascade of the three new repositories are in the worker; the comment above the budget in `scripts/check-build.mjs` says the worker bundles the repositories because they register schemas at import time. A search of the private e2e-variant worker of ADR-017 (424,902 B, the size ADR-017 records) for the message strings of `rules.ts` ("Rule not found", "is not a site name", "Choose the bank to file into") and `syllabi.ts` ("Syllabus not found") found none, which agrees with ADR-011 and not with the comment (open item U-21 in `docs/PRIVACY_CLAIMS.md`) |
+| P1-26 | Low | New lazy chunks | Exam 45,315 B (gzip 13,852), opened with the Exam tab; `SyllabusView` 24,683 B (8,689) and `SyllabusCoverage` 14,895 B (5,246); `RulesView` 28,018 B; graph about 18.9 KB (6.7 gzip) plus 3.1 KB CSS; import readers 12.6 KB; `AiRoutingSection` +13.1 KB and `ChatView` +5.2 KB; the reminders section is its own lazy chunk (+7,868 B in the pages and +11,762 B in the worker in total). The side panel now fetches the AI engine (about 68 KB) when "AI drafts" is opened instead of at panel start (ADR-013) | Fixed by construction (nothing loads until the feature is opened); the options page still loads the `ai` chunk with the page |
+| P1-27 | Low | Graph and coverage reads | The graph reads every visible link (at most 20,000) when the view opens and draws at most 60 items; the syllabus coverage reads every highlight id, link row and card once per refresh and refreshes on data changes, not on a timer; neither runs at start-up. Not measured on a large vault | RECOMMENDED: a measurement at 10,000 highlights and 20,000 links |
+| P1-28 | High (as a freeze), now guarded | Markdown rendering | marked 18.1.0 took 20 s to more than 25 s on some 100,000-character inputs and overflowed the stack at about 3,000 nested quotes. A budget of about a quarter second of estimated work (the model is fitted to measurements and set at or above them), nesting at most 24 and 100,000 characters, is checked before the block pass and before the inline pass; hostile inputs are refused in 0 to 30 ms and shown as plain text. The module header records, for Chrome 152, a realistic 20,000-character note at 24 ms and a 100,000-character note at 87 ms (an estimate of 100 ms). Those figures were recorded by the author of the module; no CI run has asserted them (jsdom's DOM is about 12 times slower, so the unit tests carry bounds, not Chrome numbers) | **FIXED** in code with unit tests (`markdownBudget.test.ts`, `markdownRender.budget.test.ts`); CI pending |
+| P1-29 | Low | Document import | Parsing runs on the importing page's thread (no Worker, ADR-014): bounded by 64 MiB, 5,000 entries, 256 MiB declared, 8 Mi characters and 10,000 blocks, so a hostile file inside the caps can keep the page busy for seconds, never forever. A header that lies about a stream's size is abandoned at the first 8 KiB slice past it | Accepted (THREAT_MODEL R26) |
+| P1-30 | Low | Related highlights | `packages/search/src/related.perf.test.ts` asserts `related()` p95 under 50 ms (the widest request under 100 ms) over a seeded 10,000-document vault; `scripts/run-perf.mjs` picks it up as a seventh suite through its `.perf.test.ts` name. Measured numbers: none recorded here | Guard written; CI pending |
+| P1-31 | Info | PDF reader, long real documents | `tests/e2e/pdf-real-memory.spec.ts` brings every page of the real documents of 50 pages or more on screen and bounds the canvases held at once (4), the main-thread heap growth over the first page (24 MB and a factor of 2.5) and live DOM growth (+2,500 nodes). The measurements the bounds came from, and what they do and do not show, are in the next addendum ("long real documents in real Chromium", below); they are agent-run local numbers on Windows, not a CI result, and pdf.js's worker heap and GPU or bitmap memory are not measured | Guard written; CI pending |
+
+### Not measured here
+
+- Anything in a real Chrome, including the Preact content script's parse and heap cost per tab (the
+  size is measured, the per-tab effect is not) and the worker's cold start with the added modules.
+- The size of the production build with the wave: only private e2e-variant builds were read.
+- The cost of the exam, graph and coverage views on a vault of tens of thousands of rows.
+
+## Addendum 2026-10-12: long real documents in real Chromium (windowing and heap)
+
+Added by the real-PDF fixtures work. Measured, not estimated: `tests/e2e/pdf-real-memory.spec.ts` on
+the three real documents of 50 or more pages in `tests/fixtures/pdf/real/` (listed, with their licence
+basis, in `tests/fixtures/pdf/real/SOURCES.md`). Machine: Windows 11, 4 CPUs shared with other
+agents, Node 24, Playwright 1.64 with its bundled Chromium 1248 (new headless, extension loaded
+unpacked, `--enable-precise-memory-info`), e2e build of this tree. The Linux and Windows CI runs will
+produce their own numbers in the `e2e` job logs (`[real-pdf-memory]` lines) and as attached
+`memory-*.json`; they are not in this table until a run is cited here.
+
+What the spec does: opens the file through the real file chooser, reads the heap after page 1 is drawn,
+then brings every page on screen one after the other (setting the viewer's scroll position, waiting for
+the page's text layer to be complete), reads the heap after each quarter, goes back to page 1 and
+reads again. Every heap reading is taken after two forced collections (CDP
+`HeapProfiler.collectGarbage`, then `Performance.getMetrics` `JSHeapUsedSize`; `performance.memory.
+usedJSHeapSize` is read in the page right after and is about 2 MB higher, as expected for the same
+isolate). A `MutationObserver` records the most canvases and text layers that existed at once, so
+transient states are seen, not only settled ones.
+
+| Document | Pages | Canvases at once (max) | Text layers at once (max) | Heap after page 1 | Heap after all pages | Growth | Per page | DOM nodes gained |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `cdc-sti-guidelines-2021` (text, tables, links) | 192 | 4 | 4 | 13.6 MB | 20.4 MB | +6.8 MB (x1.50) | 36 KB | -783 |
+| `nist-sp800-63-3-digital-identity` (text, links, outline) | 76 | 4 | 4 | 9.5 MB | 10.3 MB | +0.9 MB (x1.09) | 12 KB | +306 |
+| `naca-tr1135-compressible-flow-1953` (scan, 2544 x 3300 per page, OCR text layer) | 70 | 4 | 4 | 13.8 MB | 10.3 MB | -3.5 MB (x0.74) | n/a | -4 494 |
+
+Four runs of the spec agreed to within 0.1 MB on the heap growth, exactly on canvases and text layers,
+and to within 150 on DOM nodes. Time to bring every page on screen and settle it: 30 to 37 s for the
+192-page file (158 to 195 ms a page), 4 to 5 s for the 76-page file, 24 to 28 s for the 70 scans (340
+to 400 ms a page; the 8-megapixel image decode is the likely cost, not attributed). On the 192-page file the heap read after each quarter was
+13.6, 14.5, 20.1, 20.4 MB (pages 48, 96, 144, 192): a stepped rise that levels off, not a line.
+
+What it shows, and what it does not:
+
+- **The lazy window holds.** Never more than 4 canvases and 4 text layers in the DOM, whatever the
+  page count (two pages in view plus one neighbour each side). The live DOM node count after the
+  traversal is within 306 nodes of the first-page reading, or lower. This is the bound the spec
+  asserts (`<= 4`), and the existing `pdf.spec.ts` check (120 synthetic pages, jump to page 100) now
+  has a real 192-page counterpart.
+- **The heap is bounded in growth, not flat.** After a full traversal it is 1.5 times the first-page
+  reading on the largest file, with 36 KB per page visited. The growth is most likely the per-page
+  proxy objects pdf.js keeps for the life of the document (`engine.ts` also keeps its own
+  `pages` map and never evicts it; `PDFPageProxy.cleanup()` frees a page's operator list and images
+  but not the proxy) and fonts first used late in the document. Not attributed with a heap snapshot.
+  Extrapolated, a 2 000-page document would hold on the order of 70 MB more than after page 1: modest,
+  and the spec's bound (growth under 24 MB, factor under 2.5, 3.5 times the largest final growth
+  measured) catches a leak that keeps a text layer or a decoded image per page, which would be tens
+  of MB on these files.
+- **Page text is cached by page count, not by bytes.** The heap of the 70-page scan read 33 MB at page
+  35 and 10 MB at page 70. The 24-page text cache (`CACHE_PAGES` in `engine.ts`) holding the densest
+  OCR layers (roughly 1 MB a page) is the likely reason; not confirmed with a snapshot. Bounded, but a
+  run of text-dense pages can make that cache several times the size it has for ordinary pages. A byte
+  budget would make it uniform; not done (nothing failed, and `engine.test.ts` assumes the
+  page-count bound).
+- **Not measured**: the pdf.js worker's own heap (a separate isolate, outside the page's JS heap),
+  GPU and bitmap memory of canvases (bounded by the 4-canvas window and `MAX_CANVAS_PIXELS`, 16.7 MP
+  each), and anything in Chrome on Linux or macOS. Memory of the whole browser process is not read.
+
+Reproduce (one spec, a private build, the Playwright lock of `docs/plans/FINISH_BRIEF.md`):
+
+```bash
+SV_OUT_DIR=.output-pp node scripts/build-e2e.mjs
+SV_OUT_DIR=.output-pp node node_modules/@playwright/test/cli.js test tests/e2e/pdf-real-memory.spec.ts \
+  --workers=1 --output=.output-pp/test-results
+```

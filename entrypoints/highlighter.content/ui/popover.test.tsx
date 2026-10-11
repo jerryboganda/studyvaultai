@@ -7,6 +7,7 @@ import {
   createEvent,
   fireEvent,
   makeHighlight,
+  microtasks,
   mountUi,
   rect,
   within,
@@ -61,6 +62,25 @@ describe('highlight popover', () => {
     page.focus();
     const m = mountUi();
     const { dialog } = open(m);
+    expect(m.shadow.activeElement).toBe(dialog);
+
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    expect(m.q.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(page);
+  });
+
+  it('has focus inside as soon as it is placed, not a frame later, and still remembers the page', async () => {
+    // CI (Linux): Escape arrived 13 ms after Alt+Shift+] and went to the page, because Preact runs
+    // passive effects after the next frame. Not wrapped in act: act would flush those effects.
+    const page = document.createElement('a');
+    page.setAttribute('href', '#');
+    page.textContent = 'page link';
+    document.body.append(page);
+    page.focus();
+    const m = mountUi();
+    m.ui.showHighlightPopover(makeHighlight(), ANCHOR);
+    await microtasks();
+    const dialog = m.q.getByRole('dialog', { name: 'Highlight details' });
     expect(m.shadow.activeElement).toBe(dialog);
 
     fireEvent.keyDown(dialog, { key: 'Escape' });

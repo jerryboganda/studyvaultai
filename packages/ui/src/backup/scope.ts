@@ -16,4 +16,4 @@ export const BACKUP_HOLDS =
 
 /** What is not in the file, and therefore not touched by a restore. */
 export const BACKUP_LEAVES_OUT =
-  'your settings (blocked sites, appearance, the study-day time zone and queue order), the AI provider, address, key and usage, the sync account and its queue, saved searches, the backup folder you chose and its last-backup status, and a review session that is in progress';
+  'your settings (blocked sites, appearance, the study-day time zone and queue order, the study reminder), the AI provider, address, key and usage (fallback providers and their keys included), the sync account and its queue, saved searches, the coverage thresholds of your syllabi, an exam in progress and your exam history, the backup folder you chose and its last-backup status, auto-filing suggestions that are waiting, and a review session that is in progress';

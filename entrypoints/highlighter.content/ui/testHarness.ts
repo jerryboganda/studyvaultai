@@ -47,6 +47,16 @@ export function act(callback: () => unknown): Promise<void> | void {
   });
 }
 
+/**
+ * Runs every queued promise continuation, and with it every render Preact scheduled, but no
+ * macrotask: the passive effects Preact defers to the next frame (requestAnimationFrame, or a 100 ms
+ * timer) have NOT run yet. That is the state of a real page when a key arrives a few milliseconds
+ * after an update, which `act` hides because it flushes those effects.
+ */
+export async function microtasks(turns = 20): Promise<void> {
+  for (let i = 0; i < turns; i++) await Promise.resolve();
+}
+
 // Every event the Testing Library helpers (and user-event) dispatch is delivered inside act, so the
 // DOM is up to date when the call returns.
 configure({

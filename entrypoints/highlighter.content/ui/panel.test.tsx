@@ -9,6 +9,7 @@ import {
   fireEvent,
   focusToolbar,
   makeHighlight,
+  microtasks,
   mountUi,
   rect,
   within,
@@ -40,6 +41,16 @@ describe('More options panel', () => {
     expect(m.q.getByRole('button', { name: 'More options' }).getAttribute('aria-expanded')).toBe(
       'true',
     );
+  });
+
+  it('has focus inside before the next frame, so a key pressed right after the click reaches it', async () => {
+    // Not wrapped in act: act flushes the effects Preact defers to the next frame (docs/adr/012).
+    const m = mountUi();
+    show(m.ui);
+    m.q.getByRole('button', { name: 'More options' }).click();
+    await microtasks();
+    const dialog = m.q.getByRole('dialog', { name: 'Save with details' });
+    expect(m.shadow.activeElement).toBe(dialog);
   });
 
   it('lists banks, preselects the last-used one and saves every field', async () => {

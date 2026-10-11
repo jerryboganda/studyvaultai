@@ -182,6 +182,13 @@ describe('content', () => {
     expect(text).toMatch(/without a user name or password/);
     expect(text).toMatch(/page title/);
     expect(text).toMatch(/Deleted highlights stay in the trash on this device/);
+    // The finish-wave data (U-20): rules, syllabi, links, exam history, reminder, folder, fallbacks.
+    expect(text).toMatch(/auto-filing rules, syllabi and the links you draw between\s+items/);
+    expect(text).toMatch(/an exam in progress\s+and your exam history/);
+    expect(text).toMatch(/daily study reminder setting/);
+    expect(text).toMatch(/reference to the backup folder you chose/);
+    expect(text).toMatch(/each AI provider you set \(the main one and any fallbacks\)/);
+    expect(text).toMatch(/your API keys kept in the extension's storage/);
     const seen = (await screen.findByText('What a website can see')).parentElement!;
     expect(seen.textContent).toMatch(/colour and kind/);
     expect(seen.textContent).toMatch(/sv-hl-amber-formula/);
@@ -615,7 +622,8 @@ describe('appearance and capture', () => {
     await open();
     await userEvent.click(await screen.findByRole('radio', { name: /^Dark/ }));
     await waitFor(async () => expect((await getSettings()).theme).toBe('dark'));
-    expect(document.documentElement.dataset.theme).toBe('dark');
+    // The attribute follows the stored value through an effect: wait for it, do not assume it.
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe('dark'));
 
     await userEvent.click(screen.getByRole('radio', { name: /^Match my system/ }));
     await waitFor(() => expect(document.documentElement.dataset.theme).toBeUndefined());
@@ -877,12 +885,15 @@ describe('delete all data', () => {
     for (const part of [
       /highlight with its note, including the ones in the trash/,
       /banks,\s+folders and tags/,
+      /auto-filing rules, your syllabi with their coverage thresholds, and the links/,
       /kept PDF copies/,
-      /flashcards and review history/,
-      /AI drafts, your provider settings and your API key/,
+      /flashcards and review history, a review session or exam in progress, and your exam\s+history/,
+      /AI drafts, your provider settings and your API key, with any fallback providers/,
       /sync settings, the sign-in[\s\S]*before its last update/,
-      /theme, colours, deny list/,
-      /access Chrome gave StudyVault to\s+websites/,
+      /theme, colours, deny list, study reminder/,
+      /access Chrome gave\s+StudyVault to\s+websites/,
+      /reference to the backup folder you chose and its last-backup status/,
+      /auto-filing suggestions still waiting/,
     ]) {
       expect(text).toMatch(part);
     }

@@ -9,8 +9,9 @@
 // 2. Every `[USER-REQUIRED: ...]` marker (a fact only the account owner can supply: support address,
 //    hosted policy URL, store assets) is listed. With --strict any remaining marker fails: that is
 //    the state a store submission must not be in. The marker is the bracketed form, so prose that
-//    merely names it does not count. The scan also covers SECURITY.md (its contact marker) and
-//    README.md when they exist; those two are not held to the permission table in step 1.
+//    merely names it does not count. The scan also covers SECURITY.md (its contact marker),
+//    README.md and LICENSE (the copyright holder's name) when they exist; those three are not held
+//    to the permission table in step 1.
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { argv, env, exit } from 'node:process';
@@ -30,7 +31,7 @@ const docs = ['STORE_LISTING.md', 'PRIVACY_POLICY.md'].map((name) => {
   return { name, text: readFileSync(name, 'utf8') };
 });
 // Scanned for markers only: a missing file is not a failure (it is not a store document).
-const markerOnly = ['SECURITY.md', 'README.md']
+const markerOnly = ['SECURITY.md', 'README.md', 'LICENSE']
   .filter((name) => existsSync(name))
   .map((name) => ({ name, text: readFileSync(name, 'utf8') }));
 
