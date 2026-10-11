@@ -92,7 +92,6 @@ const refused: Record<string, string> = {
   'lines: paragraphs': fill('a\n\n'),
   'lines: headings': fill('# a\n'),
   'lines: table rows': `|a|b|\n|-|-|\n${fill('|a|b|\n', CAP - 12)}`,
-  'lines: reference definitions': fill('[a]: /u\n'),
   'lines: hard breaks': fill('a  \n'),
   'lines: code fences': fill('```\n'),
   'lines: thematic breaks': fill('---\n'),
@@ -336,6 +335,7 @@ describe('renderMarkdown: ordinary documents are not changed by the budget', () 
       tildes: fill('~'),
       'closing brackets': fill(']'),
       ampersands: fill('&a'),
+      'reference definitions, which print nothing': fill('[a]: /u\n'),
       'blank lines': '\n'.repeat(CAP),
       'text in a script with no delimiters': fill(
         '細胞膜はリン脂質二重層であり、選択的透過性を持つ。',

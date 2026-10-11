@@ -35,8 +35,13 @@
  *  - `<` (tags), `\` (escapes), `&`, `!`, `$` (math spans), `@`, `www.`, `://` (auto-links) and any
  *    other punctuation: a few microseconds each.
  *
- * The thresholds are set so that a realistic note passes with a wide margin and a hostile one is
- * refused; markdownRender.test.ts measures both on the real pipeline.
+ * The budget is about a quarter of a second of the whole pipeline in Chrome (marked, DOMPurify and the
+ * DOM), the longest a text that is rendered may take. Measured in Chrome 152: a realistic note of 20,000
+ * characters takes 24 ms and one of 100,000 characters (the cap, 3,100 elements) 87 ms, an estimate of
+ * 100 ms; the 100,000-character hostile inputs above are refused in 0 to 30 ms. markdownBudget.test.ts
+ * holds each rule; markdownRender.budget.test.ts runs hostile and ordinary text through the real
+ * pipeline (jsdom, whose DOM is about 12 times slower than Chrome's, so a rendered note of 3,000
+ * elements takes about a second there).
  */
 
 /** The largest text rendered as Markdown; MAX_NOTE_BODY_CHARS (packages/shared/src/vault.ts). */
@@ -47,7 +52,7 @@ export const RENDER_MAX_CHARS = 100_000;
  */
 export const MAX_NESTING = 24;
 /** Estimated work above which the text is shown unformatted (microseconds of the model below). */
-export const BUDGET_MICROS = 150_000;
+export const BUDGET_MICROS = 250_000;
 
 /**
  * Cost constants, in microseconds, fitted to marked 18.1.0 on a warm V8 (the first render in a page
@@ -71,8 +76,8 @@ const C = {
   taskPair: 0.1,
   /** A quote's lazy continuation lines, times the quote's lines: 3 to 11 ns measured. */
   lazyPair: 0.01,
-  /** One inline run: its tokens, render and the DOM nodes it becomes. Measured 3 to 6 us. */
-  run: 8,
+  /** One inline run: its tokens and render (3 to 6 us), and its block element through DOMPurify (16 us). */
+  run: 22,
   /** One character of inline text; one of `>`, `"`, `'` (escaped on output): 0.15 to 0.3 us measured. */
   char: 0.15,
   punct: 0.4,
@@ -96,8 +101,8 @@ const C = {
   /** `$`: a math-span attempt of up to 500 characters, made twice: 4 to 9 us measured. */
   dollar: 16,
   linkish: 15,
-  /** An element per delimiter run or bracket: measured 4 to 8 us with its token and DOM node. */
-  element: 6,
+  /** A delimiter run or bracket: its token (4 to 8 us) and, half the time, an element (16 us). */
+  element: 12,
   /** Each token start asks the math extension where the next dollar sign is: a scan of the rest. */
   tokenScan: 0.00025,
 } as const;
@@ -517,8 +522,10 @@ export function runMicros(src: string): number {
     (star ? emphasisSteps(star) : 0) +
     (under ? emphasisSteps(under) : 0) +
     (tilde ? emphasisSteps(tilde) : 0);
-  const elements = (star?.runs ?? 0) + (under?.runs ?? 0) + (tilde?.runs ?? 0) + brackets;
-  const tokens = elements + tickRuns + bangs + angles + escapes;
+  // what becomes an element: spans, links, code spans, auto-links and e-mail addresses
+  const elements =
+    (star?.runs ?? 0) + (under?.runs ?? 0) + (tilde?.runs ?? 0) + brackets + tickRuns + linkish;
+  const tokens = elements + bangs + angles + escapes;
   return (
     C.run +
     C.char * n +

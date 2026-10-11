@@ -806,12 +806,10 @@ describe('capture.save and filing rules', () => {
   it('is not asked for a duplicate or a restored highlight (nothing new was created)', async () => {
     for (const status of ['duplicate', 'restored'] as const) {
       const t = setup();
-      t.repo.saveCapture.mockResolvedValueOnce({
-        status,
-        highlight: VIEW,
-        bank: BANK,
-        addedToBank: true,
-      } as CaptureResult);
+      const again: CaptureResult = { status, highlight: VIEW, bank: BANK, addedToBank: true };
+      (
+        t.repo.saveCapture as unknown as { mockResolvedValueOnce(v: CaptureResult): void }
+      ).mockResolvedValueOnce(again);
       await t.handlers['capture.save'](captureInput(), sender);
       expect(t.filing.afterCapture, status).not.toHaveBeenCalled();
     }

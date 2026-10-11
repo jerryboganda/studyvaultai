@@ -154,7 +154,8 @@ describe('runMicros and inlineBudget: the quadratic mechanisms', () => {
     ).toBe(true);
     expect(decide('[a '.repeat(20_000)).ok).toBe(false);
     expect(decide('[\\'.repeat(5_000)).ok).toBe(false);
-    expect(runMicros('[\\'.repeat(1_000))).toBeGreaterThan(runMicros('[a]'.repeat(1_000)) * 5);
+    // closed brackets either way; the escapes make every label scan far longer
+    expect(runMicros('[a]\\'.repeat(1_000))).toBeGreaterThan(runMicros('[a]'.repeat(1_000)) * 3);
   });
 
   it('charges punctuation that starts a token (tags, escapes, entities, images)', () => {
@@ -176,8 +177,12 @@ describe('runMicros and inlineBudget: the quadratic mechanisms', () => {
     const run = 'word '.repeat(4_000);
     expect(inlineBudget([run], 0).ok).toBe(true);
     expect(inlineBudget([run], half).ok).toBe(true);
+    // each run is about 3 ms: sixty of them do not fit in what is left of the budget
     expect(
-      inlineBudget([run, run, run, run, run, run, run, run, run, run, run, run], half).ok,
+      inlineBudget(
+        Array.from({ length: 60 }, () => run),
+        half,
+      ).ok,
     ).toBe(false);
     expect(inlineBudget([run], 0, undefined, 10).ok).toBe(false);
     expect(renderBudget('- a\n- b\n', 1)).toMatchObject({ ok: false, reason: 'too-complex' });

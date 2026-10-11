@@ -2,7 +2,19 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_QUERY_LENGTH, MAX_QUERY_TERMS, parseQuery } from '@search';
 import type { SyllabusNode } from '@shared';
-import { subtreeMappings, topicLibraryTarget } from './topicLink';
+import {
+  TOPIC_QUERY_MAX_LENGTH,
+  TOPIC_QUERY_MAX_TERMS,
+  subtreeMappings,
+  topicLibraryTarget,
+} from './topicLink';
+
+describe('the copied search box limits', () => {
+  it('are the same numbers as the search module has', () => {
+    expect(TOPIC_QUERY_MAX_LENGTH).toBe(MAX_QUERY_LENGTH);
+    expect(TOPIC_QUERY_MAX_TERMS).toBe(MAX_QUERY_TERMS);
+  });
+});
 
 const node = (
   id: string,

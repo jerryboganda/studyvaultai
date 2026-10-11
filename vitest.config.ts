@@ -35,6 +35,8 @@ export default defineConfig({
       'entrypoints/**/*.test.ts',
       'entrypoints/**/*.test.tsx',
       'server/**/*.test.ts',
+      // Real public-domain PDFs through the reader's loader (tests/fixtures/pdf/real/SOURCES.md).
+      'tests/fixtures/pdf/real/**/*.test.ts',
     ],
     restoreMocks: true,
     // Several suites build 5k-10k row fixtures; a loaded CI runner must not turn that into a flake.

@@ -170,11 +170,18 @@ describe('renderMarkdown', () => {
   });
 
   it('survives pathological input', () => {
-    const deep = '> '.repeat(200) + 'x';
     const long = 'a'.repeat(100_000);
-    expect(() => audit(deep)).not.toThrow();
     expect(audit(long).textContent?.trim()).toHaveLength(100_000);
-    expect(() => audit('['.repeat(2000) + ']'.repeat(2000))).not.toThrow();
+    // Too deep or too expensive for marked: shown as plain text (markdownBudget.ts; the cases and the
+    // timings are in markdownRender.budget.test.ts), so the audit of formatted output does not apply.
+    const deep = '> '.repeat(200) + 'x';
+    const holder = document.createElement('div');
+    expect(() => holder.append(renderMarkdown(deep))).not.toThrow();
+    expect(holder.querySelector('pre.md-fallback')?.textContent).toBe(deep);
+    const brackets = '['.repeat(2000) + ']'.repeat(2000);
+    const other = document.createElement('div');
+    expect(() => other.append(renderMarkdown(brackets))).not.toThrow();
+    expect(other.textContent).toContain(brackets);
   });
 });
 

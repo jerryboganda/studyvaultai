@@ -1,5 +1,12 @@
-import { MAX_QUERY_LENGTH, MAX_QUERY_TERMS } from '@search';
 import { flattenSyllabus, type SyllabusNode } from '@shared';
+
+/**
+ * The search box limits (`MAX_QUERY_LENGTH` and `MAX_QUERY_TERMS` of @search). Copied, not imported:
+ * importing them pulls the whole query parser into the review page. topicLink.test.ts fails when
+ * they drift apart.
+ */
+export const TOPIC_QUERY_MAX_LENGTH = 512;
+export const TOPIC_QUERY_MAX_TERMS = 24;
 
 /**
  * Where a syllabus topic leads: the dashboard list of what the topic is made of. Pure helpers shared
@@ -46,7 +53,7 @@ const quoted = (value: string): string => `"${value.replace(/\\/g, '\\\\').repla
 /**
  * The list a topic's highlights are in. `banks` and `tags` map id -> name for the LIVE ones: a
  * mapping to something deleted or in the trash is left out (it holds nothing). The search box takes
- * at most MAX_QUERY_TERMS words and MAX_QUERY_LENGTH characters; when a topic points at more, the
+ * at most TOPIC_QUERY_MAX_TERMS words and TOPIC_QUERY_MAX_LENGTH characters; when a topic points at more, the
  * first ones are used and `used`/`total` say so.
  */
 export function topicLibraryTarget(
@@ -75,10 +82,10 @@ export function topicLibraryTarget(
   ];
   const used: string[] = [];
   for (const term of terms) {
-    if (used.length >= MAX_QUERY_TERMS) break;
+    if (used.length >= TOPIC_QUERY_MAX_TERMS) break;
     const next = [...used, term];
     const text = next.length === 1 ? (next[0] as string) : `(${next.join(' OR ')})`;
-    if (text.length > MAX_QUERY_LENGTH) break;
+    if (text.length > TOPIC_QUERY_MAX_LENGTH) break;
     used.push(term);
   }
   const q = used.length === 1 ? (used[0] as string) : `(${used.join(' OR ')})`;

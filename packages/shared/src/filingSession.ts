@@ -17,8 +17,7 @@ export const FILING_UNDO_PREFIX = 'sv.filing.undo.';
 
 export const filingSuggestionKey = (highlightId: string): string =>
   `${FILING_SUGGESTION_PREFIX}${highlightId}`;
-export const filingUndoKey = (highlightId: string): string =>
-  `${FILING_UNDO_PREFIX}${highlightId}`;
+export const filingUndoKey = (highlightId: string): string => `${FILING_UNDO_PREFIX}${highlightId}`;
 
 /** A record this old is ignored and removed (a toast is gone in seconds; the chip needs a day). */
 export const FILING_SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
@@ -46,7 +45,9 @@ export const FilingUndoRecord = z.object({
   bankId: Id,
   folderId: Id.nullable(),
   /** The memberships it had before. */
-  previous: z.array(z.object({ bankId: Id, folderId: Id.nullable(), addedAt: z.string() })).max(100),
+  previous: z
+    .array(z.object({ bankId: Id, folderId: Id.nullable(), addedAt: z.string() }))
+    .max(100),
   /** The tags filing linked (tags the highlight already had are not listed). */
   addedTagIds: z.array(Id).max(100),
 });

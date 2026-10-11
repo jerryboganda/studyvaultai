@@ -143,7 +143,7 @@ type Bounded = { html: string } | { reason: BudgetReason | 'error' };
  * is `blockTokens` then `inlineTokens` over `inlineQueue`; running the passes here, the queue is the
  * list of exactly the runs the second pass will scan, which is what `inlineBudget` measures. No
  * extension queues runs of its own, so the queue after the block pass is complete. The output equals
- * `parser.parse(source)` (markdownRender.test.ts compares them).
+ * `parser.parse(source)` (markdownRender.budget.test.ts compares them).
  */
 function parseBounded(source: string): Bounded {
   const raw = renderBudget(source);

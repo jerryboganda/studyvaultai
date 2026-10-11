@@ -131,3 +131,26 @@ windows); `entrypoints/highlighter.content/ui/filing.test.tsx` and `controller.f
 keyboard, undo, duplicate, master switch, Test panel); `entrypoints/options/Options.test.tsx`;
 `entrypoints/sidepanel/SidePanel.filing.test.tsx`; `entrypoints/pdf-reader/filing.test.ts` and
 `store.filing.test.ts`; `tests/e2e/rules.spec.ts` (loaded extension).
+
+## Size
+Measured on the private e2e build (`SV_OUT_DIR=.output-r1`, minified, uncompressed), against a build of
+the same tree with the filing code taken out of the content script and the worker:
+
+| | Without | With | Change |
+| --- | ---: | ---: | ---: |
+| `content-scripts/highlighter.js` | 217 191 B | 219 382 B | +2 191 B (+593 B gzip) |
+| `background.js` | 412 550 B | 424 902 B | +12 352 B (+3 683 B gzip) |
+
+The content script carries the notice builder, the two schemas (`FilingOutcome`, three RPC entries),
+`filingMessage` and the second toast button. The worker carries the rules reads (`rules.ts`), the
+decision (`decideFiling`) and `filing.ts`. The manager, its dialog and the Test panel are one lazy
+chunk of the dashboard (`RulesView-*.js`, 28 018 B), opened only with the view. The side panel chip
+and its hook, the Settings switch and the reader's notices were not measured separately.
+
+## Not verified here
+Chrome's own suspension of an idle worker (the e2e suspends it with CDP `ServiceWorker.stopWorker`,
+which is what Chrome does, but a real idle timeout was not waited for); a private window (no e2e: the
+refusal and the allowed case are unit-tested at the handler); two real windows filing and undoing the
+same highlight at once (storage serialises the writes and a second accept finds no record, but no
+two-window run was made); the PDF reader path end to end in a loaded extension (unit-tested at the
+store adapter and the notice builder; `tests/e2e/pdf.spec.ts` was not extended).

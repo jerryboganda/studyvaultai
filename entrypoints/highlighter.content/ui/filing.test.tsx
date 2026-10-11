@@ -23,10 +23,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function setup(
-  filing: FilingOutcome | undefined,
-  host: Partial<CaptureHost> = {},
-) {
+function setup(filing: FilingOutcome | undefined, host: Partial<CaptureHost> = {}) {
   const mounted = mountUi({ host });
   mounted.host.save.mockResolvedValueOnce(
     makeResult({ highlight: makeHighlight({ id: ID }), ...(filing ? { filing } : {}) }),

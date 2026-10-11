@@ -1,6 +1,6 @@
 # ADR-020: Exam simulation and syllabus coverage
 
-**Status:** accepted (exam simulation); syllabus coverage reserved · **Date:** 2026-10-11 · Refines
+**Status:** accepted (exam simulation, syllabus coverage) · **Date:** 2026-10-11 · Refines
 ADR-010 (the `meta` table). Delivers the "exam simulation" line of PRD.md (P1 "Exam simulation and
 adaptive targeted review using actual review data"; the adaptive half is not part of this slice).
 
@@ -127,10 +127,142 @@ the `TID` entries (about 1.2 KB in the review chunks) and 0.5 KB of CSS; no work
 popup or side-panel file changed. The retired duplicate `hashSeed` moved into `@study/random` (a
 wash).
 
-## Part 2: syllabus coverage (reserved)
+## Part 2: custom syllabus and coverage
 
-Reserved for the agent that adds the syllabus coverage view (exam blueprint nodes, coverage per node
-from cards and highlights, "weak areas" feeding an exam scope). It will extend `ExamScope` with a
-`syllabus` kind and `examScopeOptions` with the nodes that have cards. The persisted exam row is
-versioned (`version: 1`) and an older build refuses a row it cannot parse (it is dropped, which is
-harmless for a 24-hour row), so adding a scope kind is additive. Nothing else is decided here.
+### Context
+ADR-011 gave the vault a `syllabi` table (a named outline whose topics point at banks and tags) and
+the persistence API, but nothing used it. PRD.md lists "coverage vs custom syllabus" under review
+analytics. The person needs (a) a place to make and keep an outline of an exam or course without
+re-typing it, and (b) an honest answer, per topic and for the whole outline, to "how much of this do I
+have, and how well do I know it". Nothing may be guessed from text: coverage is only what the person
+pointed at.
+
+### Decisions
+
+**1. Two surfaces, split by purpose.** The *editor* is the dashboard view `syllabus` (`?view=syllabus`,
+optional `&syllabus=<id>`, nav button "Syllabus", palette command "Show the syllabus editor"; a lazy
+chunk). The *coverage* is a section "Syllabus coverage" at the end of the review page's Analytics tab
+(a lazy chunk of its own). Each links to the other ("See coverage" in the editor, "Edit this
+syllabus" and "Map a bank or tag" in the table), and an empty Analytics section offers "Create a
+syllabus". `openDashboard` is extended with `view: 'syllabus'` and `syllabus`; the dashboard reads
+the id only if it looks like an id.
+
+**2. The editor.** A syllabus is created empty, from a pasted outline, or "from my banks" (one topic
+per bank, mapped to it, never the Inbox; folders are not topics because a topic points at banks and
+tags only). It is renamed and deleted from the toolbar; delete is a soft delete with an Undo toast
+(`deleteSyllabus` / `restoreSyllabus`). The tree is the shared ARIA `Tree`: arrows move, Alt+Up/Down
+reorder, Alt+Right indents, Alt+Left outdents, F2 edits the title, Delete removes (with Undo), the
+Menu key or a right click opens the same actions. Every action is also a button, and a button that
+cannot act is `aria-disabled` with the reason (first/last at its level, no topic above to indent
+into, level 6 reached, 500 topics reached), so nothing is drag-only. The selected topic has a title
+(<= 200), a weight (> 0, <= 1000; empty means an equal share; the message says so) and two checkbox
+pickers, banks and tags (<= 50 each). A mapping to something deleted or in the trash is kept, shown
+as "a bank that is deleted or in the trash (untick to remove)" and reported in the topic's notice,
+as ADR-011 decided.
+- *Saving.* Each change is applied to the tree on screen at once and saved by `updateSyllabus` with
+  `expectedVersion`, one write after another (a held-down key cannot race itself). A write that comes
+  back `stale` shows the stored version and says so; a failed write shows the stored version and
+  the error. Nothing is overwritten silently.
+- *Outline text.* `parseOutline` (pure, `entrypoints/dashboard/syllabusModel.ts`) reads nested bullets
+  (`-`, `*`, `+`, `1.`), plain indented lines and Markdown headings; a single leading `# Title` is the
+  name; a trailing `(weight 2)` is the weight; a tab is four spaces. A level is the position of the
+  indent in the chain of indents seen so far, so a jump of two levels is clamped and reported. The
+  paste box has a live dry run: counts, the first lines of the tree, line-numbered errors that block
+  the import (more than 500 topics, deeper than 6 levels, a title over 200 characters, a bad weight,
+  more than 100,000 characters or 2,000 lines) and notes on what was interpreted. Nothing is saved
+  until the button. Titles are text; the text is never rendered as markup.
+- *Export.* "Export as Markdown" writes the outline (titles and weights) through a Blob download;
+  `parseOutline` reads it back to the same tree (tested). Banks and tags are not exported: their ids
+  mean nothing in another vault.
+
+**3. What a topic holds.** A highlight or a card belongs to a topic when one of its banks or tags is
+one the topic, or a subtopic, points at, and is counted once however many mappings match (union, not
+intersection). Highlights: live ones, in live banks. Cards: not deleted, not suspended, deck alive;
+their banks are the deck's bank and the banks of their highlight, their tags the card's own (resolved
+by name key and aliases) and the highlight's (the same rules as the exam scope; a trashed highlight
+files nothing). The pure rules are `syllabusTopicCoverage` in `packages/study/src/analytics.ts`
+beside the unchanged `syllabusCoverage`; the facts are read in one transaction by
+`loadSyllabusCoverageData` (`packages/storage/src/syllabusCoverage.ts`, imported by path, so no other
+bundle carries it).
+
+**4. Numbers per topic.** Highlights, cards, due (review cards due by the end of the study day plus
+learning steps due now; new cards are never due), retention of mature reviews (answered Hard, Good or
+Easy among reviews of graduated cards, over the last 365 days, undone reviews ignored; a number only
+from 5 reviews, else "n/a" with the count), last studied (the newest `fsrs.lastReview` of its cards)
+and the coverage state:
+- *none*: no highlight and no card; *covered*: at least `minHighlights` highlights and at least
+  `minCards` cards; *thin*: anything between. Defaults 3 and 1; both are whole numbers 0..999, shown
+  and adjustable on the page, kept on this device only (see 8).
+
+**5. Judging and the weighted figure.** A topic without subtopics, or whose subtopics point at
+nothing, is judged by the thresholds. A topic whose subtopics point somewhere is judged from them:
+its *covered* share is the weighted share of its subtopics that are covered, its *started* share the
+weighted share that are at least thin. Weights are relative among siblings (absent = 1), so a topic's
+share of the whole syllabus is the product of its normalised weights down the tree; the whole
+syllabus's covered share is the weighted share of its top-level topics. The page shows two numbers,
+"covered" and "has at least some material", and how many topics point at nothing; it never invents a
+single blended score. A topic that has subtopics and its own mapping counts that mapping towards its
+totals but is judged from its subtopics; the editor says so on the topic.
+
+**6. The table is the primary view.** A sortable table (button in each column header, `aria-sort`;
+ascending, descending, back to the outline order) with one row per topic: topic (indented in outline
+order, "in <parent>" when sorted), share, highlights, cards, due, retention (n of reviews), last
+studied, coverage (glyph and word, never colour alone; "from its subtopics" for judged-from-subtopics
+topics) and an action. The chart is a picture of the table for the top-level topics (covered share,
+stacked with the share that has some material) with a text summary and its own data table, as the
+other analytics charts. The action is "Show" (a topic that points somewhere) or "Map a bank or tag"
+(one that does not: no dead control), and a topic whose mapping is all gone says why it cannot show.
+Honest empty states: no syllabus (with "Create a syllabus"), an empty syllabus, an unmapped topic.
+
+**7. Showing a topic's highlights.** `topicLibraryTarget` (`packages/ui/src/vault/topicLink.ts`) turns
+the banks and tags of a topic and its subtopics into either the dashboard list scoped to one bank
+(`?bank=<id>`, exactly one bank and no tag) or a search in the grammar the search box already speaks,
+`(bank:"A" OR bank:"B" OR tag:"c")` (`?q=...`), so the person sees and can edit what is shown and the
+list is the same set the table counted. The search box holds 24 words and 512 characters; a topic
+that points at more uses the first ones and the editor says "holds N of M". Names are quoted and
+escaped.
+
+**8. Persistence and privacy.** Syllabi are the ADR-011 rows (backup, sync policy, integrity check and
+"Delete all data" are unchanged). The two thresholds are the device-local `meta` row
+`syllabusThresholds` (`{ minHighlights, minCards }`, normalised on read, damaged values fall back to
+the defaults): not in backups and not synchronised, like the exam history, and removed with the
+database by "Delete all data". No new permission, no network path, no AI: everything works offline.
+
+### Consequences
+- A person with many topics can hit the search box limits; the editor says so instead of silently
+  dropping mappings.
+- The coverage reads every highlight id, link row and card of the vault once per refresh (keys only
+  for highlights); it is refreshed on data changes, not on a timer.
+- A 100,000-review vault is read through the 365-day window only; older reviews do not count towards
+  topic retention (the page says "last 12 months").
+- Not decided here and not built: an exam scope drawn from a syllabus topic ("weak areas feeding an
+  exam", the half the reservation of this section mentioned). It needs `ExamScope` and the exam
+  persistence (Part 1) to learn a `syllabus` kind; the persisted exam row is versioned, so that is
+  additive and left to a follow-up that owns the exam code.
+
+### Tests
+`packages/study/src/analytics.test.ts` ("syllabusTopicCoverage": counted once, trashed and
+suspended left out, weights, equal share, judging from subtopics and from its own mapping, empty
+topics and syllabus, thresholds, due by study day, retention minimum, malformed trees, a
+500-topic/20,000-highlight run), `packages/storage/src/syllabusCoverage.test.ts` (facts from the
+vault, deleted tags and highlights, deck banks, the 365-day window, a stored syllabus end to end,
+the thresholds on the device),
+`entrypoints/dashboard/syllabusModel.test.ts` (edits and their limits, weights, the outline reader
+and its errors, export round trip, from-banks), `entrypoints/dashboard/SyllabusView.test.tsx` (create,
+type, reorder with buttons and keys, limits, weight validation, mapping and Show, gone mappings,
+rename, delete with Undo, from-banks, export, import dry run and errors),
+`entrypoints/review/SyllabusCoverage.test.tsx` (numbers, chart, sort, thresholds, Show targets,
+subtopics), `packages/ui/src/vault/topicLink.test.ts`, and `tests/e2e/syllabus.spec.ts` (loaded
+extension, offline: import an outline, map banks and tags, the coverage equals the seeded vault,
+sorting, thresholds kept across a reload, "Show" opens exactly the counted highlights, delete and
+Undo, "Delete all data", 320 px reflow, axe WCAG 2.2 AA on the editor, the dialog and the coverage).
+
+### Size
+Measured with a private e2e build (minified, unzipped): the lazy `SyllabusView-*.js` chunk is 24,683 B
+(8,689 B gzip) and loads when the Syllabus view opens; the lazy `SyllabusCoverage-*.js` chunk is
+14,895 B (5,246 B gzip) and loads on the Analytics tab; the shared `topicLink-*.js` chunk is
+1,184 B (649 B gzip). The two search-box limits are copied rather than imported because importing them
+pulled 12 KB of query parser into the review page. The eager part (a nav entry, the lazy wrappers,
+test ids, the link and deep-link parsers) is estimated at about 2 KB of JavaScript across the
+dashboard and review entry chunks and 2.2 KB of CSS (about 0.6 KB gzip); it was not measured against a
+baseline build.
