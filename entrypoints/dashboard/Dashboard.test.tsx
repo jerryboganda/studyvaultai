@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
+import { browser } from 'wxt/browser';
+import { PENDING_SEARCH_KEY } from '@shared';
 import { deserializeSavedSearches } from '@search';
 import { Dashboard } from './Dashboard';
 import { INDEX_KEY, INDEX_STATE_KEY } from '@ui/vault/searchHost';
@@ -71,6 +73,33 @@ const rows = () => screen.queryAllByTestId('result-row');
 const searchBox = () => screen.getByTestId('search-input') as HTMLInputElement;
 const list = (name = 'Highlights') => screen.getByRole('listbox', { name });
 const typeQuery = (text: string) => fireEvent.change(searchBox(), { target: { value: text } });
+
+describe('Dashboard: the focus-search command', () => {
+  const ask = (value: unknown) =>
+    act(async () => {
+      await browser.storage.session.set({ [PENDING_SEARCH_KEY]: value });
+    });
+  const stored = async () =>
+    (await browser.storage.session.get(PENDING_SEARCH_KEY))[PENDING_SEARCH_KEY];
+
+  it('puts the cursor in the search box and removes the request', async () => {
+    await openDashboard(vaultWith());
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(document.activeElement).not.toBe(searchBox());
+    await ask({ target: 'dashboard', at: Date.now() });
+    await waitFor(() => expect(document.activeElement).toBe(searchBox()), WAIT);
+    await waitFor(async () => expect(await stored()).toBeUndefined(), WAIT);
+  });
+
+  it('leaves a request meant for the side panel alone', async () => {
+    await openDashboard(vaultWith());
+    (document.activeElement as HTMLElement | null)?.blur();
+    await ask({ target: 'panel', at: Date.now() });
+    await Promise.resolve();
+    expect(document.activeElement).not.toBe(searchBox());
+    expect(await stored()).toMatchObject({ target: 'panel' });
+  });
+});
 
 describe('Dashboard: browsing', () => {
   it('lists the vault newest first, with the bank tree and counts', async () => {
@@ -193,6 +222,23 @@ describe('Dashboard: search', () => {
     expect(list('Search results')).toBeTruthy();
     expect(screen.getByTestId('result-summary').textContent).toContain('1 result');
     expect((await screen.findAllByTestId('facet-bank')).length).toBeGreaterThan(0);
+  });
+
+  it('says the number of matches to assistive technology and keeps the timing for the eye', async () => {
+    await openDashboard(vaultWith());
+    typeQuery('golgi');
+    await waitFor(() => expect(rows()).toHaveLength(1), WAIT);
+    const status = document.querySelector('.dash-search__status') as HTMLElement;
+    await waitFor(
+      () =>
+        expect(status.querySelector('[aria-hidden="true"]')?.textContent).toMatch(/^ in \d+ ms$/),
+      WAIT,
+    );
+    // What a screen reader gets: the live region without its aria-hidden parts.
+    const spoken = status.cloneNode(true) as HTMLElement;
+    spoken.querySelectorAll('[aria-hidden="true"]').forEach((node) => node.remove());
+    expect(spoken.textContent?.trim()).toBe('1 match');
+    expect(status.textContent).toMatch(/1 match in \d+ ms/); // still shown
   });
 
   it('turns a facet chip into a query filter', async () => {
@@ -524,6 +570,20 @@ describe('Dashboard: commands and navigation', () => {
     );
     fireEvent.click(screen.getByTestId('view-library'));
     await waitFor(() => expect(rows()).toHaveLength(3), WAIT);
+  });
+
+  it('has a chat view that only explains the opt-in while AI is off, from the nav and from a link', async () => {
+    await openDashboard(vaultWith());
+    fireEvent.click(screen.getByTestId('view-chat'));
+    expect(await screen.findByText('AI features are off', undefined, WAIT)).toBeTruthy();
+    expect(screen.queryByTestId('chat-question')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Open the AI settings' })).toBeTruthy();
+    cleanup();
+
+    // The side panel's "Chat" button opens the dashboard on this view, scoped to the bank.
+    await openDashboard(vaultWith(), '?view=chat&bank=bank-bio');
+    expect(await screen.findByText('AI features are off', undefined, WAIT)).toBeTruthy();
+    expect(screen.getByTestId('view-chat').getAttribute('aria-current')).toBe('page');
   });
 
   it('applies the density and contrast choices to the page', async () => {

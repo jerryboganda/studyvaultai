@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
-import type { Settings } from '@shared';
+import {
+  PENDING_SEARCH_KEY,
+  classifySearchRequest,
+  type SearchFocusTarget,
+  type Settings,
+} from '@shared';
 import {
   getSettings,
   updateSettings,
@@ -77,6 +82,42 @@ export function useApplyTheme(theme: Settings['theme'] | undefined) {
     if (theme === 'light' || theme === 'dark') root.dataset.theme = theme;
     else delete root.dataset.theme;
   }, [theme]);
+}
+
+/**
+ * The manifest command "focus-search" asked this surface to put the keyboard in its search box
+ * (chrome.storage.session, see `PENDING_SEARCH_KEY`). `onRequest` runs once per request: when the
+ * surface mounts with one waiting (the command just opened it) and whenever one arrives while it is
+ * open. A request for the other surface is left alone; a stale one is removed.
+ */
+export function useSearchFocusRequest(target: SearchFocusTarget, onRequest: () => void): void {
+  const request = useLatest(onRequest);
+  useEffect(() => {
+    let live = true;
+    const remove = () =>
+      void browser.storage.session.remove(PENDING_SEARCH_KEY).catch(() => undefined);
+    const take = (raw: unknown) => {
+      if (!live || raw == null) return;
+      const verdict = classifySearchRequest(raw, Date.now(), target);
+      if (verdict === 'other') return;
+      remove();
+      if (verdict === 'mine') request.current();
+    };
+    browser.storage.session.get(PENDING_SEARCH_KEY).then(
+      (stored) => take(stored[PENDING_SEARCH_KEY]),
+      () => undefined, // no hand-over is not an error
+    );
+    const onChanged = (changes: Record<string, { newValue?: unknown }>, area: string) => {
+      if (area === 'session' && PENDING_SEARCH_KEY in changes) {
+        take(changes[PENDING_SEARCH_KEY]?.newValue);
+      }
+    };
+    browser.storage.onChanged.addListener(onChanged);
+    return () => {
+      live = false;
+      browser.storage.onChanged.removeListener(onChanged);
+    };
+  }, [target, request]);
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -42,6 +42,21 @@ export const AI_KIND_INFO: Record<AiTaskKind, AiKindInfo> = {
     hint: 'Checks statements only against the selected passages.',
     min: 1,
   },
+  mnemonic: {
+    label: 'Memory aids',
+    hint: 'Acronyms, rhymes or images that help recall a quoted fact. An aid, not a fact.',
+    min: 1,
+  },
+  short_viva: {
+    label: 'Short viva',
+    hint: 'Three to five oral-exam questions with model answers that cite your quotes.',
+    min: 1,
+  },
+  study_outline: {
+    label: 'Study outline',
+    hint: 'A hierarchical outline of the selected highlights, each item cited.',
+    min: 1,
+  },
 };
 
 /** The actions offered in the UI, in display order. */
@@ -54,6 +69,9 @@ export const AI_ACTION_KINDS = [
   'explain',
   'compare_topics',
   'contradictions',
+  'mnemonic',
+  'short_viva',
+  'study_outline',
 ] as const satisfies readonly AiTaskKind[];
 
 export interface AiErrorView {

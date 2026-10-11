@@ -26,7 +26,8 @@ import {
  * packages/storage; these are only the validated shapes. Same record envelope as schema.ts.
  */
 
-export const MAX_FOLDER_DEPTH = 8;
+/** Most levels of nested folders in one bank (the tree view caps its visual indent separately). */
+export const MAX_FOLDER_DEPTH = 32;
 export const MAX_FOLDER_NAME_CHARS = 80;
 export const MAX_TAG_NAME_CHARS = 50;
 export const MAX_TAG_ALIASES = 20;
@@ -51,7 +52,7 @@ export const BankIcon = z.string().trim().min(1).max(MAX_BANK_ICON_CHARS);
 export const BankRecord = Bank.extend({ icon: BankIcon.nullable().optional() });
 export type BankRecord = z.infer<typeof BankRecord>;
 
-/** One node of the Bank > Folder > Topic > Subtopic tree (ONE nested table, depth <= 8). */
+/** One node of the Bank > Folder > Topic > Subtopic tree (ONE nested table, depth <= MAX_FOLDER_DEPTH). */
 export const Folder = z.object({
   id: Id,
   ...recordMeta,

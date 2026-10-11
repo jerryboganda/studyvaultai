@@ -82,6 +82,36 @@ export const CaptureInput = z.object({
 });
 export type CaptureInput = z.infer<typeof CaptureInput>;
 
+/**
+ * What an auto-filing rule did, or offers to do, for the highlight that was just saved
+ * (docs/adr/017-filing-rules.md). Only ever present for a newly created highlight.
+ *  - filed: a rule that does not ask first moved it; `filing.undo` puts it back.
+ *  - suggested: a rule matched and asks first; `filing.accept` files it, `filing.dismiss` drops it.
+ *  - unavailable: the winning rule points at a bank, folder or tag that is gone; nothing was changed.
+ */
+export const FilingOutcome = z.discriminatedUnion('status', [
+  z.object({
+    status: z.literal('filed'),
+    ruleName: z.string().max(200),
+    bank: BankLite,
+    folderName: z.string().max(200).nullable(),
+    addedTags: z.number().int().min(0),
+  }),
+  z.object({
+    status: z.literal('suggested'),
+    ruleName: z.string().max(200),
+    bank: BankLite,
+    folderName: z.string().max(200).nullable(),
+    addedTags: z.number().int().min(0),
+  }),
+  z.object({
+    status: z.literal('unavailable'),
+    ruleName: z.string().max(200),
+    reason: z.string().max(300),
+  }),
+]);
+export type FilingOutcome = z.infer<typeof FilingOutcome>;
+
 export const CaptureResult = z.object({
   /** created: new highlight. duplicate: same quote+place already saved. restored: it had been deleted. */
   status: z.enum(['created', 'duplicate', 'restored']),
@@ -89,6 +119,8 @@ export const CaptureResult = z.object({
   bank: BankLite,
   /** For duplicate/restored: true when a new bank membership was added. */
   addedToBank: z.boolean(),
+  /** A filing rule's result for a new highlight; absent when no rule applied. */
+  filing: FilingOutcome.optional(),
 });
 export type CaptureResult = z.infer<typeof CaptureResult>;
 
@@ -165,6 +197,17 @@ export const BackgroundRpc = {
   'tab.activate': def(
     z.object({ tabId: z.number().int().min(0) }),
     z.object({ ok: z.literal(true) }),
+  ),
+  /**
+   * Filing rules (docs/adr/017-filing-rules.md). The worker keeps the pending suggestion and the undo
+   * record of a highlight in chrome.storage.session, so a page names only the highlight: it can never
+   * choose a bank. A page may act only on highlights of its own site.
+   */
+  'filing.accept': def(z.object({ highlightId: Id }), FilingOutcome),
+  'filing.dismiss': def(z.object({ highlightId: Id }), z.object({ ok: z.literal(true) })),
+  'filing.undo': def(
+    z.object({ highlightId: Id }),
+    z.object({ restored: z.boolean(), reason: z.string().max(300).nullable() }),
   ),
   /**
    * From a content script's user click: open the side panel for the sender's tab. Free text (notes,

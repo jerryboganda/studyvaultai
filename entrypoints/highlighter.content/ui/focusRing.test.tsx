@@ -1,8 +1,7 @@
-import { act, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 import { STYLES_CSS, declsFor, parseCss, readCss } from './testCss';
-import { cleanupUi, focusToolbar, makeHighlight, mountUi, rect } from './testHarness';
+import { act, cleanupUi, focusToolbar, makeHighlight, mountUi, rect, within } from './testHarness';
 
 const FOCUSABLE = 'button, input, select, textarea, a[href], [tabindex]';
 

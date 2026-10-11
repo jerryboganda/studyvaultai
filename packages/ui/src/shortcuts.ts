@@ -19,6 +19,7 @@ export const COMMAND = {
   openSidePanel: 'open-side-panel',
   quickSave: 'quick-save',
   focusToolbar: 'focus-toolbar',
+  focusSearch: 'focus-search',
   nextHighlight: 'next-highlight',
   previousHighlight: 'previous-highlight',
 } as const;

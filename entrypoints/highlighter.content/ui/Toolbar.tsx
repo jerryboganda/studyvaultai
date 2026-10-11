@@ -7,6 +7,7 @@ import {
   type HighlightKind,
 } from '@shared';
 import type { SaveRequest, SelectionInfo } from '../contract';
+import { pushSaved } from '../filingNotice';
 import { Composer } from './Composer';
 import { errorMessage, openSidePanel, useUi } from './context';
 import { pushToast, useStore } from './store';
@@ -88,26 +89,31 @@ export function ToolbarUnit({ selection }: { selection: SelectionInfo }) {
         // transient user activation (about 5 s; measured: allowed after 3 s, refused after 6 s).
         const noted = note && (await openSidePanel(ui, id));
         const { text, undoable } = savedNotice(result, noted);
-        pushToast(store, {
-          text,
-          tone: 'success',
-          ttl: undoable && viaKeyboard ? KEYBOARD_UNDO_MS : undefined,
-          action: undoable
-            ? {
-                label: 'Undo',
-                run: () => {
-                  host.undo(id).then(
-                    () => pushToast(store, { text: 'Save undone', tone: 'info' }),
-                    (err: unknown) =>
-                      pushToast(store, {
-                        text: errorMessage(err, 'Could not undo the save.'),
-                        tone: 'error',
-                      }),
-                  );
-                },
-              }
-            : undefined,
-        });
+        pushSaved(
+          result,
+          {
+            text,
+            tone: 'success',
+            ttl: undoable && viaKeyboard ? KEYBOARD_UNDO_MS : undefined,
+            action: undoable
+              ? {
+                  label: 'Undo',
+                  run: () => {
+                    host.undo(id).then(
+                      () => pushToast(store, { text: 'Save undone', tone: 'info' }),
+                      (err: unknown) =>
+                        pushToast(store, {
+                          text: errorMessage(err, 'Could not undo the save.'),
+                          tone: 'error',
+                        }),
+                    );
+                  },
+                }
+              : undefined,
+          },
+          host,
+          (notice) => pushToast(store, notice),
+        );
         // Same selection (text), not same object: scrolling re-places the toolbar with a new rect.
         // A newer selection owns the toolbar now and must not be dismissed with this one.
         if (store.get().toolbar?.selection.text === savedText) {

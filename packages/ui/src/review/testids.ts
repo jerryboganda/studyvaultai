@@ -125,6 +125,58 @@ export const TID = {
   counts: 'rv-counts',
   backlogStats: 'rv-backlog-stats',
 
+  // exam simulation
+  examSetup: 'rv-exam-setup',
+  examScope: 'rv-exam-scope',
+  examQuestions: 'rv-exam-questions',
+  examTimed: 'rv-exam-timed',
+  examMinutes: 'rv-exam-minutes',
+  examShuffle: 'rv-exam-shuffle',
+  examStart: 'rv-exam-start',
+  examContinue: 'rv-exam-continue',
+  examDiscard: 'rv-exam-discard',
+  examRun: 'rv-exam-run',
+  examTimer: 'rv-exam-timer',
+  examAnnounce: 'rv-exam-announce',
+  examProgress: 'rv-exam-progress',
+  examQuestion: 'rv-exam-question',
+  examChoices: 'rv-exam-choices',
+  examText: 'rv-exam-text',
+  examPrev: 'rv-exam-prev',
+  examNext: 'rv-exam-next',
+  examFinish: 'rv-exam-finish',
+  examLeave: 'rv-exam-leave',
+  examMarking: 'rv-exam-marking',
+  examMarkRest: 'rv-exam-mark-rest',
+  examShowResults: 'rv-exam-show-results',
+  examResults: 'rv-exam-results',
+  examScore: 'rv-exam-score',
+  examBanks: 'rv-exam-banks',
+  examTags: 'rv-exam-tags',
+  examTimes: 'rv-exam-times',
+  examMissed: 'rv-exam-missed',
+  examExport: 'rv-exam-export',
+  examCount: 'rv-exam-count',
+  examCountStatus: 'rv-exam-count-status',
+  examClose: 'rv-exam-close',
+  examHistory: 'rv-exam-history',
+  examHistoryClear: 'rv-exam-history-clear',
+
+  // syllabus coverage (Analytics)
+  syllabus: 'rv-syllabus',
+  syllabusEmpty: 'rv-syllabus-empty',
+  syllabusCreate: 'rv-syllabus-create',
+  syllabusSelect: 'rv-syllabus-select',
+  syllabusEdit: 'rv-syllabus-edit',
+  syllabusOverall: 'rv-syllabus-overall',
+  syllabusMinHighlights: 'rv-syllabus-min-highlights',
+  syllabusMinCards: 'rv-syllabus-min-cards',
+  syllabusReset: 'rv-syllabus-reset',
+  syllabusThresholdStatus: 'rv-syllabus-threshold-status',
+  syllabusChart: 'rv-syllabus-chart',
+  syllabusTable: 'rv-syllabus-table',
+  syllabusError: 'rv-syllabus-error',
+
   // reusable pieces for the integrator
   tab: 'rv-tab',
   tabCount: 'rv-tab-count',
@@ -145,3 +197,12 @@ export const blankId = (index: number) => `rv-blank-${index}`;
 export const pickerItemId = (highlightId: string) => `rv-pick-${highlightId}`;
 export const cardRowId = (cardId: string) => `rv-card-${cardId}`;
 export const bankRowId = (bankId: string | null) => `rv-bank-${bankId ?? 'none'}`;
+/** Syllabus coverage: one table row and its buttons, by topic id. */
+export const syllabusRowId = (topicId: string) => `rv-syllabus-row-${topicId}`;
+export const syllabusShowId = (topicId: string) => `rv-syllabus-show-${topicId}`;
+export const syllabusSortId = (key: string) => `rv-syllabus-sort-${key}`;
+/** Exam: 0-based question index in exam order. */
+export const examChoiceId = (index: number) => `rv-exam-choice-${index}`;
+export const examMarkId = (index: number, mark: 'know' | 'dont') => `rv-exam-mark-${index}-${mark}`;
+export const examMissedId = (index: number) => `rv-exam-missed-${index}`;
+export const examJumpId = (index: number) => `rv-exam-jump-${index}`;

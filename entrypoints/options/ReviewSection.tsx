@@ -1,7 +1,10 @@
-import { useId } from 'react';
+import { Suspense, lazy, useId } from 'react';
 import type { Settings } from '@shared';
 import { ReviewSettingsSection } from '@ui/review';
 import { Toggle, useWriter, type Update } from './Preferences';
+
+// Only read when the review section is open and review is on (docs/adr/019-reminders.md).
+const Reminders = lazy(() => import('./Reminders').then((m) => ({ default: m.Reminders })));
 
 /**
  * The review section: the on/off switch for flashcard review (`features.review`), and while it is
@@ -28,10 +31,18 @@ export function ReviewSection({ settings, update }: { settings: Settings; update
         {error}
       </section>
       {on ? (
-        <ReviewSettingsSection />
+        <>
+          <Suspense fallback={<p className="sv-muted">Loading reminders…</p>}>
+            <Reminders settings={settings} update={update} />
+          </Suspense>
+          <ReviewSettingsSection />
+        </>
       ) : (
         <p className="sv-muted">
           Review is off. Turn it on above to set the study day and deck rules.
+          {settings.reminders.on
+            ? ' The toolbar count and the daily reminder are paused until review is back on.'
+            : ''}
         </p>
       )}
     </div>

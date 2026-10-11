@@ -133,6 +133,10 @@ export function taskOf(chat: ChatRequest): string {
   if (p.startsWith('TASK\nWrite ONE exam pearl')) return 'exam_pearl';
   if (p.startsWith('TASK\nCreate up to')) return 'flashcards';
   if (p.startsWith('TASK\nWrite a concise summary')) return 'summary';
+  if (p.startsWith('TASK\nWrite 1 to 5 memory aids')) return 'mnemonic';
+  if (p.startsWith('TASK\nWrite 3 to 5 short oral-exam')) return 'short_viva';
+  if (p.startsWith('TASK\nBuild a hierarchical study outline')) return 'study_outline';
+  if (p.startsWith('TASK\nAnswer the question in the data block')) return 'explain';
   return 'unknown';
 }
 
@@ -167,6 +171,43 @@ export function cannedAnswer(chat: ChatRequest): string {
         summary: 'E2E summary of the passage.',
         keyPoints: ['E2E key point one.'],
         evidence: [evidence],
+      });
+    case 'explain':
+      return JSON.stringify({
+        answer: 'E2E answer drawn from the first passage.',
+        answerState: 'answered',
+        uncertainty: '',
+        evidence: [evidence],
+      });
+    case 'mnemonic':
+      return JSON.stringify({
+        aids: [
+          {
+            type: 'acronym',
+            fact: 'E2E fact the aid is anchored to.',
+            mnemonic: 'E2E mnemonic: S-A-N.',
+            howItWorks: 'E2E mapping of the letters.',
+            evidence: [evidence],
+          },
+        ],
+      });
+    case 'short_viva':
+      return JSON.stringify({
+        questions: [
+          {
+            question: 'E2E viva question about the passage?',
+            modelAnswer: 'E2E model answer to say aloud.',
+            evidence: [evidence],
+          },
+        ],
+      });
+    case 'study_outline':
+      return JSON.stringify({
+        title: 'E2E outline',
+        items: [
+          { level: 1, text: 'E2E main topic', evidence: [evidence] },
+          { level: 2, text: 'E2E sub-topic', evidence: [evidence] },
+        ],
       });
     default:
       throw new Error(`the fake provider has no canned answer for task ${task}`);

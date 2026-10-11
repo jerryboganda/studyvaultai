@@ -7,11 +7,20 @@ export {
   openDashboard,
   type DashboardTarget,
 } from './dashboardLink';
+export {
+  LinksSection,
+  storageLinks,
+  type LinkSearchPort,
+  type LinksPort,
+  type LinksProps,
+} from './Links';
+export { KIND_NAME, TYPE_MEANING, TYPE_NAME, phrase } from './linkLabels';
 export { Markdown } from './Markdown';
 export { renderMarkdown, renderMarkdownToHtml } from './markdownRender';
 export { PopupMenu, type MenuItem } from './Menu';
 export type { MetaPort } from './meta';
 export { Modal } from './Modal';
+export { RELATED_SHOWN, RelatedSection, type RelatedPort } from './Related';
 export {
   INDEX_KEY,
   INDEX_STALE_KEY,
@@ -55,3 +64,9 @@ export {
 } from './treeModel';
 export { VirtualList, type VirtualListProps } from './VirtualList';
 export { computeWindow, scrollTopFor, type WindowInput, type WindowRange } from './virtual';
+export {
+  subtreeMappings,
+  topicLibraryTarget,
+  type TopicLibraryTarget,
+  type TopicMapping,
+} from './topicLink';

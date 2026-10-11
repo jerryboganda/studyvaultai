@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
 import { browser } from 'wxt/browser';
 import { DEFAULT_DENY_HOSTS, DENY_LIST_SCOPE_NOTE, type Settings } from '@shared';
-import { getAiEndpointPattern } from '@storage';
+import { getAiEndpointPatterns } from '@storage';
 import {
   ALL_SITES_ORIGINS,
   Badge,
@@ -342,12 +342,12 @@ function OtherAccess({ settings, changes }: { settings: Settings; changes: numbe
   const known = useAsync(
     async () => {
       const [ai, status] = await Promise.all([
-        getAiEndpointPattern().catch(() => null),
+        getAiEndpointPatterns().catch((): string[] => []),
         syncApi.status().catch(() => null),
       ]);
       const key = (address: string | null | undefined) => (address ? originKey(address) : null);
       return {
-        ai: key(ai),
+        ai: ai.flatMap((address) => key(address) ?? []),
         syncServer: key(status?.config?.serverUrl),
         syncIssuer: key(status?.config?.issuer),
       };

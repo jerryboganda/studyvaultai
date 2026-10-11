@@ -39,6 +39,12 @@ export interface ViewerHandle {
   /** Scroll to a rectangle of a page (raw frame) so it sits in the upper third of the view. */
   reveal(pageNumber: number, rect: PdfRect | null): void;
   focus(): void;
+  /**
+   * Evaluate the browser's current selection now (the keyboard path: the save bar must not wait for
+   * the gate's pause) and report whether there is a selection in the pages to save. False: nothing
+   * is selected, or a drag is still in progress.
+   */
+  flushSelection(): boolean;
   /** Draw pages again (their text source changed): one page, or every kept page. */
   redraw(pageNumber?: number): void;
 }
@@ -97,6 +103,7 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
   const observer = useRef<IntersectionObserver | null>(null);
   const currentPage = useRef(0);
   const evaluateSelection = useRef<(() => void) | null>(null);
+  const flushGate = useRef<(() => boolean) | null>(null);
 
   const latest = useRef(props);
   latest.current = props;
@@ -424,10 +431,12 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
     const gate = createSelectionGate(document, evaluate);
     const soon = gate.notify;
     evaluateSelection.current = soon;
+    flushGate.current = gate.flush;
     document.addEventListener('selectionchange', soon);
     return () => {
       gate.dispose();
       evaluateSelection.current = null;
+      flushGate.current = null;
       document.removeEventListener('selectionchange', soon);
     };
   }, []);
@@ -454,6 +463,11 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
         el.scrollTop = Math.max(0, slot.offsetTop + r.y * h - el.clientHeight / 3);
       },
       focus: () => scroller.current?.focus(),
+      flushSelection: () => {
+        const sel = document.getSelection();
+        if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return false;
+        return flushGate.current?.() ?? false;
+      },
       redraw: (n) =>
         n === undefined ? lazy.current?.invalidate() : lazy.current?.invalidatePage(n),
     }),
@@ -477,8 +491,16 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
       '/': 'search',
       g: 'go-to-page',
       h: 'save-selection',
+      s: 'save-selection',
     };
-    const action = map[e.key];
+    let action = map[e.key];
+    // Enter on a selection made with the keyboard (caret browsing, F7) saves it too.
+    if (e.key === 'Enter') {
+      const sel = document.getSelection();
+      if (sel && !sel.isCollapsed && scroller.current?.contains(sel.anchorNode)) {
+        action = 'save-selection';
+      }
+    }
     if (action) {
       e.preventDefault();
       props.onShortcut(action);
@@ -492,7 +514,7 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
       className="sv-viewer"
       tabIndex={0}
       role="region"
-      aria-label={`PDF pages. ${doc.pageCount} pages. Press ] and [ to change page, + and - to zoom, R to rotate, slash to search, H to save a selection.`}
+      aria-label={`PDF pages. ${doc.pageCount} pages. Press ] and [ to change page, + and - to zoom, R to rotate, slash to search, S or H to save the selected text.`}
       onKeyDown={onKeyDown}
       data-testid="pdf-viewer"
     >

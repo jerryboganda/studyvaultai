@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  AI_TASK_KINDS,
   AiResult,
   BudgetLimits,
   BudgetState,
@@ -45,37 +46,82 @@ export type AiProviderId = (typeof AI_PROVIDERS)[number];
 
 const KEY_SETTINGS = 'aiSettings';
 const KEY_API_KEY = 'aiKey';
+const KEY_PROFILE_KEYS = 'aiProfileKeys';
 const KEY_BUDGET = 'aiBudget';
 
-/** `meta` keys that hold secrets: every export, backup and snapshot must leave these rows out. */
-export const AI_SECRET_META_KEYS: readonly string[] = [KEY_API_KEY];
+/**
+ * `meta` keys that hold secrets: every export, backup and snapshot must leave these rows out
+ * (`meta` is not a backup table at all, and it is local-only for sync). `aiKey` is the primary
+ * provider's key; `aiProfileKeys` holds one `{apiKey, origin}` per fallback provider.
+ */
+export const AI_SECRET_META_KEYS: readonly string[] = [KEY_API_KEY, KEY_PROFILE_KEYS];
 
 // ---------------------------------------------------------------------------------------------
 // Settings (meta 'aiSettings')
 // ---------------------------------------------------------------------------------------------
 
-export const AiSettingsSchema = z.strictObject({
+/** The id the primary provider (the top-level fields of the settings) goes by in routes. */
+export const PRIMARY_PROFILE_ID = 'primary';
+/** Providers that can follow the primary one. */
+export const AI_MAX_FALLBACKS = 3;
+
+const AiPricingSchema = z.strictObject({
+  inputUsdPerMTok: z.number().min(0).max(1_000_000),
+  outputUsdPerMTok: z.number().min(0).max(1_000_000),
+});
+
+/** One provider after the primary one, with its own address, model, price list and key. */
+export const AiProfileSchema = z.strictObject({
+  id: z.string().regex(/^p-[a-z0-9]{6,20}$/),
+  label: z.string().trim().min(1).max(40),
   provider: z.enum(AI_PROVIDERS),
-  /** '' = the provider's default address (Anthropic only). */
   baseUrl: z.string().trim().max(300),
   model: z.string().trim().max(120),
-  /** Ask OpenAI-compatible servers for `response_format: json_object` (some servers reject it). */
   jsonMode: z.boolean(),
   maxTokensParam: z.enum(['max_tokens', 'max_completion_tokens']),
-  limits: BudgetLimits,
-  /** null = unknown: estimates show "unknown" and a cost cap cannot be enforced. */
-  pricing: z
-    .strictObject({
-      inputUsdPerMTok: z.number().min(0).max(1_000_000),
-      outputUsdPerMTok: z.number().min(0).max(1_000_000),
-    })
-    .nullable(),
-  preferences: z.strictObject({
-    flashcardCount: z.number().int().min(1).max(20),
-    mcqChoices: z.number().int().min(3).max(6),
-  }),
+  pricing: AiPricingSchema.nullable(),
+  /** Used when an earlier provider is not answering (network error, 5xx, timeout), never otherwise. */
+  fallback: z.boolean(),
 });
+export type AiProfile = z.infer<typeof AiProfileSchema>;
+
+export const AiSettingsSchema = z
+  .strictObject({
+    provider: z.enum(AI_PROVIDERS),
+    /** '' = the provider's default address (Anthropic only). */
+    baseUrl: z.string().trim().max(300),
+    model: z.string().trim().max(120),
+    /** Ask OpenAI-compatible servers for `response_format: json_object` (some servers reject it). */
+    jsonMode: z.boolean(),
+    maxTokensParam: z.enum(['max_tokens', 'max_completion_tokens']),
+    limits: BudgetLimits,
+    /** null = unknown: estimates show "unknown" and a cost cap cannot be enforced. */
+    pricing: AiPricingSchema.nullable(),
+    preferences: z.strictObject({
+      flashcardCount: z.number().int().min(1).max(20),
+      mcqChoices: z.number().int().min(3).max(6),
+    }),
+    /** After the primary provider, in the order they are tried. */
+    fallbacks: z.array(AiProfileSchema).max(AI_MAX_FALLBACKS),
+    /**
+     * Task kind -> provider that is tried FIRST for it ('primary' or a profile id); the others follow
+     * in list order. A kind that is absent starts with the primary provider.
+     */
+    routes: z.record(z.string().max(40), z.string().max(40)),
+  })
+  .superRefine((v, ctx) => {
+    const ids = v.fallbacks.map((p) => p.id);
+    if (new Set(ids).size !== ids.length) {
+      ctx.addIssue({ code: 'custom', message: 'duplicate provider ids' });
+    }
+  });
 export type AiSettings = z.infer<typeof AiSettingsSchema>;
+
+/** The fields every provider has, whether it is the primary one or a fallback. */
+export type AiProfileSettings = Pick<
+  AiSettings,
+  'provider' | 'baseUrl' | 'model' | 'jsonMode' | 'maxTokensParam' | 'pricing'
+>;
 
 export function defaultAiSettings(): AiSettings {
   return {
@@ -87,16 +133,49 @@ export function defaultAiSettings(): AiSettings {
     limits: { maxRequestsPerDay: 30, maxCostUsdPerDay: null },
     pricing: null,
     preferences: { flashcardCount: 5, mcqChoices: 4 },
+    fallbacks: [],
+    routes: {},
   };
+}
+
+const KINDS: ReadonlySet<string> = new Set(AI_TASK_KINDS);
+
+/**
+ * A stored row as settings. A fallback that no longer validates is dropped (the primary provider
+ * and everything else survive); a route to a provider that is gone, or for an unknown task, is dropped.
+ */
+function readSettings(stored: unknown): AiSettings {
+  const defaults = defaultAiSettings();
+  if (typeof stored !== 'object' || stored === null) return defaults;
+  const raw = stored as Record<string, unknown>;
+  const fallbacks = (Array.isArray(raw.fallbacks) ? raw.fallbacks : [])
+    .filter((p) => AiProfileSchema.safeParse(p).success)
+    .slice(0, AI_MAX_FALLBACKS);
+  const storedRoutes =
+    typeof raw.routes === 'object' && raw.routes !== null && !Array.isArray(raw.routes)
+      ? raw.routes
+      : {};
+  const parsed = AiSettingsSchema.safeParse({
+    ...defaults,
+    ...raw,
+    fallbacks,
+    routes: storedRoutes,
+  });
+  if (!parsed.success) return defaults;
+  const ids = new Set<string>([PRIMARY_PROFILE_ID, ...parsed.data.fallbacks.map((p) => p.id)]);
+  const routes = Object.fromEntries(
+    Object.entries(parsed.data.routes).filter(([kind, id]) => KINDS.has(kind) && ids.has(id)),
+  );
+  return { ...parsed.data, routes };
 }
 
 export async function getAiSettings(): Promise<AiSettings> {
   const row = await withDb((db) => db.meta.get(KEY_SETTINGS));
-  const defaults = defaultAiSettings();
-  const stored = row?.value;
-  if (typeof stored !== 'object' || stored === null) return defaults;
-  const parsed = AiSettingsSchema.safeParse({ ...defaults, ...stored });
-  return parsed.success ? parsed.data : defaults;
+  return readSettings(row?.value);
+}
+
+async function getSettingsIn(db: StudyVaultDb): Promise<AiSettings> {
+  return readSettings((await db.meta.get(KEY_SETTINGS))?.value);
 }
 
 export async function setAiSettings(next: AiSettings): Promise<AiSettings> {
@@ -105,6 +184,48 @@ export async function setAiSettings(next: AiSettings): Promise<AiSettings> {
   await signalChange();
   return value;
 }
+
+const ProfileKeysRow = z.record(
+  z.string().max(40),
+  z.strictObject({ apiKey: z.string().min(1), origin: z.string().min(1) }),
+);
+
+/**
+ * Read-modify-write of the settings in one transaction, so the primary form and the provider list
+ * (two editors of one row) never overwrite each other. The keys of a fallback that was removed go
+ * in the same transaction; routes to it are dropped.
+ */
+export async function updateAiSettings(
+  mutate: (current: AiSettings) => AiSettings,
+): Promise<AiSettings> {
+  const value = await withWritableDb((db) =>
+    db.transaction('rw', db.meta, async () => {
+      const row = await db.meta.get(KEY_SETTINGS);
+      const next = parseInput(AiSettingsSchema, mutate(readSettings(row?.value)), 'AI settings');
+      const ids = new Set(next.fallbacks.map((p) => p.id));
+      const routes = Object.fromEntries(
+        Object.entries(next.routes).filter(([, id]) => id === PRIMARY_PROFILE_ID || ids.has(id)),
+      );
+      const value = { ...next, routes };
+      await db.meta.put({ key: KEY_SETTINGS, value, updatedAt: now() });
+      const keys = ProfileKeysRow.safeParse((await db.meta.get(KEY_PROFILE_KEYS))?.value);
+      if (keys.success) {
+        const kept = Object.fromEntries(Object.entries(keys.data).filter(([id]) => ids.has(id)));
+        if (Object.keys(kept).length !== Object.keys(keys.data).length) {
+          if (Object.keys(kept).length === 0) await db.meta.delete(KEY_PROFILE_KEYS);
+          else await db.meta.put({ key: KEY_PROFILE_KEYS, value: kept, updatedAt: now() });
+        }
+      }
+      return value;
+    }),
+  );
+  await signalChange();
+  return value;
+}
+
+/** A new id for a fallback provider. */
+export const newAiProfileId = (): string =>
+  `p-${Array.from(crypto.getRandomValues(new Uint8Array(8)), (b) => (b % 36).toString(36)).join('')}`;
 
 // ---------------------------------------------------------------------------------------------
 // Endpoint
@@ -175,6 +296,16 @@ export async function getAiEndpointPattern(): Promise<string | null> {
   return check.ok ? check.pattern : null;
 }
 
+/** The patterns of every provider that can receive text: the primary one and the fallbacks. */
+export async function getAiEndpointPatterns(): Promise<string[]> {
+  const s = await getAiSettings();
+  return unique(
+    [s, ...s.fallbacks]
+      .map((p) => checkAiEndpoint(p.provider, p.baseUrl))
+      .flatMap((check) => (check.ok ? [check.pattern] : [])),
+  );
+}
+
 // ---------------------------------------------------------------------------------------------
 // API key (meta 'aiKey')
 // ---------------------------------------------------------------------------------------------
@@ -222,6 +353,75 @@ export async function setAiApiKey(apiKey: string, origin: string): Promise<void>
 
 export async function clearAiApiKey(): Promise<void> {
   await withWritableDb((db) => db.meta.delete(KEY_API_KEY));
+  await signalChange();
+}
+
+// Keys of the fallback providers: one meta row `aiProfileKeys`, { [profileId]: { apiKey, origin } }.
+// Same containment as the primary key (extension-origin IndexedDB only, bound to the origin it was
+// saved for, never in a result, backup, export or sync row, removed by the same wipes).
+
+const profileKeys = (value: unknown): z.infer<typeof ProfileKeysRow> => {
+  const parsed = ProfileKeysRow.safeParse(value);
+  return parsed.success ? parsed.data : {};
+};
+
+/** Present / origin / last four characters of each fallback provider's key; never the key. */
+export async function getAiProfileKeyInfos(): Promise<Record<string, AiKeyInfo>> {
+  const row = await withDb((db) => db.meta.get(KEY_PROFILE_KEYS));
+  return Object.fromEntries(
+    Object.entries(profileKeys(row?.value)).map(([id, k]) => [
+      id,
+      { present: true, origin: k.origin, last4: k.apiKey.slice(-4) },
+    ]),
+  );
+}
+
+/** The only reader of a fallback provider's secret (with `getAiApiKey` for the primary one). */
+export async function getAiProfileApiKey(
+  profileId: string,
+  origin: string,
+): Promise<string | null> {
+  const row = await withDb((db) => db.meta.get(KEY_PROFILE_KEYS));
+  const key = profileKeys(row?.value)[profileId];
+  return key && key.origin === origin ? key.apiKey : null;
+}
+
+export async function setAiProfileApiKey(
+  profileId: string,
+  apiKey: string,
+  origin: string,
+): Promise<void> {
+  const key = apiKey.trim();
+  if (!API_KEY_SHAPE.test(key)) {
+    throw new StudyVaultError(
+      'invalid_request',
+      'That does not look like an API key: it must be 8-512 visible characters without spaces.',
+    );
+  }
+  await withWritableDb((db) =>
+    db.transaction('rw', db.meta, async () => {
+      // A key only ever belongs to a provider that exists.
+      if (!(await getSettingsIn(db)).fallbacks.some((p) => p.id === profileId)) {
+        throw new StudyVaultError('not_found', 'That provider no longer exists.');
+      }
+      const all = profileKeys((await db.meta.get(KEY_PROFILE_KEYS))?.value);
+      all[profileId] = { apiKey: key, origin };
+      await db.meta.put({ key: KEY_PROFILE_KEYS, value: all, updatedAt: now() });
+    }),
+  );
+  await signalChange();
+}
+
+export async function clearAiProfileApiKey(profileId: string): Promise<void> {
+  await withWritableDb((db) =>
+    db.transaction('rw', db.meta, async () => {
+      const all = profileKeys((await db.meta.get(KEY_PROFILE_KEYS))?.value);
+      if (!(profileId in all)) return;
+      delete all[profileId];
+      if (Object.keys(all).length === 0) await db.meta.delete(KEY_PROFILE_KEYS);
+      else await db.meta.put({ key: KEY_PROFILE_KEYS, value: all, updatedAt: now() });
+    }),
+  );
   await signalChange();
 }
 
@@ -721,7 +921,7 @@ export async function clearAiData(): Promise<void> {
   await withWritableDb((db) =>
     db.transaction('rw', [db.aiResults, db.meta], async () => {
       await db.aiResults.clear();
-      await db.meta.bulkDelete([KEY_SETTINGS, KEY_API_KEY, KEY_BUDGET]);
+      await db.meta.bulkDelete([KEY_SETTINGS, KEY_API_KEY, KEY_PROFILE_KEYS, KEY_BUDGET]);
     }),
   );
   await signalChange();

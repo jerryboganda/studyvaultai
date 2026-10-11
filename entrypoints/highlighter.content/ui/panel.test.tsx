@@ -1,15 +1,17 @@
-import { act, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 import { StudyVaultError, defaultSettings } from '@shared';
 import {
   BIOLOGY,
   INBOX,
+  act,
   cleanupUi,
+  fireEvent,
   focusToolbar,
   makeHighlight,
   mountUi,
   rect,
+  within,
 } from './testHarness';
 
 const SELECTION = { text: 'Mitochondria are the powerhouse', rect: rect(100, 200, 120, 20) };

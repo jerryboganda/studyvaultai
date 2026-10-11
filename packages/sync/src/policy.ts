@@ -102,4 +102,15 @@ export const STUDYVAULT_SYNC_POLICY: SyncPolicy = {
   reviewLogs: { appendOnly: true, local: LOCAL },
   documents: { text: ['title'], local: LOCAL },
   ocrPages: { immutable: ['documentId', 'pageNumber'], text: ['correctedText'], local: LOCAL },
+  // Organisation records (schema v4, ADR-011). A rule's conditions and target and a syllabus tree are
+  // structured user data: a concurrent edit keeps both versions. `enabled`, `order` and
+  // `requireConfirm` are last-writer-wins scalars. A relation's five identity fields never change
+  // (a different link is a different row), so a remote operation that would change one is refused.
+  filingRules: { text: ['name', 'match', 'action'], local: LOCAL },
+  syllabi: { text: ['name', 'nodes'], local: LOCAL },
+  relations: {
+    immutable: ['fromKind', 'fromId', 'toKind', 'toId', 'type'],
+    text: ['note'],
+    local: LOCAL,
+  },
 };

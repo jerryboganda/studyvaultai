@@ -27,7 +27,10 @@ describe('table registry', () => {
   it('lists exactly the tables of the Dexie schema, with matching primary keys', async () => {
     const registry = getTableRegistry();
     expect(registry.schemaVersion).toBe(DB_VERSION);
-    expect(registry.tables.map((t) => t.name).sort()).toEqual(Object.keys(SCHEMA_V2).sort());
+    // The registry describes the vault's tables: the sync bookkeeping tables of v3 are not in it.
+    expect(registry.tables.map((t) => t.name).sort()).toEqual(
+      [...Object.keys(SCHEMA_V2), 'filingRules', 'syllabi', 'relations'].sort(),
+    );
     const db = getDb();
     await db.open();
     for (const spec of registry.tables) {
@@ -54,6 +57,11 @@ describe('table registry', () => {
     }
     for (const plain of ['highlightBanks', 'highlightTags', 'attachments', 'ocrPages', 'meta']) {
       expect(byName.get(plain)!.softDelete, plain).toBe(false);
+    }
+    // The organisation records of schema v4 carry their real schemas from the start.
+    for (const name of ['filingRules', 'syllabi', 'relations']) {
+      expect(byName.get(name)!.softDelete, name).toBe(true);
+      expect(unregisteredTables(), name).not.toContain(name);
     }
     expect(byName.get('attachments')!.localOnly).toBe(true);
     expect(byName.get('highlights')!.references).toEqual([{ field: 'sourceId', table: 'sources' }]);

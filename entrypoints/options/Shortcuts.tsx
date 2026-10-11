@@ -50,6 +50,13 @@ export function KeyboardShortcuts() {
           ))}
         </ul>
       )}
+      {commands?.some((c) => c.shortcut === '') ? (
+        <p className="sv-muted sv-small" data-testid="shortcuts-unset-note">
+          Chrome lets an extension suggest only four keys, so some commands start as “Not set”, for
+          example the one that opens the side panel on the search box. Choose a key for them with
+          the button below.
+        </p>
+      ) : null}
 
       <div className="sv-stack sv-stack--tight">
         <h3>Inside a page</h3>

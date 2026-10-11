@@ -290,6 +290,11 @@ export const COMMANDS = [
     shortcut: 'Alt+Shift+Period',
   },
   {
+    name: 'focus-search',
+    description: 'Search your highlights: open the side panel on the search box',
+    shortcut: '',
+  },
+  {
     name: 'previous-highlight',
     description: 'Go to the previous highlight on the page',
     shortcut: '',

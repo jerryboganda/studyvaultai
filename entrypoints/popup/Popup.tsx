@@ -30,6 +30,7 @@ import {
   type ActiveTab,
 } from '@ui';
 import { useDueCount } from '@ui/review/hooks';
+import { ReminderNotice } from '@ui/review/ReminderNotice';
 import { reviewPageUrl } from '@ui/review/links';
 import { openDashboard } from '@ui/vault/dashboardLink';
 import {
@@ -128,6 +129,8 @@ function PopupBody() {
           reviewOn={settings.features.review}
           // The tab check comes first: the worker answers it, and the card count opens the database.
           settled={state !== null && state.kind !== 'loading'}
+          // The notice's button is gone once it is dismissed: focus goes to the title, not <body>.
+          onReminderDismissed={() => heading.current?.focus()}
         />
       ) : null}
       <Footer />
@@ -446,11 +449,19 @@ function PdfReader({ offer, enabled }: { offer: PdfReaderOffer; enabled: boolean
  * Review and dashboard, in every state. Cards due is read live from the database (not from a
  * counter kept elsewhere); with review turned off nothing is queried and no count is shown.
  */
-function StudyBar({ reviewOn, settled }: { reviewOn: boolean; settled: boolean }) {
+function StudyBar({
+  reviewOn,
+  settled,
+  onReminderDismissed,
+}: {
+  reviewOn: boolean;
+  settled: boolean;
+  onReminderDismissed(): void;
+}) {
   return (
     <section className="popup__study sv-stack sv-stack--tight" aria-label="Study">
       {reviewOn && settled ? (
-        <WithReview />
+        <WithReview onReminderDismissed={onReminderDismissed} />
       ) : (
         <>
           {reviewOn ? <p className="sv-muted sv-small">Counting cards…</p> : null}
@@ -461,7 +472,7 @@ function StudyBar({ reviewOn, settled }: { reviewOn: boolean; settled: boolean }
   );
 }
 
-function WithReview() {
+function WithReview({ onReminderDismissed }: { onReminderDismissed(): void }) {
   const due = useDueCount();
   const view = studyView(due);
   if (due.error) {
@@ -480,6 +491,8 @@ function WithReview() {
   }
   return (
     <>
+      {/* The daily time came (Settings > Review): only while something is due. */}
+      <ReminderNotice count={due.count} onDismissed={onReminderDismissed} />
       {view ? (
         <p className="popup__due">
           <span data-testid="popup-due">

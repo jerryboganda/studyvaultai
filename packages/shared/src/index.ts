@@ -7,3 +7,5 @@ export * from './pendingFocus';
 export * from './urls';
 export * from './registry';
 export * from './vault';
+export * from './filing';
+export * from './filingSession';

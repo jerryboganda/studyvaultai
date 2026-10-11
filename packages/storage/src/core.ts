@@ -9,6 +9,7 @@ import {
   Id,
   INBOX_BANK_ID,
   INBOX_BANK_NAME,
+  MAX_FOLDER_DEPTH,
   PLACEHOLDER_SOURCE_PREFIX,
   SCHEMA_VERSION,
   Source,
@@ -166,8 +167,8 @@ export async function readBanks(db: StudyVaultDb): Promise<BankRecord[]> {
   );
 }
 
-/** Most parents a folder path follows (and shows); deeper chains are cut. */
-const FOLDER_PATH_DEPTH = 16;
+/** Most parents a folder path follows (and shows); deeper chains (corrupt data) are cut. */
+export const FOLDER_PATH_DEPTH = MAX_FOLDER_DEPTH;
 
 /**
  * The live folders named by `ids` and their ancestors, keyed by id: what a folder path needs, read

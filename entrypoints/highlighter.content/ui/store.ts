@@ -9,6 +9,8 @@ export interface Toast {
   text: string;
   tone: ToastTone;
   action?: { label: string; run: () => void };
+  /** A second button after the action ("Not now" next to "File"). */
+  secondary?: { label: string; run: () => void };
   /** Overrides how long the toast stays (ms). Internal: the host cannot set it through the contract. */
   ttl?: number;
 }
@@ -55,7 +57,13 @@ let toastSeq = 0;
 
 export function pushToast(
   store: Store<UiState>,
-  notice: { text: string; tone?: ToastTone; action?: Toast['action']; ttl?: number },
+  notice: {
+    text: string;
+    tone?: ToastTone;
+    action?: Toast['action'];
+    secondary?: Toast['secondary'];
+    ttl?: number;
+  },
 ): number {
   const toast: Toast = { ...notice, id: ++toastSeq, tone: notice.tone ?? 'info' };
   store.set((s) => ({

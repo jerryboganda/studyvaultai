@@ -1,6 +1,15 @@
 import { useId, useState, type FormEvent } from 'react';
 import { createBank, listBanksWithCounts, listFolderTree, type FolderNode } from '@storage';
-import { Badge, Button, InlineNotice, plural, useAction, useObserved, useToast } from '@ui';
+import {
+  Badge,
+  Button,
+  InlineNotice,
+  plural,
+  useAction,
+  useObserved,
+  useSettings,
+  useToast,
+} from '@ui';
 import { openDashboard } from '@ui/vault';
 import { scopeLabel, validateBankName, type BankScope } from './model';
 
@@ -19,6 +28,9 @@ export function Banks({
   onScope(next: BankScope | null): void;
 }) {
   const banks = useObserved(() => listBanksWithCounts(), []);
+  // Chat with a bank's notes is an AI feature: null while the settings are being read.
+  const { settings } = useSettings();
+  const aiOn = settings === null ? null : settings.features.ai;
   return (
     <div className="sv-stack">
       <h2 className="sv-sr">Banks</h2>
@@ -57,7 +69,14 @@ export function Banks({
           </p>
           <ul className="bank-list" aria-label="Your banks">
             {banks.data.map(({ bank, count }) => (
-              <BankRow key={bank.id} bank={bank} count={count} scope={scope} onScope={onScope} />
+              <BankRow
+                key={bank.id}
+                bank={bank}
+                count={count}
+                scope={scope}
+                onScope={onScope}
+                aiOn={aiOn}
+              />
             ))}
           </ul>
         </>
@@ -71,16 +90,19 @@ function BankRow({
   count,
   scope,
   onScope,
+  aiOn,
 }: {
   bank: { id: string; name: string; isInbox: boolean };
   count: number;
   scope: BankScope | null;
   onScope(next: BankScope | null): void;
+  aiOn: boolean | null;
 }) {
   const uid = useId();
   const [open, setOpen] = useState(false);
   const active = scope?.bankId === bank.id && scope.folderId === null;
   const dashboard = useAction(() => openDashboard({ bank: bank.id }));
+  const chat = useAction(() => openDashboard({ bank: bank.id, view: 'chat' }));
 
   return (
     <li className="bank-item" data-testid="bank-item">
@@ -125,10 +147,27 @@ function BankRow({
         >
           Open in dashboard
         </Button>
+        <Button
+          variant="ghost"
+          busy={chat.busy}
+          aria-label={`Chat with the notes of ${bank.name} (AI)`}
+          data-testid="bank-chat"
+          {...(aiOn === true
+            ? {}
+            : {
+                disabledReason:
+                  aiOn === false
+                    ? 'AI features are off, so nothing is sent anywhere. Turn them on in the AI settings.'
+                    : 'Reading your settings…',
+              })}
+          onClick={() => void chat.run()}
+        >
+          Chat (AI)
+        </Button>
       </div>
-      {dashboard.error ? (
+      {dashboard.error || chat.error ? (
         <InlineNotice tone="error" title="Could not open the dashboard">
-          {dashboard.error}
+          {dashboard.error ?? chat.error}
         </InlineNotice>
       ) : null}
       {open ? (

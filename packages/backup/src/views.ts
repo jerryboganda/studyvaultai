@@ -1,3 +1,4 @@
+import { MAX_FOLDER_DEPTH } from '@shared';
 import { num, safeHttpUrl, str, strOrNull } from './text';
 import type { Row } from './types';
 
@@ -57,7 +58,8 @@ const byId = (rows: readonly Row[] | undefined): Map<string, Row> =>
 const isDeleted = (r: Row | undefined): boolean => r !== undefined && r.deletedAt != null;
 
 export const UNFILED = 'Unfiled';
-const MAX_DEPTH = 8;
+/** Folder levels an export path follows: the vault never nests deeper (`MAX_FOLDER_DEPTH`). */
+const MAX_DEPTH = MAX_FOLDER_DEPTH;
 
 /**
  * Join the tables into one view per highlight, in a deterministic order (capture time, then id).

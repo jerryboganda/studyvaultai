@@ -1,8 +1,7 @@
-import { act, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { STYLES_CSS, declsFor, parseCss, readCss } from './testCss';
-import { cleanupUi, makeHighlight, mountUi, rect } from './testHarness';
+import { act, cleanupUi, makeHighlight, mountUi, rect, within } from './testHarness';
 
 /**
  * jsdom has no layout. These tests give the overlay a viewport and natural sizes, and check what

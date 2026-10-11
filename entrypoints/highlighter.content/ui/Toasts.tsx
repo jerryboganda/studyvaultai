@@ -69,6 +69,18 @@ function ToastCard({ toast }: { toast: Toast }) {
           {toast.action.label}
         </button>
       ) : null}
+      {toast.secondary ? (
+        <button
+          type="button"
+          className="sv-btn sv-btn-link"
+          onClick={() => {
+            toast.secondary?.run();
+            close();
+          }}
+        >
+          {toast.secondary.label}
+        </button>
+      ) : null}
       <button
         type="button"
         className="sv-btn sv-icon-btn"

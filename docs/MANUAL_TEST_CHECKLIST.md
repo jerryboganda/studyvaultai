@@ -57,7 +57,7 @@ of an unpacked extension is derived from its path.
 
 | ID | Check | Expected | Blocker |
 | --- | --- | --- | --- |
-| MT-11 | `chrome://extensions/shortcuts` (Edge: `edge://extensions/shortcuts`) | Five commands are listed: open side panel (Alt+Shift+S), quick-save (Alt+Shift+H), focus toolbar (Alt+Shift+Y), next highlight (Alt+Shift+Period), previous highlight (unassigned). Settings > Keyboard shortcuts shows the same keys Chrome reports | yes |
+| MT-11 | `chrome://extensions/shortcuts` (Edge: `edge://extensions/shortcuts`) | Six commands are listed: open side panel (Alt+Shift+S), quick-save (Alt+Shift+H), focus toolbar (Alt+Shift+Y), next highlight (Alt+Shift+Period), previous highlight (unassigned), search your highlights / `focus-search` (unassigned: assign a key, press it in a normal tab, and the side panel opens on Search with the cursor in the box; with the dashboard in front, its own search box takes focus). Settings > Keyboard shortcuts shows the same keys Chrome reports | yes |
 | MT-11a | Press each assigned shortcut on an activated article page, with and without a selection | Quick-save with a selection: badge "check", highlight painted. Without a selection: badge "!" and the title says to select text first. Focus toolbar moves focus into the toolbar. Next highlight scrolls to the next painted highlight and wraps. Open side panel opens the panel | yes |
 | MT-11b | Reassign one shortcut to a combination that clashes with the OS or the screen reader (for example one NVDA uses) | Chrome warns or the OS wins; StudyVault does not capture the key in the page; nothing is lost | no |
 | MT-11c | On macOS and Linux, repeat MT-11a | The suggested keys map to the platform's modifier names; no unintended browser action | yes |

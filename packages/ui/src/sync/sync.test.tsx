@@ -332,6 +332,31 @@ describe('turning sync on', () => {
     expect(await screen.findByTestId('sync-connected')).toBeInTheDocument();
   });
 
+  it('says it is waiting while the Chrome prompt is open and does not ask twice', async () => {
+    let answer!: (granted: boolean) => void;
+    const prompt = new Promise<boolean>((resolve) => (answer = resolve));
+    const requestPermissions = vi.fn(() => prompt);
+    const fake = fakeApi(view(), { requestPermissions });
+    mount(fake);
+    await userEvent.type(await screen.findByTestId('sync-server-url'), 'https://sync.example.org');
+    await userEvent.type(byId('sync-issuer'), 'https://id.example.org');
+    await userEvent.type(byId('sync-client-id'), 'studyvault');
+    await userEvent.click(byId('sync-ack'));
+    const enable = byId('sync-enable');
+    expect(screen.queryByTestId('sync-enable-status')).toBeNull();
+    await userEvent.click(enable);
+
+    expect(enable.getAttribute('aria-busy')).toBe('true');
+    expect(byId('sync-enable-status').textContent).toMatch(/Turning on sync/);
+    await userEvent.click(enable); // busy: ignored
+    expect(requestPermissions).toHaveBeenCalledTimes(1);
+
+    answer(false);
+    await waitFor(() => expect(enable.getAttribute('aria-busy')).toBeNull());
+    expect(screen.queryByTestId('sync-enable-status')).toBeNull();
+    expect(await screen.findByText(/did not grant the permissions/)).toBeInTheDocument();
+  });
+
   it('a declined prompt changes nothing', async () => {
     const fake = fakeApi(view(), { requestPermissions: vi.fn(async () => false) });
     mount(fake);

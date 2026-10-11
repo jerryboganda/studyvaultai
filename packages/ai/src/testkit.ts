@@ -203,6 +203,42 @@ export function goodReply(kind: AiTaskKind, s: AiSelection): unknown {
           evidence: [ev(a)],
         })),
       };
+    case 'mnemonic':
+      return {
+        aids: [
+          {
+            type: 'acronym',
+            fact: 'Metformin is first-line for type 2 diabetes.',
+            mnemonic: 'M for Metformin, M for Majority of adults.',
+            howItWorks: 'Both M words point to the drug and to the usual starting choice.',
+            evidence: [ev(a)],
+          },
+        ],
+      };
+    case 'short_viva':
+      return {
+        questions: [
+          {
+            question: 'What is the first-line drug for type 2 diabetes in most adults?',
+            modelAnswer: 'Metformin is the first-line pharmacological treatment.',
+            evidence: [ev(a)],
+          },
+          {
+            question: 'Why is insulin therapy required in type 1 diabetes?',
+            modelAnswer: 'Pancreatic beta cells are destroyed.',
+            evidence: [ev(b)],
+          },
+        ],
+      };
+    case 'study_outline':
+      return {
+        title: 'Diabetes mellitus',
+        items: [
+          { level: 1, text: 'Type 2 diabetes', evidence: [ev(a)] },
+          { level: 2, text: 'First-line drug', evidence: [ev(a)] },
+          { level: 1, text: 'Type 1 diabetes', evidence: [ev(b)] },
+        ],
+      };
   }
 }
 

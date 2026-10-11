@@ -46,6 +46,7 @@ First use on a site needs one click. That is the price of not requesting broad a
 - **Private windows.** Capture from incognito tabs is refused unless the user turns on
   `allowIncognitoCapture`, because the database is shared with normal windows.
 - **Shortcuts.** Manifest commands: `open-side-panel` (Alt+Shift+S), `quick-save` (Alt+Shift+H),
-  `focus-toolbar` (Alt+Shift+Y), `next-highlight` (Alt+Shift+Period), `previous-highlight` (unassigned;
-  Chrome allows four suggested keys). `[`/`]` are not valid manifest keys, so Alt+Shift+] / [ remain as
+  `focus-toolbar` (Alt+Shift+Y), `next-highlight` (Alt+Shift+Period), `previous-highlight` and
+  `focus-search` (both unassigned: Chrome allows four suggested keys; `focus-search` opens the side
+  panel on its Search tab, or focuses the search box of the dashboard when that is the page in front). `[`/`]` are not valid manifest keys, so Alt+Shift+] / [ remain as
   additional in-page keys. In-page Alt+Shift+T was removed: it collided with Chrome's own accelerator.

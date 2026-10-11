@@ -90,8 +90,9 @@ test.describe.configure({ timeout: 300_000 });
  * validated with the product's own schemas (see helpers.backup.ts). Nothing mocks a Chrome API.
  *
  * What is NOT covered here, and why:
- *  - the single-file JSON export and `exportHighlightsJson`: no Options control offers them, so
- *    there is no user path to drive (the engine's unit tests cover them);
+ *  - `exportJson`, the lossless single-file variant of the backup: no Options control offers it, so
+ *    there is no user path to drive (the engine's unit tests cover it). The readable JSON export of
+ *    highlights (`exportHighlightsJson`) has a control and is driven by polish.spec.ts;
  *  - the pre-update copy being MADE by a real database upgrade: a loaded extension cannot be made
  *    to upgrade on demand, so the copy is planted in the shape the product reads
  *    (`seedPreUpdateCopy`); making it is covered by packages/storage lifecycle tests;

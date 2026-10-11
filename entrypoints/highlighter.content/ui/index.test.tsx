@@ -1,8 +1,7 @@
-import { act, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ContentScriptContext } from 'wxt/utils/content-script-context';
 import { defaultSettings } from '@shared';
-import { makeHost, rect } from './testHarness';
+import { act, makeHost, rect, within } from './testHarness';
 
 interface FakeCall {
   options: {

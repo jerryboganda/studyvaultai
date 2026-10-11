@@ -278,6 +278,65 @@ describe('AI settings', () => {
     );
   });
 
+  /** Holds the settings write until `release`, then lets it succeed or fail. */
+  function holdSettingsWrite() {
+    const real = browser.storage.local.set.bind(browser.storage.local);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const state = { fail: false };
+    vi.spyOn(browser.storage.local, 'set').mockImplementation(async (items) => {
+      await gate;
+      if (state.fail) throw new Error('The browser storage is full.');
+      return real(items);
+    });
+    return { release, state };
+  }
+
+  it('the switch shows the choice at once, is busy while the setting is written and keeps it after', async () => {
+    const user = userEvent.setup();
+    render(
+      <AiEnvProvider env={envFor(null)}>
+        <AiSettingsSection />
+      </AiEnvProvider>,
+    );
+    const toggle = (await screen.findByTestId('ai-enable')) as HTMLInputElement;
+    const held = holdSettingsWrite();
+    await user.click(toggle);
+
+    expect(toggle.checked).toBe(true); // not snapped back while the write is pending
+    expect(toggle.getAttribute('aria-busy')).toBe('true');
+    expect(screen.getByText('Saving…')).toBeTruthy();
+    await user.click(toggle); // a second click is ignored, not queued
+    expect(toggle.checked).toBe(true);
+
+    held.release();
+    await waitFor(() => expect(toggle.getAttribute('aria-busy')).toBeNull());
+    expect(toggle.checked).toBe(true);
+    expect(await screen.findByTestId('ai-base-url')).toBeTruthy();
+  });
+
+  it('a failed write rolls the switch back and says so in an alert', async () => {
+    const user = userEvent.setup();
+    render(
+      <AiEnvProvider env={envFor(null)}>
+        <AiSettingsSection />
+      </AiEnvProvider>,
+    );
+    const toggle = (await screen.findByTestId('ai-enable')) as HTMLInputElement;
+    const held = holdSettingsWrite();
+    held.state.fail = true;
+    await user.click(toggle);
+    expect(toggle.checked).toBe(true);
+
+    held.release();
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/The setting was not saved/);
+    expect(alert.textContent).toMatch(/storage is full/);
+    await waitFor(() => expect(toggle.checked).toBe(false));
+    expect(toggle.getAttribute('aria-busy')).toBeNull();
+    expect(screen.queryByTestId('ai-base-url')).toBeNull();
+  });
+
   it('turning the flag off hides the provider controls again', async () => {
     const user = userEvent.setup();
     await turnAi(true);

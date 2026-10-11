@@ -1,15 +1,22 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_COVERAGE_THRESHOLDS,
   backlog,
   countsByBank,
   countsByDeck,
+  coverageState,
   dueForecast,
   estimatedRetention,
+  normalizeThresholds,
   streak,
   studyLog,
   syllabusCoverage,
+  syllabusTopicCoverage,
   trueRetention,
+  type CoverageCard,
+  type CoverageHighlight,
+  type CoverageTopic,
 } from './analytics';
 import type { Rating, ReviewLog } from './schema';
 import { DAY, T0, idOf, makeCard } from './testUtils';
@@ -333,6 +340,383 @@ describe('syllabusCoverage', () => {
       learnedRatio: null,
       total: 0,
     });
+  });
+});
+
+describe('syllabusTopicCoverage', () => {
+  // 2026-01-05 09:00 UTC; the study day ends at 00:00 UTC on the 6th.
+  const NOW = T0;
+  const opts = { now: NOW, boundary: UTC };
+  const none = { highlights: [], cards: [], logs: [] };
+
+  const topic = (id: string, over: Partial<CoverageTopic> = {}): CoverageTopic => ({
+    id,
+    title: `Topic ${id}`,
+    depth: 1,
+    parentId: null,
+    bankIds: [],
+    tagIds: [],
+    ...over,
+  });
+  const child = (id: string, parentId: string, over: Partial<CoverageTopic> = {}) =>
+    topic(id, { parentId, depth: 2, ...over });
+  const hl = (
+    id: string,
+    bankIds: string[] = [],
+    tagIds: string[] = [],
+    deletedAt: string | null = null,
+  ): CoverageHighlight => ({ id, bankIds, tagIds, deletedAt });
+  const card = (
+    id: string,
+    bankIds: string[],
+    spec: Parameters<typeof makeCard>[1] & { tagIds?: string[] } = {},
+  ): CoverageCard => {
+    const c = makeCard(id, spec);
+    return {
+      id,
+      deletedAt: c.deletedAt,
+      suspended: c.suspended,
+      fsrs: c.fsrs,
+      bankIds,
+      tagIds: spec.tagIds ?? [],
+    };
+  };
+  const row = (r: ReturnType<typeof syllabusTopicCoverage>, id: string) => {
+    const found = r.topics.find((t) => t.id === id);
+    if (!found) throw new Error(`no topic ${id}`);
+    return found;
+  };
+
+  it('counts every highlight and card once, however many mappings match', () => {
+    const r = syllabusTopicCoverage(
+      [
+        topic('p', { bankIds: ['b1'] }),
+        child('c', 'p', { bankIds: ['b1'], tagIds: ['t1'] }),
+        topic('other', { tagIds: ['t9'] }),
+      ],
+      {
+        highlights: [
+          hl('h1', ['b1'], ['t1']), // matches c twice (bank and tag), and p through both
+          hl('h2', ['b1']),
+          hl('h3', [], ['t1']),
+          hl('h4', ['b7'], ['t7']), // matches nothing
+        ],
+        cards: [card('k1', ['b1'], { tagIds: ['t1'] }), card('k2', [], { tagIds: ['t1'] })],
+        logs: [],
+      },
+      opts,
+    );
+    expect(row(r, 'c')).toMatchObject({ highlights: 3, cards: 2 });
+    // The parent counts its own bank and its subtopic's tag, h1 once.
+    expect(row(r, 'p')).toMatchObject({ highlights: 3, cards: 2 });
+    expect(row(r, 'other')).toMatchObject({ highlights: 0, cards: 0, mapped: true });
+  });
+
+  it('leaves out deleted highlights and deleted or suspended cards', () => {
+    const r = syllabusTopicCoverage(
+      [topic('a', { bankIds: ['b1'] })],
+      {
+        highlights: [hl('h1', ['b1']), hl('h2', ['b1'], [], '2026-01-01T00:00:00.000Z')],
+        cards: [
+          card('k1', ['b1']),
+          card('k2', ['b1'], { suspended: true }),
+          card('k3', ['b1'], { deleted: true }),
+        ],
+        logs: [],
+      },
+      opts,
+    );
+    expect(row(r, 'a')).toMatchObject({ highlights: 1, cards: 1 });
+  });
+
+  it('ignores the same highlight or card listed twice', () => {
+    const r = syllabusTopicCoverage(
+      [topic('a', { bankIds: ['b1'] })],
+      { highlights: [hl('h1', ['b1']), hl('h1', ['b1'])], cards: [], logs: [] },
+      opts,
+    );
+    expect(row(r, 'a').highlights).toBe(1);
+  });
+
+  it('weights top-level topics relative to each other and says what is covered and started', () => {
+    const topics = [
+      topic('big', { weight: 3, bankIds: ['b1'] }),
+      topic('small', { weight: 1, bankIds: ['b2'] }),
+    ];
+    const facts = {
+      highlights: [hl('h1', ['b1']), hl('h2', ['b1']), hl('h3', ['b1']), hl('h4', ['b2'])],
+      cards: [card('k1', ['b1'])],
+      logs: [],
+    };
+    const r = syllabusTopicCoverage(topics, facts, opts);
+    expect(row(r, 'big')).toMatchObject({ state: 'covered', share: 0.75 });
+    expect(row(r, 'small')).toMatchObject({ state: 'thin', share: 0.25 }); // 1 highlight, no card
+    expect(r.covered).toBeCloseTo(0.75, 10);
+    expect(r.started).toBeCloseTo(1, 10);
+    expect(r.unmapped).toBe(0);
+
+    const swapped = syllabusTopicCoverage(
+      [
+        { ...(topics[0] as CoverageTopic), weight: 1 },
+        { ...(topics[1] as CoverageTopic), weight: 3 },
+      ],
+      facts,
+      opts,
+    );
+    expect(swapped.covered).toBeCloseTo(0.25, 10);
+  });
+
+  it('gives topics without a weight an equal share', () => {
+    const r = syllabusTopicCoverage(
+      [topic('a', { bankIds: ['b1'] }), topic('b'), topic('c'), topic('d')],
+      { highlights: [hl('h1', ['b1'])], cards: [card('k1', ['b1'])], logs: [] },
+      { ...opts, thresholds: { minHighlights: 1, minCards: 1 } },
+    );
+    expect(r.topics.map((t) => t.share)).toEqual([0.25, 0.25, 0.25, 0.25]);
+    expect(r.covered).toBeCloseTo(0.25, 10);
+    expect(r.unmapped).toBe(3);
+  });
+
+  it('judges a topic with mapped subtopics from them, by their weights', () => {
+    const topics = [
+      topic('ch', { weight: 2 }),
+      child('heavy', 'ch', { weight: 3, bankIds: ['b1'] }),
+      child('light', 'ch', { weight: 1, bankIds: ['b2'] }),
+      topic('q', { weight: 1, bankIds: ['b3'] }),
+    ];
+    const r = syllabusTopicCoverage(
+      topics,
+      {
+        highlights: [hl('a', ['b1']), hl('b', ['b1']), hl('c', ['b1'])],
+        cards: [card('k1', ['b1'])],
+        logs: [],
+      },
+      opts,
+    );
+    expect(row(r, 'heavy').state).toBe('covered');
+    expect(row(r, 'light')).toMatchObject({ state: 'none', mapped: true });
+    expect(row(r, 'ch')).toMatchObject({
+      scoredFrom: 'subtopics',
+      state: 'thin',
+      covered: 0.75,
+      started: 0.75,
+      share: 2 / 3,
+    });
+    expect(row(r, 'heavy').share).toBeCloseTo(0.5, 10); // 2/3 of the syllabus, 3/4 of that
+    expect(r.covered).toBeCloseTo((2 / 3) * 0.75, 10);
+  });
+
+  it('judges a topic by its own mapping when no subtopic points anywhere', () => {
+    const r = syllabusTopicCoverage(
+      [topic('bank-topic', { bankIds: ['b1'] }), child('folder-like', 'bank-topic')],
+      {
+        highlights: [hl('a', ['b1']), hl('b', ['b1']), hl('c', ['b1'])],
+        cards: [card('k1', ['b1'])],
+        logs: [],
+      },
+      opts,
+    );
+    expect(row(r, 'bank-topic')).toMatchObject({ scoredFrom: 'own', state: 'covered' });
+    expect(row(r, 'folder-like')).toMatchObject({
+      state: 'none',
+      mapped: false,
+      subtreeMapped: false,
+      // It sits under a mapped topic, so it counts what the parent counts only through its own mapping.
+      highlights: 0,
+    });
+    expect(r.covered).toBeCloseTo(1, 10);
+    expect(r.unmapped).toBe(1);
+  });
+
+  it('is honest about empty topics and an empty syllabus', () => {
+    const r = syllabusTopicCoverage([topic('a'), topic('b')], none, opts);
+    expect(r.status).toBe('ok');
+    expect(r.topics.every((t) => t.state === 'none' && !t.mapped && t.highlights === 0)).toBe(true);
+    expect(r.covered).toBe(0);
+    expect(r.started).toBe(0);
+    expect(r.topics[0]).toMatchObject({
+      cards: 0,
+      due: 0,
+      lastStudiedAt: null,
+      retention: { value: null, reviews: 0 },
+    });
+    expect(r.unmapped).toBe(2);
+
+    expect(syllabusTopicCoverage([], none, opts)).toMatchObject({
+      status: 'empty',
+      covered: null,
+      started: null,
+      topics: [],
+    });
+  });
+
+  it('uses the thresholds the person set, and falls back for invalid ones', () => {
+    const topics = [topic('a', { bankIds: ['b1'] })];
+    const facts = {
+      highlights: [hl('a', ['b1']), hl('b', ['b1'])],
+      cards: [card('k1', ['b1'])],
+      logs: [],
+    };
+    expect(row(syllabusTopicCoverage(topics, facts, opts), 'a').state).toBe('thin'); // 2 < 3
+    expect(
+      row(syllabusTopicCoverage(topics, facts, { ...opts, thresholds: { minHighlights: 2 } }), 'a')
+        .state,
+    ).toBe('covered');
+    expect(
+      row(
+        syllabusTopicCoverage(topics, facts, {
+          ...opts,
+          thresholds: { minHighlights: 2, minCards: 2 },
+        }),
+        'a',
+      ).state,
+    ).toBe('thin');
+    expect(
+      row(
+        syllabusTopicCoverage(
+          topics,
+          { ...facts, cards: [] },
+          {
+            ...opts,
+            thresholds: { minHighlights: 0, minCards: 0 },
+          },
+        ),
+        'a',
+      ).state,
+    ).toBe('covered');
+
+    expect(normalizeThresholds({ minHighlights: -1, minCards: 1.5 })).toEqual(
+      DEFAULT_COVERAGE_THRESHOLDS,
+    );
+    expect(normalizeThresholds({ minHighlights: 1000, minCards: Number.NaN })).toEqual(
+      DEFAULT_COVERAGE_THRESHOLDS,
+    );
+    expect(normalizeThresholds(null)).toEqual(DEFAULT_COVERAGE_THRESHOLDS);
+    expect(normalizeThresholds({ minHighlights: 0, minCards: 999 })).toEqual({
+      minHighlights: 0,
+      minCards: 999,
+    });
+    expect(coverageState(0, 0, { minHighlights: 0, minCards: 0 })).toBe('none');
+  });
+
+  it('counts due cards by study day, last studied, and keeps new cards out of due', () => {
+    const r = syllabusTopicCoverage(
+      [topic('a', { bankIds: ['b1'] })],
+      {
+        highlights: [],
+        cards: [
+          card('k1', ['b1'], {
+            state: 'review',
+            due: '2026-01-05T23:59:00.000Z',
+            lastReview: '2026-01-02T00:00:00.000Z',
+          }),
+          card('k2', ['b1'], {
+            state: 'review',
+            due: '2026-01-06T00:00:00.000Z',
+            lastReview: '2026-01-04T10:00:00.000Z',
+          }), // tomorrow
+          card('k3', ['b1'], {
+            state: 'learning',
+            due: '2026-01-05T08:59:00.000Z',
+            lastReview: '2026-01-05T08:00:00.000Z',
+          }),
+          card('k4', ['b1'], {
+            state: 'learning',
+            due: '2026-01-05T09:30:00.000Z',
+            lastReview: '2026-01-05T08:00:00.000Z',
+          }), // later today, not yet
+          card('k5', ['b1']), // new
+        ],
+        logs: [],
+      },
+      opts,
+    );
+    expect(row(r, 'a')).toMatchObject({
+      cards: 5,
+      due: 2,
+      lastStudiedAt: '2026-01-05T08:00:00.000Z',
+    });
+  });
+
+  it('measures retention of mature reviews per topic and withholds it below the minimum', () => {
+    const topics = [topic('a', { bankIds: ['b1'] }), topic('b', { bankIds: ['b2'] })];
+    const cards = [
+      card('k1', ['b1'], { state: 'review' }),
+      card('k2', ['b2'], { state: 'review' }),
+    ];
+    const day = (n: number) => iso(T0MS - n * DAY);
+    const logs = [
+      // topic a: 5 mature reviews, one forgotten, plus an undone one and a first (new) review.
+      log(day(1), 3, { cardId: 'k1' }),
+      log(day(2), 3, { cardId: 'k1' }),
+      log(day(3), 1, { cardId: 'k1' }),
+      log(day(4), 4, { cardId: 'k1' }),
+      log(day(5), 2, { cardId: 'k1' }),
+      log(day(6), 1, { cardId: 'k1', undone: true }),
+      log(day(7), 3, { cardId: 'k1', prev: 'new' }),
+      // topic b: 4 mature reviews, below the minimum of 5.
+      ...[1, 2, 3, 4].map((n) => log(day(n), 3, { cardId: 'k2' })),
+      // a card nobody maps does not leak into a topic
+      log(day(1), 1, { cardId: 'stranger' }),
+    ];
+    const r = syllabusTopicCoverage(topics, { highlights: [], cards, logs }, opts);
+    expect(row(r, 'a').retention.reviews).toBe(5);
+    expect(row(r, 'a').retention.value).toBeCloseTo(4 / 5, 10);
+    expect(row(r, 'b').retention).toEqual({ value: null, reviews: 4 });
+    expect(
+      row(
+        syllabusTopicCoverage(
+          topics,
+          { highlights: [], cards, logs },
+          { ...opts, minRetentionReviews: 4 },
+        ),
+        'b',
+      ).retention.value,
+    ).toBe(1);
+  });
+
+  it('survives a malformed tree: a parent listed after its child, unknown parents, repeated ids', () => {
+    const r = syllabusTopicCoverage(
+      [
+        child('kid', 'late'),
+        topic('late', { bankIds: ['b1'] }),
+        child('orphan', 'nobody', { bankIds: ['b1'] }),
+        topic('late'),
+      ],
+      { highlights: [hl('h', ['b1'])], cards: [], logs: [] },
+      opts,
+    );
+    expect(r.topics).toHaveLength(4);
+    expect(r.topics.every((t) => Number.isFinite(t.share))).toBe(true);
+    expect(
+      r.topics.reduce((sum, t) => sum + (t.parentId === null || t.id === 'kid' ? 0 : t.share), 0),
+    ).toBeGreaterThan(0);
+  });
+
+  it('handles a full-size syllabus over a large vault quickly', () => {
+    const topics: CoverageTopic[] = [];
+    for (let i = 0; i < 20; i += 1) {
+      topics.push(topic(`c${i}`, { bankIds: [`b${i}`] }));
+      for (let j = 0; j < 24; j += 1) {
+        topics.push(child(`c${i}-${j}`, `c${i}`, { tagIds: [`t${i}-${j}`], weight: 1 + (j % 3) }));
+      }
+    }
+    expect(topics).toHaveLength(500);
+    const highlights = Array.from({ length: 20_000 }, (_, i) =>
+      hl(idOf('h', i), [`b${i % 20}`], [`t${i % 20}-${i % 24}`]),
+    );
+    const cards = Array.from({ length: 20_000 }, (_, i) =>
+      card(idOf('k', i), [`b${i % 20}`], { state: 'review', tagIds: [`t${i % 20}-${i % 24}`] }),
+    );
+    const logs = Array.from({ length: 60_000 }, (_, i) =>
+      log(iso(T0MS - (i % 300) * DAY), 3, { cardId: idOf('k', i % 20_000) }),
+    );
+    const t0 = performance.now();
+    const r = syllabusTopicCoverage(topics, { highlights, cards, logs }, opts);
+    const ms = performance.now() - t0;
+    expect(r.topics).toHaveLength(500);
+    expect(r.topics[0]?.highlights).toBe(1000);
+    expect(ms).toBeLessThan(3000);
   });
 });
 

@@ -20,6 +20,7 @@ import {
   type AiSelection,
   type AiTaskKind,
   type BudgetState,
+  type FallbackTarget,
   type FetchLike,
   type LogEvent,
   type PipelineDeps,
@@ -27,15 +28,20 @@ import {
   type SystemClock,
 } from '@ai';
 import {
+  PRIMARY_PROFILE_ID,
   addAiSpend,
   checkAiEndpoint,
   createAiCache,
   getAiApiKey,
   getAiBudget,
   getAiKeyInfo,
+  getAiProfileApiKey,
+  getAiProfileKeyInfos,
   getAiSettings,
   saveAiResult,
   type AiEndpointCheck,
+  type AiKeyInfo,
+  type AiProfileSettings,
   type AiSettings,
   type StoredAiResult,
 } from '@storage';
@@ -48,11 +54,16 @@ export interface AiEnv {
   online(): boolean;
   /** Provider deadline per attempt in ms; the engine's default (60 s) when absent. */
   timeoutMs?: number;
-  /** Test seam: replaces the HTTP adapters. Endpoint, key and consent rules all still apply. */
+  /**
+   * Test seam: replaces the HTTP adapters. Endpoint, key and consent rules all still apply.
+   * `settings` is the provider's own address, model and options (merged over the primary settings
+   * for a fallback), `profileId` says which provider it is.
+   */
   createProvider?(cfg: {
     settings: AiSettings;
     apiKey: string | null;
     fetch: FetchLike;
+    profileId: string;
   }): AiProvider;
 }
 
@@ -71,23 +82,40 @@ export function defaultAiEnv(): AiEnv {
 
 export type KeyState = 'present' | 'missing' | 'not_needed' | 'other_origin';
 
+/** One provider as configured: the primary one (`id` 'primary') or a fallback. */
+export interface AiProfileConfig {
+  id: string;
+  label: string;
+  /** May be used when an earlier provider is not answering. The primary provider always may. */
+  fallback: boolean;
+  settings: AiProfileSettings;
+  endpoint: AiEndpointCheck;
+  key: { state: KeyState; mask: string | null; origin: string | null };
+  /** Null while the feature is off or this provider's settings are incomplete; `problem` says why. */
+  provider: AiProvider | null;
+  problem: string | null;
+}
+
 export interface AiConfig {
   /** Mirrors Settings.features.ai. Off => nothing can be previewed, sent or tested. */
   flagOn: boolean;
   settings: AiSettings;
+  /** The primary provider's endpoint, key and provider (the same data as `profiles[0]`). */
   endpoint: AiEndpointCheck;
   key: { state: KeyState; mask: string | null; origin: string | null };
   /** Null while the feature is off or the settings are incomplete; `problem` says why. */
   provider: AiProvider | null;
   problem: string | null;
   budget: BudgetState;
+  /** The primary provider first, then the fallbacks in the order they are tried. */
+  profiles: AiProfileConfig[];
 }
 
-// The key is held here, not on the config object: a config can be logged or serialised by a caller.
+// The keys are held here, not on the config object: a config can be logged or serialised by a caller.
 const secretsOf = new WeakMap<AiConfig, string[]>();
 const secretsFor = (config: AiConfig): string[] => secretsOf.get(config) ?? [];
 
-/** Exact strings that must never reach the screen or a log (the stored API key). */
+/** Exact strings that must never reach the screen or a log (every stored API key). */
 export const configSecrets = secretsFor;
 
 function guard(origin: string, inner: FetchLike): FetchLike {
@@ -105,7 +133,7 @@ function guard(origin: string, inner: FetchLike): FetchLike {
 }
 
 function httpProvider(
-  settings: AiSettings,
+  settings: AiProfileSettings,
   endpoint: Extract<AiEndpointCheck, { ok: true }>,
   apiKey: string | null,
   fetch: FetchLike,
@@ -128,15 +156,26 @@ function httpProvider(
   });
 }
 
-export async function loadAiConfig(
+interface ProfileInput {
+  id: string;
+  label: string;
+  fallback: boolean;
+  settings: AiProfileSettings;
+  keyInfo: AiKeyInfo;
+  readKey(origin: string): Promise<string | null>;
+}
+
+async function buildProfile(
+  input: ProfileInput,
+  base: AiSettings,
   flagOn: boolean,
-  env: AiEnv = defaultAiEnv(),
-): Promise<AiConfig> {
-  const settings = await getAiSettings();
-  const keyInfo = await getAiKeyInfo();
-  const budget = await getAiBudget(env.clock.now());
+  env: AiEnv,
+  secrets: string[],
+): Promise<AiProfileConfig> {
+  const { settings, keyInfo } = input;
   const endpoint = checkAiEndpoint(settings.provider, settings.baseUrl);
-  const apiKey = endpoint.ok ? await getAiApiKey(endpoint.origin) : null;
+  const apiKey = endpoint.ok ? await input.readKey(endpoint.origin) : null;
+  if (apiKey) secrets.push(apiKey);
   const needsKey = settings.provider === 'anthropic' || !(endpoint.ok && endpoint.loopback);
   const state: KeyState = apiKey
     ? 'present'
@@ -154,12 +193,18 @@ export async function loadAiConfig(
   else {
     const fetch = guard(endpoint.origin, env.fetch);
     provider = env.createProvider
-      ? env.createProvider({ settings, apiKey, fetch })
+      ? env.createProvider({
+          settings: { ...base, ...settings },
+          apiKey,
+          fetch,
+          profileId: input.id,
+        })
       : httpProvider(settings, endpoint, apiKey, fetch);
   }
-
-  const config: AiConfig = {
-    flagOn,
+  return {
+    id: input.id,
+    label: input.label,
+    fallback: input.fallback,
     settings,
     endpoint,
     key: {
@@ -169,24 +214,134 @@ export async function loadAiConfig(
     },
     provider,
     problem,
-    budget,
   };
-  if (apiKey) secretsOf.set(config, [apiKey]);
+}
+
+export async function loadAiConfig(
+  flagOn: boolean,
+  env: AiEnv = defaultAiEnv(),
+): Promise<AiConfig> {
+  const settings = await getAiSettings();
+  const budget = await getAiBudget(env.clock.now());
+  const secrets: string[] = [];
+  const primary = await buildProfile(
+    {
+      id: PRIMARY_PROFILE_ID,
+      label: 'Primary provider',
+      fallback: true,
+      settings,
+      keyInfo: await getAiKeyInfo(),
+      readKey: getAiApiKey,
+    },
+    settings,
+    flagOn,
+    env,
+    secrets,
+  );
+  const infos = settings.fallbacks.length > 0 ? await getAiProfileKeyInfos() : {};
+  const profiles = [primary];
+  for (const p of settings.fallbacks) {
+    profiles.push(
+      await buildProfile(
+        {
+          id: p.id,
+          label: p.label,
+          fallback: p.fallback,
+          settings: p,
+          keyInfo: infos[p.id] ?? { present: false, origin: null, last4: null },
+          readKey: (origin) => getAiProfileApiKey(p.id, origin),
+        },
+        settings,
+        flagOn,
+        env,
+        secrets,
+      ),
+    );
+  }
+  const config: AiConfig = {
+    flagOn,
+    settings,
+    endpoint: primary.endpoint,
+    key: primary.key,
+    provider: primary.provider,
+    problem: primary.problem,
+    budget,
+    profiles,
+  };
+  if (secrets.length > 0) secretsOf.set(config, secrets);
   return config;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Routing: which providers one task may use, in which order
+// ---------------------------------------------------------------------------------------------
+
+const usable = (p: AiProfileConfig): boolean =>
+  p.provider !== null && (p.key.state === 'present' || p.key.state === 'not_needed');
+
+export interface AiRoute {
+  /** Providers in the order they are tried. The first is the one the confirmation names first. */
+  targets: AiProfileConfig[];
+  /** Fallbacks that are not set up: they are left out and receive nothing. */
+  skipped: AiProfileConfig[];
+  /** The provider chosen for the task, whether or not it is set up. */
+  first: AiProfileConfig;
+}
+
+/**
+ * The route of a task kind: the provider chosen for it first (the primary one unless the settings
+ * route it elsewhere), then every other provider that is set up and allowed to be a fallback, in list
+ * order. Providers that are not set up are skipped, never guessed at.
+ */
+export function routeFor(config: AiConfig, kind: AiTaskKind): AiRoute {
+  const all = config.profiles;
+  const chosen = all.find((p) => p.id === config.settings.routes[kind]) ?? all[0]!;
+  const rest = all.filter((p) => p.id !== chosen.id && p.fallback);
+  // The first provider is kept whenever it exists: a missing key is then a reason to show next to
+  // Send, with the preview still readable, not a missing preview.
+  const targets = chosen.provider ? [chosen, ...rest.filter(usable)] : [];
+  return { targets, skipped: rest.filter((p) => !usable(p)), first: chosen };
+}
+
 /** Why a request cannot be sent right now (null = it can). Shown as the reason a button is disabled. */
-export function sendBlocker(config: AiConfig, env: AiEnv): string | null {
+export function sendBlocker(config: AiConfig, env: AiEnv, kind?: AiTaskKind): string | null {
   if (!config.flagOn) return 'AI features are turned off in the AI settings.';
-  if (config.problem) return config.problem;
-  if (config.key.state === 'missing') return 'Add your API key in the AI settings first.';
-  if (config.key.state === 'other_origin') {
-    return 'The saved API key belongs to another address. Enter the key again in the AI settings.';
+  const p = kind ? routeFor(config, kind).first : config.profiles[0]!;
+  const named = (text: string) => (p.id === PRIMARY_PROFILE_ID ? text : `${p.label}: ${text}`);
+  if (p.problem) return named(p.problem);
+  if (p.key.state === 'missing') {
+    return p.id === PRIMARY_PROFILE_ID
+      ? 'Add your API key in the AI settings first.'
+      : `Add the API key of "${p.label}" in the AI settings first.`;
   }
-  if (config.endpoint.ok && !config.endpoint.loopback && !env.online()) {
+  if (p.key.state === 'other_origin') {
+    return named(
+      'The saved API key belongs to another address. Enter the key again in the AI settings.',
+    );
+  }
+  if (p.endpoint.ok && !p.endpoint.loopback && !env.online()) {
     return 'You are offline. AI needs a connection (a model on this computer works offline).';
   }
   return null;
+}
+
+/** The text the consent preview pairs with each provider: its price list, for the cost bound. */
+const targetOf = (p: AiProfileConfig): FallbackTarget => ({
+  provider: p.provider!,
+  pricing: p.settings.pricing,
+});
+
+/** Pipeline deps for one task: the first provider and the fallbacks behind it. */
+function routedDeps(config: AiConfig, kind: AiTaskKind) {
+  const route = routeFor(config, kind);
+  const [first, ...rest] = route.targets;
+  if (!first?.provider) return null;
+  return {
+    route,
+    provider: first.provider,
+    pricing: first.settings.pricing,
+    fallbacks: rest.map(targetOf),
+  };
 }
 
 export async function previewAiTask(
@@ -197,11 +352,18 @@ export async function previewAiTask(
   edits?: RedactionEdits,
 ): Promise<AiRequestPreview> {
   if (!config.flagOn) throw new AiError('disabled');
-  if (!config.provider) throw new Error(config.problem ?? 'AI is not set up.');
+  const routed = routedDeps(config, kind);
+  if (!routed)
+    throw new Error(sendBlocker(config, env, kind) ?? config.problem ?? 'AI is not set up.');
   return buildPreview(
     kind,
     selection,
-    { provider: config.provider, sha256: env.clock.sha256, pricing: config.settings.pricing },
+    {
+      provider: routed.provider,
+      fallbacks: routed.fallbacks,
+      sha256: env.clock.sha256,
+      pricing: routed.pricing,
+    },
     edits,
   );
 }
@@ -220,7 +382,7 @@ export interface AiRunDone {
   saved: StoredAiResult;
   cacheHit: boolean;
   coalesced: boolean;
-  /** Provider calls this run made (0 = nothing was sent). */
+  /** Provider calls this run made (0 = nothing was sent), failed ones included. */
   attempts: number;
   budget: BudgetState;
 }
@@ -238,7 +400,7 @@ async function persistSpend(before: BudgetState, after: BudgetState, nowMs: numb
   return addAiSpend(delta, nowMs);
 }
 
-/** Never lets the key leave through an unexpected error type. */
+/** Never lets a key leave through an unexpected error type. */
 function clean(err: unknown, secrets: readonly string[]): unknown {
   if (isAiError(err)) return err;
   const message = err instanceof Error ? err.message : 'Something went wrong.';
@@ -247,13 +409,17 @@ function clean(err: unknown, secrets: readonly string[]): unknown {
 
 /**
  * The only place a consent token is created, and it is called only from the confirm click. Without
- * a previewed request there is nothing to bind the token to, so nothing can be sent.
+ * a previewed request there is nothing to bind the token to, so nothing can be sent. The token is
+ * checked against the route as it is NOW: a provider added or removed since the preview is a
+ * different request and is refused (`consent_mismatch`).
  */
 export async function runAiTask(config: AiConfig, env: AiEnv, args: AiRunArgs): Promise<AiRunDone> {
   const secrets = secretsFor(config);
   try {
-    if (!config.flagOn || !config.provider) throw new AiError('disabled');
-    if (config.key.state === 'missing' || config.key.state === 'other_origin') {
+    const routed = config.flagOn ? routedDeps(config, args.kind) : null;
+    if (!routed) throw new AiError('disabled');
+    const { first } = routed.route;
+    if (first.key.state === 'missing' || first.key.state === 'other_origin') {
       throw new AiError('missing_key');
     }
     if (!AiRequestPreview.safeParse(args.preview).success) throw new AiError('consent_required');
@@ -262,11 +428,12 @@ export async function runAiTask(config: AiConfig, env: AiEnv, args: AiRunArgs): 
     const before = rollover(await getAiBudget(nowMs), nowMs);
     const deps: PipelineDeps = {
       enabled: config.flagOn,
-      provider: config.provider,
+      provider: routed.provider,
+      fallbacks: routed.fallbacks,
       ...env.clock,
       cache: createAiCache(),
       coordinator: env.coordinator,
-      pricing: config.settings.pricing,
+      pricing: routed.pricing,
       secrets,
       ...(env.timeoutMs === undefined ? {} : { timeoutMs: env.timeoutMs }),
       ...(args.onProgress ? { log: args.onProgress } : {}),
@@ -310,13 +477,15 @@ export type AiConnectionTest =
 const TEST_TIMEOUT_MS = 20_000;
 
 /**
- * One minimal request with a fixed message that contains no study content. Counted in the ledger
- * and subject to the daily limits, like any other request. Returns the real result or error.
+ * One minimal request with a fixed message that contains no study content, to ONE provider
+ * (`profileId`, the primary one by default). Counted in the ledger and subject to the daily limits,
+ * like any other request. Returns the real result or error.
  */
 export async function testAiConnection(
   config: AiConfig,
   env: AiEnv,
   signal?: AbortSignal,
+  profileId: string = PRIMARY_PROFILE_ID,
 ): Promise<AiConnectionTest> {
   const secrets = secretsFor(config);
   const timer = new AbortController();
@@ -324,13 +493,15 @@ export async function testAiConnection(
   const onAbort = () => timer.abort();
   signal?.addEventListener('abort', onAbort, { once: true });
   try {
-    if (!config.flagOn || !config.provider) throw new AiError('disabled');
-    if (config.key.state === 'missing' || config.key.state === 'other_origin') {
+    const profile = config.profiles.find((p) => p.id === profileId);
+    if (!config.flagOn || !profile?.provider) throw new AiError('disabled');
+    if (profile.key.state === 'missing' || profile.key.state === 'other_origin') {
       throw new AiError('missing_key');
     }
     const nowMs = env.clock.now();
     const before = rollover(await getAiBudget(nowMs), nowMs);
-    const { pricing, limits } = config.settings;
+    const { pricing } = profile.settings;
+    const { limits } = config.settings;
     const estimate = pricing
       ? (40 * pricing.inputUsdPerMTok + 16 * pricing.outputUsdPerMTok) / 1e6
       : null;
@@ -342,7 +513,7 @@ export async function testAiConnection(
     const started = env.clock.now();
     let completion;
     try {
-      completion = await config.provider.complete(
+      completion = await profile.provider.complete(
         {
           messages: [{ role: 'user', content: 'Reply with the single word: OK' }],
           maxOutputTokens: 16,

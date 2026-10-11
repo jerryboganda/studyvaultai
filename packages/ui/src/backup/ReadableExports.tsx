@@ -4,6 +4,7 @@ import {
   buildHighlightViews,
   exportAnki,
   exportHighlightsCsv,
+  exportHighlightsJson,
   exportMarkdown,
   safeFilename,
   zipFiles,
@@ -18,7 +19,7 @@ import { explainBackupError } from './explain';
 import { fileStamp } from './format';
 import { BACKUP_TITLE } from './scope';
 
-type Format = 'markdown' | 'csv' | 'anki';
+type Format = 'markdown' | 'csv' | 'anki' | 'json';
 type Layout = 'per-bank' | 'per-folder' | 'single';
 
 interface Prepared {
@@ -35,10 +36,11 @@ const FORMAT_HELP: Record<Format, string> = {
     'Notes you can read anywhere, each quote followed by its source. Works with Obsidian, Logseq and plain editors.',
   csv: 'One row per highlight and bank, for spreadsheets and your own scripts.',
   anki: 'A text file Anki can import, built from your flashcards.',
+  json: 'One JSON file for scripts and other tools: every highlight with its quote, source, notes, tags and banks. StudyVault does not import it back; to move your study data use the backup file.',
 };
 
 /**
- * Human-readable exports (Markdown / CSV / Anki) of everything or of chosen banks. The result is
+ * Human-readable exports (Markdown / CSV / Anki / JSON) of everything or of chosen banks. The result is
  * shown first, including the exact field mapping for Anki, and only then downloaded.
  */
 export function ReadableExports({ deps }: { deps: BackupDeps }) {
@@ -126,6 +128,21 @@ export function ReadableExports({ deps }: { deps: BackupDeps }) {
             'A highlight filed in two banks has two rows. Cells that a spreadsheet would run as a formula start with an apostrophe.',
           ],
         });
+      } else if (format === 'json') {
+        const name = `studyvault-highlights-${stamp}.json`;
+        setPrepared({
+          file: {
+            name,
+            data: exportHighlightsJson(data),
+            mime: 'application/json;charset=utf-8',
+          },
+          highlights,
+          fileNames: [name],
+          anki: null,
+          notes: [
+            'One entry per highlight, with every bank it is filed in. Notes, tags and custom fields are included; deleted items are not.',
+          ],
+        });
       } else {
         const anki = exportAnki(data, { format: 'tsv', sourcePlacement: placement });
         setPrepared({
@@ -149,7 +166,7 @@ export function ReadableExports({ deps }: { deps: BackupDeps }) {
 
   return (
     <div className="sv-stack" data-testid="backup-readable">
-      <h3>Export to Markdown, CSV or Anki</h3>
+      <h3>Export to Markdown, CSV, Anki or JSON</h3>
       <p>
         Readable copies for other tools. They are for reading and sharing, not for restoring: to
         move your study data use “{BACKUP_TITLE}”.
@@ -209,7 +226,7 @@ export function ReadableExports({ deps }: { deps: BackupDeps }) {
 
       <fieldset className="bk-fieldset">
         <legend className="sv-label">Format</legend>
-        {(['markdown', 'csv', 'anki'] as const).map((f) => (
+        {(['markdown', 'csv', 'anki', 'json'] as const).map((f) => (
           <div className="sv-check" key={f}>
             <input
               id={`bk-format-${f}`}
@@ -229,7 +246,9 @@ export function ReadableExports({ deps }: { deps: BackupDeps }) {
                   ? 'Markdown'
                   : f === 'csv'
                     ? 'CSV (spreadsheet)'
-                    : 'Anki import file'}
+                    : f === 'anki'
+                      ? 'Anki import file'
+                      : 'JSON (for scripts)'}
               </label>
               <p id={`bk-format-${f}-hint`} className="sv-small sv-muted">
                 {FORMAT_HELP[f]}

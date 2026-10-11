@@ -40,6 +40,11 @@ function setup(
       return result;
     }),
     openSidePanel: vi.fn(async (_windowId: number) => undefined),
+    isDashboardUrl: vi.fn(
+      (url: string | undefined) =>
+        url?.startsWith('chrome-extension://abc/dashboard.html') ?? false,
+    ),
+    requestSearchFocus: vi.fn(async (_target: 'panel' | 'dashboard') => undefined),
     showBadge: vi.fn(async (tabId: number, badge: Badge) => {
       shown.push({ tabId, badge });
     }),
@@ -281,6 +286,64 @@ describe('open-side-panel command', () => {
   });
 });
 
+describe('focus-search command', () => {
+  it('opens the side panel from the gesture, then asks it to focus its search box', async () => {
+    const t = setup();
+    const order: string[] = [];
+    t.deps.openSidePanel.mockImplementationOnce(async () => {
+      order.push('open');
+    });
+    t.deps.requestSearchFocus.mockImplementationOnce(async (target) => {
+      order.push(`request:${target}`);
+    });
+    const pending = t.commands.onCommand('focus-search', {
+      id: 1,
+      windowId: 9,
+      url: 'https://example.org/page',
+    });
+    expect(t.deps.openSidePanel).toHaveBeenCalledWith(9); // before any await resolved
+    await pending;
+    expect(order).toEqual(['open', 'request:panel']);
+    expect(t.shown).toEqual([]);
+  });
+
+  it('asks the dashboard itself when the dashboard is the page in front, and opens no panel', async () => {
+    const t = setup();
+    await t.commands.onCommand('focus-search', {
+      id: 2,
+      windowId: 9,
+      url: 'chrome-extension://abc/dashboard.html?bank=b1',
+    });
+    expect(t.deps.requestSearchFocus).toHaveBeenCalledWith('dashboard');
+    expect(t.deps.openSidePanel).not.toHaveBeenCalled();
+    expect(t.deps.activate).not.toHaveBeenCalled(); // no content script involved
+  });
+
+  it('does not ask for focus when the panel could not be opened, and says so on the badge', async () => {
+    const t = setup();
+    t.deps.openSidePanel.mockRejectedValueOnce(
+      new Error('may only be called in response to a user gesture'),
+    );
+    await t.commands.onCommand('focus-search', { id: 3, windowId: 9, url: 'https://example.org/' });
+    expect(t.deps.requestSearchFocus).not.toHaveBeenCalled();
+    expect(t.shown[0]).toMatchObject({ tabId: 3, badge: { text: '!', tone: 'error' } });
+  });
+
+  it('reports a failed hand-over instead of dropping it', async () => {
+    const t = setup();
+    t.deps.requestSearchFocus.mockRejectedValueOnce(new Error('session storage is not available'));
+    await t.commands.onCommand('focus-search', { id: 4, windowId: 9, url: 'https://example.org/' });
+    expect(t.shown[0]?.badge.title).toContain('session storage is not available');
+  });
+
+  it('does nothing without a window (and never opens a panel for it)', async () => {
+    const t = setup();
+    await t.commands.onCommand('focus-search', { id: 5, url: 'https://example.org/' });
+    expect(t.deps.openSidePanel).not.toHaveBeenCalled();
+    expect(t.deps.requestSearchFocus).not.toHaveBeenCalled();
+  });
+});
+
 describe('installContextMenu', () => {
   it('removes existing items first, then creates the selection item (idempotent)', async () => {
     const log: string[] = [];
@@ -321,5 +384,18 @@ describe('badge port (fakeBrowser.action)', () => {
     await vi.advanceTimersByTimeAsync(3000);
     expect(await fakeBrowser.action.getBadgeText({ tabId: 5 })).toBe('');
     expect(await fakeBrowser.action.getTitle({ tabId: 5 })).toBe('StudyVault AI');
+  });
+
+  it('puts back the toolbar count of the reminders feature, not a blank, on that tab', async () => {
+    // The global badge is what every other tab shows (docs/adr/019-reminders.md).
+    await fakeBrowser.action.setBadgeText({ text: '12' });
+    await fakeBrowser.action.setTitle({ title: 'StudyVault AI: 12 cards due' });
+    const show = createBadgePort('StudyVault AI');
+    await show(5, { text: '✓', title: 'StudyVault: saved to "Inbox".', tone: 'success' });
+    expect(await fakeBrowser.action.getBadgeText({ tabId: 5 })).toBe('✓');
+
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(await fakeBrowser.action.getBadgeText({ tabId: 5 })).toBe('12');
+    expect(await fakeBrowser.action.getTitle({ tabId: 5 })).toBe('StudyVault AI: 12 cards due');
   });
 });

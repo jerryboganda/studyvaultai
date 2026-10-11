@@ -27,6 +27,11 @@ export interface AiProvider {
   /** Stable, key-free identifier recorded on results (e.g. `openai-compatible:api.openai.com`). */
   readonly id: string;
   readonly model: string;
+  /**
+   * The exact origin requests go to (scheme, host, port), for adapters that know it. The consent
+   * hash includes it, so an address changed after the preview is not what was confirmed.
+   */
+  readonly origin?: string;
   complete(req: AiCompletionRequest, opts: { signal?: AbortSignal }): Promise<AiCompletion>;
 }
 
@@ -196,6 +201,7 @@ export function createOpenAICompatibleProvider(cfg: OpenAICompatibleConfig): AiP
   return {
     id: `openai-compatible:${base.host}`,
     model: cfg.model,
+    origin: base.origin,
     async complete(req, { signal }) {
       if (!key && !keyless) throw new AiError('missing_key');
       const body = {
@@ -266,6 +272,7 @@ export function createAnthropicProvider(cfg: AnthropicConfig): AiProvider {
   return {
     id: `anthropic:${base.host}`,
     model: cfg.model,
+    origin: base.origin,
     async complete(req, { signal }) {
       if (!key) throw new AiError('missing_key');
       const system = req.messages

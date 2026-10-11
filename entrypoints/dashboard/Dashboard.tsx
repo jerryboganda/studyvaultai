@@ -1,4 +1,6 @@
 import {
+  Suspense,
+  lazy,
   useCallback,
   useEffect,
   useMemo,
@@ -18,14 +20,25 @@ import {
   errorMessage,
   useApplyTheme,
   useFocusRescue,
+  useSearchFocusRequest,
   useSettings,
   useToast,
 } from '@ui';
-import { CommandPalette, Modal, type Command } from '@ui/vault';
+import { BackupReminder } from '@ui/backup/BackupReminder';
+import type { RelationRef } from '@storage';
+import {
+  CommandPalette,
+  Modal,
+  type Command,
+  type LinkSearchPort,
+  type RelatedPort,
+  type TopicLibraryTarget,
+} from '@ui/vault';
 import { ApiProvider, realApi, useApi, type DashboardApi } from './api';
 import { BankPane, type BankPaneHandle } from './BankPane';
 import { DuplicatesView } from './DuplicatesView';
-import { parseDeepLink } from './deepLink';
+import { ChatEntry } from './ChatEntry';
+import { parseDeepLink, parseSyllabusLink, parseViewLink } from './deepLink';
 import {
   ALL_SCOPE,
   EMPTY_FILTERS,
@@ -54,14 +67,29 @@ import { StoragePanel } from './StoragePanel';
 import { EMPTY_TREE_DATA, TreeDataContext, loadTreeData, type TreeData } from './treeData';
 import { TrashView } from './TrashView';
 
-type View = 'library' | 'duplicates' | 'trash' | 'storage';
+type View =
+  'library' | 'duplicates' | 'trash' | 'storage' | 'chat' | 'graph' | 'syllabus' | 'rules';
 
 const VIEW_LABELS: Record<View, string> = {
   library: 'All highlights',
   duplicates: 'Duplicate quotes',
   trash: 'Trash',
   storage: 'Storage',
+  chat: 'Chat with your notes',
+  graph: 'Knowledge graph',
+  syllabus: 'Syllabus',
+  rules: 'Filing rules',
 };
+
+// The graph and its layout are not carried until the view is opened (ADR-018).
+const GraphView = lazy(() => import('./GraphView'));
+// The syllabus editor and its outline reader load with the view (ADR-020).
+const SyllabusView = lazy(() =>
+  import('./SyllabusView').then((m) => ({ default: m.SyllabusView })),
+);
+
+// The filing-rules manager is carried when the view is opened (ADR-017).
+const RulesView = lazy(() => import('./RulesView').then((m) => ({ default: m.RulesView })));
 
 /** Where focus goes when a toast that held it closes: the main pane, never <body>. */
 const mainPane = () => document.getElementById('dash-center');
@@ -126,7 +154,7 @@ function Workspace() {
   }, [contrast]);
 
   // --- navigation state ---------------------------------------------------------------------
-  const [view, setView] = useState<View>('library');
+  const [view, setView] = useState<View>(() => parseViewLink(window.location.search) ?? 'library');
   const [scope, setScope] = useState<Scope>(
     link.bank ? { bankId: link.bank, folderId: null } : ALL_SCOPE,
   );
@@ -138,6 +166,8 @@ function Workspace() {
   const [palette, setPalette] = useState(false);
   const [legend, setLegend] = useState(false);
   const [duplicateFocus, setDuplicateFocus] = useState<string | null>(null);
+  // The item the graph is drawn around: undefined follows the preview, null is the overview.
+  const [graphCentre, setGraphCentre] = useState<RelationRef | null | undefined>(undefined);
   const searchText = useDebounced(text, 180);
 
   // --- vault data ---------------------------------------------------------------------------
@@ -152,6 +182,25 @@ function Workspace() {
   }, [host]);
   const subscribe = useMemo(() => (cb: () => void) => host.subscribe(cb), [host]);
   const hostState = useSyncExternalStore(subscribe, () => host.state);
+  // The Related section of the preview asks this index; `hostState` is a new object on every build
+  // and catch-up, which is also when `host.revision` moves.
+  const related = useMemo<RelatedPort>(
+    () => ({
+      state: hostState,
+      revision: host.revision,
+      find: (id, options) => host.related(id, options),
+    }),
+    [host, hostState],
+  );
+  // The picker of the Links section finds items in the same index.
+  const linkSearch = useMemo<LinkSearchPort>(
+    () => ({
+      state: hostState,
+      revision: host.revision,
+      search: (query, options) => host.search(query, options),
+    }),
+    [host, hostState],
+  );
   useEffect(() => {
     host.reconcileSoon();
   }, [host, dataVersion]);
@@ -212,6 +261,27 @@ function Workspace() {
     lib.activeKey !== null &&
     lib.rows.find((r) => rowId(r) === lib.activeKey)?.highlightId === null;
   const previewId = useDebounced(shown, 90);
+  const graphFocus: RelationRef | null =
+    graphCentre === undefined
+      ? shown === null
+        ? null
+        : { kind: 'highlight', id: shown }
+      : graphCentre;
+  const linksPort = api.links;
+  const links = useMemo(
+    () =>
+      linksPort
+        ? {
+            port: linksPort,
+            search: linkSearch,
+            onShowGraph: (item: RelationRef) => {
+              setGraphCentre(item);
+              setView('graph');
+            },
+          }
+        : undefined,
+    [linksPort, linkSearch],
+  );
 
   // --- focus management ---------------------------------------------------------------------
   const searchRef = useRef<HTMLInputElement>(null);
@@ -241,6 +311,9 @@ function Workspace() {
     else if (pane === 'list') listRef.current?.focus();
     else previewRef.current?.focus();
   }, []);
+
+  // The manifest command "focus-search", run while this page is the one in front.
+  useSearchFocusRequest('dashboard', () => focusPane('search'));
 
   const cyclePane = useCallback(
     (direction: 1 | -1) => {
@@ -299,6 +372,25 @@ function Workspace() {
     setTreeOpen(false);
   }, []);
 
+  // A syllabus topic leads to the list of what it is made of: one bank, or a search that matches
+  // any of its banks and tags (shown in the search box, so it can be read and changed).
+  const syllabusLink = useMemo(() => parseSyllabusLink(window.location.search), []);
+  const showTopic = useCallback(
+    (target: Exclude<TopicLibraryTarget, { kind: 'none' }>) => {
+      setFilters(EMPTY_FILTERS);
+      if (target.kind === 'bank') {
+        setText('');
+        goLibrary({ bankId: target.bankId, folderId: null });
+      } else {
+        setScope(ALL_SCOPE);
+        setText(target.q);
+        setView('library');
+        setTreeOpen(false);
+      }
+    },
+    [goLibrary],
+  );
+
   const showHighlight = useCallback(
     (id: string) => {
       setView('library');
@@ -333,6 +425,37 @@ function Workspace() {
         run: () => setView('duplicates'),
       },
       { id: 'view-trash', label: 'Show the trash', group: 'Go to', run: () => setView('trash') },
+      {
+        id: 'view-graph',
+        label: 'Show the knowledge graph',
+        group: 'Go to',
+        keywords: 'links connections relations map',
+        run: () => {
+          setGraphCentre(undefined);
+          setView('graph');
+        },
+      },
+      {
+        id: 'view-syllabus',
+        label: 'Show the syllabus editor',
+        group: 'Go to',
+        keywords: 'exam coverage outline topics',
+        run: () => setView('syllabus'),
+      },
+      {
+        id: 'view-rules',
+        label: 'Show the filing rules',
+        group: 'Go to',
+        keywords: 'auto file automatic smart rules suggestions',
+        run: () => setView('rules'),
+      },
+      {
+        id: 'view-chat',
+        label: 'Chat with your notes (AI)',
+        group: 'Go to',
+        keywords: 'ask question ai assistant',
+        run: () => setView('chat'),
+      },
       {
         id: 'view-storage',
         label: 'Show storage usage',
@@ -652,6 +775,56 @@ function Workspace() {
         return <TrashView />;
       case 'storage':
         return <StoragePanel hostState={hostState} onRebuildIndex={() => void host.rebuild()} />;
+      case 'graph':
+        return (
+          <Suspense
+            fallback={
+              <p className="sv-muted dash-loading" role="status">
+                Opening the graph…
+              </p>
+            }
+          >
+            <GraphView
+              centre={graphFocus}
+              onCentre={setGraphCentre}
+              onShow={showHighlight}
+              onBack={() => goLibrary()}
+            />
+          </Suspense>
+        );
+      case 'syllabus':
+        return (
+          <Suspense
+            fallback={
+              <p className="sv-muted dash-loading" role="status">
+                Opening the syllabus…
+              </p>
+            }
+          >
+            <SyllabusView initialId={syllabusLink} onShowTopic={showTopic} />
+          </Suspense>
+        );
+      case 'rules':
+        return (
+          <Suspense
+            fallback={
+              <p className="sv-muted dash-loading" role="status">
+                Opening the filing rules…
+              </p>
+            }
+          >
+            <RulesView />
+          </Suspense>
+        );
+      case 'chat':
+        return (
+          <ChatEntry
+            index={host.index}
+            scope={scope}
+            names={{ bank: names.bank, folder: names.folder }}
+            tags={treeData.tags.map((t) => ({ id: t.tag.id, name: t.tag.name }))}
+          />
+        );
       default:
         return (
           <LibraryView
@@ -757,6 +930,7 @@ function Workspace() {
                   onClick={() => {
                     if (v === 'library') goLibrary(ALL_SCOPE);
                     else {
+                      if (v === 'graph') setGraphCentre(undefined);
                       setView(v);
                       setTreeOpen(false); // the panel would otherwise stay over the view just chosen
                     }
@@ -815,6 +989,7 @@ function Workspace() {
         </nav>
 
         <main id="dash-center" className="dash-center" tabIndex={-1} aria-label={VIEW_LABELS[view]}>
+          <BackupReminder />
           {center()}
         </main>
 
@@ -868,6 +1043,8 @@ function Workspace() {
                 lib.setActiveKey(null);
                 bump();
               }}
+              related={related}
+              links={links}
             />
           )}
         </aside>

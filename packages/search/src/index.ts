@@ -22,6 +22,8 @@ export type {
   UpsertStatus,
 } from './searchIndex';
 
+export type { RelatedHit, RelatedOptions, RelatedResult } from './related';
+
 export { parseQuery, QUERY_SYNTAX, MAX_QUERY_LENGTH, MAX_QUERY_TERMS } from './query';
 export type {
   Comparator,

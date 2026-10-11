@@ -1,3 +1,4 @@
+export { AsyncSwitch, type AsyncSwitchProps } from './AsyncSwitch';
 export { Button, type ButtonProps } from './Button';
 export { Badge, KindChip, ResolveBadge, type Tone } from './Badge';
 export { ConfirmDialog } from './ConfirmDialog';
@@ -6,7 +7,7 @@ export { useFocusRescue } from './focus';
 export { Kbd, ShortcutHints } from './Kbd';
 export { EmptyState, InlineNotice } from './Notice';
 export { Tabs, type TabDef } from './Tabs';
-export { ToastProvider, useToast, type ToastInput } from './Toast';
+export { ToastProvider, readKeepToasts, useToast, writeKeepToasts, type ToastInput } from './Toast';
 export {
   useActiveTab,
   useAction,
@@ -15,6 +16,7 @@ export {
   useDataEpoch,
   useLatest,
   useObserved,
+  useSearchFocusRequest,
   useSettings,
   useShortcuts,
   type ActiveTab,

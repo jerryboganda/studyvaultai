@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { useId, useState } from 'react';
 import {
   COLOR_IDS,
   COLOR_SWATCH,
@@ -9,7 +9,8 @@ import {
   type Settings,
 } from '@shared';
 import { KIND_DECORATION } from '@highlights';
-import { Button, InlineNotice, useAction } from '@ui';
+import { AsyncSwitch, Button, InlineNotice, readKeepToasts, useAction, writeKeepToasts } from '@ui';
+import { openDashboard } from '@ui/vault/dashboardLink';
 
 /** Persists one settings change (`useSettings().update`); rejects with the real reason. */
 export type Update = (mutate: (s: Settings) => Settings) => Promise<unknown>;
@@ -68,10 +69,15 @@ export function useWriter(update: Update) {
       {save.error}
     </InlineNotice>
   ) : null;
-  return { write: (mutate: (s: Settings) => Settings) => void save.run(mutate), error };
+  /** Resolves when the write settled (it never rejects: a failure is `error`). */
+  return { write: (mutate: (s: Settings) => Settings) => save.run(mutate), error };
 }
 
-/** Checkbox whose explanation is its accessible description, not part of its name. */
+/**
+ * Checkbox whose explanation is its accessible description, not part of its name. A returned
+ * promise makes it a pending switch (`AsyncSwitch`): shown as chosen, busy and "Saving…" until the
+ * write settles, rolled back by the stored value if it failed.
+ */
 export function Toggle({
   label,
   hint,
@@ -81,26 +87,9 @@ export function Toggle({
   label: string;
   hint: string;
   checked: boolean;
-  onChange(next: boolean): void;
+  onChange(next: boolean): Promise<unknown> | void;
 }) {
-  const id = useId();
-  return (
-    <div className="sv-check">
-      <input
-        id={id}
-        type="checkbox"
-        checked={checked}
-        aria-describedby={`${id}-hint`}
-        onChange={(e) => onChange(e.target.checked)}
-      />
-      <div>
-        <label htmlFor={id}>{label}</label>
-        <p id={`${id}-hint`} className="sv-muted sv-small">
-          {hint}
-        </p>
-      </div>
-    </div>
-  );
+  return <AsyncSwitch label={label} hint={hint} checked={checked} onChange={onChange} />;
 }
 
 export function Appearance({ settings, update }: { settings: Settings; update: Update }) {
@@ -108,6 +97,8 @@ export function Appearance({ settings, update }: { settings: Settings; update: U
   const { write, error } = useWriter(update);
   const strong = settings.highlightStyle === 'strong';
   const painted = settings.paintHighlights;
+  // Per viewer, in this browser profile: not a StudyVault setting, so it is not written through `update`.
+  const [keepToasts, setKeepToasts] = useState(readKeepToasts);
   return (
     <section className="sv-stack" aria-labelledby={`${uid}-h`}>
       <h2 id={`${uid}-h`}>Appearance</h2>
@@ -288,6 +279,19 @@ export function Appearance({ settings, update }: { settings: Settings; update: U
           </p>
         </div>
       </div>
+
+      <div className="sv-stack">
+        <h3>Notifications</h3>
+        <Toggle
+          label="Keep notifications on screen until I close them"
+          hint="Messages such as “Highlight deleted” with an Undo close by themselves after a few seconds, and wait while the pointer is over them or focus is inside them. Turn this on to keep every one until you press Dismiss, or Escape while it has focus or the pointer. Error messages always stay until you close them. Saved in this browser only."
+          checked={keepToasts}
+          onChange={(next) => {
+            writeKeepToasts(next);
+            setKeepToasts(next);
+          }}
+        />
+      </div>
       {error}
     </section>
   );
@@ -296,6 +300,7 @@ export function Appearance({ settings, update }: { settings: Settings; update: U
 export function Capture({ settings, update }: { settings: Settings; update: Update }) {
   const uid = useId();
   const { write, error } = useWriter(update);
+  const openRules = useAction(() => openDashboard({ view: 'rules' }));
   return (
     <section className="sv-stack" aria-labelledby={`${uid}-h`}>
       <h2 id={`${uid}-h`}>Capture</h2>
@@ -317,6 +322,25 @@ export function Capture({ settings, update }: { settings: Settings; update: Upda
         checked={settings.features.pdfReader}
         onChange={(pdfReader) => write((s) => ({ ...s, features: { ...s.features, pdfReader } }))}
       />
+      <Toggle
+        label="Use filing rules"
+        hint="When a new highlight matches one of your filing rules, StudyVault suggests filing it in the bank the rule names, or files it for you if the rule says so, with Undo. Turn this off to keep your rules without applying them. A bank you pick yourself in the toolbar is never overridden, and imports and restores are never filed."
+        checked={settings.useFilingRules}
+        onChange={(useFilingRules) => write((s) => ({ ...s, useFilingRules }))}
+      />
+      <div className="sv-row">
+        <Button busy={openRules.busy} onClick={() => void openRules.run()}>
+          Manage filing rules
+        </Button>
+        <span className="sv-muted sv-small">
+          Opens the dashboard on the rules and a test panel.
+        </span>
+      </div>
+      {openRules.error ? (
+        <InlineNotice tone="error" title="Could not open the dashboard">
+          {openRules.error}
+        </InlineNotice>
+      ) : null}
       {error}
     </section>
   );

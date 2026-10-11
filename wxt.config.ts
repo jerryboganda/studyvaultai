@@ -52,7 +52,8 @@ export default defineConfig({
         suggested_key: { default: 'Alt+Shift+H' },
         description: 'Quick-save the current selection',
       },
-      // Chrome allows at most four suggested keys; previous-highlight is user-assignable.
+      // Chrome allows at most four suggested keys; previous-highlight and focus-search are
+      // user-assignable only (no `suggested_key`), so a fifth or sixth suggestion is not made.
       // [ and ] are not valid manifest keys, so the in-page Alt+Shift+] / [ stay as extra routes.
       'focus-toolbar': {
         suggested_key: { default: 'Alt+Shift+Y' },
@@ -64,6 +65,9 @@ export default defineConfig({
       },
       'previous-highlight': {
         description: 'Go to the previous highlight on the page',
+      },
+      'focus-search': {
+        description: 'Search your highlights: open the side panel on the search box',
       },
     },
     // Defence in depth. Local features (capture, banks, search, review, backup, OCR) make no network

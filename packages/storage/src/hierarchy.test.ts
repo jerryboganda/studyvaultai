@@ -99,7 +99,7 @@ describe('folders', () => {
       createFolder({ bankId: bank.id, name: 'too deep', parentFolderId: ids.at(-1)! }),
     ).rejects.toMatchObject({
       code: 'invalid_request',
-      message: expect.stringMatching(/at most 8/),
+      message: `Folders can be nested at most ${MAX_FOLDER_DEPTH} levels deep.`,
     });
     expect(await getDb().folders.count()).toBe(MAX_FOLDER_DEPTH);
   });
@@ -166,7 +166,7 @@ describe('folders', () => {
       await createFolder({ bankId: bank.id, name: 'Subtree child', parentFolderId: sub.id });
       await expect(moveFolder({ id: sub.id, parentFolderId: deep.at(-1)! })).rejects.toMatchObject({
         code: 'invalid_request',
-        message: expect.stringMatching(/at most 8/),
+        message: `Folders can be nested at most ${MAX_FOLDER_DEPTH} levels deep.`,
       });
       // A leaf fits at exactly the maximum depth.
       const leaf = await createFolder({ bankId: bank.id, name: 'Leaf' });

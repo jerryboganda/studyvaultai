@@ -8,6 +8,7 @@ const ROOT = join(__dirname, '..', '..', '..');
 /** `sv.`-prefixed names that are not `localStorage` keys, with where they really live. */
 const NOT_LOCAL_STORAGE: Record<string, string> = {
   'sv.pendingFocus': 'chrome.storage.session (PENDING_FOCUS_KEY, packages/shared)',
+  'sv.pendingSearch': 'chrome.storage.session (PENDING_SEARCH_KEY, packages/shared)',
 };
 
 function sources(dir: string): string[] {

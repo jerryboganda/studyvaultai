@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { INBOX_BANK_ID } from '@shared';
+import { INBOX_BANK_ID, MAX_FOLDER_DEPTH } from '@shared';
 import type { BankInfo, FolderNode } from '@storage';
 import {
   buildTree,
@@ -181,8 +181,9 @@ describe('planMove (keyboard alternative to drag and drop)', () => {
   });
 
   it('refuses an indent that would pass the depth limit', () => {
-    let deep: FolderNode = node('d8', 'bio-bank', 'Level 8', 0, 8);
-    for (let depth = 7; depth >= 1; depth--) {
+    const top = MAX_FOLDER_DEPTH;
+    let deep: FolderNode = node(`d${top}`, 'bio-bank', `Level ${top}`, 0, top);
+    for (let depth = top - 1; depth >= 1; depth--) {
       deep = node(`d${depth}`, 'bio-bank', `Level ${depth}`, 0, depth, [deep]);
     }
     const tall: TreeData = {
@@ -190,10 +191,10 @@ describe('planMove (keyboard alternative to drag and drop)', () => {
       folders: { ...data.folders, 'bio-bank': [node('x', 'bio-bank', 'Sibling', 0, 1), deep] },
     };
     const built2 = buildTree(tall);
-    // "d1" (height 8) sits below "x"; indenting it under x would make the chain 9 deep.
+    // "d1" (height = the limit) sits below "x"; indenting it under x would pass the limit by one.
     expect(planMove(tall, built2.meta.get(folderNodeId('d1'))!, 'indent')).toMatchObject({
       ok: false,
-      reason: expect.stringContaining('8 levels'),
+      reason: expect.stringContaining(`${MAX_FOLDER_DEPTH} levels`),
     });
   });
 

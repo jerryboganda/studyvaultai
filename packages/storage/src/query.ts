@@ -16,6 +16,7 @@ import {
 } from '@shared';
 import {
   cmp,
+  FOLDER_PATH_DEPTH,
   inChunks,
   keysWhereIn,
   rowsWhereIn,
@@ -422,7 +423,7 @@ export async function toDashboardItems(
   const pathOf = (folderId: string | null): FolderRef[] => {
     const out: FolderRef[] = [];
     let cursor = folderId;
-    for (let i = 0; cursor !== null && i < 16; i++) {
+    for (let i = 0; cursor !== null && i < FOLDER_PATH_DEPTH; i++) {
       const f = folders.get(cursor);
       if (!f) break;
       out.unshift({ id: f.id, name: f.name });

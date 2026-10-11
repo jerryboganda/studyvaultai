@@ -10,6 +10,7 @@ import {
   type VaultApi,
 } from '@storage';
 import type { BankLite, HighlightPatch, HighlightView } from '@shared';
+import { storageLinks, type LinksPort } from '@ui/vault/Links';
 import type { MetaPort } from '@ui/vault/meta';
 
 /**
@@ -72,6 +73,8 @@ export interface DashboardApi extends Pick<
   softDeleteHighlight(id: string): Promise<void>;
   restoreHighlight(id: string): Promise<HighlightView>;
   meta: MetaPort;
+  /** Links between items (ADR-018). Without it the preview has no Links section. */
+  links?: LinksPort;
 }
 
 const meta: MetaPort = {
@@ -101,6 +104,7 @@ export const realApi: DashboardApi = {
   softDeleteHighlight,
   restoreHighlight,
   meta,
+  links: storageLinks,
 };
 
 export type { MetaPort };

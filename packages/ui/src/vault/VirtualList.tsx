@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type KeyboardEvent,
@@ -17,6 +18,11 @@ export interface VirtualListProps {
   count: number;
   /** Total rows the user can reach (more may still be loading); announced as aria-setsize. */
   setSize?: number;
+  /**
+   * The row height in px: a minimum. Rows are windowed at one height, so when a row's content needs
+   * more (a user stylesheet raising line, paragraph or letter spacing, WCAG 1.4.12) every row grows
+   * to the tallest content measured so far instead of clipping it.
+   */
   rowHeight: number;
   rowKey(index: number): string;
   renderRow(index: number): ReactNode;
@@ -48,12 +54,16 @@ export interface VirtualListProps {
  * cost the same as 20. Focus stays on the listbox and moves with aria-activedescendant, which is the
  * listbox pattern for lists whose rows come and go. Rows must be non-interactive (an option cannot
  * contain controls); anything clickable belongs in the preview pane.
+ *
+ * Row content is measured (ResizeObserver on each row's content box) and the common row height is
+ * raised to the tallest content seen, so text-spacing overrides never clip a row. The measure only
+ * grows for a given `rowHeight`, which keeps the rows from jumping while scrolling.
  */
 export function VirtualList({
   label,
   count,
   setSize,
-  rowHeight,
+  rowHeight: minRowHeight,
   rowKey,
   renderRow,
   activeIndex,
@@ -79,6 +89,38 @@ export function VirtualList({
   const [measured, setMeasured] = useState(0);
   const viewportHeight = measured > 0 ? measured : fallbackViewportHeight;
 
+  // Tallest row content measured for this minimum (px, including the row's 1 px border).
+  const [grown, setGrown] = useState({ base: minRowHeight, height: 0 });
+  const rowHeight = Math.max(minRowHeight, grown.base === minRowHeight ? grown.height : 0);
+  const minRef = useRef(minRowHeight);
+  useLayoutEffect(() => {
+    minRef.current = minRowHeight;
+  });
+  const rowObserver = useRef<ResizeObserver | null>(null);
+  // Ref callback of each row's content box (React 19: the returned function is its cleanup).
+  const measureRow = useCallback((el: HTMLDivElement | null) => {
+    if (!el || typeof ResizeObserver === 'undefined') return undefined;
+    const observer = (rowObserver.current ??= new ResizeObserver((entries) => {
+      let tallest = 0;
+      for (const entry of entries) {
+        const box = entry.borderBoxSize?.[0]?.blockSize ?? entry.contentRect.height;
+        tallest = Math.max(tallest, Math.ceil(box) + 1);
+      }
+      const base = minRef.current;
+      if (tallest <= base) return;
+      setGrown((g) => (g.base === base && g.height >= tallest ? g : { base, height: tallest }));
+    }));
+    observer.observe(el);
+    return () => observer.unobserve(el);
+  }, []);
+  useEffect(
+    () => () => {
+      rowObserver.current?.disconnect();
+      rowObserver.current = null;
+    },
+    [],
+  );
+
   const setRefs = useCallback(
     (node: HTMLDivElement | null) => {
       element.current = node;
@@ -96,6 +138,19 @@ export function VirtualList({
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
+
+  // The row height changed under a scrolled list: stay on the same first row.
+  const lastRow = useRef(rowHeight);
+  useLayoutEffect(() => {
+    const el = element.current;
+    const before = lastRow.current;
+    lastRow.current = rowHeight;
+    if (!el || before === rowHeight || before <= 0) return;
+    const top = Math.round(el.scrollTop / before) * rowHeight;
+    el.scrollTop = top;
+    shownTop.current = top;
+    setScrollTop(top);
+  }, [rowHeight]);
 
   const win = computeWindow({ count, rowHeight, scrollTop, viewportHeight, overscan });
 
@@ -186,7 +241,9 @@ export function VirtualList({
         style={{ top: i * rowHeight, height: rowHeight }}
         onClick={(e) => onRowClick(i, e)}
       >
-        {renderRow(i)}
+        <div ref={measureRow} className="sv-vrow__content">
+          {renderRow(i)}
+        </div>
       </div>,
     );
   }

@@ -622,6 +622,54 @@ describe('ReadableExports', () => {
     expect(downloads[0]?.name).toMatch(/\.csv$/);
   });
 
+  it('exports JSON for scripts: the same scope choice, one entry per highlight, nothing deleted', async () => {
+    await seed();
+    await getDb().highlights.update('hl-00000005', { deletedAt: at(99) } as never);
+    const { deps, downloads } = harness();
+    render(<ReadableExports deps={deps} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('readable-format-json'));
+    // everything: five live highlights (one of six is in the trash)
+    await user.click(screen.getByTestId('readable-prepare'));
+    await screen.findByTestId('readable-result', {}, TIMEOUT);
+    expect(screen.getByTestId('readable-summary').textContent).toBe('5 highlights in 1 file.');
+    await user.click(screen.getByTestId('readable-download'));
+    expect(downloads).toHaveLength(1);
+    expect(downloads[0]?.name).toMatch(/^studyvault-highlights-\d{8}-\d{6}\.json$/);
+    expect(downloads[0]?.mime).toMatch(/^application\/json/);
+    const all = JSON.parse(String(downloads[0]?.data)) as Array<{
+      id: string;
+      quote: string;
+      deleted: boolean;
+      source: { title: string; url: string | null; type: string };
+      banks: { name: string; folder: string[] }[];
+      quoteHash: string;
+    }>;
+    expect(all.map((h) => h.id)).toEqual([
+      'hl-00000000',
+      'hl-00000001',
+      'hl-00000002',
+      'hl-00000003',
+      'hl-00000004',
+    ]);
+    expect(all[0]).toMatchObject({
+      quote: 'Quote number 0 about drug 0',
+      deleted: false,
+      source: { title: 'Aspirin', url: 'https://example.com/a', type: 'web' },
+      banks: [{ name: 'Cardiology', folder: [] }],
+    });
+    expect(all[0]?.quoteHash).toMatch(/^[0-9a-f]{64}$/);
+
+    // selected banks: only Renal's highlights
+    await user.click(screen.getByTestId('readable-scope-banks'));
+    await user.click(await screen.findByTestId('readable-bank-bank-renal'));
+    await user.click(screen.getByTestId('readable-prepare'));
+    await screen.findByTestId('readable-result', {}, TIMEOUT);
+    await user.click(screen.getByTestId('readable-download'));
+    const renal = JSON.parse(String(downloads[1]?.data)) as Array<{ id: string }>;
+    expect(renal.map((h) => h.id)).toEqual(['hl-00000001', 'hl-00000003']);
+  });
+
   it('packs several Markdown files into one zip, one per bank', async () => {
     await seed();
     const { deps, downloads } = harness();

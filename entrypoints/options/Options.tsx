@@ -11,7 +11,7 @@ import {
   useSettings,
 } from '@ui';
 import { AiSettingsSection } from '@ui/ai';
-import { BackupSection } from '@ui/backup';
+import { BackupReminder, BackupSection } from '@ui/backup';
 import { reviewPageUrl } from '@ui/review/links';
 import { SyncSection } from '@ui/sync';
 import { openOnboarding } from '@ui/shell/open';
@@ -151,6 +151,7 @@ function OptionsBody() {
             <p className="sv-muted">Loading settings…</p>
           ) : (
             <>
+              {dataReady ? <BackupReminder /> : null}
               <div id="site-access">
                 <SiteAccess settings={settings} />
               </div>

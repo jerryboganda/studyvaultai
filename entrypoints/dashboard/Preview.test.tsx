@@ -343,6 +343,36 @@ describe('Preview: notes', () => {
     expect(preview.querySelectorAll('li')).toHaveLength(1);
   });
 
+  it('previews TeX as its source and saves the body exactly as typed', async () => {
+    const body = String.raw`Rate: $v_1 * t_2$ and area
+
+$$
+A = \int_0^1 f(x)\,dx
+$$
+
+<img src=x onerror=alert(1)> costs $5 and $10`;
+    const { vault } = await open();
+    fireEvent.click(screen.getByTestId('note-add'));
+    fireEvent.change(screen.getByTestId('note-body'), { target: { value: body } });
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+
+    const preview = screen.getByTestId('note-preview');
+    const math = [...preview.querySelectorAll('code.math')];
+    expect(math.map((m) => m.className)).toEqual(['math', 'math math-display']);
+    expect(math[0]!.textContent).toBe(String.raw`$v_1 * t_2$`);
+    expect(math[1]!.textContent).toBe(String.raw`$$
+A = \int_0^1 f(x)\,dx
+$$`);
+    expect(preview.querySelector('em, img, script')).toBeNull();
+    expect(preview.textContent).toContain('costs $5 and $10');
+
+    // What is stored is the Markdown body, not the rendered text.
+    fireEvent.click(screen.getByRole('button', { name: 'Back to editing' }));
+    fireEvent.click(screen.getByTestId('note-save'));
+    await waitFor(() => expect(vault.called('createNote')).toHaveLength(1));
+    expect(vault.called('createNote')[0]!.args[0]).toMatchObject({ body });
+  });
+
   it('edits and deletes a note, with an undo for the delete', async () => {
     const { vault } = await open(undefined, (v) => {
       void v.api().createNote({ highlightId: 'hl-00000001', body: 'first draft' });

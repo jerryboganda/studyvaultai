@@ -27,6 +27,12 @@
 export interface SelectionGate {
   /** Call on every `selectionchange`. */
   notify(): void;
+  /**
+   * A keyboard command asks for the selection now instead of after the pause. Refused (false)
+   * while the primary button is held: the gate's rule about drags stands, and the release will
+   * evaluate it. True when the evaluation ran.
+   */
+  flush(): boolean;
   dispose(): void;
 }
 
@@ -133,6 +139,12 @@ export function createSelectionGate(
     notify: () => {
       if (held) armValve();
       else evaluateAfterPause();
+    },
+    flush: () => {
+      if (held) return false;
+      stopPause();
+      evaluate();
+      return true;
     },
     dispose: () => {
       stopPause();

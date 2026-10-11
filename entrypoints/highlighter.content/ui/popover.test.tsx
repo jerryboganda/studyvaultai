@@ -1,8 +1,16 @@
-import { act, createEvent, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { defaultSettings } from '@shared';
-import { cleanupUi, makeHighlight, mountUi, rect } from './testHarness';
+import {
+  act,
+  cleanupUi,
+  createEvent,
+  fireEvent,
+  makeHighlight,
+  mountUi,
+  rect,
+  within,
+} from './testHarness';
 
 const ANCHOR = rect(100, 300, 160, 20);
 

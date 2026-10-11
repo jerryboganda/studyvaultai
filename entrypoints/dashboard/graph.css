@@ -1,0 +1,195 @@
+/*
+ * Knowledge graph view (GraphView.tsx). Loaded with the view, not with the dashboard.
+ * Nothing here animates: the layout is computed once and drawn, so reduced motion needs no override.
+ * Colour is never the only cue: link types differ by dash pattern, weight and text; item kinds by
+ * shape and letter.
+ */
+.dash-graph {
+  max-width: none;
+}
+.dash-graph__bar {
+  align-items: flex-end;
+}
+.dash-graph__depth {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sv-space-3);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.dash-graph__scroll {
+  overflow: auto;
+  max-height: 70vh;
+  border: 1px solid var(--sv-border-strong);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-bg);
+}
+.dash-graph__svg {
+  display: block;
+  margin-inline: auto;
+}
+
+/* Links */
+.dash-graph__edge {
+  stroke: var(--sv-text-muted);
+  stroke-linecap: round;
+}
+.dash-graph__edge--supports {
+  stroke: var(--sv-success);
+}
+.dash-graph__edge--contradicts {
+  stroke: var(--sv-danger);
+}
+.dash-graph__edge--cause {
+  stroke: var(--sv-accent);
+}
+.dash-graph__edge--example {
+  stroke: var(--sv-text);
+}
+.dash-graph__arrow path {
+  fill: var(--sv-text-muted);
+}
+.dash-graph__arrow--supports path {
+  fill: var(--sv-success);
+}
+.dash-graph__arrow--contradicts path {
+  fill: var(--sv-danger);
+}
+.dash-graph__arrow--cause path {
+  fill: var(--sv-accent);
+}
+.dash-graph__arrow--example path {
+  fill: var(--sv-text);
+}
+.dash-graph__edgelabel {
+  fill: var(--sv-text);
+  font: 600 11px var(--sv-font);
+  paint-order: stroke;
+  stroke: var(--sv-bg);
+  stroke-width: 4px;
+}
+
+/* Items */
+.dash-graph__node {
+  outline: none;
+  cursor: pointer;
+}
+.dash-graph__shape {
+  fill: var(--sv-surface-raised);
+  stroke: var(--sv-border-strong);
+  stroke-width: 2;
+}
+.dash-graph__node[data-centre='true'] .dash-graph__shape {
+  fill: var(--sv-surface);
+  stroke: var(--sv-accent);
+  stroke-width: 4;
+}
+.dash-graph__node:focus-visible .dash-graph__shape,
+.dash-graph__node:hover .dash-graph__shape {
+  stroke: var(--sv-focus);
+  stroke-width: 5;
+}
+.dash-graph__glyph {
+  fill: var(--sv-text);
+  font: 700 14px var(--sv-font);
+  pointer-events: none;
+}
+.dash-graph__label {
+  fill: var(--sv-text);
+  font: 12px var(--sv-font);
+  paint-order: stroke;
+  stroke: var(--sv-bg);
+  stroke-width: 4px;
+  pointer-events: none;
+}
+.dash-graph__node:focus-visible .dash-graph__label {
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+/* Legend, table, overview */
+.dash-graph__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sv-space-2) var(--sv-space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.dash-graph__legend li {
+  display: flex;
+  align-items: center;
+  gap: var(--sv-space-2);
+}
+.dash-graph__legend .dash-graph__edge {
+  fill: none;
+}
+.dash-graph__tablewrap {
+  overflow-x: auto;
+}
+.dash-graph__table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.dash-graph__table th,
+.dash-graph__table td {
+  padding: var(--sv-space-2);
+  border-bottom: 1px solid var(--sv-border);
+  text-align: start;
+  vertical-align: top;
+}
+.dash-graph__table thead th {
+  color: var(--sv-text-muted);
+  font-size: var(--sv-text-sm);
+}
+.dash-graph__table tbody th {
+  font-weight: 400;
+}
+.dash-graph__links {
+  margin: 0;
+  padding-inline-start: var(--sv-space-4);
+}
+.dash-graph__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+@media (forced-colors: active) {
+  .dash-graph__scroll {
+    border-color: CanvasText;
+  }
+  .dash-graph__edge {
+    stroke: CanvasText;
+  }
+  .dash-graph__arrow path {
+    fill: CanvasText;
+  }
+  .dash-graph__shape {
+    fill: Canvas;
+    stroke: CanvasText;
+  }
+  .dash-graph__node[data-centre='true'] .dash-graph__shape {
+    stroke-width: 5;
+  }
+  .dash-graph__node:focus-visible .dash-graph__shape,
+  .dash-graph__node:hover .dash-graph__shape {
+    stroke: Highlight;
+    stroke-width: 6;
+  }
+  .dash-graph__glyph,
+  .dash-graph__label,
+  .dash-graph__edgelabel {
+    fill: CanvasText;
+    stroke: Canvas;
+  }
+  .dash-graph__table th,
+  .dash-graph__table td {
+    border-color: CanvasText;
+  }
+}

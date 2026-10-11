@@ -33,6 +33,8 @@ export {
   DB_VERSION,
   SCHEMA_V1,
   SCHEMA_V2,
+  SCHEMA_V3,
+  SCHEMA_V4,
   type StudyVaultDb,
   type MigrationContext,
   type MigrationHook,
@@ -122,6 +124,7 @@ export {
   tableRegistry,
   registerTableSchema,
   unregisteredTables,
+  relationKey,
   checkIntegrity,
   type IntegrityIssue,
   type IntegrityIssueCode,
@@ -159,8 +162,75 @@ export type {
   VaultCounts,
 } from './types';
 
+// Organisation records (schema v4, ADR-011): auto-filing rules, syllabi, relations
+export type { SaveOutcome } from './organisation';
+export {
+  checkFilingRules,
+  createFilingRule,
+  deleteFilingRule,
+  getFilingRule,
+  listApplicableFilingRules,
+  listFilingRules,
+  purgeFilingRules,
+  reorderFilingRules,
+  restoreFilingRule,
+  updateFilingRule,
+  type FilingRuleInput,
+  type FilingRulePatch,
+  type FilingRuleProblem,
+} from './rules';
+// Applying rules to a new highlight: suggestion, auto-filing and undo (ADR-017)
+export {
+  FILING_PLAN_BUDGET_MS,
+  acceptFiling,
+  dismissFiling,
+  filingAfterCapture,
+  listFilingSuggestions,
+  undoFiling,
+  type FilingCapture,
+  type FilingSessionPort,
+} from './filing';
+export {
+  checkSyllabi,
+  createSyllabus,
+  deleteSyllabus,
+  getSyllabus,
+  listSyllabi,
+  purgeSyllabi,
+  restoreSyllabus,
+  updateSyllabus,
+  type SyllabusNodeInput,
+  type SyllabusProblem,
+} from './syllabi';
+export {
+  createRelation,
+  deleteRelation,
+  getRelation,
+  listAllRelations,
+  listRelationsFor,
+  pruneDanglingRelations,
+  purgeRelations,
+  restoreRelation,
+  updateRelationNote,
+  type CreateRelationStatus,
+  type RelationInput,
+  type RelationRef,
+} from './relations';
+// The links screens (ADR-018): the other end of a link as text, and the set a graph draws
+export {
+  GRAPH_MAX_RELATIONS,
+  describeEnds,
+  findKnowledgePoints,
+  listLinks,
+  loadGraph,
+  type LinkEnd,
+  type LinkEntry,
+} from './graph';
+
 // Backup / restore (Dexie side of @backup's ports) and external highlight import
 export * from './backupTarget';
+// The folder the person picked for dated backups (handle and state in `meta`; ADR-016)
+export * from './backupFolder';
 
 // Optional AI features: results, cache port, settings, key and usage ledger (one line; see ai.ts)
 export * from './ai';

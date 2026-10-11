@@ -51,6 +51,15 @@ export const AiSelection = z.strictObject({
   topics: z.array(short(80)).min(2).max(6).optional(),
   /** fact_check: the statements to check against the selected chunks. */
   claims: z.array(short(300)).min(1).max(10).optional(),
+  /**
+   * explain (bank chat): earlier turns the person chose to send for context. They are previewed like
+   * every other block, are never citeable and are treated as untrusted data.
+   */
+  history: z
+    .array(z.strictObject({ role: z.enum(['user', 'assistant']), text: short(1500) }))
+    .min(1)
+    .max(6)
+    .optional(),
   options: z
     .strictObject({
       /** flashcards: how many cards (1-20, default 5). */
@@ -230,6 +239,52 @@ export const FactCheckOutput = z.strictObject({
   externallyVerified: z.literal(false),
 });
 
+export const MNEMONIC_TYPES = ['acronym', 'rhyme', 'image', 'story', 'chunking', 'other'] as const;
+const MnemonicAid = {
+  type: z.enum(MNEMONIC_TYPES),
+  /** The fact the aid anchors, in the model's words; the cited quote is the authority. */
+  fact: short(300),
+  mnemonic: short(300),
+  howItWorks: short(300),
+  evidence: z.array(Evidence).min(1).max(2),
+};
+export const MnemonicModelOutput = z.strictObject({
+  aids: z.array(z.strictObject(MnemonicAid)).min(1).max(5),
+});
+export const MnemonicOutput = z.strictObject({
+  aids: z.array(z.strictObject(MnemonicAid)).min(1).max(5),
+  /** Always true (pipeline-owned): the text is a device for recall, never a statement of fact. */
+  aidNotFact: z.literal(true),
+});
+
+export const ShortVivaOutput = z.strictObject({
+  questions: z
+    .array(
+      z.strictObject({
+        question: short(300),
+        modelAnswer: short(800),
+        evidence: z.array(Evidence).min(1).max(3),
+      }),
+    )
+    .min(1)
+    .max(5),
+});
+
+export const StudyOutlineOutput = z.strictObject({
+  title: short(120),
+  /** A flat list in reading order; `level` makes it a hierarchy without recursive schemas. */
+  items: z
+    .array(
+      z.strictObject({
+        level: z.number().int().min(1).max(3),
+        text: short(240),
+        evidence: z.array(Evidence).min(1).max(2),
+      }),
+    )
+    .min(1)
+    .max(40),
+});
+
 export const OUTPUT_SCHEMAS = {
   exam_pearl: ExamPearlOutput,
   summary: SummaryOutput,
@@ -240,6 +295,9 @@ export const OUTPUT_SCHEMAS = {
   compare_topics: CompareTopicsOutput,
   contradictions: ContradictionsOutput,
   fact_check: FactCheckOutput,
+  mnemonic: MnemonicOutput,
+  short_viva: ShortVivaOutput,
+  study_outline: StudyOutlineOutput,
 } as const;
 
 // ---------------------------------------------------------------------------------------------
@@ -312,6 +370,9 @@ export const AiResult = z.discriminatedUnion('kind', [
   variant('compare_topics', CompareTopicsOutput),
   variant('contradictions', ContradictionsOutput),
   variant('fact_check', FactCheckOutput),
+  variant('mnemonic', MnemonicOutput),
+  variant('short_viva', ShortVivaOutput),
+  variant('study_outline', StudyOutlineOutput),
 ]);
 export type AiResult = z.infer<typeof AiResult>;
 
@@ -336,6 +397,16 @@ export const AiRequestPreview = z.strictObject({
   templateVersion: z.string(),
   provider: z.string(),
   model: z.string(),
+  /**
+   * Every provider that may receive this text, in the order they are tried: the one above first,
+   * then the fallbacks. The consent hash covers the whole list, so a fallback that is added or
+   * removed after the preview invalidates the confirmation.
+   */
+  recipients: z
+    .array(
+      z.strictObject({ provider: z.string(), model: z.string(), origin: z.string().optional() }),
+    )
+    .min(1),
   /** False when the task needs no provider call (e.g. no contradiction candidates). */
   willSend: z.boolean(),
   /** The exact messages that will be sent. `outboundText` is the same content rendered for display. */
@@ -347,8 +418,8 @@ export const AiRequestPreview = z.strictObject({
   chunks: z.array(
     z.strictObject({
       id: ChunkId,
-      /** `question` and `claim` blocks are sent too but are not citeable. */
-      kind: z.enum(['highlight', 'note', 'question', 'claim']),
+      /** `question`, `claim` and `history` blocks are sent too but are not citeable. */
+      kind: z.enum(['highlight', 'note', 'question', 'claim', 'history']),
       originalChars: z.number().int().min(0),
       truncated: z.boolean(),
       /** Sanitised, truncated, NOT yet redacted: redaction offsets refer to this text. */

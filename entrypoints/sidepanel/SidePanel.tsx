@@ -4,10 +4,12 @@ import { parseSrc, pdfReaderPath } from '@pdf/readerUrl';
 import type { ColorId, HighlightKind } from '@shared';
 import { callBackground, callTab } from '@runtime';
 import {
+  acceptFiling,
   attachTags,
   createNote,
   createTag,
   detachTags,
+  dismissFiling,
   getHighlightDetail,
   listHighlights,
   listPageHighlights,
@@ -15,6 +17,7 @@ import {
   listTags,
   restoreHighlight,
   softDeleteHighlight,
+  undoFiling,
   updateHighlight,
   updateNote,
   type HighlightListItem,
@@ -37,14 +40,15 @@ import {
   useDataEpoch,
   useFocusRescue,
   useObserved,
+  useSearchFocusRequest,
   useSettings,
   useShortcuts,
   useToast,
   type Loadable,
 } from '@ui';
 import { useSearchHost } from '@ui/panel';
-import { ReviewTab, useDueCount } from '@ui/review';
-import { openDashboard } from '@ui/vault';
+import { ReminderNotice, ReviewTab, useDueCount } from '@ui/review';
+import { openDashboard, storageLinks, type RelatedPort } from '@ui/vault';
 import { Banks } from './Banks';
 import {
   HighlightCard,
@@ -66,6 +70,7 @@ import {
   type View,
 } from './model';
 import { SearchTab } from './Search';
+import { useFilingSuggestions } from './useFilingSuggestions';
 import { usePendingFocus } from './usePendingFocus';
 
 const RECENT_LIMIT = 50;
@@ -122,6 +127,13 @@ function Panel() {
   }, []);
   // The page overlay asked for a note: the card to focus is in "This page".
   usePendingFocus(() => setView('page'));
+  // The manifest command "focus-search": show Search and put the cursor in its box. A request that
+  // arrives before the tab exists (the panel was closed) is kept until the tab consumes it.
+  const [focusSearch, setFocusSearch] = useState(false);
+  useSearchFocusRequest('panel', () => {
+    setView('search');
+    setFocusSearch(true);
+  });
 
   // The content script is the authority on the page's identity (canonical URL, live title).
   const status = useAsync(
@@ -163,6 +175,8 @@ function Panel() {
     [scope?.bankId, scope?.folderId],
   );
   const tags = useObserved(() => listTags(), []);
+  const filing = useFilingSuggestions();
+  const refreshSuggestions = filing.refresh;
   const due = useDueCount();
   const pageIds = useMemo(
     () => new Set((pageItems.data ?? []).map((i) => i.highlight.id)),
@@ -221,16 +235,84 @@ function Panel() {
         if (noteId === null) await createNote({ highlightId, sourceId, body });
         else await updateNote(noteId, { body });
       },
+      // A filing rule's pending suggestion (docs/adr/017-filing-rules.md).
+      fileSuggestion: async (id) => {
+        const out = await acceptFiling(id);
+        refreshSuggestions();
+        if (out.status !== 'filed') {
+          toast.push({ message: out.status === 'unavailable' ? out.reason : 'Nothing was filed.' });
+          return;
+        }
+        const where =
+          out.folderName === null ? out.bank.name : `${out.bank.name} / ${out.folderName}`;
+        toast.push({
+          message: `Filed in ${where} by rule '${out.ruleName}'.`,
+          focusAction: true,
+          action: {
+            label: 'Undo',
+            onClick: () => {
+              undoFiling(id).then(
+                (done) =>
+                  toast.push({
+                    message: done.restored
+                      ? 'Filing undone. The highlight is back where it was.'
+                      : (done.reason ?? 'Nothing was undone.'),
+                  }),
+                (err: unknown) =>
+                  toast.push({
+                    tone: 'error',
+                    message: `Could not undo the filing: ${errorMessage(err)}`,
+                  }),
+              );
+            },
+          },
+        });
+      },
+      dismissSuggestion: async (id) => {
+        await dismissFiling(id);
+        refreshSuggestions();
+        toast.announce('Suggestion dismissed. The highlight stays where it is.');
+      },
     };
-  }, [repaint, tabId, toast]);
+  }, [refreshSuggestions, repaint, tabId, toast]);
 
   const paletteFor = useCallback(
     (kind: HighlightKind): ColorId => settings?.palette[kind] ?? 'amber',
     [settings],
   );
+  // Related highlights share the Search tab's index; opening the first card's section starts it.
+  const related = useMemo<RelatedPort>(
+    () => ({
+      state: search.state,
+      revision: search.revision,
+      request: () => setSearchSeen(true),
+      find: (id, options) => search.host.related(id, options),
+    }),
+    [search.state, search.revision, search.host],
+  );
+  // Links: the picker finds items in the same index; "Show in graph" opens the dashboard's view.
+  const links = useMemo<NonNullable<CardContext['links']>>(
+    () => ({
+      port: storageLinks,
+      search: {
+        state: search.state,
+        revision: search.revision,
+        request: () => setSearchSeen(true),
+        search: (query, options) => search.host.search(query, options),
+      },
+      onShowGraph: (item) => {
+        void openDashboard({
+          highlight: item.kind === 'highlight' ? item.id : null,
+          view: 'graph',
+        });
+      },
+    }),
+    [search.state, search.revision, search.host],
+  );
+  const suggestions = filing.suggestions;
   const context: CardContext = useMemo(
-    () => ({ reviewOn, aiOn, tagListId: TAG_LIST_ID }),
-    [reviewOn, aiOn],
+    () => ({ reviewOn, aiOn, tagListId: TAG_LIST_ID, related, links, suggestions }),
+    [reviewOn, aiOn, related, links, suggestions],
   );
 
   const openSettings = useAction(async () => {
@@ -272,6 +354,19 @@ function Panel() {
         <InlineNotice tone="error">Could not open the dashboard: {dashboard.error}</InlineNotice>
       ) : null}
       <main className="panel__main">
+        {reviewOn && !fatal ? (
+          <div className="panel__reminder">
+            <ReminderNotice
+              count={due.count}
+              action={
+                <Button variant="primary" onClick={() => setView('review')}>
+                  Show review
+                </Button>
+              }
+              onDismissed={() => panelContent()?.focus()}
+            />
+          </div>
+        ) : null}
         {fatal ? (
           <div className="panel__body">
             <InlineNotice
@@ -350,6 +445,8 @@ function Panel() {
                   paletteFor={paletteFor}
                   actions={actions}
                   reviewOn={reviewOn}
+                  focusRequested={focusSearch}
+                  onFocused={() => setFocusSearch(false)}
                 />
               ) : view === 'banks' ? (
                 <Banks scope={scope} onScope={setScope} />

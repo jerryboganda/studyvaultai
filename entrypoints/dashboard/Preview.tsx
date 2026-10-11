@@ -7,7 +7,7 @@ import {
   StudyVaultError,
   type HighlightKind,
 } from '@shared';
-import type { HighlightDetail } from '@storage';
+import type { HighlightDetail, RelationRef } from '@storage';
 import {
   Button,
   InlineNotice,
@@ -19,6 +19,13 @@ import {
   useAction,
   useToast,
 } from '@ui';
+import {
+  LinksSection,
+  RelatedSection,
+  type LinkSearchPort,
+  type LinksPort,
+  type RelatedPort,
+} from '@ui/vault';
 import { useApi } from './api';
 import { describeCaptureMethod, formatDateTime, timeZoneName } from './format';
 import { useAutosave, useBump, useVaultQuery } from './hooks';
@@ -36,6 +43,19 @@ export interface PreviewProps {
   onReviewDuplicates(highlightId: string): void;
   /** The highlight went to the trash (or was purged): the owner clears its selection. */
   onGone?(): void;
+  /** The search index behind the Related section; the section is left out without it. */
+  related?: RelatedPort;
+  /** The links of the highlight; the section is left out without it. */
+  links?: PreviewLinks;
+}
+
+/** What the Links section needs from the dashboard. */
+export interface PreviewLinks {
+  port: LinksPort;
+  /** The search index the picker finds items in. */
+  search: LinkSearchPort;
+  /** Show the graph around an item. */
+  onShowGraph?(item: RelationRef): void;
 }
 
 /** Right pane: provenance first, then everything the user can change. */
@@ -90,6 +110,8 @@ function PreviewBody({
   onShow,
   onReviewDuplicates,
   onGone,
+  related,
+  links,
 }: PreviewProps & { detail: HighlightDetail }) {
   const api = useApi();
   const bump = useBump();
@@ -122,6 +144,34 @@ function PreviewBody({
     await api.updateHighlight(highlight.id, next);
     bump();
   });
+
+  // One click on a Related suggestion: a "related" link from this highlight to that one.
+  const linkAsRelated = async (otherId: string) => {
+    if (!links) return;
+    const made = await links.port.create({
+      fromKind: 'highlight',
+      fromId: highlight.id,
+      toKind: 'highlight',
+      toId: otherId,
+      type: 'related',
+    });
+    toast.push({
+      message: made.status === 'existing' ? 'These are already linked.' : 'Linked as Related.',
+      action:
+        made.status === 'existing'
+          ? undefined
+          : {
+              label: 'Undo',
+              onClick: () => {
+                void links.port
+                  .remove(made.relation.id)
+                  .catch((err: unknown) =>
+                    toast.push({ tone: 'error', message: errorMessage(err, 'Could not undo.') }),
+                  );
+              },
+            },
+    });
+  };
 
   const trash = async () => {
     try {
@@ -343,6 +393,38 @@ function PreviewBody({
         onOpen={onShow}
         onReview={() => onReviewDuplicates(highlight.id)}
       />
+      {links ? (
+        <section
+          className="dash-section"
+          aria-labelledby={`${uid}-links`}
+          data-testid="preview-links"
+        >
+          <h3 id={`${uid}-links`}>Links</h3>
+          <LinksSection
+            item={{ kind: 'highlight', id: highlight.id }}
+            port={links.port}
+            search={links.search}
+            onOpen={onShow}
+            onShowGraph={links.onShowGraph}
+            eager
+          />
+        </section>
+      ) : null}
+      {related ? (
+        <section
+          className="dash-section"
+          aria-labelledby={`${uid}-related`}
+          data-testid="preview-related"
+        >
+          <h3 id={`${uid}-related`}>Related</h3>
+          <RelatedSection
+            id={highlight.id}
+            port={related}
+            onOpen={onShow}
+            onLink={links ? linkAsRelated : undefined}
+          />
+        </section>
+      ) : null}
 
       <section className="dash-section">
         <Button variant="danger" onClick={() => void trash()} data-testid="preview-trash">

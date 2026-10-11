@@ -3,8 +3,19 @@ export * from './constants';
 export * from './errors';
 export * from './schema';
 export * from './budget';
-export { createMemoryCache, createCoordinator } from './deps';
-export type { AiCache, AiCoordinator, LogEvent, PipelineDeps, Pricing, RetryPolicy } from './deps';
+export { createMemoryCache, createCoordinator, chainOf, worstPricing } from './deps';
+export type {
+  AiCache,
+  AiCoordinator,
+  ChainTarget,
+  FallbackTarget,
+  LogEvent,
+  PipelineDeps,
+  Pricing,
+  RetryPolicy,
+} from './deps';
+export { questionTerms, retrievalQuery, searchPassages } from './retrieve';
+export type { PassageRef, PassageSearch } from './retrieve';
 export {
   createAnthropicProvider,
   createMockProvider,
@@ -31,7 +42,7 @@ export type { Message } from './prompt';
 export type { RedactionEdits, RedactionKind, RedactionRegion } from './redact';
 export { scrubSecrets } from './secrets';
 export { buildPreview, createConsentToken, looksClinical } from './prepare';
-export { acceptResult, runTask } from './pipeline';
+export { acceptResult, failsOver, runTask } from './pipeline';
 export type { RunOptions, RunOutcome } from './pipeline';
 export { candidatePairs } from './candidates';
 export { groundClaims, MIN_QUOTE_CHARS } from './grounding';

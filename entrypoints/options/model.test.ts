@@ -196,6 +196,15 @@ describe('otherGrants', () => {
     ]);
   });
 
+  it('names every AI address, the fallback providers included', () => {
+    const out = otherGrants(
+      ['https://api.ai.example/*', 'https://backup.ai.example/*', 'https://z.example/*'],
+      listed,
+      { ...none, ai: ['https://api.ai.example', 'https://backup.ai.example'] },
+    );
+    expect(out.map((g) => g.purpose)).toEqual(['AI provider', 'AI provider', 'Other']);
+  });
+
   it('does not match a different scheme of the same host', () => {
     const out = otherGrants(['http://api.ai.example/*'], listed, {
       ...none,

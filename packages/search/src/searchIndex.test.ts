@@ -785,3 +785,16 @@ describe('term cache in front of the radix tree', () => {
     expect(index.stats().terms).toBe(2); // zebrafish, larva
   });
 });
+
+describe('TeX in a note body (ADR-015)', () => {
+  it('is indexed as typed, so commands and symbols are findable and nothing is rendered away', () => {
+    const body = String.raw`Gauss: $\nabla \cdot \mathbf{E} = \frac{\rho}{\varepsilon_0}$ and $$\oint_S \mathbf{E}\,dA$$`;
+    const index = build([
+      doc({ id: 'tex', docType: 'note', comment: body }),
+      doc({ id: 'other', comment: 'an unrelated remark' }),
+    ]);
+    for (const q of ['nabla', 'frac', 'varepsilon', 'oint', 'mathbf', 'rho']) {
+      expect(ids(index, q), q).toEqual(['tex']);
+    }
+  });
+});

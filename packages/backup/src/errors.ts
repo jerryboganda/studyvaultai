@@ -35,6 +35,12 @@ export const BACKUP_ERROR_CODES = [
   'safety_backup_failed',
   'staging_failed',
   'commit_failed',
+  // backup folder (File System Access): nothing in the vault changes in any of these
+  'folder_permission',
+  'folder_missing',
+  'disk_full',
+  'folder_write_failed',
+  'folder_verify_failed',
 ] as const;
 
 export type BackupErrorCode = (typeof BACKUP_ERROR_CODES)[number];

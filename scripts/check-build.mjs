@@ -89,7 +89,11 @@ for (const [name, sources] of Object.entries(policy)) {
 const commands = Object.keys(m.commands ?? {})
   .sort()
   .join(',');
-const wantCommands = 'focus-toolbar,next-highlight,open-side-panel,previous-highlight,quick-save';
+const wantCommands =
+  'focus-search,focus-toolbar,next-highlight,open-side-panel,previous-highlight,quick-save';
+// Chrome honours at most four suggested keys per extension; a fifth would be dropped silently.
+const suggested = Object.values(m.commands ?? {}).filter((c) => c.suggested_key).length;
+if (suggested > 4) fail(`${suggested} commands carry a suggested key; Chrome allows four`);
 if (commands !== wantCommands) fail(`commands "${commands}" != "${wantCommands}"`);
 
 // --- no remote code or assets in extension pages -------------------------------------------
@@ -111,7 +115,8 @@ if (walk(prod).some((f) => f.endsWith('.map'))) fail('source maps are shipped');
 const KB = 1024;
 const size = (rel) => statSync(join(prod, rel)).size;
 const budgets = [
-  ['content-scripts/highlighter.js', 450 * KB],
+  // Preact in place of React (docs/adr/012): 405 KB -> 209 KB measured, budget = measured + 5%.
+  ['content-scripts/highlighter.js', 220 * KB],
   // The worker bundles @storage, which now includes the study, AI and sync repositories (they register
   // their table schemas at import time, so they are not tree-shaken). 420 KB is a regress guard.
   ['background.js', 420 * KB],

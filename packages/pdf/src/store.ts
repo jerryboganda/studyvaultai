@@ -3,6 +3,7 @@ import type {
   CaptureMethod,
   CaptureResult,
   ColorId,
+  FilingOutcome,
   HighlightKind,
   HighlightPatch,
   HighlightView,
@@ -84,6 +85,16 @@ export interface StoredCopy {
   originalUrl: string | null;
 }
 
+/**
+ * What the reader may do with a filing rule's result (docs/adr/017-filing-rules.md). The result
+ * itself comes back on `savePdfHighlight`'s CaptureResult (`filing`); these act on it later.
+ */
+export interface PdfFilingPort {
+  accept(highlightId: string): Promise<FilingOutcome>;
+  dismiss(highlightId: string): Promise<void>;
+  undo(highlightId: string): Promise<{ restored: boolean; reason: string | null }>;
+}
+
 export interface PdfStore {
   upsertDocument(input: PdfDocumentInput): Promise<PdfDocumentRecord>;
   getDocument(id: string): Promise<PdfDocumentRecord | null>;
@@ -105,4 +116,6 @@ export interface PdfStore {
   getOcrPages?(documentId: string): Promise<StoredOcrPage[]>;
   listBanks(): Promise<BankLite[]>;
   createBank(name: string): Promise<BankLite>;
+  /** Absent: the reader never mentions filing rules. */
+  filing?: PdfFilingPort;
 }

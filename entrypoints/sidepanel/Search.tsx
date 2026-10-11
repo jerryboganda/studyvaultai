@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { MAX_QUERY_LENGTH, QUERY_SYNTAX, type SearchResult, type Snippet } from '@search';
 import type { ColorId, HighlightKind } from '@shared';
 import {
@@ -64,6 +64,10 @@ export interface SearchTabProps {
   paletteFor(kind: HighlightKind): ColorId;
   actions: CardActions;
   reviewOn: boolean;
+  /** The "focus-search" command asked for the cursor to be put in the query box. */
+  focusRequested?: boolean;
+  /** The box took focus: the request is done. */
+  onFocused?(): void;
 }
 
 export function SearchTab({
@@ -77,8 +81,17 @@ export function SearchTab({
   paletteFor,
   actions,
   reviewOn,
+  focusRequested = false,
+  onFocused,
 }: SearchTabProps) {
   const uid = useId();
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!focusRequested) return;
+    input.current?.focus();
+    input.current?.select();
+    onFocused?.();
+  }, [focusRequested, onFocused]);
   const [help, setHelp] = useState(false);
   const [facets, setFacets] = useState(false);
   const typed = useDebounced(text, 180);
@@ -114,6 +127,7 @@ export function SearchTab({
           Search highlights and notes
         </label>
         <input
+          ref={input}
           id={`${uid}-q`}
           type="search"
           className="sv-control"
@@ -356,14 +370,20 @@ function statusLine(s: {
   outcome: { result: SearchResult } | { error: string } | null;
   usable: boolean;
   shown: number;
-}): string {
+}): ReactNode {
   if (s.query === '') return 'Type to search. Press Search syntax for what you can ask for.';
   if (!s.usable) return 'Search will answer as soon as the index is ready.';
   if (!s.result) return s.outcome && 'error' in s.outcome ? '' : 'Searching…';
   const { total, took, hits } = s.result;
   if (total === 0) return 'No matches.';
-  const matches = `${total.toLocaleString()} ${total === 1 ? 'match' : 'matches'} in ${Math.max(1, Math.round(took))} ms`;
-  return hits.length < total ? `${matches}; showing the best ${s.shown}.` : `${matches}.`;
+  // The timing is for the eye only (aria-hidden): read aloud after every query it is noise.
+  return (
+    <>
+      {total.toLocaleString()} {total === 1 ? 'match' : 'matches'}
+      <span aria-hidden="true"> in {Math.max(1, Math.round(took))} ms</span>
+      {hits.length < total ? `; showing the best ${s.shown}.` : '.'}
+    </>
+  );
 }
 
 // ---------------------------------------------------------------------------------------------

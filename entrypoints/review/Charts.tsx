@@ -23,6 +23,8 @@ export interface BarChartProps {
   bars: readonly Bar[];
   valueLabel: string;
   extraLabel?: string;
+  /** Header of the first table column (the category of a bar). Default "Day". */
+  categoryLabel?: string;
   /** Extra table columns, one array of cells per bar. */
   columns?: { header: string; cells: readonly ReactNode[] };
   testId?: string;
@@ -41,6 +43,7 @@ export function BarChart({
   bars,
   valueLabel,
   extraLabel,
+  categoryLabel = 'Day',
   columns,
   testId,
   tableTestId,
@@ -118,7 +121,7 @@ export function BarChart({
             <caption className="sv-sr">{title}</caption>
             <thead>
               <tr>
-                <th scope="col">Day</th>
+                <th scope="col">{categoryLabel}</th>
                 <th scope="col">{valueLabel}</th>
                 {extraLabel ? <th scope="col">{extraLabel}</th> : null}
                 {columns ? <th scope="col">{columns.header}</th> : null}

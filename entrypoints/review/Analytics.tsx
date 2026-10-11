@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { Suspense, lazy, useMemo } from 'react';
 import { RATINGS, RATING_LABELS } from '@study';
 import { getAnalyticsInput } from '@storage';
 import { Button, EmptyState, InlineNotice, plural, useDataEpoch, useAsync } from '@ui';
@@ -18,6 +18,17 @@ import {
 import { BarChart, ShareBars } from './Charts';
 
 const HISTORY_DAYS = 365;
+
+// The syllabus coverage table is only needed on this tab, and only its own chunk carries it.
+const SyllabusCoverage = lazy(() => import('./SyllabusCoverage'));
+
+function Coverage({ settings }: { settings: StudySettings }) {
+  return (
+    <Suspense fallback={<p className="sv-muted">Loading syllabus coverage…</p>}>
+      <SyllabusCoverage settings={settings} />
+    </Suspense>
+  );
+}
 
 /**
  * Review analytics from the real database rows. A number that cannot be derived is shown as
@@ -57,6 +68,7 @@ export function Analytics({ settings }: { settings: StudySettings }) {
             filled in before then.
           </span>
         </EmptyState>
+        <Coverage settings={settings} />
       </div>
     );
   }
@@ -253,6 +265,8 @@ export function Analytics({ settings }: { settings: StudySettings }) {
           </p>
         ) : null}
       </section>
+
+      <Coverage settings={settings} />
     </div>
   );
 }

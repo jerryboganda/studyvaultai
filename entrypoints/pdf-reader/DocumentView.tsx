@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import {
   buildPdfAnchor,
   findInDocument,
@@ -36,6 +37,7 @@ import {
 } from '@ui';
 import { Companion } from './Companion';
 import { DocInfo, type StoredCopyState } from './DocInfo';
+import { filingToasts, type Filed } from './filing';
 import type { Session } from './loader';
 import {
   isPainted,
@@ -53,6 +55,10 @@ import { SaveBar, type SaveDraft } from './SaveBar';
 import { SidePane } from './SidePane';
 import { Toolbar, type SearchState } from './Toolbar';
 import { Viewer, type ViewerHandle, type ViewerShortcut } from './Viewer';
+
+/** Said when S or Enter is pressed with nothing selected: how to select without a mouse. */
+const NO_SELECTION_HELP =
+  'Nothing is selected. Press F7 for caret browsing, select text with Shift and the arrow keys, then press S.';
 
 const NO_HIGHLIGHTS: readonly HighlightView[] = [];
 const NO_BANKS: readonly BankLite[] = [];
@@ -346,11 +352,22 @@ export function DocumentView({
           return searchInput.current?.focus();
         case 'go-to-page':
           return pageInput.current?.focus();
-        case 'save-selection':
-          return bar.current?.querySelector<HTMLElement>('select, textarea, button')?.focus();
+        case 'save-selection': {
+          const focusBar = () =>
+            bar.current?.querySelector<HTMLElement>('select, textarea, button')?.focus();
+          if (bar.current) return focusBar();
+          // The bar waits for the gate's pause after a selection: ask for it now, and let React
+          // show it before focus moves (the key press is the user's act; nothing is guessed).
+          flushSync(() => {
+            viewer.current?.flushSelection();
+          });
+          if (bar.current) return focusBar();
+          toast.push({ message: NO_SELECTION_HELP });
+          return undefined;
+        }
       }
     },
-    [doc.pageCount, effectiveZoom, goToPage, page],
+    [doc.pageCount, effectiveZoom, goToPage, page, toast],
   );
 
   // ---- search --------------------------------------------------------------------------------
@@ -515,6 +532,7 @@ export function DocumentView({
         persisted.current = true;
       }
       const created: string[] = [];
+      const filings: Filed[] = [];
       let duplicates = 0;
       let bankName = '';
       for (const part of sel.parts) {
@@ -549,6 +567,10 @@ export function DocumentView({
         bankName = res.bank.name;
         if (res.status === 'duplicate' && !res.addedToBank) duplicates++;
         else created.push(res.highlight.id);
+        // A filing rule that names PDF document as a source answered for this new highlight.
+        if (res.filing && res.status === 'created') {
+          filings.push({ id: res.highlight.id, filing: res.filing });
+        }
       }
       await refresh();
       void updateSettings((s) => ({ ...s, lastBankId: draft.bankId ?? s.lastBankId })).catch(
@@ -574,6 +596,11 @@ export function DocumentView({
               }
             : undefined,
       });
+      if (store.filing && filings.length > 0) {
+        for (const t of filingToasts(filings, store.filing, (next) => toast.push(next), refresh)) {
+          toast.push(t);
+        }
+      }
       engaged.current = false;
       document.getSelection()?.removeAllRanges();
       setSelection(null);
@@ -744,6 +771,12 @@ export function DocumentView({
         onToggleSidePane={() => setSidePaneOpen((v) => !v)}
         onOpenAnother={onOpenAnother}
       />
+
+      <p className="sv-doc__keys sv-small sv-muted" data-testid="pdf-keyboard-hint">
+        Without a mouse: press <kbd className="sv-kbd">F7</kbd> to turn on caret browsing, select
+        text with <kbd className="sv-kbd">Shift</kbd> and the arrow keys, then press{' '}
+        <kbd className="sv-kbd">S</kbd> or <kbd className="sv-kbd">Enter</kbd> to save it.
+      </p>
 
       {!persistAllowed ? (
         <InlineNotice tone="warning" live title="Nothing is being saved">

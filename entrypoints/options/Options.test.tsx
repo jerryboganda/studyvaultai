@@ -706,6 +706,23 @@ describe('appearance and capture', () => {
     await waitFor(async () => expect((await getSettings()).allowIncognitoCapture).toBe(true));
   });
 
+  it('has a "Use filing rules" switch that writes the setting, and opens the rules manager', async () => {
+    await open();
+    const box = await screen.findByRole('checkbox', { name: 'Use filing rules' });
+    expect((box as HTMLInputElement).checked).toBe(true);
+    const hint = document.getElementById(box.getAttribute('aria-describedby')!)!;
+    expect(hint.textContent).toMatch(/never overridden/);
+    await userEvent.click(box);
+    await waitFor(async () => expect((await getSettings()).useFilingRules).toBe(false));
+
+    const create = vi.spyOn(browser.tabs, 'create').mockResolvedValue({} as never);
+    await userEvent.click(screen.getByRole('button', { name: 'Manage filing rules' }));
+    await waitFor(() => expect(create).toHaveBeenCalledOnce());
+    expect(create.mock.calls[0]![0]).toMatchObject({
+      url: expect.stringMatching(/\/dashboard\.html\?view=rules$/),
+    });
+  });
+
   it('keeps a failed write visible next to its control with Retry, then succeeds', async () => {
     await open();
     const radio = await screen.findByRole('radio', { name: /^Light/ });
@@ -737,6 +754,29 @@ describe('keyboard shortcuts', () => {
     const inPage = within(section).getByRole('list', { name: 'In-page shortcuts' });
     expect(within(inPage).getByText('Alt+Shift+]')).toBeTruthy();
     expect(within(inPage).getByText('Alt+Shift+[')).toBeTruthy();
+  });
+
+  it('lists the search command, unset because Chrome allows only four suggested keys, and says so', async () => {
+    await open();
+    const section = (await screen.findByRole('heading', { name: 'Keyboard shortcuts' }))
+      .parentElement!;
+    const commands = await within(section).findByRole('list', { name: 'Browser shortcuts' });
+    const row = within(commands)
+      .getByText('Search your highlights: open the side panel on the search box')
+      .closest('li')!;
+    expect(row.textContent).toContain('Not set');
+    expect(within(section).getByTestId('shortcuts-unset-note').textContent).toMatch(
+      /only four keys/,
+    );
+  });
+
+  it('says nothing about unset keys when every command has one', async () => {
+    chrome.commands.getAll.mockResolvedValue(
+      COMMANDS.map((c) => ({ ...c, shortcut: c.shortcut || 'Alt+Shift+9' })),
+    );
+    await open();
+    await screen.findByRole('list', { name: 'Browser shortcuts' });
+    expect(screen.queryByTestId('shortcuts-unset-note')).toBeNull();
   });
 
   it('reflects what the user changed in Chrome when the page regains focus', async () => {

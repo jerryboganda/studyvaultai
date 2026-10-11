@@ -1,7 +1,11 @@
+import { getTrustedSettings } from '@runtime';
 import {
+  acceptFiling,
   assertPdfWriteAllowed,
   cacheDocumentBytes,
   createBank,
+  dismissFiling,
+  filingAfterCapture,
   getDocument,
   getDocumentBytes,
   getOcrPages,
@@ -13,6 +17,7 @@ import {
   saveOcrPage,
   savePdfHighlight,
   softDeleteHighlight,
+  undoFiling,
   updateHighlight,
   upsertDocument,
 } from '@storage';
@@ -26,7 +31,35 @@ export function createStorageStore(): PdfStore {
   return {
     upsertDocument: (input) => upsertDocument(input),
     getDocument: (id) => getDocument(id),
-    savePdfHighlight: (input) => savePdfHighlight(input),
+    savePdfHighlight: async (input) => {
+      const result = await savePdfHighlight(input);
+      if (result.status !== 'created') return result;
+      // Rules look at a new reader highlight only when they name "PDF document" as a source
+      // (decideFiling). Nothing here may fail the save that already succeeded.
+      try {
+        const settings = await getTrustedSettings();
+        if (!settings.useFilingRules) return result;
+        const doc = await getDocument(input.documentId);
+        const filing = await filingAfterCapture({
+          highlightId: result.highlight.id,
+          placed: { bankId: result.bank.id, folderId: input.folderId ?? null },
+          requestedBankId: input.bankId,
+          lastBankId: settings.lastBankId,
+          candidate: {
+            url: doc?.originalUrl ?? null,
+            title: doc?.title ?? '',
+            quote: result.highlight.exactQuote,
+            kind: result.highlight.kind,
+            tagIds: [],
+            sourceType: 'pdf',
+          },
+        });
+        return filing ? { ...result, filing } : result;
+      } catch (err) {
+        console.warn('[StudyVault] filing rules were not applied', err);
+        return result;
+      }
+    },
     listPdfHighlights: (documentId) => listPdfHighlights(documentId),
     updateHighlight: (id, patch) => updateHighlight(id, patch),
     deleteHighlight: (id) => softDeleteHighlight(id),
@@ -49,6 +82,11 @@ export function createStorageStore(): PdfStore {
           byteLength: d.cachedBytes ?? 0,
           originalUrl: d.document.originalUrl,
         })),
+    filing: {
+      accept: (id) => acceptFiling(id),
+      dismiss: (id) => dismissFiling(id),
+      undo: (id) => undoFiling(id),
+    },
     listBanks: () => listBanks(),
     // createBank lives in the repo, outside the PDF write path: the same restriction applies.
     createBank: async (name) => {

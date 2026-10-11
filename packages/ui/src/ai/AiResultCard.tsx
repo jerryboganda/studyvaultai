@@ -19,6 +19,7 @@ import { useAction, useAsync, useDataEpoch } from '../hooks';
 import { InlineNotice } from '../Notice';
 import { buildAccept, initialDraft, type AiDraft } from './accept';
 import { AI_KIND_INFO } from './labels';
+import { LinkContradiction } from './LinkContradiction';
 
 const NEW_DECK = '__new__';
 const EMPTY_SOURCES: ReadonlyMap<string, AiSourceRef> = new Map();
@@ -286,6 +287,16 @@ function Output({
               <Plain>{x.explanation}</Plain>
               <Cite {...c} path={`/contradictions/${i}/a/text`} quoteId={x.a.quoteId} />
               <Cite {...c} path={`/contradictions/${i}/b/text`} quoteId={x.b.quoteId} />
+              <LinkContradiction
+                a={sources.get(x.a.quoteId)}
+                b={sources.get(x.b.quoteId)}
+                grounded={['a', 'b'].every(
+                  (end) =>
+                    result.grounding.claims.find(
+                      (claim) => claim.path === `/contradictions/${i}/${end}/text`,
+                    )?.supported === true,
+                )}
+              />
             </section>
           ))}
         </>
@@ -305,6 +316,58 @@ function Output({
               <Cites {...c} base={`/checks/${i}/evidence`} evidence={chk.evidence} />
             </section>
           ))}
+        </>
+      );
+    case 'mnemonic':
+      return (
+        <>
+          {result.output.aids.map((aid, i) => (
+            <section key={i} className="sv-stack sv-stack--tight" data-testid="ai-aid">
+              {/* The quote the aid is anchored to comes first: it is the fact, the aid is not. */}
+              <Cites {...c} base={`/aids/${i}/evidence`} evidence={aid.evidence} />
+              <div className="sv-row sv-wrap">
+                <Badge tone="warning" glyph="?">
+                  Memory aid, not a fact
+                </Badge>
+                <Badge>{aid.type}</Badge>
+              </div>
+              <Plain>
+                <strong>{aid.mnemonic}</strong>
+              </Plain>
+              <Plain>{aid.howItWorks}</Plain>
+              <p className="sv-muted sv-small">Anchored to: {aid.fact}</p>
+            </section>
+          ))}
+        </>
+      );
+    case 'short_viva':
+      return (
+        <ol className="ai-list">
+          {result.output.questions.map((q, i) => (
+            <li key={i} className="ai-item" data-testid="ai-viva-question">
+              <Plain>
+                <strong>Question {i + 1}:</strong> {q.question}
+              </Plain>
+              <Plain>
+                <strong>Model answer (a draft to check):</strong> {q.modelAnswer}
+              </Plain>
+              <Cites {...c} base={`/questions/${i}/evidence`} evidence={q.evidence} />
+            </li>
+          ))}
+        </ol>
+      );
+    case 'study_outline':
+      return (
+        <>
+          <h4>{result.output.title}</h4>
+          <ul className="ai-list" data-testid="ai-outline">
+            {result.output.items.map((it, i) => (
+              <li key={i} className={`ai-outline ai-outline--l${it.level}`} data-level={it.level}>
+                {it.text}
+                <Cites {...c} base={`/items/${i}/evidence`} evidence={it.evidence} />
+              </li>
+            ))}
+          </ul>
         </>
       );
   }

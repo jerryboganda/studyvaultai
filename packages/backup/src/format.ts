@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { inflateSync, strFromU8, strToU8, Zip, ZipDeflate, ZipPassThrough } from 'fflate';
+import { Inflate, inflateSync, strFromU8, strToU8, Zip, ZipDeflate, ZipPassThrough } from 'fflate';
 import { IsoDate } from '@shared';
 import { BackupError } from './errors';
 import { concatBytes } from './canonical';
@@ -47,6 +47,11 @@ export const Manifest = z.object({
     includesAttachments: z.boolean(),
     encrypted: z.boolean(),
   }),
+  /**
+   * Set only on a file the "backup folder" feature wrote: the one thing that lets it recognise (and
+   * prune) its own files and never anyone else's. Part of the checksum, absent from other backups.
+   */
+  origin: z.literal('backup-folder').optional(),
   /** SHA-256 of canonicalJson(manifest without this field). */
   checksum: Sha256Hex,
 });
@@ -283,12 +288,36 @@ export function listZip(
   return entries;
 }
 
-/** Decompress exactly one entry. The declared size is checked BEFORE any allocation. */
+/**
+ * Inflate into exactly `size` bytes, in 8 KiB slices of input: a stream that goes past `size` is
+ * abandoned at the first slice that does, so a header that lies (small `size`, huge stream) costs
+ * a few milliseconds and no memory, where `inflateSync` would run the whole stream to its end.
+ */
+function inflateExactly(raw: Uint8Array, size: number): Uint8Array {
+  const out = new Uint8Array(size);
+  let n = 0;
+  const stream = new Inflate((chunk) => {
+    if (n + chunk.length > size) throw new Error('longer than declared');
+    out.set(chunk, n);
+    n += chunk.length;
+  });
+  for (let at = 0; at < raw.length; at += 8192) {
+    stream.push(raw.subarray(at, at + 8192), at + 8192 >= raw.length);
+  }
+  if (n !== size) throw new Error('shorter than declared');
+  return out;
+}
+
+/**
+ * Decompress exactly one entry. The declared size is checked BEFORE any allocation. With `exact`
+ * (files that are not StudyVault's own: imports) the stream must also be exactly that long.
+ */
 export function readZipEntry(
   bytes: Uint8Array,
   entries: Map<string, ZipInfo>,
   name: string,
   maxBytes: number,
+  exact = false,
 ): Uint8Array {
   const info = entries.get(name);
   if (!info) {
@@ -331,7 +360,9 @@ export function readZipEntry(
     const out =
       info.compression === 0
         ? raw.slice()
-        : inflateSync(raw, { out: new Uint8Array(info.originalSize) });
+        : exact
+          ? inflateExactly(raw, info.originalSize)
+          : inflateSync(raw, { out: new Uint8Array(info.originalSize) });
     if (out.length !== info.originalSize) throw new Error('size mismatch');
     return out;
   } catch (cause) {

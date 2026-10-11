@@ -48,6 +48,9 @@ const SCALARS: Record<string, readonly string[]> = {
   ],
   documents: ['pageCount', 'byteLength', 'originalUrl', 'textStatus'],
   ocrPages: ['text', 'words', 'language', 'engine', 'confidence'],
+  // `order` is a rank (a concurrent re-ordering ends with the later write per rule; ties are
+  // broken by age and id), the two flags are on/off switches: all three are short scalars.
+  filingRules: ['enabled', 'order', 'requireConfirm'],
 };
 /** Present on every row of a soft-deletable table; never free text. */
 const ROW_META = ['id', 'createdAt', 'updatedAt', 'deletedAt', 'schemaVersion'];
@@ -72,6 +75,9 @@ describe('sync policy against every registered schema', () => {
         'reviewLogs',
         'documents',
         'ocrPages',
+        'filingRules',
+        'syllabi',
+        'relations',
       ]),
     );
     expect(active.notSynced).toEqual([]);
@@ -123,6 +129,14 @@ describe('sync policy against every registered schema', () => {
     expect(policy.cards!.text).toEqual(expect.arrayContaining(['front', 'back']));
     expect(policy.knowledgePoints!.text).toEqual(
       expect.arrayContaining(['shortOneLiner', 'examPearl', 'misconception', 'claims']),
+    );
+    // organisation records: what a person typed or built is kept on both sides when it conflicts;
+    // what a relation connects never changes
+    expect(policy.filingRules!.text).toEqual(expect.arrayContaining(['name', 'match', 'action']));
+    expect(policy.syllabi!.text).toEqual(expect.arrayContaining(['name', 'nodes']));
+    expect(policy.relations!.text).toContain('note');
+    expect(policy.relations!.immutable).toEqual(
+      expect.arrayContaining(['fromKind', 'fromId', 'toKind', 'toId', 'type']),
     );
   });
 

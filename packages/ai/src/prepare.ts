@@ -3,6 +3,7 @@
 // hash of its output, so the user can only approve exactly what will be transmitted.
 import { candidatePairs } from './candidates';
 import { CHARS_PER_TOKEN, DEFAULT_LIMITS, TEMPLATE_VERSION } from './constants';
+import { chainOf, worstPricing } from './deps';
 import type { PipelineDeps } from './deps';
 import { AiError } from './errors';
 import type { ChunkText } from './grounding';
@@ -16,7 +17,10 @@ import { clip, collapseWhitespace, estimateTokens, sanitizeSourceText } from './
 import { TASKS } from './tasks';
 import type { TaskContext, TaskDef } from './tasks';
 
-export type PrepareDeps = Pick<PipelineDeps, 'provider' | 'sha256' | 'limits' | 'pricing'>;
+export type PrepareDeps = Pick<
+  PipelineDeps,
+  'provider' | 'fallbacks' | 'sha256' | 'limits' | 'pricing'
+>;
 
 export interface Prepared {
   kind: AiTaskKind;
@@ -49,7 +53,7 @@ function invalid(detail: string, issues?: string[]): AiError {
 
 interface Piece {
   id: string;
-  kind: 'highlight' | 'note' | 'question' | 'claim';
+  kind: 'highlight' | 'note' | 'question' | 'claim' | 'history';
   original: string;
   text: string;
   truncated: boolean;
@@ -114,20 +118,32 @@ export async function prepare(
     throw new AiError('input_too_large', { detail: 'too many passages' });
   if (new Set(sel.chunks.map((c) => c.id)).size !== sel.chunks.length)
     throw invalid('duplicate passage id');
-  // `question` and `claim_N` name the non-citeable blocks; a passage must not be able to shadow them.
-  if (sel.chunks.some((c) => c.id === 'question' || /^claim_\d+$/.test(c.id))) {
+  // `question`, `claim_N` and `history_N` name the non-citeable blocks; a passage must not shadow them.
+  if (sel.chunks.some((c) => c.id === 'question' || /^(?:claim|history)_\d+$/.test(c.id))) {
     throw invalid('reserved passage id');
   }
   if (sel.chunks.length < task.minChunks)
     throw invalid(`${kind} needs at least ${task.minChunks} passages`);
   if (kind === 'explain' && !sel.question) throw invalid('explain needs a question');
   if (kind === 'fact_check' && !sel.claims) throw invalid('fact_check needs statements to check');
+  if (sel.history && kind !== 'explain') throw invalid('earlier turns are only used by explain');
 
   const pieces: Piece[] = sel.chunks.map((c) =>
     piece(c.id, c.kind, c.text, limits.maxChunkChars, edits),
   );
   if (pieces.some((p) => p.text.trim() === '')) throw invalid('a passage is empty after cleaning');
   const extras: Piece[] = [];
+  (sel.history ?? []).forEach((h, i) =>
+    extras.push(
+      piece(
+        `history_${i + 1}`,
+        'history',
+        `${h.role === 'user' ? 'The user asked' : 'The assistant answered'}: ${h.text}`,
+        limits.maxChunkChars,
+        edits,
+      ),
+    ),
+  );
   if (kind === 'explain' && sel.question) {
     extras.push(piece('question', 'question', sel.question, limits.maxChunkChars, edits));
   }
@@ -186,7 +202,8 @@ export async function prepare(
       detail: `about ${inputTokens} tokens, limit ${limits.maxInputTokens}`,
     });
   }
-  const pricing = deps.pricing ?? null;
+  const chain = chainOf(deps);
+  const pricing = worstPricing(chain);
   const estimatedCostUsd = !willSend
     ? 0
     : pricing
@@ -219,6 +236,13 @@ export async function prepare(
       v: 1,
       provider: deps.provider.id,
       model: deps.provider.model,
+      origin: deps.provider.origin ?? null,
+      // Only present with fallbacks: every provider that may receive the text, in order.
+      ...(chain.length > 1
+        ? {
+            chain: chain.map((t) => [t.provider.id, t.provider.model, t.provider.origin ?? null]),
+          }
+        : {}),
       kind,
       templateVersion: TEMPLATE_VERSION,
       maxOutputTokens,
@@ -231,6 +255,11 @@ export async function prepare(
     templateVersion: TEMPLATE_VERSION,
     provider: deps.provider.id,
     model: deps.provider.model,
+    recipients: chain.map((t) => ({
+      provider: t.provider.id,
+      model: t.provider.model,
+      ...(t.provider.origin ? { origin: t.provider.origin } : {}),
+    })),
     willSend,
     messages,
     outboundText: renderOutbound(messages),

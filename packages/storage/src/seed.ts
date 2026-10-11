@@ -1,6 +1,7 @@
 import {
   COLOR_IDS,
   HIGHLIGHT_KINDS,
+  MAX_FOLDER_DEPTH,
   SCHEMA_VERSION,
   type Folder,
   type Highlight,
@@ -77,7 +78,7 @@ export async function seedVault(db: StudyVaultDb, options: SeedOptions): Promise
   const pick = <T>(list: readonly T[]): T => list[Math.floor(random() * list.length)]!;
   const bankCount = options.banks ?? 12;
   const perBank = options.foldersPerBank ?? 20;
-  const depth = Math.max(1, Math.min(options.folderDepth ?? 4, 8));
+  const depth = Math.max(1, Math.min(options.folderDepth ?? 4, MAX_FOLDER_DEPTH));
   const tagCount = options.tags ?? 40;
   const sourceCount = options.sources ?? Math.max(1, Math.ceil(options.highlights / 50));
   const noteEvery = options.noteEvery ?? 10;

@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { Suspense, lazy, useCallback, useState } from 'react';
 import { browser } from 'wxt/browser';
 import {
   Button,
@@ -23,6 +23,9 @@ import { Analytics } from './Analytics';
 import { Author } from './Author';
 import { CardBrowser } from './CardBrowser';
 import { StudyView } from './StudyView';
+
+// The exam view and its storage helpers are only needed on the Exam tab: a chunk of their own.
+const ExamView = lazy(() => import('./Exam').then((m) => ({ default: m.ExamView })));
 
 /** Where focus goes when a toast that held it closes: the panel content, never <body>. */
 const content = () => document.querySelector<HTMLElement>('[role="tabpanel"], main');
@@ -82,7 +85,7 @@ function Page() {
 
   // One tree for every state: a running session hides the navigation with CSS instead of
   // swapping the tree, because swapping would remount the study view and drop the session on screen.
-  const focused = focusMode && view === 'study';
+  const focused = focusMode && (view === 'study' || view === 'exam');
 
   return (
     <div
@@ -110,6 +113,7 @@ function Page() {
         label="Review sections"
         tabs={[
           { id: 'study', label: 'Study' },
+          { id: 'exam', label: 'Exam' },
           { id: 'create', label: 'Create cards' },
           { id: 'cards', label: 'Cards' },
           { id: 'analytics', label: 'Analytics' },
@@ -127,6 +131,11 @@ function Page() {
               onFocusMode={setFocusMode}
               onNavigate={select}
             />
+          ) : null}
+          {view === 'exam' ? (
+            <Suspense fallback={<p className="sv-muted">Loading…</p>}>
+              <ExamView settings={settings} onFocusMode={setFocusMode} />
+            </Suspense>
           ) : null}
           {view === 'create' ? <Author initialHighlightId={link.highlightId ?? null} /> : null}
           {view === 'cards' ? <CardBrowser settings={settings} /> : null}

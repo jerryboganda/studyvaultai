@@ -150,8 +150,15 @@ export function studyDayNumber(ms: number, boundary: DayBoundary): number {
  * first occurrence; a non-existent one (clocks go forward) resolves to the instant the gap ends.
  */
 export function studyDayStartMs(dayNumber: number, boundary: DayBoundary): number {
-  const wall = dayNumber * DAY_MS + boundary.rolloverHour * HOUR_MS;
-  const tz = boundary.timeZone;
+  return wallClockToMs(dayNumber * DAY_MS + boundary.rolloverHour * HOUR_MS, boundary.timeZone);
+}
+
+/**
+ * The instant at which the wall clock of `tz` reads `wall` (a local date and time written as if it
+ * were UTC milliseconds). DST-safe the way `studyDayStartMs` is: the first of two occurrences, and
+ * the instant the gap ends when the local time does not exist.
+ */
+export function wallClockToMs(wall: number, tz: string): number {
   const t1 = wall - tzOffsetMs(wall - DAY_MS, tz);
   const t2 = wall - tzOffsetMs(wall + DAY_MS, tz);
   const valid = [t1, t2].filter((t) => t + tzOffsetMs(t, tz) === wall);
@@ -170,6 +177,34 @@ export function studyDayStartMs(dayNumber: number, boundary: DayBoundary): numbe
 /** Local calendar date (YYYY-MM-DD) that labels a study day. */
 export const studyDayKey = (dayNumber: number): string =>
   new Date(dayNumber * DAY_MS).toISOString().slice(0, 10);
+
+// ---------------------------------------------------------------------------------------------
+// Daily reminder time
+// ---------------------------------------------------------------------------------------------
+
+/** "HH:MM", 24-hour and zero-padded: what an `<input type="time">` produces. */
+export const TIME_OF_DAY = /^([01]\d|2[0-3]):([0-5]\d)$/;
+
+/**
+ * The first instant strictly after `now` at which the wall clock of `timeZone` reads `timeOfDay`.
+ * DST follows `wallClockToMs`: a time that does not exist that day (clocks go forward) is the
+ * instant the gap ends, and a time that happens twice (clocks go back) is its first occurrence, so
+ * a daily reminder fires exactly once per calendar day.
+ */
+export function nextReminderAt(now: DateInput, timeZone: string, timeOfDay: string): number {
+  const parts = TIME_OF_DAY.exec(timeOfDay);
+  if (!parts) throw new RangeError(`Invalid time of day: ${timeOfDay}`);
+  if (!isValidTimeZone(timeZone)) throw new RangeError(`Invalid time zone: ${timeZone}`);
+  const ms = toMs(now);
+  const sinceMidnight = Number(parts[1]) * HOUR_MS + Number(parts[2]) * MINUTE_MS;
+  const today = Math.floor((ms + tzOffsetMs(ms, timeZone)) / DAY_MS);
+  // Today's occurrence may have passed; a calendar day is at most 25 hours, so tomorrow's cannot.
+  for (let day = today; day <= today + 2; day++) {
+    const at = wallClockToMs(day * DAY_MS + sinceMidnight, timeZone);
+    if (at > ms) return at;
+  }
+  throw new RangeError(`No occurrence of ${timeOfDay} found in ${timeZone}`);
+}
 
 // ---------------------------------------------------------------------------------------------
 // Labels

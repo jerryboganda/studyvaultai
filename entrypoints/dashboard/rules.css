@@ -1,0 +1,134 @@
+/* Filing rules (docs/adr/017-filing-rules.md): the manager, its dialog and the test panel.
+   Tokens only; no raw colours. Reflows to one column at 320 px. */
+
+.rule-top {
+  align-items: flex-start;
+}
+.rule-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.rule-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+  padding: var(--sv-space-3);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface);
+}
+.rule-row[data-enabled='false'] .rule-row__head strong {
+  color: var(--sv-text-muted);
+}
+.rule-row__head {
+  align-items: center;
+}
+.rule-row__rank {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  min-height: 24px;
+  border: 1px solid var(--sv-border-strong);
+  border-radius: 999px;
+  font-size: var(--sv-text-xs);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.rule-row__switch {
+  align-items: center;
+  min-height: 24px;
+}
+
+.rule-fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-3);
+  min-width: 0;
+  margin: 0;
+  padding: var(--sv-space-3);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+}
+.rule-fieldset > legend {
+  padding: 0 var(--sv-space-1);
+  font-weight: 700;
+}
+.rule-fieldset--inner {
+  border-style: dashed;
+}
+.rule-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sv-space-2) var(--sv-space-4);
+}
+
+.rule-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sv-space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.rule-chip {
+  align-items: center;
+  padding-inline-end: 0;
+}
+.rule-chip__x {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--sv-text);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.rule-chip__x:hover {
+  background: var(--sv-border);
+}
+.rule-chip-input {
+  flex: 1 1 12rem;
+  min-width: 0;
+  width: auto;
+}
+.rule-problem {
+  margin: 0;
+  color: var(--sv-danger);
+  font-weight: 600;
+}
+
+.rule-tester {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-3);
+  padding-top: var(--sv-space-4);
+  border-top: 1px solid var(--sv-border);
+}
+.rule-test-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-1);
+  margin: 0;
+  padding-inline-start: var(--sv-space-5);
+}
+
+@media (max-width: 480px) {
+  .rule-row .sv-btn {
+    flex: 1 1 auto;
+  }
+}
+@media (forced-colors: active) {
+  .rule-row,
+  .rule-fieldset,
+  .rule-row__rank {
+    border-color: CanvasText;
+  }
+}

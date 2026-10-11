@@ -2,11 +2,13 @@
 import 'fake-indexeddb/auto';
 import Dexie from 'dexie';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { MAX_FOLDER_DEPTH } from '@shared';
 import { getDb } from './db';
 import { createFolder } from './hierarchy';
 import { addToBank } from './membership';
 import { attachTags, renameTag, createTag } from './tags';
 import { createBank, saveCapture } from './repo';
+import { listHighlights } from './query';
 import { listSearchDocuments, listSearchDocumentsChangedSince } from './search';
 import { cap } from './test-fixtures';
 import { freshDatabase, save } from './test-vault';
@@ -193,6 +195,30 @@ describe('writers stamp when their transaction holds its lock', () => {
 });
 
 describe('listSearchDocuments: bank, folder and tag facets', () => {
+  it('keeps the whole path of a chain at the depth limit (search feed and dashboard list)', async () => {
+    const bank = await createBank('Deep');
+    const names: string[] = [];
+    let parentFolderId: string | undefined;
+    for (let level = 1; level <= MAX_FOLDER_DEPTH; level++) {
+      const folder = await createFolder({
+        bankId: bank.id,
+        name: `Level ${level}`,
+        ...(parentFolderId ? { parentFolderId } : {}),
+      });
+      names.push(folder.name);
+      parentFolderId = folder.id;
+    }
+    const h = await save('Quote at the bottom of the chain', { bankId: bank.id });
+    await addToBank({ highlightId: h.id, bankId: bank.id, folderId: parentFolderId! });
+
+    const doc = (await listSearchDocuments()).find((d) => d.id === h.id)!;
+    expect(doc.folderPath).toEqual(names);
+    const item = (await listHighlights({ bankId: bank.id })).items.find(
+      (i) => i.highlight.id === h.id,
+    )!;
+    expect(item.locations[0]!.folderPath.map((f) => f.name)).toEqual(names);
+  });
+
   it('names a deep folder chain, several banks and tags; a trashed parent cuts the path', async () => {
     const cardio = await createBank('Cardiology');
     const neuro = await createBank('Neurology');

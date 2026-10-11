@@ -3,6 +3,8 @@ import {
   deserializeSearchIndex,
   type ApplyResult,
   type LoadResult,
+  type RelatedOptions,
+  type RelatedResult,
   type SearchIndex,
   type SearchOptions,
   type SearchResult,
@@ -175,6 +177,13 @@ export class SearchHost {
     const index = this.index;
     if (!index) throw new Error('The search index is not ready yet.');
     return index.search(query, options);
+  }
+
+  /** Highlights that share words with one highlight; throws, like `search`, while not ready. */
+  related(id: string, options?: RelatedOptions): RelatedResult {
+    const index = this.index;
+    if (!index) throw new Error('The search index is not ready yet.');
+    return index.related(id, options);
   }
 
   /** Restore (or build) the index. Safe to call again after an error. */

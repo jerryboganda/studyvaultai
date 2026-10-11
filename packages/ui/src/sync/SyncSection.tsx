@@ -282,6 +282,12 @@ function SetupForm({
         >
           Turn on sync&hellip;
         </Button>
+        {turnOn.busy ? (
+          <span className="sv-small sv-muted" role="status" data-testid="sync-enable-status">
+            Turning on sync… Chrome may ask you to allow access to the server and the sign-in
+            provider first.
+          </span>
+        ) : null}
       </div>
       {declined ? (
         <InlineNotice tone="warning" title="Chrome did not grant the permissions">
@@ -694,6 +700,11 @@ function Connected({
           >
             Delete my data from the server&hellip;
           </Button>
+          {turnOff.busy ? (
+            <span className="sv-small sv-muted" role="status" data-testid="sync-disable-status">
+              Turning sync off…
+            </span>
+          ) : null}
         </div>
         <p className="sv-muted sv-small">
           Turning sync off keeps everything on this device and removes the sign-in from this

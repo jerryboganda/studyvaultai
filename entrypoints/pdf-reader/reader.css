@@ -62,6 +62,10 @@ body,
 .sv-doc__head {
   padding: var(--sv-space-2) var(--sv-space-4) 0;
 }
+.sv-doc__keys {
+  margin: 0;
+  padding: var(--sv-space-1) var(--sv-space-4);
+}
 .sv-doc__title {
   overflow: hidden;
   text-overflow: ellipsis;

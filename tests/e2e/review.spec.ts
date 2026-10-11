@@ -690,7 +690,11 @@ test.describe('study session', () => {
     expect(source.url()).toBe(`${ctx.origin}/review-physiology.html`);
     if (hasPersistentAccess(ctx)) {
       // The content script is registered for the origin: the passage is found and shown.
-      await expect(page.getByText('Opened the source and showed the passage.')).toBeVisible();
+      // The product waits up to 30 s for the tab and 20 s more for the passage (jump.ts); a slow CI
+      // runner can use a good part of that, so the test allows the same 50 s plus a margin.
+      await expect(page.getByText('Opened the source and showed the passage.')).toBeVisible({
+        timeout: 60_000,
+      });
       await expect
         .poll(() =>
           source.evaluate(() =>

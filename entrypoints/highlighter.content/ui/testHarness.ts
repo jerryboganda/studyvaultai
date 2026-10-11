@@ -1,6 +1,7 @@
 /** Test-only helpers for the overlay (never imported by production code). */
+import { configure, createEvent, fireEvent, within } from '@testing-library/dom';
+import { act as preactAct } from 'preact/test-utils';
 import { vi } from 'vitest';
-import { act, within } from '@testing-library/react';
 import {
   defaultSettings,
   type AnchorSet,
@@ -11,6 +12,54 @@ import {
 } from '@shared';
 import type { CaptureHost, CaptureUi } from '../contract';
 import { mountCaptureUi } from './mount';
+
+/** One macrotask turn: every promise continuation already queued has run when it resolves. */
+function macrotask(): Promise<void> {
+  return new Promise((resolve) => {
+    const { port1, port2 } = new MessageChannel();
+    port1.onmessage = () => {
+      port1.close();
+      resolve();
+    };
+    port2.postMessage(null);
+  });
+}
+
+/**
+ * The overlay renders with Preact (docs/adr/012; vitest.config.ts routes its `react` imports there),
+ * so the tests drive Preact's act instead of React Testing Library's. A synchronous callback is
+ * flushed (renders, then effects) before it returns. An async one also waits for the promise chain
+ * it started to run out, as React's act does: Preact's returns as soon as the callback's own promise
+ * settles, and an `.then()` chained on that promise would still be pending.
+ */
+export function act(callback: () => Promise<unknown>): Promise<void>;
+export function act(callback: () => void): void;
+export function act(callback: () => unknown): Promise<void> | void {
+  let returned: unknown;
+  const flushed = preactAct(() => {
+    returned = callback();
+    return returned as void | Promise<void>;
+  });
+  if (typeof (returned as { then?: unknown } | null)?.then !== 'function') return;
+  return flushed.then(async () => {
+    await macrotask();
+    await preactAct(() => undefined);
+  });
+}
+
+// Every event the Testing Library helpers (and user-event) dispatch is delivered inside act, so the
+// DOM is up to date when the call returns.
+configure({
+  eventWrapper: (dispatch) => {
+    let result: unknown;
+    act(() => {
+      result = dispatch();
+    });
+    return result;
+  },
+});
+
+export { createEvent, fireEvent, within };
 
 export const INBOX: BankLite = { id: 'inbox-default', name: 'Inbox', color: 'blue', isInbox: true };
 export const BIOLOGY: BankLite = {

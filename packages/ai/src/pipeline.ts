@@ -9,17 +9,19 @@ import {
   DEFAULT_TIMEOUT_MS,
   FACT_CHECK_SCOPE_NOTICE,
   MAX_RETRY_WAIT_MS,
+  MNEMONIC_NOTICE,
   TEMPLATE_VERSION,
   UNSUPPORTED_NOTICE,
   UNVERIFIED_NOTICE,
 } from './constants';
-import { createCoordinator } from './deps';
-import type { PipelineDeps } from './deps';
+import { chainOf, createCoordinator } from './deps';
+import type { ChainTarget, PipelineDeps, Pricing } from './deps';
 import { AiError, isAiError } from './errors';
+import type { AiErrorCode } from './errors';
 import { citationsFrom, groundClaims, pairKey } from './grounding';
 import { repairMessages } from './prompt';
 import type { Message } from './prompt';
-import type { AiCompletion } from './providers';
+import type { AiCompletion, AiProvider } from './providers';
 import { prepare } from './prepare';
 import type { Prepared } from './prepare';
 import type { RedactionEdits } from './redact';
@@ -133,6 +135,7 @@ function toAiError(e: unknown, deps: PipelineDeps): AiError {
 
 async function attempt(
   deps: PipelineDeps,
+  provider: AiProvider,
   messages: readonly Message[],
   maxOutputTokens: number,
   signal: AbortSignal | undefined,
@@ -153,7 +156,7 @@ async function attempt(
   );
   try {
     return await Promise.race([
-      deps.provider.complete({ messages, maxOutputTokens, json: true }, { signal: call.signal }),
+      provider.complete({ messages, maxOutputTokens, json: true }, { signal: call.signal }),
       deadline,
     ]);
   } catch (e) {
@@ -170,29 +173,58 @@ interface Tally {
   requests: number;
   inputTokens: number;
   outputTokens: number;
+  /** Tokens by position in the chain, so each provider's own price list prices its own attempts. */
+  by: { inputTokens: number; outputTokens: number }[];
 }
 
-async function callWithRetry(
+/** Failures that say "this endpoint is not answering": the only ones another provider may take over. */
+const FALLBACK_CODES: ReadonlySet<AiErrorCode> = new Set(['network', 'server_error', 'timeout']);
+
+/** True for the failure classes another provider may take over (never auth, quota, rate limit, refusal). */
+export const failsOver = (code: AiErrorCode): boolean => FALLBACK_CODES.has(code);
+
+/** Attempts a provider gets before the next one is used, when there is a next one. */
+const ATTEMPTS_BEFORE_FALLBACK = 2;
+
+/** The providers of one run. `at` is the one that answered last; the repair call continues from it. */
+interface Chain {
+  targets: readonly ChainTarget[];
+  at: number;
+  /** Called before another provider is tried: an error when the budget has no room for one more request. */
+  gate?: () => AiError | null;
+}
+
+async function callProvider(
   deps: PipelineDeps,
+  chain: Chain,
   messages: readonly Message[],
   maxOutputTokens: number,
   signal: AbortSignal | undefined,
   tally: Tally,
 ): Promise<AiCompletion> {
+  const index = chain.at;
+  const provider = chain.targets[index]!.provider;
   const r = deps.retry ?? {};
-  const maxAttempts = r.maxAttempts ?? 3;
+  const configured = r.maxAttempts ?? 3;
+  const maxAttempts =
+    index < chain.targets.length - 1 ? Math.min(configured, ATTEMPTS_BEFORE_FALLBACK) : configured;
   const base = r.baseDelayMs ?? 500;
   const cap = r.maxDelayMs ?? 8_000;
   const maxWait = r.maxRetryWaitMs ?? MAX_RETRY_WAIT_MS;
   for (let n = 1; ; n++) {
     tally.requests++;
     try {
-      const c = await attempt(deps, messages, maxOutputTokens, signal);
+      const c = await attempt(deps, provider, messages, maxOutputTokens, signal);
       // Providers that omit usage must not make the budget look free: fall back to a size estimate.
       const sentChars = messages.reduce((n, m) => n + m.content.length, 0);
       const replyChars = c.text?.length ?? JSON.stringify(c.json ?? null).length;
-      tally.inputTokens += c.usage.inputTokens || estimateTokens(sentChars);
-      tally.outputTokens += c.usage.outputTokens || estimateTokens(replyChars);
+      const inputTokens = c.usage.inputTokens || estimateTokens(sentChars);
+      const outputTokens = c.usage.outputTokens || estimateTokens(replyChars);
+      tally.inputTokens += inputTokens;
+      tally.outputTokens += outputTokens;
+      const by = (tally.by[index] ??= { inputTokens: 0, outputTokens: 0 });
+      by.inputTokens += inputTokens;
+      by.outputTokens += outputTokens;
       return c;
     } catch (e) {
       const err = toAiError(e, deps);
@@ -212,13 +244,63 @@ async function callWithRetry(
   }
 }
 
+/**
+ * One call with the configured retry policy, moving to the next provider of the chain only when the
+ * current one is not answering (network, 5xx, timeout) after its attempts. Every attempt on every
+ * provider is counted in `tally`; each provider sees exactly the previewed messages.
+ */
+async function callWithRetry(
+  deps: PipelineDeps,
+  chain: Chain,
+  messages: readonly Message[],
+  maxOutputTokens: number,
+  signal: AbortSignal | undefined,
+  tally: Tally,
+): Promise<AiCompletion> {
+  const first = chain.at;
+  for (;;) {
+    try {
+      return await callProvider(deps, chain, messages, maxOutputTokens, signal, tally);
+    } catch (e) {
+      const err = toAiError(e, deps);
+      const last = chain.at >= chain.targets.length - 1;
+      if (last || !FALLBACK_CODES.has(err.code)) {
+        const tried = chain.at - first + 1;
+        if (tried < 2) throw err;
+        throw new AiError(err.code, {
+          ...(err.status !== undefined ? { status: err.status } : {}),
+          ...(err.retryAfterMs !== undefined ? { retryAfterMs: err.retryAfterMs } : {}),
+          detail: `${err.detail ? `${err.detail}; ` : ''}tried ${tried} providers`,
+          ...(err.issues !== undefined ? { issues: err.issues } : {}),
+        });
+      }
+      const stop = chain.gate?.();
+      if (stop) throw stop;
+      chain.at++;
+      deps.log?.({
+        event: 'fallback',
+        detail: `${err.code}, trying ${chain.targets[chain.at]!.provider.id}`,
+      });
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------------------------
 
-function costOf(deps: PipelineDeps, inputTokens: number, outputTokens: number): number | null {
-  const p = deps.pricing;
-  return p
-    ? (inputTokens * p.inputUsdPerMTok + outputTokens * p.outputUsdPerMTok) / 1_000_000
-    : null;
+const priceOf = (p: Pricing, inputTokens: number, outputTokens: number) =>
+  (inputTokens * p.inputUsdPerMTok + outputTokens * p.outputUsdPerMTok) / 1_000_000;
+
+/**
+ * What the attempts cost by each provider's own price list. `known` is false as soon as a provider of
+ * the chain has none (the ledger still gets the part that is known, like before).
+ */
+function costOf(targets: readonly ChainTarget[], tally: Tally): { usd: number; known: boolean } {
+  let usd = 0;
+  targets.forEach((t, i) => {
+    const by = tally.by[i];
+    if (t.pricing && by) usd += priceOf(t.pricing, by.inputTokens, by.outputTokens);
+  });
+  return { usd, known: targets.every((t) => t.pricing !== null) };
 }
 
 async function fingerprintOf(p: Prepared, deps: PipelineDeps): Promise<string> {
@@ -241,6 +323,8 @@ function buildResult(
   fingerprint: string,
   modelData: unknown,
   usage: Usage,
+  /** The provider that answered: with fallbacks it is not always the one consent names first. */
+  answered: AiProvider,
 ): AiResult {
   const normalized = p.task.normalize(modelData, p.ctx);
   const claims = p.task.claims(normalized, p.ctx);
@@ -263,14 +347,15 @@ function buildResult(
   const notices = [UNVERIFIED_NOTICE];
   if (p.ctx.clinical) notices.push(CLINICAL_NOTICE);
   if (p.kind === 'fact_check') notices.push(FACT_CHECK_SCOPE_NOTICE);
+  if (p.kind === 'mnemonic') notices.push(MNEMONIC_NOTICE);
   if (unsupported) notices.push(UNSUPPORTED_NOTICE);
   const candidate = {
     id: deps.randomId(),
     kind: p.kind,
     inputSourceIds: p.ctx.chunkIds,
     inputFingerprint: fingerprint,
-    provider: deps.provider.id,
-    model: deps.provider.model,
+    provider: answered.id,
+    model: answered.model,
     templateVersion: TEMPLATE_VERSION,
     output: checked.data,
     citations: citationsFrom(claims, grounding, p.chunkTexts),
@@ -316,7 +401,8 @@ async function execute(
   consent: ConsentToken,
   fingerprint: string,
 ): Promise<RunOutcome> {
-  const tally: Tally = { requests: 0, inputTokens: 0, outputTokens: 0 };
+  const tally: Tally = { requests: 0, inputTokens: 0, outputTokens: 0, by: [] };
+  const chain: Chain = { targets: chainOf(deps), at: 0 };
   let budget: BudgetState | null = null;
   if (opts.budget) {
     budget = rollover(opts.budget.state, deps.now());
@@ -328,11 +414,18 @@ async function execute(
   }
   const spend = (): BudgetState | undefined =>
     budget
-      ? recordSpend(budget, deps.now(), {
-          ...tally,
-          costUsd: costOf(deps, tally.inputTokens, tally.outputTokens),
-        })
+      ? recordSpend(budget, deps.now(), { ...tally, costUsd: costOf(chain.targets, tally).usd })
       : undefined;
+  // Another provider is another request: it only goes out while the daily budget has room for it.
+  chain.gate = () => {
+    const after = spend();
+    if (!after || !opts.budget) return null;
+    const d = checkBudget(after, opts.budget.limits, deps.now(), {
+      requests: 1,
+      estimatedCostUsd: p.preview.estimate.estimatedCostUsd,
+    });
+    return d.ok ? null : new AiError('budget_exceeded', { detail: d.reason });
+  };
   const fail = (e: unknown): never => {
     const err = toAiError(e, deps);
     const after = spend();
@@ -347,7 +440,14 @@ async function execute(
   };
 
   try {
-    let completion = await callWithRetry(deps, p.messages, p.maxOutputTokens, opts.signal, tally);
+    let completion = await callWithRetry(
+      deps,
+      chain,
+      p.messages,
+      p.maxOutputTokens,
+      opts.signal,
+      tally,
+    );
     let parsed = parseReply(completion);
     let validated = parsed.ok ? validateModel(p, parsed.value) : parsed;
     if (!validated.ok) {
@@ -356,6 +456,7 @@ async function execute(
       const bad = completion.text ?? JSON.stringify(completion.json ?? null);
       completion = await callWithRetry(
         deps,
+        chain,
         repairMessages(p.messages, bad, validated.issues),
         p.maxOutputTokens,
         opts.signal,
@@ -365,12 +466,14 @@ async function execute(
       validated = parsed.ok ? validateModel(p, parsed.value) : parsed;
       if (!validated.ok) throw new AiError('invalid_output', { issues: validated.issues });
     }
+    const cost = costOf(chain.targets, tally);
     const usage: Usage = {
       inputTokens: tally.inputTokens,
       outputTokens: tally.outputTokens,
-      estimatedCostUsd: costOf(deps, tally.inputTokens, tally.outputTokens),
+      estimatedCostUsd: cost.known ? cost.usd : null,
     };
-    const result = buildResult(p, deps, consent, fingerprint, validated.data, usage);
+    const answered = chain.targets[chain.at]!.provider;
+    const result = buildResult(p, deps, consent, fingerprint, validated.data, usage, answered);
     try {
       await deps.cache?.put(result);
     } catch {
@@ -434,7 +537,15 @@ export async function runTask(
 
   if (!p.willSend) {
     // e.g. no contradiction candidates: the answer is computed locally and nothing is transmitted.
-    const result = buildResult(p, deps, consent, fingerprint, p.task.empty(p.ctx), zeroUsage);
+    const result = buildResult(
+      p,
+      deps,
+      consent,
+      fingerprint,
+      p.task.empty(p.ctx),
+      zeroUsage,
+      deps.provider,
+    );
     return { result, budget: budgetIn, cacheHit: false, coalesced: false, attempts: 0 };
   }
 

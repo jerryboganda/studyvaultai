@@ -58,6 +58,9 @@ export const BACKUP_TABLES = [
   'aiResults',
   'documents',
   'ocrPages',
+  'filingRules',
+  'syllabi',
+  'relations',
   // Rows hold Blob values: compared by size and type.
   'attachments',
 ] as const;

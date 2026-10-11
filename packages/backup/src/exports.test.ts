@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { unzipSync } from 'fflate';
+import { MAX_FOLDER_DEPTH } from '@shared';
 import { exportAnki, toAnkiCloze } from './anki';
 import { csvCell, exportHighlightsCsv, exportHighlightsJson, parseCsv, toCsv } from './csv';
 import { exportDataset, INJECTION_QUOTE } from './exportData';
@@ -120,6 +121,25 @@ describe('Markdown export', () => {
     expect(text).toMatch(/text offset \d+\u2013\d+/);
     expect(text).toContain('#heart-failure');
     expect(text).toContain('#t2026'); // purely numeric tags are not valid Markdown tags
+  });
+
+  it('keeps a TeX note body exactly as written while captured text cannot add math (ADR-015)', () => {
+    const body = String.raw`Energy: $E_k = \frac{1}{2} m v^2$ and
+
+$$
+\sum_{i=1}^{n} a_i * b_i
+$$`;
+    const base = exportDataset();
+    const data = {
+      ...base,
+      notes: (base.notes ?? []).map((n, i) => (i === 0 ? { ...n, body } : n)),
+    };
+    const text = asText(exportMarkdown(data, { exportedAt: EXPORTED_AT }));
+    // The note is the user's own Markdown: no escaping of its dollar signs, underscores or stars.
+    expect(text).toContain(body);
+    // A quote taken from a page is not: its `$x$` is escaped, so it renders as literal text.
+    expect(text).toContain('\\$x\\$');
+    expect(text).not.toMatch(/(?<!\\)\$x\$/);
   });
 
   it('omits soft-deleted highlights and banks unless asked', () => {
@@ -272,6 +292,42 @@ describe('CSV', () => {
     }[];
     expect(j).toHaveLength(6);
     expect(j.find((h) => h.id === 'hl-0007')?.banks).toHaveLength(2);
+  });
+});
+
+describe('folder paths', () => {
+  it('follow a chain as deep as the vault allows, in the CSV and JSON views', () => {
+    const base = exportDataset();
+    const folders = [...(base.folders ?? [])];
+    const names: string[] = [];
+    let parent: string | null = null;
+    for (let level = 1; level <= MAX_FOLDER_DEPTH; level++) {
+      folders.push({
+        id: `deep-${level}`,
+        bankId: 'bank-cardio',
+        parentFolderId: parent,
+        name: `Level ${level}`,
+        position: 0,
+        deletedAt: null,
+      });
+      names.push(`Level ${level}`);
+      parent = `deep-${level}`;
+    }
+    const data = {
+      ...base,
+      folders,
+      highlightBanks: base.highlightBanks.map((m) =>
+        m.highlightId === 'hl-0004' ? { ...m, folderId: parent } : m,
+      ),
+    };
+    const json = JSON.parse(exportHighlightsJson(data)) as {
+      id: string;
+      banks: { folder: string[] }[];
+    }[];
+    expect(json.find((h) => h.id === 'hl-0004')?.banks[0]?.folder).toEqual(names);
+    const rows = parseCsv(exportHighlightsCsv(data));
+    const folderColumn = rows[0]!.indexOf('folder');
+    expect(rows.some((r) => r[folderColumn] === names.join(' / '))).toBe(true);
   });
 });
 

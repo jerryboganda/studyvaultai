@@ -27,10 +27,14 @@ export type AiDraft =
       highlightId: string | null;
     };
 
-/** Markdown-significant characters are escaped: model text stays inert text inside a note. */
+/**
+ * Markdown-significant characters are escaped: model text stays inert text inside a note. `$` is one
+ * of them (ADR-015): a `$...$` in model or quoted text must not turn into a math span, and inside a
+ * span these backslashes would be shown as typed. Written by hand, the note can still use `$...$`.
+ */
 const esc = (s: string): string =>
   s
-    .replace(/[\\`*_[\]<>#|]/g, '\\$&')
+    .replace(/[\\`*_[\]<>#|$]/g, '\\$&')
     .replace(/\s+/g, ' ')
     .trim();
 const clip = (s: string, n: number): string => (s.length <= n ? s : `${s.slice(0, n - 1)}…`);
@@ -118,6 +122,28 @@ export function toMarkdown(result: WithQuestion, sources: Sources): string {
         body.push(`- **${esc(c.claim)}**: ${c.label.replace(/_/g, ' ')}. ${esc(c.explanation)}`);
       }
       break;
+    case 'mnemonic':
+      for (const a of result.output.aids) {
+        body.push(`- **Memory aid, not a fact:** ${esc(a.mnemonic)}`);
+        body.push(`  - How it works: ${esc(a.howItWorks)}`);
+        const q = quoteOf(sources, a.evidence[0]?.quoteId ?? '');
+        body.push(
+          q ? `  - Anchored to: > ${esc(clip(q, 300))}` : `  - Anchored to: ${esc(a.fact)}`,
+        );
+      }
+      break;
+    case 'short_viva':
+      result.output.questions.forEach((q, i) => {
+        body.push(`## Question ${i + 1}`, '', esc(q.question), '');
+        body.push(`**Model answer (a draft to check):** ${esc(q.modelAnswer)}`, '');
+      });
+      break;
+    case 'study_outline':
+      body.push(`# ${esc(result.output.title)}`, '');
+      for (const it of result.output.items) {
+        body.push(`${'  '.repeat(it.level - 1)}- ${esc(it.text)}`);
+      }
+      break;
     default:
       body.push('(no text)');
   }
@@ -129,6 +155,9 @@ const NOTE_TITLES: Partial<Record<AiResult['kind'], string>> = {
   explain: 'AI answer',
   contradictions: 'AI contradiction check',
   fact_check: 'AI statement check',
+  mnemonic: 'AI memory aids',
+  short_viva: 'AI viva questions',
+  study_outline: 'AI study outline',
 };
 
 export function initialDraft(result: WithQuestion, path: string, sources: Sources): AiDraft {
