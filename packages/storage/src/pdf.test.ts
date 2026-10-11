@@ -537,8 +537,13 @@ describe('storage usage and wiping', () => {
     await wipeAllData();
 
     const after = await getStorageUsage();
-    expect(after.totalRows).toBe(0);
-    expect(Object.values(after.rows).every((n) => n === 0)).toBe(true);
+    // Every table is empty but one row: the search-index generation that tells open pages to drop
+    // the text they hold (an opaque token, no content).
+    expect(Object.entries(after.rows).filter(([name, n]) => name !== 'meta' && n !== 0)).toEqual(
+      [],
+    );
+    expect((await getDb().meta.toArray()).map((r) => r.key)).toEqual(['searchIndexStale']);
+    expect(after.totalRows).toBe(1);
     expect(await fakeBrowser.storage.local.get('settings')).toEqual({});
     // And the recreated database is a normal, writable database.
     expect((await save('After the wipe')).bankIds).toEqual([INBOX_BANK_ID]);

@@ -8,6 +8,7 @@ import {
   normalizeHost,
   normalizeUrl,
   originPattern,
+  parseHttpUrl,
   redactUrl,
   sameSite,
   sourceKeys,
@@ -148,9 +149,241 @@ describe('credentials never become part of an address', () => {
       expect(normalizeUrl(`https://x.test/p?${name}=v&id=7`), name).toBe('https://x.test/p?id=7');
     }
     // Look-alikes are page identity.
-    expect(normalizeUrl('https://x.test/p?tokens=1&keyword=a&codes=2')).toBe(
-      'https://x.test/p?codes=2&keyword=a&tokens=1',
+    expect(normalizeUrl('https://x.test/p?keyword=a&codes=2&author=x')).toBe(
+      'https://x.test/p?author=x&codes=2&keyword=a',
     );
+  });
+
+  // Every spelling of a credential-like name, as page and API authors really write them.
+  const SECRET_NAMES = [
+    'access-token',
+    'accessToken',
+    'ACCESS_TOKEN',
+    'auth_token',
+    'authToken',
+    'jwt',
+    'bearer',
+    'sid',
+    'session_token',
+    'PHPSESSID',
+    'JSESSIONID',
+    'x-api-key',
+    'client_secret',
+    'secret_key',
+    'csrf_token',
+    'xsrf-token',
+    'otp',
+    'pwd',
+    'passwd',
+    'ticket',
+    'AWSAccessKeyId',
+    'awsaccesskeyid',
+    'Key-Pair-Id',
+    'Authorization',
+    'auth_code',
+    'verification_code',
+    'code_verifier',
+    'sig',
+    'Signature',
+    'oauth_token',
+    'credentials',
+    'X_Amz_Security_Token',
+    'x-goog-credential',
+    'api.key',
+    'user[token]',
+    '%74oken',
+  ];
+
+  // Page identity and navigation state: they must stay readable and keep the page apart.
+  const KEEP_NAMES = [
+    'medium',
+    'page',
+    'q',
+    'id',
+    'v',
+    't',
+    'sort',
+    'author',
+    'keyword',
+    'keywords',
+    'design',
+    'signup',
+    'signal',
+    'assessment',
+    'inside',
+    'side',
+    'passage',
+    'encode',
+    'codes',
+    'zipcode',
+    'postcode',
+    'code_challenge',
+    'authuser',
+    'lang',
+    'topic',
+    'course_id',
+    'userId',
+    'section',
+    'state',
+  ];
+
+  it.each(SECRET_NAMES)('redacts the parameter %s everywhere an address is stored', (name) => {
+    const url = `https://x.test/p?${name}=SECRETVALUE&id=7#/r?${name}=SECRETVALUE&step=2`;
+    expect(redactUrl(url)).toBe('https://x.test/p?id=7#/r?step=2');
+    expect(normalizeUrl(url)).toBe('https://x.test/p?id=7#/r?step=2');
+    expect(sourceKeys(url, null)).toEqual({
+      urlKey: 'https://x.test/p?id=7#/r?step=2',
+      visitedKey: 'https://x.test/p?id=7#/r?step=2',
+    });
+  });
+
+  it.each(KEEP_NAMES)('keeps the parameter %s readable', (name) => {
+    const url = `https://x.test/p?${name}=v#/r?${name}=v`;
+    expect(redactUrl(url)).toBe(url);
+    expect(normalizeUrl(url)).toBe(url);
+  });
+
+  it('removes a credential in a key=value fragment or route, whatever its spelling', () => {
+    for (const hash of [
+      '#access_token=a&token_type=bearer',
+      '#/access-token=a',
+      '#!authToken=a',
+      '#/cb;jwt=a',
+      '#/cb/session_token=a/x',
+    ]) {
+      expect(normalizeUrl(`https://a.test/${hash}`), hash).toBe('https://a.test/');
+    }
+    // A second "#" is not part of a route: what follows it is dropped.
+    expect(normalizeUrl('https://a.test/#/cb#id_token=a')).toBe('https://a.test/#/cb');
+    expect(normalizeUrl('https://a.test/#/cb#state=1&access_token=a')).toBe('https://a.test/#/cb');
+    expect(normalizeUrl('https://a.test/#/r?step=2&AuthToken=a&ticket=t&page=3')).toBe(
+      'https://a.test/#/r?step=2&page=3',
+    );
+    expect(redactUrl('https://a.test/p?q=1#/r?sid=z')).toBe('https://a.test/p?q=1#/r');
+  });
+
+  it('removes credential path parameters and keeps the others', () => {
+    expect(normalizeUrl('https://a.test/app/page;jsessionid=ABC123?x=1')).toBe(
+      'https://a.test/app/page?x=1',
+    );
+    expect(redactUrl('https://a.test/app;JSESSIONID=ABC/page;v=2;sid=9')).toBe(
+      'https://a.test/app/page;v=2',
+    );
+  });
+
+  it('identity stays stable when only a secret differs, in any parameter spelling', () => {
+    const a = sourceKeys('https://app.test/r?id=9&authToken=aaa&PHPSESSID=1#/x?jwt=a', null);
+    const b = sourceKeys('https://app.test/r?PHPSESSID=2&id=9&authToken=bbb#/x?jwt=b', null);
+    expect(a).toEqual(b);
+    expect(a?.urlKey).toBe('https://app.test/r?id=9#/x');
+  });
+
+  describe('on arbitrary input', () => {
+    // Deterministic generator (mulberry32), so a failure is reproducible.
+    let seed = 0x5eed1234;
+    const rand = () => {
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const pick = <T>(list: readonly T[]): T => list[Math.floor(rand() * list.length)]!;
+    const junk = [
+      '',
+      '&',
+      '=',
+      '==',
+      '?',
+      '#',
+      '/',
+      ';',
+      '!',
+      '%',
+      '%zz',
+      '%E0%A4%A',
+      '+',
+      ' ',
+      '\u0000',
+      '\ud800',
+      'é',
+      '[]',
+      'a'.repeat(300),
+      '\\',
+      ':',
+      '@',
+    ];
+    const encode = (s: string) => {
+      try {
+        return encodeURIComponent(s);
+      } catch {
+        return '%EF%BF%BD'; // a lone surrogate cannot be percent-encoded
+      }
+    };
+    /** A credential name in a random spelling: "authToken", "AUTH-TOKEN", "auth.token", "authtoken". */
+    const secretName = () => {
+      // "sid" and "code" only count as a word of their own ("auth_code"), never glued ("authcode").
+      const last = pick(['token', 'key', 'secret', 'jwt', 'password', 'sid', 'code']);
+      const words = [pick(['access', 'auth', 'client', 'csrf', 'api', 'id', 'refresh']), last];
+      const glued = last === 'sid' || last === 'code' ? ['-', '_', '.'] : ['-', '_', '.', ''];
+      const style = Math.floor(rand() * 3);
+      if (style === 0) return words.join(pick(glued));
+      if (style === 1) return words.map((w) => w[0]!.toUpperCase() + w.slice(1)).join('');
+      return words.join(pick(glued)).toUpperCase();
+    };
+
+    it('never lets a planted credential survive, whatever surrounds it', () => {
+      const names = [...SECRET_NAMES, ...KEEP_NAMES, ...junk];
+      for (let i = 0; i < 1500; i++) {
+        const secret = secretName();
+        const pairs = Array.from(
+          { length: Math.floor(rand() * 5) },
+          () => `${encode(pick(names))}=${encode(pick(junk))}`,
+        );
+        pairs.splice(Math.floor(rand() * (pairs.length + 1)), 0, `${secret}=LEAK${i}`);
+        const query = pairs.join('&');
+        const hash = pick([
+          '',
+          '#frag',
+          `#/r?${query}`,
+          `#!/r?${query}&x=1`,
+          `#/r/${secret}=LEAK${i}`,
+          `#!${secret}=LEAK${i}&state=s`,
+          `#/r#${query}`,
+          `#${query}`,
+        ]);
+        const path = pick(['', '/', '/x/', `/x;${secret}=LEAK${i}`, `/x;a=b;${secret}=LEAK${i}/y`]);
+        const input = `${pick(['https://', 'http://u:p@'])}a.test${path}?${query}${hash}`;
+        const red = redactUrl(input);
+        const norm = normalizeUrl(input);
+        expect(red, input).not.toBeNull();
+        expect(norm, input).not.toBeNull();
+        expect(red, input).not.toContain(`LEAK${i}`);
+        expect(norm, input).not.toContain(`LEAK${i}`);
+        expect(redactUrl(red!), `idempotent: ${input}`).toBe(red);
+        expect(normalizeUrl(norm!), `idempotent: ${input}`).toBe(norm);
+        // Two spellings of one page that differ only in the secret have one identity.
+        const other = input.replaceAll(`LEAK${i}`, `OTHER${i}`);
+        expect(sourceKeys(other, null), input).toEqual(sourceKeys(input, null));
+      }
+    });
+
+    it('never throws on malformed addresses, queries and fragments', () => {
+      for (let i = 0; i < 1500; i++) {
+        const piece = () =>
+          [pick(junk), pick(junk), secretName(), pick(junk)].join(pick(['', '=']));
+        const input = `${pick(['https', 'http', 'ftp', '', 'javascript'])}://${pick(['u:p@', '', '['])}a.test${pick(['', '/', '/x/;a', `;${piece()}`])}?${piece()}&${piece()}${pick(['', '#', '#/', '#!', '#/r?', `#/${piece()}`, `#${piece()}`])}`;
+        expect(() => {
+          const red = redactUrl(input);
+          const norm = normalizeUrl(input);
+          sourceKeys(input, pick([null, '/', input, 'https://a.test/x', ':::']));
+          for (const v of [red, norm]) {
+            // Whatever comes back is itself a valid address, and a second pass does not change it.
+            if (v !== null) expect(parseHttpUrl(v), input).not.toBeNull();
+          }
+          if (norm !== null) expect(normalizeUrl(norm), input).toBe(norm);
+        }, input).not.toThrow();
+      }
+    });
   });
 
   it('a rotated token yields the same identity', () => {

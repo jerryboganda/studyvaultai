@@ -1,12 +1,14 @@
 import { browser } from 'wxt/browser';
 import { z } from 'zod';
 import { StudyVaultError, type Settings } from '@shared';
-import { getSettings, serveRpc, updateSettings, watchSettings } from '@runtime';
+import { getTrustedSettings, serveRpc, updateSettings } from '@runtime';
 import {
   createSyncRuntime,
   countSyncAttention,
   notifyDataChanged,
+  readSyncPrivate,
   wipeAllData,
+  writeSyncPrivate,
   type SyncRuntime,
 } from '@storage';
 import {
@@ -23,6 +25,9 @@ import {
   createKey,
   createPayloadCodec,
   discoverOidc,
+  exportKeyJwk,
+  importKeyJwk,
+  isAlive,
   normaliseBaseUrl,
   unlockKey,
   type CryptoLike,
@@ -33,6 +38,7 @@ import {
   type OidcClientConfig,
   type OidcEndpoints,
   type PayloadCodec,
+  type SetAsideReason,
   type SyncReport,
   type TokenSet,
   type TokenStore,
@@ -46,13 +52,21 @@ import {
 
 /**
  * The optional sync feature in the service worker. Everything is a function of persisted state (the
- * flag, the config, the database, session-scoped tokens), so a worker that was suspended and
- * restarted behaves like one that never stopped. The only things held in memory are the E2EE key
- * (deliberately: it must not reach disk) and the discovery document (a cache).
+ * flag, the config, the database, session-scoped tokens and key), so a worker that was suspended and
+ * restarted behaves like one that never stopped. The only things held in memory are caches: the
+ * unwrapped E2EE key (rebuilt from the session store until its expiry), the discovery document and
+ * the runtime.
  *
  * Nothing in here runs, fetches or schedules while `Settings.features.sync` is off: the entry
  * points check the flag first, `disable()` removes the alarms, and the capture interceptor lives
  * in @storage behind the same flag.
+ *
+ * Where things live (docs/adr/010-module-seams.md, amendment "Privileged configuration"):
+ *  - IndexedDB `meta` (unreachable for content scripts): server/issuer/client id, the person's
+ *    encryption decision and the "end-to-end encryption was enabled" marker.
+ *  - chrome.storage.session (memory only, trusted contexts only): tokens and the tokens' binding,
+ *    the provider's endpoints, and the E2EE data key until its expiry.
+ *  - Never in chrome.storage.local, which a content script can write.
  */
 
 // ---------------------------------------------------------------------------------------------
@@ -61,9 +75,12 @@ import {
 
 export const ALARM_PERIODIC = 'sv-sync-periodic';
 export const ALARM_SOON = 'sv-sync-soon';
+/** Fires at the key's absolute expiry so a suspended worker still drops the key from session storage. */
+export const ALARM_LOCK = 'sv-sync-lock';
 export const PERIODIC_MINUTES = 15;
 /** Chrome's minimum alarm granularity is 30 s. */
 export const SOON_MINUTES = 0.5;
+/** How long an unlocked key is usable, counted from the unlock: absolute, not extended by use. */
 export const KEY_LOCK_MS = 15 * 60 * 1000;
 const DEBOUNCE_MS = 3_000;
 const MAX_PAGES = 20;
@@ -85,6 +102,43 @@ export const StoredSyncConfig = z.object({
   e2ee: z.object({ kid: z.string().max(64), version: z.number().int().min(1) }).nullable(),
 });
 export type StoredSyncConfig = z.infer<typeof StoredSyncConfig>;
+
+/**
+ * The person's decision about how uploads are protected. No record = not decided: nothing is
+ * uploaded (pulling is fine). `plaintext` = they chose to upload without end-to-end encryption.
+ * `e2ee` = encryption was enabled (or unlocked) on this device; `profile` is the key profile it
+ * was enabled with, and a server that later presents none, an older or a different one is refused.
+ */
+export const StoredEncryption = z.object({
+  v: z.literal(1),
+  mode: z.enum(['plaintext', 'e2ee']),
+  profile: z.object({ kid: z.string().max(64), version: z.number().int().min(1) }).nullable(),
+  at: z.number(),
+  /** The last re-keying done from this device: what it could not vouch for. */
+  rekey: z
+    .object({
+      kind: z.enum(['setup', 'rotate']),
+      at: z.number(),
+      setAside: z.number().int().min(0),
+    })
+    .nullable(),
+  /** Why uploads are refused (downgrade protection), until the server presents the right profile. */
+  warning: z.string().max(500).nullable(),
+  /**
+   * Set when this device emptied its own history on the server (setup) and has not re-sent its
+   * state yet: the next unlocked run does it, so an interrupted set-up cannot lose that history.
+   */
+  resend: z.boolean().optional(),
+});
+export type StoredEncryption = z.infer<typeof StoredEncryption>;
+
+/** The unwrapped data key, in memory-only session storage, until `expiresAt` (epoch ms). */
+export const StoredKey = z.object({
+  jwk: z.object({ kty: z.string(), k: z.string() }).passthrough(),
+  kid: z.string().max(64),
+  expiresAt: z.number(),
+});
+export type StoredKey = z.infer<typeof StoredKey>;
 
 const StoredTokens = z.object({
   accessToken: z.string().min(1),
@@ -108,7 +162,10 @@ const StoredDiscovery = z.object({
 // ---------------------------------------------------------------------------------------------
 
 export interface AlarmsPort {
-  create(name: string, info: { delayInMinutes: number; periodInMinutes?: number }): Promise<void>;
+  create(
+    name: string,
+    info: { delayInMinutes?: number; when?: number; periodInMinutes?: number },
+  ): Promise<void>;
   clear(name: string): Promise<boolean>;
   get(name: string): Promise<{ name: string } | undefined>;
 }
@@ -117,14 +174,40 @@ export interface SyncServiceDeps {
   now(): number;
   fetch: typeof fetch;
   crypto: CryptoLike;
+  /** The AUTHORITATIVE settings (never the content-script-writable copy). */
   getSettings(): Promise<Settings>;
   setFlag(enabled: boolean): Promise<void>;
+  /** Server, provider and client id. Lives in IndexedDB `meta`: content scripts cannot write it. */
   config: {
     load(): Promise<StoredSyncConfig | null>;
     save(config: StoredSyncConfig | null): Promise<void>;
   };
+  /**
+   * Where this configuration used to live (chrome.storage.local, writable by content scripts). It is
+   * moved once, and only when Chrome already holds the person's grant for both origins; afterwards
+   * it is never read again.
+   */
+  legacyConfig?: {
+    load(): Promise<StoredSyncConfig | null>;
+    clear(): Promise<void>;
+  };
+  /** The encryption decision and the "E2EE was enabled" marker. IndexedDB `meta`. */
+  encryption: {
+    load(): Promise<StoredEncryption | null>;
+    save(value: StoredEncryption | null): Promise<void>;
+  };
   /** Session-scoped: gone when the browser closes. Never local storage. */
   tokens: TokenStore;
+  /** The (server, issuer, client id) the stored tokens were issued for. Session-scoped too. */
+  tokenBinding: {
+    load(): Promise<string | null>;
+    save(binding: string | null): Promise<void>;
+  };
+  /** The unwrapped E2EE key until its expiry. Memory-only session storage, trusted contexts only. */
+  keyVault: {
+    load(): Promise<StoredKey | null>;
+    save(key: StoredKey | null): Promise<void>;
+  };
   /** Cached provider endpoints; session-scoped too. */
   discoveryCache: {
     load(): Promise<OidcEndpoints | null>;
@@ -163,6 +246,23 @@ function originPattern(url: string): string {
   return `${new URL(url).origin}/*`;
 }
 
+const bindingOf = (c: Pick<StoredSyncConfig, 'serverUrl' | 'issuer' | 'clientId'>) =>
+  JSON.stringify([c.serverUrl, c.issuer, c.clientId]);
+
+const WARNING_ABSENT =
+  'End-to-end encryption was turned on for this account from this device, but the server now reports no encryption key. Nothing was uploaded. The server may have been reset or tampered with: your data on this device is untouched.';
+const WARNING_DIFFERENT =
+  'End-to-end encryption was turned on for this account from this device, but the server now presents an older or different encryption key. Nothing was uploaded. The server may have been reset or tampered with: your data on this device is untouched.';
+
+/** `null` = the profile is what this device expects (or one rotated forward by another device). */
+function downgradeWarning(enc: StoredEncryption | null, profile: KeyProfile | null): string | null {
+  if (enc?.mode !== 'e2ee' || !enc.profile) return null;
+  if (profile === null) return WARNING_ABSENT;
+  const older = profile.version < enc.profile.version;
+  const other = profile.version === enc.profile.version && profile.kid !== enc.profile.kid;
+  return older || other ? WARNING_DIFFERENT : null;
+}
+
 // ---------------------------------------------------------------------------------------------
 // Service
 // ---------------------------------------------------------------------------------------------
@@ -177,6 +277,7 @@ export function createSyncService(deps: SyncServiceDeps) {
       return () => clearTimeout(id);
     });
   let codec: KeyedCodec | null = null;
+  let loadedKid: string | null = null;
   let unlockedUntil: number | null = null;
   let cancelLock: (() => void) | null = null;
   let flag: boolean | null = null;
@@ -187,39 +288,148 @@ export function createSyncService(deps: SyncServiceDeps) {
   let client: { key: string; value: HttpSyncClient } | null = null;
   let session: { key: string; value: AuthSession } | null = null;
   let cancelDebounce: (() => void) | null = null;
+  let legacyChecked = false;
 
   const isOn = async (): Promise<boolean> => {
     if (flag === null) flag = (await deps.getSettings()).features.sync;
     return flag;
   };
 
-  // ---- E2EE key ----
-  const keyed = (): KeyedCodec => (codec ??= createPayloadCodec(deps.crypto));
-  const lockKey = () => {
-    cancelLock?.();
-    cancelLock = null;
-    unlockedUntil = null;
-    codec?.lock();
-  };
-  const installKey = (target: KeyedCodec, key: CryptoKey, kid: string) => {
-    target.unlock(key, kid);
-    if (target === codec) {
-      cancelLock?.();
-      unlockedUntil = deps.now() + keyLockMs;
-      cancelLock = setTimer(() => {
-        lockKey();
-        void publishStatus();
-      }, keyLockMs);
+  // ---- configuration ----
+  /**
+   * The configuration, from `meta`. The pre-amendment copy in chrome.storage.local is read only when
+   * `meta` has none, and then only if Chrome already holds both origins' grants (a copy planted by a
+   * content script points at origins the person never allowed). Either way it is removed.
+   */
+  const loadConfig = async (): Promise<StoredSyncConfig | null> => {
+    const stored = await deps.config.load();
+    const legacy = deps.legacyConfig;
+    if (stored) {
+      if (legacy && !legacyChecked) {
+        legacyChecked = true;
+        await legacy.clear().catch(() => undefined);
+      }
+      return stored;
     }
+    if (!legacy) return null;
+    const found = await legacy.load().catch(() => null);
+    if (!found) return null;
+    const origins = [...new Set([originPattern(found.serverUrl), originPattern(found.issuer)])];
+    let granted = true;
+    for (const o of origins) if (!(await deps.hasOrigins([o]))) granted = false;
+    if (granted) await deps.config.save(found);
+    await legacy.clear().catch(() => undefined);
+    return granted ? found : null;
   };
 
-  // ---- config / auth / client / runtime ----
   const requireConfig = async (): Promise<StoredSyncConfig> => {
-    const config = await deps.config.load();
+    const config = await loadConfig();
     if (!config) throw invalid('Set the sync server first.');
     return config;
   };
 
+  // ---- tokens, bound to the configuration they were issued for ----
+  const clearTokens = async () => {
+    await deps.tokens.clear();
+    await deps.tokenBinding.save(null);
+  };
+  /**
+   * Tokens are only ever used for the (server, issuer, client id) they were issued for. A
+   * configuration that changed behind this worker's back finds no tokens: they are forgotten, so
+   * nothing is sent to an address the person never signed in to. `peek` reports without forgetting.
+   */
+  const tokensFor = (config: StoredSyncConfig, peek = false): TokenStore => ({
+    load: async () => {
+      const tokens = await deps.tokens.load();
+      if (!tokens) return null;
+      if ((await deps.tokenBinding.load()) === bindingOf(config)) return tokens;
+      if (!peek) await clearTokens();
+      return null;
+    },
+    save: async (tokens) => {
+      await deps.tokens.save(tokens);
+      await deps.tokenBinding.save(bindingOf(config));
+    },
+    clear: clearTokens,
+  });
+
+  // ---- E2EE key: persisted in session storage until an absolute expiry ----
+  const keyed = (): KeyedCodec => (codec ??= createPayloadCodec(deps.crypto));
+
+  /** Forget the key everywhere: memory, session storage, the expiry timer and alarm. */
+  const lockKey = async (): Promise<void> => {
+    cancelLock?.();
+    cancelLock = null;
+    unlockedUntil = null;
+    loadedKid = null;
+    codec?.lock();
+    await deps.keyVault.save(null).catch(() => undefined);
+    await deps
+      .alarms()
+      ?.clear(ALARM_LOCK)
+      .catch(() => false);
+  };
+
+  const armLock = (expiresAt: number) => {
+    cancelLock?.();
+    unlockedUntil = expiresAt;
+    cancelLock = setTimer(
+      () => {
+        void lockKey().then(publishStatus);
+      },
+      Math.max(0, expiresAt - deps.now()),
+    );
+    void deps
+      .alarms()
+      ?.create(ALARM_LOCK, { when: expiresAt })
+      .catch(() => undefined);
+  };
+
+  /** Install a key the person just proved they know. It is usable for `keyLockMs`, from now. */
+  const unlockWith = async (key: CryptoKey, profile: { kid: string; version: number }) => {
+    const expiresAt = deps.now() + keyLockMs;
+    // The session store is authoritative: a key that could not be stored is not unlocked.
+    await deps.keyVault.save({
+      jwk: (await exportKeyJwk(deps.crypto, key)) as StoredKey['jwk'],
+      kid: profile.kid,
+      expiresAt,
+    });
+    keyed().unlock(key, profile.kid);
+    loadedKid = profile.kid;
+    armLock(expiresAt);
+  };
+
+  /**
+   * Make the in-memory codec agree with the session store, which is authoritative: a restarted
+   * worker picks the key up again, an expired or foreign one is dropped. True when usable.
+   */
+  const ensureKey = async (config: StoredSyncConfig | null): Promise<boolean> => {
+    if (!config?.e2ee) {
+      if (codec?.isUnlocked()) await lockKey();
+      return false;
+    }
+    const record = await deps.keyVault.load();
+    const usable =
+      record !== null && record.expiresAt > deps.now() && record.kid === config.e2ee.kid;
+    if (!usable) {
+      if (record !== null || codec?.isUnlocked()) await lockKey();
+      return false;
+    }
+    const target = keyed();
+    if (!target.isUnlocked() || loadedKid !== record.kid) {
+      try {
+        target.unlock(await importKeyJwk(deps.crypto, record.jwk as JsonWebKey), record.kid);
+        loadedKid = record.kid;
+      } catch {
+        await lockKey();
+        return false;
+      }
+    }
+    if (unlockedUntil !== record.expiresAt) armLock(record.expiresAt);
+    return true;
+  };
+
+  // ---- auth / client / runtime ----
   const oidc = async (config: StoredSyncConfig): Promise<OidcClientConfig> => {
     let endpoints = await deps.discoveryCache.load();
     if (!endpoints || endpoints.issuer !== config.issuer) {
@@ -235,11 +445,11 @@ export function createSyncService(deps: SyncServiceDeps) {
   };
 
   const authSession = async (config: StoredSyncConfig): Promise<AuthSession> => {
-    const key = `${config.issuer}|${config.clientId}`;
+    const key = bindingOf(config);
     if (session?.key === key) return session.value;
     const value = new AuthSession({
       config: await oidc(config),
-      store: deps.tokens,
+      store: tokensFor(config),
       fetch: deps.fetch,
       crypto: deps.crypto,
       now: deps.now,
@@ -265,8 +475,7 @@ export function createSyncService(deps: SyncServiceDeps) {
     }
   };
 
-  const configKey = (c: StoredSyncConfig) =>
-    `${c.serverUrl}|${c.issuer}|${c.clientId}|${c.e2ee?.kid ?? ''}`;
+  const configKey = (c: StoredSyncConfig) => `${bindingOf(c)}|${c.e2ee?.kid ?? ''}`;
 
   const httpClient = (config: StoredSyncConfig): HttpSyncClient => {
     const key = configKey(config);
@@ -286,14 +495,16 @@ export function createSyncService(deps: SyncServiceDeps) {
     if (runtime?.key === key) {
       const cached = runtime;
       const kept = await cached.value;
-      // A restore gave the database a new sync identity behind this worker's back (see ADR-010).
       if (await kept.isCurrent()) return kept;
+      // A restore gave the database a new sync identity behind this worker's back (see ADR-010):
+      // what was restored is not what the unlocked key was unlocked for. Lock until it is entered again.
+      await lockKey();
       if (runtime === cached) runtime = null;
     }
     const value = deps.createRuntime({
       isEnabled: isOn,
       transport: httpClient(config),
-      accountId: async () => (await deps.tokens.load())?.subject ?? null,
+      accountId: async () => (await tokensFor(config).load())?.subject ?? null,
       ...(config.e2ee ? { codec: keyed() } : {}),
     });
     runtime = { key, value };
@@ -313,8 +524,9 @@ export function createSyncService(deps: SyncServiceDeps) {
   const status = async (): Promise<SyncStatusView> => {
     const settings = await deps.getSettings();
     flag = settings.features.sync;
-    const config = await deps.config.load();
-    const tokens = await deps.tokens.load();
+    const config = await loadConfig();
+    const tokens = config ? await tokensFor(config, true).load() : null;
+    const enc = await deps.encryption.load();
     const origins = config
       ? [originPattern(config.serverUrl), originPattern(config.issuer)].filter(
           (o, i, all) => all.indexOf(o) === i,
@@ -322,6 +534,16 @@ export function createSyncService(deps: SyncServiceDeps) {
       : [];
     const missing: string[] = [];
     for (const o of origins) if (!(await deps.hasOrigins([o]))) missing.push(o);
+
+    // A runtime that notices a restore locks the key: look at the key after it.
+    if (settings.features.sync && config) await getRuntime(config).catch(() => undefined);
+    const unlocked = config?.e2ee ? await ensureKey(config) : false;
+    const choice: 'undecided' | 'plaintext' | 'e2ee' =
+      config?.e2ee || enc?.mode === 'e2ee'
+        ? 'e2ee'
+        : enc?.mode === 'plaintext'
+          ? 'plaintext'
+          : 'undecided';
 
     const view: SyncStatusView = {
       enabled: settings.features.sync,
@@ -343,13 +565,16 @@ export function createSyncService(deps: SyncServiceDeps) {
       retryAt: null,
       running,
       e2ee: {
-        mode: !config?.e2ee ? 'none' : codec?.isUnlocked() ? 'unlocked' : 'locked',
+        mode: !config?.e2ee ? 'none' : unlocked ? 'unlocked' : 'locked',
         version: config?.e2ee?.version ?? null,
         lockInSeconds:
-          unlockedUntil === null
-            ? null
-            : Math.max(0, Math.round((unlockedUntil - deps.now()) / 1000)),
+          unlocked && unlockedUntil !== null
+            ? Math.max(0, Math.round((unlockedUntil - deps.now()) / 1000))
+            : null,
+        warning: enc?.warning ?? null,
+        setAside: enc?.rekey?.setAside ?? 0,
       },
+      encryptionChoice: choice,
       attention: { conflicts: 0, quarantined: 0 },
       notSynced: [],
       problem,
@@ -369,7 +594,14 @@ export function createSyncService(deps: SyncServiceDeps) {
         view.lastError = { code: state.lastError.code, message: state.lastError.message };
       view.notSynced = [...rt.active.notSynced];
       view.attention = await deps.attention();
-      if (config.e2ee && !codec?.isUnlocked() && view.status === 'idle') view.status = 'locked';
+      if (config.e2ee && !unlocked && view.status === 'idle') view.status = 'locked';
+      if (tokens !== null && choice === 'undecided' && view.status === 'idle') {
+        view.status = 'awaiting_encryption_choice';
+      }
+      if (enc?.warning) {
+        view.status = 'error';
+        view.lastError = { code: 'e2ee_downgrade', message: enc.warning };
+      }
     } catch (e) {
       view.problem = problem = e instanceof Error ? e.message : String(e);
       view.status = 'error';
@@ -430,22 +662,163 @@ export function createSyncService(deps: SyncServiceDeps) {
   const reportToError = (report: SyncReport): string | null =>
     report.error ? report.error.message : null;
 
-  async function learnKeyProfile(config: StoredSyncConfig): Promise<StoredSyncConfig> {
-    if (config.e2ee || (await deps.tokens.load()) === null) return config;
+  const setWarning = async (enc: StoredEncryption | null, warning: string | null) => {
+    if (enc && (enc.warning ?? null) !== warning) await deps.encryption.save({ ...enc, warning });
+    return warning;
+  };
+
+  /**
+   * Compare the server's key profile with what this device knows. Learns the profile of an account
+   * that another device encrypted (so the codec takes over and plaintext can never be pushed), and
+   * refuses to continue when a device that enabled E2EE is shown no profile, an older or another one.
+   */
+  async function checkProfile(
+    config: StoredSyncConfig,
+  ): Promise<{ config: StoredSyncConfig; warning: string | null }> {
+    const enc = await deps.encryption.load();
+    if (config.e2ee && enc?.mode !== 'e2ee') return { config, warning: null };
+    if ((await tokensFor(config, true).load()) === null) {
+      return { config, warning: enc?.warning ?? null };
+    }
     let profile: KeyProfile | null;
     try {
       profile = await httpClient(config).getKeyProfile();
     } catch {
-      return config; // the run itself will report connectivity or sign-in problems
+      return { config, warning: enc?.warning ?? null }; // the run itself reports connectivity
     }
-    if (!profile) return config;
+    const warning = await setWarning(enc, downgradeWarning(enc, profile));
+    if (warning || !profile || config.e2ee) return { config, warning };
     const next: StoredSyncConfig = {
       ...config,
       e2ee: { kid: profile.kid, version: profile.version },
     };
     await deps.config.save(next);
     invalidate();
-    return next;
+    return { config: next, warning: null };
+  }
+
+  /**
+   * The server's copy of this device's own history was emptied (set-up): send what this device
+   * holds, under the new key. Rows, and the deletions that other devices must still learn about.
+   */
+  async function resendOwnState(rt: SyncRuntime): Promise<void> {
+    await rt.resendAll();
+    for (const m of await rt.store.listTombstones(deps.now() + 1, 50_000)) {
+      if (isAlive(m)) continue;
+      await rt.engine.recordLocalChange({
+        kind: 'delete',
+        entityType: m.entityType,
+        entityId: m.entityId,
+        before: null,
+      });
+    }
+    const enc = await deps.encryption.load();
+    if (enc?.resend) await deps.encryption.save({ ...enc, resend: false });
+  }
+
+  /** Read the server's whole log (all of it, page by page) and parse it. */
+  async function readLog(net: HttpSyncClient): Promise<SyncOperation[]> {
+    const ops: SyncOperation[] = [];
+    let cursor: string | null = null;
+    for (;;) {
+      const page = await net.pull({ since: cursor, limit: 500 });
+      for (const entry of page.ops) {
+        const parsed = SyncOperation.safeParse(entry.op);
+        if (!parsed.success) {
+          throw invalid(
+            'The server holds an operation this version cannot read, so encryption cannot be changed safely.',
+          );
+        }
+        ops.push(parsed.data);
+      }
+      cursor = page.nextCursor;
+      if (!page.hasMore) return ops;
+    }
+  }
+
+  /**
+   * Replace every stored payload under the new key, atomically (the server insists on full coverage).
+   *
+   *  - Rotation (`migrating` false): what authenticates under the old key is re-encrypted; anything
+   *    else is replaced by an undecryptable envelope. Nothing unauthenticated becomes authentic.
+   *  - Setup (`migrating` true): the log is plaintext and nobody can authenticate it. This device
+   *    first applies it like any pull (validating every operation) and then keeps only operations
+   *    from OTHER devices that it validated and merged. Its own history is replaced by an
+   *    authenticated "ignore" marker: the caller re-sends this device's state instead of trusting
+   *    the server's copy of it. Everything else is replaced by an undecryptable envelope.
+   * Returns how many stored operations could not be vouched for (they are also put in the
+   * quarantine list, so the person can see what they were).
+   */
+  async function rekeyLog(o: {
+    rt: SyncRuntime;
+    net: HttpSyncClient;
+    oldCodec: PayloadCodec;
+    newCodec: PayloadCodec;
+    profile: KeyProfile;
+    migrating: boolean;
+  }): Promise<number> {
+    for (let attempt = 0; ; attempt++) {
+      let ops: SyncOperation[];
+      let accepted = new Set<string>();
+      if (o.migrating) {
+        const audit = await o.rt.engine.auditHistory();
+        if (audit.unreadable > 0) {
+          throw invalid(
+            'The server holds an operation this version cannot read, so encryption cannot be changed safely.',
+          );
+        }
+        ops = audit.ops;
+        accepted = audit.accepted;
+      } else {
+        ops = await readLog(o.net);
+      }
+      const byId = new Map(ops.map((op) => [op.id, op] as const));
+      const aside: Array<{ op: SyncOperation; reason: SetAsideReason }> = [];
+      const request = await buildRotation({
+        ops,
+        oldCodec: o.oldCodec,
+        newCodec: o.newCodec,
+        newProfile: o.profile,
+        crypto: deps.crypto,
+        plaintext: (op) =>
+          !o.migrating
+            ? 'reject'
+            : op.clientId === o.rt.clientId
+              ? 'void'
+              : accepted.has(op.id)
+                ? 'keep'
+                : 'reject',
+        onSetAside: (op, reason) => {
+          const full = byId.get(op.id);
+          if (full) aside.push({ op: full, reason });
+        },
+      }).catch((e: unknown) => {
+        if (e instanceof CodecLockedError) throw forbidden('The encryption key is locked.');
+        throw e;
+      });
+      try {
+        await o.net.rotate(request);
+      } catch (e) {
+        // Another device pushed between our read and the swap: read again (bounded).
+        if (e instanceof TransportError && e.kind === 'client' && attempt < 2) continue;
+        throw e;
+      }
+      const known = new Set((await o.rt.store.listQuarantined()).map((q) => q.id));
+      for (const { op, reason } of aside) {
+        if (known.has(op.id)) continue; // this device already refused it and said why
+        await o.rt.store.putQuarantined({
+          id: op.id,
+          entityType: op.entityType,
+          entityId: op.entityId,
+          reason: reason === 'unencrypted' ? 'plaintext_in_e2ee' : 'decrypt_failed',
+          detail:
+            'Stored on the server, but not proven to come from one of your devices. It was not carried into your encrypted history.',
+          at: deps.now(),
+          op,
+        });
+      }
+      return aside.length;
+    }
   }
 
   const service = {
@@ -456,7 +829,10 @@ export function createSyncService(deps: SyncServiceDeps) {
       while (tasks.size > 0) await Promise.all([...tasks]);
     },
 
-    /** Store the server and provider. Changing either forgets the tokens issued for the old one. */
+    /**
+     * Store the server and provider. Changing either forgets the tokens issued for the old one, and
+     * the encryption decision that was made for it.
+     */
     async configure(input: SyncConfigInput): Promise<SyncStatusView> {
       let serverUrl: string;
       try {
@@ -466,7 +842,7 @@ export function createSyncService(deps: SyncServiceDeps) {
         throw invalid(e instanceof Error ? e.message : 'The address is not valid.');
       }
       const issuer = input.issuer.replace(/\/+$/, '');
-      const previous = await deps.config.load();
+      const previous = await loadConfig();
       const same =
         previous?.serverUrl === serverUrl &&
         previous.issuer === issuer &&
@@ -479,9 +855,10 @@ export function createSyncService(deps: SyncServiceDeps) {
         e2ee: same ? previous.e2ee : null,
       });
       if (!same) {
-        await deps.tokens.clear();
+        await clearTokens();
         await deps.discoveryCache.save(null);
-        lockKey();
+        await deps.encryption.save(null);
+        await lockKey();
         invalidate();
         problem = null;
       }
@@ -496,7 +873,7 @@ export function createSyncService(deps: SyncServiceDeps) {
       flag = true;
       problem = null;
       try {
-        const rt = await getRuntime((await deps.config.load())!);
+        const rt = await getRuntime((await loadConfig())!);
         rt.startCapture();
         await rt.reconcile();
       } catch (e) {
@@ -512,10 +889,10 @@ export function createSyncService(deps: SyncServiceDeps) {
       await deps.setFlag(false);
       flag = false;
       await unschedule();
-      lockKey();
-      await deps.tokens.clear();
+      await lockKey();
+      await clearTokens();
       try {
-        const config = await deps.config.load();
+        const config = await loadConfig();
         if (config && runtime) (await runtime.value).stopCapture();
       } catch {
         /* the capture of other contexts follows the flag by itself */
@@ -568,6 +945,7 @@ export function createSyncService(deps: SyncServiceDeps) {
       }
       await schedule();
       await publishStatus();
+      // Pull-only until the person has chosen how uploads are protected (see runSync).
       background('sign-in');
       return { status: await status(), needsOrigins: [] };
     },
@@ -576,8 +954,8 @@ export function createSyncService(deps: SyncServiceDeps) {
       wipeLocalData: boolean;
       revokeAtProvider: boolean;
     }): Promise<SyncStatusView> {
-      const config = await deps.config.load();
-      lockKey();
+      const config = await loadConfig();
+      await lockKey();
       let signed: AuthSession | null;
       try {
         signed = config ? await authSession(config) : null;
@@ -593,6 +971,7 @@ export function createSyncService(deps: SyncServiceDeps) {
         await deps.tokens.clear();
         if (o.wipeLocalData) await deps.wipeLocalData();
       }
+      await deps.tokenBinding.save(null);
       invalidate();
       if (o.wipeLocalData) {
         flag = false;
@@ -602,11 +981,15 @@ export function createSyncService(deps: SyncServiceDeps) {
       return status();
     },
 
-    /** One run: record what was missed, pull, push. Never throws; the view says what happened. */
+    /**
+     * One run: record what was missed, pull, push. Never throws; the view says what happened.
+     * Until the person has chosen how uploads are protected (a passphrase, or an explicit "upload
+     * without end-to-end encryption") the run only pulls: nothing leaves the device.
+     */
     async runSync(reason: string, o: { force?: boolean } = {}): Promise<SyncStatusView> {
       void reason;
       if (!(await isOn())) return status();
-      const config = await deps.config.load();
+      const config = await loadConfig();
       if (!config) return status();
       await deps.exclusive(async () => {
         running = true;
@@ -614,11 +997,27 @@ export function createSyncService(deps: SyncServiceDeps) {
         problem = null;
         await publishStatus();
         try {
-          let current = await learnKeyProfile(config);
+          // A locked device touches neither the network nor the data: nothing to compare then.
+          const unlocked = await ensureKey(config);
+          const checked =
+            config.e2ee && !unlocked ? { config, warning: null } : await checkProfile(config);
+          if (checked.warning) {
+            lastRunError = checked.warning;
+            return;
+          }
+          const current = checked.config;
+          const usable = current !== config ? await ensureKey(current) : unlocked;
           const rt = await getRuntime(current);
           if (await rt.isDirty()) await rt.reconcile();
-          let report = await rt.engine.sync(o.force ? { force: true } : {});
-          for (let i = 1; report.more && i < MAX_PAGES; i++) report = await rt.engine.sync(o);
+          const enc = await deps.encryption.load();
+          if (enc?.resend && usable) await resendOwnState(rt); // an interrupted set-up
+          const mayPush = current.e2ee !== null || enc?.mode === 'plaintext';
+          const options = {
+            ...(o.force ? { force: true } : {}),
+            ...(mayPush ? {} : { push: false }),
+          };
+          let report = await rt.engine.sync(options);
+          for (let i = 1; report.more && i < MAX_PAGES; i++) report = await rt.engine.sync(options);
           lastRunError = reportToError(report);
           if (report.applied > 0) await deps.notifyDataChanged();
           if (report.status === 'idle') {
@@ -626,7 +1025,6 @@ export function createSyncService(deps: SyncServiceDeps) {
             // Changes that did not fit in the outbox are found by fingerprint now that it drained.
             if (await rt.isDirty()) background('continue');
           }
-          current = (await deps.config.load()) ?? current;
           const alarms = deps.alarms();
           if (report.retryAt !== null && alarms) {
             const minutes = Math.max(SOON_MINUTES, (report.retryAt - deps.now()) / 60_000);
@@ -643,6 +1041,35 @@ export function createSyncService(deps: SyncServiceDeps) {
       return status();
     },
 
+    // ---- how uploads are protected ----
+
+    /**
+     * The person's explicit choice to upload WITHOUT end-to-end encryption: the operator of the
+     * server can read everything that is uploaded. Without this (or a passphrase) nothing is sent.
+     */
+    async uploadWithoutEncryption(): Promise<SyncStatusView> {
+      const config = await requireConfig();
+      if (!(await isOn())) throw invalid('Turn sync on first.');
+      if (config.e2ee) {
+        throw invalid('This account is end-to-end encrypted: unlock it with the passphrase.');
+      }
+      const enc = await deps.encryption.load();
+      if (enc?.mode === 'e2ee') {
+        throw invalid('End-to-end encryption was turned on for this account from this device.');
+      }
+      await deps.encryption.save({
+        v: 1,
+        mode: 'plaintext',
+        profile: null,
+        at: deps.now(),
+        rekey: null,
+        warning: null,
+      });
+      await publishStatus();
+      background('encryption-choice');
+      return status();
+    },
+
     // ---- end-to-end encryption ----
 
     async e2eeSetup(passphrase: string): Promise<SyncStatusView> {
@@ -652,25 +1079,56 @@ export function createSyncService(deps: SyncServiceDeps) {
       if (await net.getKeyProfile()) {
         throw invalid('Encryption is already set up for this account. Unlock it instead.');
       }
+      const before = await deps.encryption.load();
+      if (before?.mode === 'e2ee') {
+        throw invalid(
+          'End-to-end encryption was turned on for this account from this device, but the server no longer has the key. Nothing was uploaded.',
+        );
+      }
       let created;
       try {
-        created = await createKey({ crypto: deps.crypto, passphrase, now: deps.now(), version: 1 });
+        created = await createKey({
+          crypto: deps.crypto,
+          passphrase,
+          now: deps.now(),
+          version: 1,
+          extractable: true,
+        });
       } catch (e) {
         if (e instanceof WeakPassphraseError) throw invalid(e.message);
         throw e;
       }
       const next = createPayloadCodec(deps.crypto);
       next.unlock(created.key, created.profile.kid);
-      // Existing plaintext history is re-encrypted in place by the same call that installs the key.
-      await rotateServerLog(net, plaintextCodec, next, created.profile);
+      const rekeyed = await deps.exclusive(async () => {
+        const rt = await getRuntime(config);
+        return rekeyLog({
+          rt,
+          net,
+          oldCodec: plaintextCodec,
+          newCodec: next,
+          profile: created.profile,
+          migrating: true,
+        });
+      });
+      if (rekeyed === null) throw invalid('Sync is busy right now. Try again in a moment.');
       const updated: StoredSyncConfig = {
         ...config,
         e2ee: { kid: created.profile.kid, version: created.profile.version },
       };
       await deps.config.save(updated);
+      await deps.encryption.save({
+        v: 1,
+        mode: 'e2ee',
+        profile: updated.e2ee,
+        at: deps.now(),
+        rekey: { kind: 'setup', at: deps.now(), setAside: rekeyed },
+        warning: null,
+        resend: true,
+      });
       invalidate();
-      codec = createPayloadCodec(deps.crypto);
-      installKey(codec, created.key, created.profile.kid);
+      await unlockWith(created.key, created.profile);
+      await resendOwnState(await getRuntime(updated));
       await publishStatus();
       background('e2ee-setup');
       return status();
@@ -682,10 +1140,20 @@ export function createSyncService(deps: SyncServiceDeps) {
       const config = await requireConfig();
       if (!(await isOn())) throw invalid('Turn sync on first.');
       const profile = await httpClient(config).getKeyProfile();
-      if (!profile) return { ok: false, reason: 'no_key' };
+      const enc = await deps.encryption.load();
+      if (!profile) {
+        await setWarning(enc, downgradeWarning(enc, null));
+        await publishStatus();
+        return { ok: false, reason: 'no_key' };
+      }
+      const warning = await setWarning(enc, downgradeWarning(enc, profile));
+      if (warning) {
+        await publishStatus();
+        return { ok: false, reason: 'no_key' };
+      }
       let key: CryptoKey;
       try {
-        key = await unlockKey({ crypto: deps.crypto, passphrase, profile });
+        key = await unlockKey({ crypto: deps.crypto, passphrase, profile, extractable: true });
       } catch (e) {
         if (e instanceof WrongPassphraseError) return { ok: false, reason: 'wrong_passphrase' };
         throw e;
@@ -695,8 +1163,17 @@ export function createSyncService(deps: SyncServiceDeps) {
         e2ee: { kid: profile.kid, version: profile.version },
       };
       await deps.config.save(updated);
+      await deps.encryption.save({
+        v: 1,
+        mode: 'e2ee',
+        profile: updated.e2ee,
+        at: deps.now(),
+        rekey: enc?.rekey ?? null,
+        warning: null,
+        ...(enc?.resend ? { resend: true } : {}),
+      });
       invalidate();
-      installKey(keyed(), key, profile.kid);
+      await unlockWith(key, profile);
       const rt = await getRuntime(updated);
       await rt.engine.retryQuarantined();
       await publishStatus();
@@ -705,7 +1182,7 @@ export function createSyncService(deps: SyncServiceDeps) {
     },
 
     async e2eeLock(): Promise<SyncStatusView> {
-      lockKey();
+      await lockKey();
       await publishStatus();
       return status();
     },
@@ -713,12 +1190,25 @@ export function createSyncService(deps: SyncServiceDeps) {
     async e2eeRotate(
       current: string,
       next: string,
-    ): Promise<{ ok: boolean; reason: 'wrong_passphrase' | 'no_key' | null }> {
+    ): Promise<{
+      ok: boolean;
+      reason: 'wrong_passphrase' | 'no_key' | null;
+      setAside?: number;
+    }> {
       const config = await requireConfig();
       if (!(await isOn())) throw invalid('Turn sync on first.');
       const net = httpClient(config);
       const profile = await net.getKeyProfile();
-      if (!profile) return { ok: false, reason: 'no_key' };
+      const enc = await deps.encryption.load();
+      if (!profile) {
+        await setWarning(enc, downgradeWarning(enc, null));
+        await publishStatus();
+        return { ok: false, reason: 'no_key' };
+      }
+      if (await setWarning(enc, downgradeWarning(enc, profile))) {
+        await publishStatus();
+        return { ok: false, reason: 'no_key' };
+      }
       let oldKey: CryptoKey;
       try {
         oldKey = await unlockKey({ crypto: deps.crypto, passphrase: current, profile });
@@ -733,6 +1223,7 @@ export function createSyncService(deps: SyncServiceDeps) {
           passphrase: next,
           now: deps.now(),
           version: profile.version + 1,
+          extractable: true,
         });
       } catch (e) {
         if (e instanceof WeakPassphraseError) throw invalid(e.message);
@@ -743,39 +1234,57 @@ export function createSyncService(deps: SyncServiceDeps) {
       const newCodec = createPayloadCodec(deps.crypto);
       newCodec.unlock(created.key, created.profile.kid);
 
-      await rotateServerLog(net, oldCodec, newCodec, created.profile);
-
-      // Operations already encrypted for sending with the old key go back to plaintext in the
-      // outbox; the push re-encrypts them with the new key.
-      const rt = await getRuntime(config);
-      for (const p of await rt.log.pending(100_000)) {
-        if (!p.op.payloadEncrypted) continue;
-        const aad = {
-          id: p.op.id,
-          clientId: p.op.clientId,
-          entityType: p.op.entityType,
-          entityId: p.op.entityId,
-          opType: p.op.opType,
-          revision: p.op.revision,
-          hlc: p.op.hlc,
-        };
-        const plain = await oldCodec.decrypt(p.op.payload as never, aad);
-        await rt.log.replace(
-          [p.op.id],
-          SyncOperation.parse({ ...p.op, payload: plain, payloadEncrypted: false }),
-        );
-      }
+      const rekeyed = await deps.exclusive(async () => {
+        const rt = await getRuntime(config);
+        // Operations already encrypted for sending with the old key go back to plaintext in the
+        // outbox; the push re-encrypts them with the new key. Before the swap, so a failure
+        // leaves everything as it was.
+        for (const p of await rt.log.pending(100_000)) {
+          if (!p.op.payloadEncrypted) continue;
+          const aad = {
+            id: p.op.id,
+            clientId: p.op.clientId,
+            entityType: p.op.entityType,
+            entityId: p.op.entityId,
+            opType: p.op.opType,
+            revision: p.op.revision,
+            hlc: p.op.hlc,
+          };
+          const plain = await oldCodec.decrypt(p.op.payload as never, aad);
+          await rt.log.replace(
+            [p.op.id],
+            SyncOperation.parse({ ...p.op, payload: plain, payloadEncrypted: false }),
+          );
+        }
+        return rekeyLog({
+          rt,
+          net,
+          oldCodec,
+          newCodec,
+          profile: created.profile,
+          migrating: false,
+        });
+      });
+      if (rekeyed === null) throw invalid('Sync is busy right now. Try again in a moment.');
       const updated: StoredSyncConfig = {
         ...config,
         e2ee: { kid: created.profile.kid, version: created.profile.version },
       };
       await deps.config.save(updated);
+      await deps.encryption.save({
+        v: 1,
+        mode: 'e2ee',
+        profile: updated.e2ee,
+        at: deps.now(),
+        rekey: { kind: 'rotate', at: deps.now(), setAside: rekeyed },
+        warning: null,
+        ...(enc?.resend ? { resend: true } : {}),
+      });
       invalidate();
-      codec = createPayloadCodec(deps.crypto);
-      installKey(codec, created.key, created.profile.kid);
+      await unlockWith(created.key, created.profile);
       await publishStatus();
       background('e2ee-rotate');
-      return { ok: true, reason: null };
+      return { ok: true, reason: null, setAside: rekeyed };
     },
 
     // ---- conflicts, quarantine ----
@@ -783,6 +1292,7 @@ export function createSyncService(deps: SyncServiceDeps) {
     async resolveConflict(id: string, decision: ConflictDecision): Promise<void> {
       const config = await requireConfig();
       if (!(await isOn())) throw invalid('Turn sync on first.');
+      await ensureKey(config);
       const rt = await getRuntime(config);
       try {
         await rt.engine.resolveConflict(id, decision);
@@ -797,6 +1307,7 @@ export function createSyncService(deps: SyncServiceDeps) {
     async retryQuarantine(): Promise<{ retried: number; remaining: number }> {
       const config = await requireConfig();
       if (!(await isOn())) throw invalid('Turn sync on first.');
+      await ensureKey(config);
       const rt = await getRuntime(config);
       const before = (await rt.store.listQuarantined()).length;
       const report = await rt.engine.retryQuarantined();
@@ -819,11 +1330,13 @@ export function createSyncService(deps: SyncServiceDeps) {
       const config = await requireConfig();
       if (!(await isOn())) throw invalid('Turn sync on first.');
       await httpClient(config).deleteAllData();
-      // The key profile went with it; this device's data is untouched.
-      lockKey();
+      // The key profile went with it; this device's data is untouched. Starting over is the
+      // person's explicit act, so the "encryption was enabled" marker and the decision go too.
+      await lockKey();
       await deps.config.save({ ...config, e2ee: null });
+      await deps.encryption.save(null);
       invalidate();
-      const rt = await getRuntime((await deps.config.load())!);
+      const rt = await getRuntime((await loadConfig())!);
       await rt.engine.acknowledgeServerReset();
       await publishStatus();
       return status();
@@ -852,6 +1365,11 @@ export function createSyncService(deps: SyncServiceDeps) {
     // ---- events ----
 
     async onAlarm(name: string): Promise<void> {
+      if (name === ALARM_LOCK) {
+        await lockKey();
+        await publishStatus();
+        return;
+      }
       if (name !== ALARM_PERIODIC && name !== ALARM_SOON) return;
       if (!(await isOn())) {
         await unschedule(); // a leftover alarm of a build or session that had sync on
@@ -866,7 +1384,7 @@ export function createSyncService(deps: SyncServiceDeps) {
       flag = settings.features.sync;
       if (was !== null && was !== flag && !flag) {
         await unschedule();
-        lockKey();
+        await lockKey();
         invalidate();
       }
     },
@@ -876,42 +1394,6 @@ export function createSyncService(deps: SyncServiceDeps) {
       await service.runSync('startup');
     },
   };
-
-  async function rotateServerLog(
-    net: HttpSyncClient,
-    oldCodec: PayloadCodec,
-    newCodec: PayloadCodec,
-    profile: KeyProfile,
-  ): Promise<void> {
-    for (let attempt = 0; ; attempt++) {
-      const ops: SyncOperation[] = [];
-      let cursor: string | null = null;
-      for (;;) {
-        const page = await net.pull({ since: cursor, limit: 500 });
-        for (const entry of page.ops) {
-          const parsed = SyncOperation.safeParse(entry.op);
-          if (!parsed.success) {
-            throw invalid(
-              'The server holds an operation this version cannot read, so encryption cannot be changed safely.',
-            );
-          }
-          ops.push(parsed.data);
-        }
-        cursor = page.nextCursor;
-        if (!page.hasMore) break;
-      }
-      const request = await buildRotation({ ops, oldCodec, newCodec, newProfile: profile });
-      try {
-        await net.rotate(request);
-        return;
-      } catch (e) {
-        // Another device pushed between our read and the swap: read again (bounded).
-        if (e instanceof TransportError && e.kind === 'client' && attempt < 2) continue;
-        if (e instanceof CodecLockedError) throw forbidden('The encryption key is locked.');
-        throw e;
-      }
-    }
-  }
 
   return service;
 }
@@ -942,6 +1424,7 @@ export function registerSyncRpc(service: SyncService, extensionBaseUrl: string):
       'sync.signIn': async (_p, s) => (guard(s), service.signIn()),
       'sync.signOut': async (p, s) => (guard(s), service.signOut(p)),
       'sync.now': async (_p, s) => (guard(s), service.runSync('manual', { force: true })),
+      'sync.uploadPlain': async (_p, s) => (guard(s), service.uploadWithoutEncryption()),
       'sync.e2ee.setup': async (p, s) => (guard(s), service.e2eeSetup(p.passphrase)),
       'sync.e2ee.unlock': async (p, s) => (guard(s), service.e2eeUnlock(p.passphrase)),
       'sync.e2ee.lock': async (_p, s) => (guard(s), service.e2eeLock()),
@@ -970,16 +1453,21 @@ export function registerSyncRpc(service: SyncService, extensionBaseUrl: string):
 // Chrome adapters
 // ---------------------------------------------------------------------------------------------
 
-const CONFIG_KEY = 'syncConfig';
+/** Where the configuration lived before it moved to IndexedDB (chrome.storage.local). */
+const LEGACY_CONFIG_KEY = 'syncConfig';
 const TOKENS_KEY = 'syncTokens';
+const BINDING_KEY = 'syncBinding';
 const DISCOVERY_KEY = 'syncOidc';
+const KEY_KEY = 'syncKey';
 const STATUS_KEY = 'syncStatus';
 
-export function createSessionTokenStore(area: {
+interface KeyValueArea {
   get(key: string): Promise<Record<string, unknown>>;
   set(items: Record<string, unknown>): Promise<void>;
   remove(key: string): Promise<void>;
-}): TokenStore {
+}
+
+export function createSessionTokenStore(area: KeyValueArea): TokenStore {
   return {
     async load(): Promise<TokenSet | null> {
       const parsed = StoredTokens.safeParse((await area.get(TOKENS_KEY))[TOKENS_KEY]);
@@ -994,6 +1482,33 @@ export function createSessionTokenStore(area: {
   };
 }
 
+/** The key vault over session storage: memory only, and (by default) trusted contexts only. */
+export function createSessionKeyVault(area: KeyValueArea): SyncServiceDeps['keyVault'] {
+  return {
+    async load() {
+      const parsed = StoredKey.safeParse((await area.get(KEY_KEY))[KEY_KEY]);
+      return parsed.success ? parsed.data : null;
+    },
+    async save(key) {
+      if (key) await area.set({ [KEY_KEY]: key });
+      else await area.remove(KEY_KEY);
+    },
+  };
+}
+
+export function createSessionBinding(area: KeyValueArea): SyncServiceDeps['tokenBinding'] {
+  return {
+    async load() {
+      const value = (await area.get(BINDING_KEY))[BINDING_KEY];
+      return typeof value === 'string' ? value : null;
+    },
+    async save(binding) {
+      if (binding !== null) await area.set({ [BINDING_KEY]: binding });
+      else await area.remove(BINDING_KEY);
+    },
+  };
+}
+
 /** The real service-worker wiring. Thin on purpose: the logic above is what the tests cover. */
 export function browserSyncDeps(): SyncServiceDeps {
   const local = browser.storage.local;
@@ -1002,21 +1517,43 @@ export function browserSyncDeps(): SyncServiceDeps {
     now: () => Date.now(),
     fetch: (input, init) => fetch(input, init),
     crypto: globalThis.crypto,
-    getSettings,
+    // The authoritative copy, not the one a content script can write (see @runtime/settings).
+    getSettings: getTrustedSettings,
     setFlag: async (enabled) => {
       await updateSettings((s) => ({ ...s, features: { ...s.features, sync: enabled } }));
     },
     config: {
       async load() {
-        const parsed = StoredSyncConfig.safeParse((await local.get(CONFIG_KEY))[CONFIG_KEY]);
+        const parsed = StoredSyncConfig.safeParse(await readSyncPrivate('sync.config'));
         return parsed.success ? parsed.data : null;
       },
       async save(config) {
-        if (config) await local.set({ [CONFIG_KEY]: config });
-        else await local.remove(CONFIG_KEY);
+        await writeSyncPrivate('sync.config', config);
+      },
+    },
+    legacyConfig: {
+      async load() {
+        const parsed = StoredSyncConfig.safeParse(
+          (await local.get(LEGACY_CONFIG_KEY))[LEGACY_CONFIG_KEY],
+        );
+        return parsed.success ? parsed.data : null;
+      },
+      async clear() {
+        await local.remove(LEGACY_CONFIG_KEY);
+      },
+    },
+    encryption: {
+      async load() {
+        const parsed = StoredEncryption.safeParse(await readSyncPrivate('sync.encryption'));
+        return parsed.success ? parsed.data : null;
+      },
+      async save(value) {
+        await writeSyncPrivate('sync.encryption', value);
       },
     },
     tokens: createSessionTokenStore(session),
+    tokenBinding: createSessionBinding(session),
+    keyVault: createSessionKeyVault(session),
     discoveryCache: {
       async load() {
         const parsed = StoredDiscovery.safeParse((await session.get(DISCOVERY_KEY))[DISCOVERY_KEY]);
@@ -1061,7 +1598,9 @@ export function browserSyncDeps(): SyncServiceDeps {
         lock ? fn() : null,
       );
     },
-    wipeLocalData: wipeAllData,
+    // Nobody watches a sign-out: stop waiting after the time the old delete allowed. A blocked wipe
+    // still finishes by itself (and says so); only this call gives up waiting for it.
+    wipeLocalData: () => wipeAllData({ signal: AbortSignal.timeout(10_000) }),
     notifyDataChanged,
     createRuntime: createSyncRuntime,
     attention: countSyncAttention,
@@ -1076,6 +1615,19 @@ export function registerSync(extensionBaseUrl: string): SyncService {
   const service = createSyncService(browserSyncDeps());
   const report = (err: unknown) => console.error('[StudyVault] sync', err);
 
+  // Session storage holds tokens and the unwrapped key: keep it closed to content scripts (it is
+  // by default; stated here so a later change of the default cannot expose it).
+  const session = browser.storage.session as {
+    setAccessLevel?: (o: { accessLevel: 'TRUSTED_CONTEXTS' }) => Promise<void>;
+  };
+  try {
+    void Promise.resolve(session.setAccessLevel?.({ accessLevel: 'TRUSTED_CONTEXTS' })).catch(
+      report,
+    );
+  } catch {
+    /* no such call here: the default of this area is trusted contexts only */
+  }
+
   registerSyncRpc(service, extensionBaseUrl);
 
   // Alarms exist only once the optional permission was granted; the API object may be absent.
@@ -1084,12 +1636,16 @@ export function registerSync(extensionBaseUrl: string): SyncService {
   };
   browser.alarms?.onAlarm.addListener(onAlarm);
 
-  // The flag changing in another context (options page, wipe) and local data changing.
-  watchSettings((settings) => {
-    service.onSettings(settings).catch(report);
-  });
+  // The flag changing in another context (options page, wipe) and local data changing. The
+  // payload of a storage event is writable by content scripts: re-read the authoritative copy.
   browser.storage.onChanged.addListener((changes, area) => {
-    if (area === 'local' && 'dataEpoch' in changes) service.onLocalChange().catch(report);
+    if (area !== 'local') return;
+    if ('settings' in changes) {
+      getTrustedSettings()
+        .then((settings) => service.onSettings(settings))
+        .catch(report);
+    }
+    if ('dataEpoch' in changes) service.onLocalChange().catch(report);
   });
 
   browser.runtime.onStartup.addListener(() => {

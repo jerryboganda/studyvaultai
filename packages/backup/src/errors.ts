@@ -31,6 +31,7 @@ export const BACKUP_ERROR_CODES = [
   'import_invalid',
   'integrity_violation',
   // commit
+  'restore_in_progress',
   'safety_backup_failed',
   'staging_failed',
   'commit_failed',

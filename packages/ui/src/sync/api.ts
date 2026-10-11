@@ -21,6 +21,8 @@ export interface SyncApi {
   signIn(): Promise<{ status: SyncStatusView; needsOrigins: string[] }>;
   signOut(o: { wipeLocalData: boolean; revokeAtProvider: boolean }): Promise<SyncStatusView>;
   syncNow(): Promise<SyncStatusView>;
+  /** Upload without end-to-end encryption: the explicit choice that opens the first upload. */
+  uploadPlain(): Promise<SyncStatusView>;
   e2eeSetup(passphrase: string): Promise<SyncStatusView>;
   e2eeUnlock(
     passphrase: string,
@@ -29,7 +31,7 @@ export interface SyncApi {
   e2eeRotate(
     current: string,
     next: string,
-  ): Promise<{ ok: boolean; reason: 'wrong_passphrase' | 'no_key' | null }>;
+  ): Promise<{ ok: boolean; reason: 'wrong_passphrase' | 'no_key' | null; setAside?: number }>;
   resolveConflict(id: string, decision: ConflictDecision): Promise<void>;
   retryQuarantine(): Promise<{ retried: number; remaining: number }>;
   discardQuarantined(id: string): Promise<void>;
@@ -116,6 +118,7 @@ export function createSyncApi(): SyncApi {
     signIn: () => call('sync.signIn', empty),
     signOut: (o) => call('sync.signOut', o),
     syncNow: () => call('sync.now', empty),
+    uploadPlain: () => call('sync.uploadPlain', empty),
     e2eeSetup: (passphrase) => call('sync.e2ee.setup', { passphrase }),
     e2eeUnlock: (passphrase) => call('sync.e2ee.unlock', { passphrase }),
     e2eeLock: () => call('sync.e2ee.lock', empty),

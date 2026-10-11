@@ -432,15 +432,26 @@ export class StudyVaultDb extends Dexie {
 // Pre-migration hook
 // ---------------------------------------------------------------------------------------------
 
+/** Rows of each table that `estimateBytes` reads to learn how big a row typically is. */
+const SAMPLE_ROWS = 25;
+
 export interface MigrationContext {
   databaseName: string;
   fromVersion: number;
   toVersion: number;
+  /** Row count of every table the old version had (index counts: no row is read). */
+  counts(): Promise<Record<string, number>>;
   /**
-   * Every row of every table as the old build wrote it, read from a connection that is still at the
-   * old version. Call it (and finish any export) before the hook returns.
+   * Rough size in bytes of the rows of `tables` as JSON: each table's count times the average row of
+   * a small sample. Reads at most a few rows per table, so ask it before reading everything.
    */
-  snapshot(): Promise<Record<string, unknown[]>>;
+  estimateBytes(tables: readonly string[]): Promise<number>;
+  /**
+   * The rows of `tables` (default: every table) as the old build wrote them, read from a connection
+   * that is still at the old version. Call it (and finish any export) before the hook returns. It
+   * holds every row it returns in memory: name only the tables that are needed.
+   */
+  snapshot(tables?: readonly string[]): Promise<Record<string, unknown[]>>;
 }
 export type MigrationHook = (ctx: MigrationContext) => void | Promise<void>;
 
@@ -463,9 +474,23 @@ export function onBeforeMigrate(
   };
 }
 
+/**
+ * False only when this engine can say the database does not exist. A probe open of a missing
+ * database creates it and deletes it again, which would delete the real one if another context
+ * created it in between.
+ */
+async function mayExist(name: string): Promise<boolean> {
+  try {
+    if (typeof indexedDB === 'undefined' || typeof indexedDB.databases !== 'function') return true;
+    return (await indexedDB.databases()).some((d) => d.name === name);
+  } catch {
+    return true;
+  }
+}
+
 /** Read the existing database at whatever version it has, without declaring a schema. */
 async function runMigrationHooks(name: string): Promise<void> {
-  if (migrationHooks.size === 0) return;
+  if (migrationHooks.size === 0 || !(await mayExist(name))) return;
   const probe = new Dexie(name);
   try {
     try {
@@ -481,9 +506,27 @@ async function runMigrationHooks(name: string): Promise<void> {
       databaseName: name,
       fromVersion,
       toVersion: DB_VERSION,
-      snapshot: async () => {
+      counts: async () => {
+        const out: Record<string, number> = {};
+        for (const table of probe.tables) out[table.name] = await table.count();
+        return out;
+      },
+      estimateBytes: async (tables) => {
+        let total = 0;
+        for (const name of tables) {
+          const table = probe.table(name);
+          const count = await table.count();
+          if (count === 0) continue;
+          const sample = await table.limit(SAMPLE_ROWS).toArray();
+          total += (JSON.stringify(sample).length / Math.max(1, sample.length)) * count;
+        }
+        return Math.ceil(total);
+      },
+      snapshot: async (tables) => {
         const out: Record<string, unknown[]> = {};
-        for (const table of probe.tables) out[table.name] = await table.toArray();
+        for (const name of tables ?? probe.tables.map((t) => t.name)) {
+          out[name] = await probe.table(name).toArray();
+        }
         return out;
       },
     };
@@ -509,22 +552,43 @@ async function runMigrationHooks(name: string): Promise<void> {
 
 const opening = new WeakMap<Dexie, Promise<void>>();
 
+/** True inside a liveQuery's Dexie zone, where Dexie refuses every write. */
+const inLiveQuery = (): boolean =>
+  Boolean((Dexie.Promise as unknown as { PSD?: { subscr?: unknown } }).PSD?.subscr);
+
 /**
- * Open the database. Without pre-migration hooks this is exactly `db.open()`: a Dexie promise, so a
- * liveQuery that triggers the open keeps tracking the tables it reads afterwards. With hooks the
- * open is shared between racing callers and the hooks run at most once per open.
+ * Open the database. Without pre-migration hooks (unit tests) this is exactly `db.open()`. With
+ * hooks, which every context that loads the storage layer has, the open is shared between racing
+ * callers and the hooks run at most once per open. Dexie's zone follows the awaits, so a liveQuery
+ * that triggers the open keeps tracking the tables it reads afterwards (observe.test.ts).
  */
 function openDatabase(db: StudyVaultDb): PromiseLike<unknown> {
   if (migrationHooks.size === 0) return db.open();
   let pending = opening.get(db);
   if (!pending) {
+    // A hook writes its copy to another database, which Dexie refuses inside a liveQuery's zone. The
+    // zone follows awaits and timers, so only a callback the event loop starts is outside of it.
+    const hooks = inLiveQuery()
+      ? new Promise<void>((resolve, reject) => {
+          setTimeout(() => runMigrationHooks(db.name).then(resolve, reject), 0);
+        })
+      : runMigrationHooks(db.name);
     pending = (async () => {
-      await runMigrationHooks(db.name);
+      await hooks;
       await db.open();
     })().finally(() => opening.delete(db));
     opening.set(db, pending);
   }
   return pending;
+}
+
+/**
+ * Open `db` the way `withDb` does, hooks included, for code that keeps a connection of its own (the
+ * sync runtime): a raw `db.open()` there would upgrade the schema without the pre-update copy.
+ */
+export async function ensureOpen(db: StudyVaultDb): Promise<void> {
+  assertNoPendingDelete();
+  if (!db.isOpen()) await openDatabase(db);
 }
 
 // Dexie errors that mean "the database cannot be used right now" rather than "a bug".
@@ -579,6 +643,7 @@ export function setConnectionGate(gate: ConnectionGate | null): void {
 /** Open the shared database if needed, run `fn`, and surface every failure as a StudyVaultError. */
 export async function withDb<T>(fn: (db: StudyVaultDb) => Promise<T>): Promise<T> {
   try {
+    assertNoPendingDelete();
     const db = getDb();
     if (!db.isOpen()) await openDatabase(db);
     if (connectionGate) await connectionGate(db);
@@ -635,35 +700,65 @@ export function closeDb(): void {
   verifiedCurrent = false;
 }
 
-const DELETE_TIMEOUT_MS = 10_000;
-
 /**
- * Close this context's connection and delete the whole database. Other contexts' Dexie
- * connections close themselves on the versionchange event and reopen lazily (empty) on next use.
+ * "All StudyVault data is being deleted, and the delete is not finished": thrown by every database
+ * call of this context until it is, and to a caller that stopped waiting for it. Code `storage_unavailable`.
  */
-export async function deleteDatabase(): Promise<void> {
-  closeDb();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const blocked = new Promise<never>((_, reject) => {
-    timer = setTimeout(
-      () =>
-        reject(
-          new StudyVaultError(
-            'storage_unavailable',
-            'Another StudyVault window is still using the database. Close other StudyVault tabs and try again.',
-          ),
-        ),
-      DELETE_TIMEOUT_MS,
-    );
-  });
-  try {
-    await Promise.race([Dexie.delete(DB_NAME), blocked]);
-  } catch (err) {
-    throw toStorageError(err);
-  } finally {
-    clearTimeout(timer);
+export class WipePendingError extends StudyVaultError {
+  constructor(message: string) {
+    super('storage_unavailable', message);
+    this.name = 'WipePendingError';
   }
 }
 
+interface PendingDelete {
+  /** Another window did not release the database when asked to: the request waits for it. */
+  blocked: boolean;
+  done: Promise<void>;
+}
+let pendingDelete: PendingDelete | null = null;
+
+function assertNoPendingDelete(): void {
+  if (!pendingDelete) return;
+  throw new WipePendingError(
+    pendingDelete.blocked
+      ? 'All StudyVault data is being deleted, but another StudyVault window is still holding it. Close the other StudyVault windows: deleting finishes by itself, and reading and saving work again afterwards.'
+      : 'All StudyVault data is being deleted. Try again in a moment.',
+  );
+}
+
+/**
+ * Close this context's connection and delete the whole database, however long that takes. An
+ * IndexedDB delete cannot be taken back once requested: if another window keeps its connection open
+ * (frozen, or a build that ignores `versionchange`) the request stays queued, and every open behind
+ * it would queue too. So this never gives up on it. `onBlocked` fires when the engine reports that
+ * another window holds the database; until the request completes, every database call in this
+ * context fails at once with `WipePendingError` instead of hanging behind it. A second call while
+ * one is pending joins it. Other windows' Dexie connections close themselves on `versionchange` and
+ * reopen lazily (empty) on next use.
+ */
+export function deleteDatabase(onBlocked?: () => void): Promise<void> {
+  if (pendingDelete) {
+    if (pendingDelete.blocked) onBlocked?.();
+    return pendingDelete.done;
+  }
+  closeDb();
+  const state: PendingDelete = { blocked: false, done: Promise.resolve() };
+  const request = new Dexie(DB_NAME, { addons: [] });
+  request.on('blocked', () => {
+    state.blocked = true;
+    onBlocked?.();
+  });
+  state.done = Promise.resolve(request.delete())
+    .catch((err: unknown) => {
+      throw toStorageError(err);
+    })
+    .finally(() => {
+      if (pendingDelete === state) pendingDelete = null;
+    });
+  pendingDelete = state;
+  return state.done;
+}
+
 /** Test helper: close the connection and delete the whole database. */
-export const resetDbForTests = deleteDatabase;
+export const resetDbForTests = (): Promise<void> => deleteDatabase();

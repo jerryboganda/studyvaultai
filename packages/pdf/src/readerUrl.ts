@@ -17,6 +17,11 @@ export interface ReaderTarget {
   page?: number | null;
   /** Highlight id to scroll to and flash. */
   highlight?: string | null;
+  /**
+   * The tab that asked for the reader is private. A hint that can only make the reader more careful:
+   * the reader asks the browser which window it is in and treats either answer as "private".
+   */
+  incognito?: boolean;
 }
 
 /** Extension-relative path that opens the reader. Pass it to `runtime.getURL`. */
@@ -28,6 +33,7 @@ export function pdfReaderPath(target: ReaderTarget = {}): string {
     params.set('page', String(target.page));
   }
   if (target.highlight) params.set('highlight', target.highlight);
+  if (target.incognito === true) params.set('incognito', '1');
   const q = params.toString();
   return q ? `${READER_PAGE}?${q}` : READER_PAGE;
 }
@@ -78,6 +84,14 @@ export function parseSrc(raw: string | null): SrcCheck | null {
   if (raw === null || raw === '') return null;
   if (raw.length > MAX_SRC_CHARS)
     return { ok: false, message: 'That address is too long to open.' };
+  return checkAddress(raw);
+}
+
+/**
+ * The scheme, credential and origin rules of `parseSrc` without its length bound: the address a
+ * redirect ended at (a signed download link can be long) is held to the same rules as the first one.
+ */
+export function checkAddress(raw: string): SrcCheck {
   let u: URL;
   try {
     u = new URL(raw);
@@ -103,6 +117,8 @@ export interface ReaderParams {
   doc: string | null;
   page: number | null;
   highlight: string | null;
+  /** `?incognito=1`: the opener was a private tab (see ReaderTarget.incognito). */
+  incognito: boolean;
 }
 
 const ID = /^[0-9A-Za-z_-]{8,128}$/;
@@ -117,5 +133,6 @@ export function parseReaderParams(search: string): ReaderParams {
     doc: doc !== null && ID.test(doc) ? doc : null,
     page: Number.isInteger(p) && p > 0 ? p : null,
     highlight: highlight !== null && ID.test(highlight) ? highlight : null,
+    incognito: q.get('incognito') === '1',
   };
 }

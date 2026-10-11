@@ -16,6 +16,7 @@ const NO_RETRY = new Set<FetchFailure['kind']>([
   'sign-in',
   'redirected-non-pdf',
   'redirect-blocked',
+  'redirect-needs-access',
   'not-found',
   'not-pdf',
   'too-large',
@@ -28,6 +29,8 @@ function advice(f: FetchFailure): string {
     case 'redirected-non-pdf':
     case 'redirect-blocked':
       return 'StudyVault does not use your browser sign-ins to fetch files. Open the link in your browser, sign in, download the PDF, then choose the downloaded file below.';
+    case 'redirect-needs-access':
+      return 'The address sent the download to a site you have not allowed. You can allow that site for this download only, or download the PDF in your browser and choose it below.';
     case 'not-pdf':
       return 'If the link opens a PDF in your browser, download it from there and choose the downloaded file below.';
     case 'not-found':
@@ -61,21 +64,28 @@ export function OpenPanel({
   /** Extra context from the reader, e.g. "no stored copy of this document". */
   notice: ReactNode;
   onFile(file: File): void;
-  /** Called synchronously from the click: permissions.request needs the user gesture. */
-  onAllowAndOpen(): void;
+  /**
+   * Called synchronously from the click: permissions.request needs the user gesture. `extra` lists
+   * further origin patterns to ask for in the same prompt (the site a redirect ended at).
+   */
+  onAllowAndOpen(extra?: string[]): void;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   /** The stored-copy manager (rendered after the open options). */
   copies?: ReactNode;
 }) {
   const local = useRef<HTMLInputElement>(null);
   const input = fileInputRef ?? local;
+  /** A redirect that ended on a site the person has not allowed: ask for exactly that one. */
+  const redirectTo = web.t === 'failed' ? web.failure.redirectTo : undefined;
 
   return (
     <main className="sv-open" data-testid="pdf-open">
       <h1>Open a PDF in StudyVault</h1>
       <p className="sv-muted">
-        PDFs open in StudyVault's own reader, so highlights, notes and search work on them. Files
-        are read on this device and are never uploaded.
+        PDFs open in StudyVault's own reader, so highlights, notes and search work on them. A file
+        you choose is read on this device and StudyVault does not upload it. A web address is
+        fetched from that site only after you allow it. If you turned on sync, the details and
+        recognised text of a PDF sync as described in Settings.
       </p>
       {notice}
 
@@ -146,7 +156,11 @@ export function OpenPanel({
                       downloaded copy above instead.
                     </InlineNotice>
                   ) : null}
-                  <Button variant="primary" onClick={onAllowAndOpen} data-testid="pdf-allow-open">
+                  <Button
+                    variant="primary"
+                    onClick={() => onAllowAndOpen()}
+                    data-testid="pdf-allow-open"
+                  >
                     Allow access to {src.host} and open
                   </Button>
                 </>
@@ -161,9 +175,19 @@ export function OpenPanel({
                 <InlineNotice tone="error" title="The PDF could not be downloaded">
                   <p>{web.failure.message}</p>
                   <p>{advice(web.failure)}</p>
-                  {!NO_RETRY.has(web.failure.kind) ? (
+                  {redirectTo ? (
                     <p>
-                      <Button onClick={onAllowAndOpen}>Try again</Button>
+                      <Button
+                        variant="primary"
+                        onClick={() => onAllowAndOpen([redirectTo.pattern])}
+                        data-testid="pdf-allow-redirect"
+                      >
+                        Allow access to {redirectTo.host} and open
+                      </Button>
+                    </p>
+                  ) : !NO_RETRY.has(web.failure.kind) ? (
+                    <p>
+                      <Button onClick={() => onAllowAndOpen()}>Try again</Button>
                     </p>
                   ) : null}
                 </InlineNotice>

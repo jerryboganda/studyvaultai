@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
-import { PdfOpenError, fetchPdf, type FetchFailure, type PdfStore, type ReaderParams } from '@pdf';
+import {
+  PdfOpenError,
+  fetchPdf,
+  requestOrigins,
+  withdrawOrigins,
+  type FetchFailure,
+  type PdfStore,
+  type ReaderParams,
+} from '@pdf';
 import { getSettings } from '@runtime';
 import { defaultSettings } from '@shared';
 import { Button, InlineNotice, ToastProvider, errorMessage, useApplyTheme, useSettings } from '@ui';
@@ -9,6 +17,7 @@ import { openSession, readLocalFile, type Session } from './loader';
 import type { OcrService } from './ocr';
 import { OpenPanel, type WebState } from './OpenPanel';
 import { PasswordDialog } from './PasswordDialog';
+import { writePolicy, type WindowPrivacy } from './privacy';
 import { StoredCopies } from './StoredCopies';
 
 type Phase =
@@ -23,15 +32,6 @@ interface PasswordRequest {
   seq: number;
 }
 
-/** True in a private (incognito) window; false when the API is unavailable (unit tests). */
-function inPrivateWindow(): boolean {
-  try {
-    return browser.extension?.inIncognitoContext === true;
-  } catch {
-    return false;
-  }
-}
-
 function describeOpenError(err: unknown): string {
   if (err instanceof PdfOpenError) {
     return err.kind === 'invalid'
@@ -41,37 +41,44 @@ function describeOpenError(err: unknown): string {
   return errorMessage(err, 'The PDF could not be opened.');
 }
 
-export function Reader({
-  store,
-  ocr,
-  params,
-}: {
+interface ReaderProps {
   store: PdfStore;
   /** The local OCR engine; undefined disables recognition with an explanation. */
   ocr: OcrService | undefined;
   params: ReaderParams;
-}) {
+  /** Which window this is (privacy.ts); one memoised answer per page load. */
+  privacy: () => Promise<WindowPrivacy>;
+}
+
+export function Reader(props: ReaderProps) {
   return (
     <ToastProvider>
-      <ReaderBody store={store} ocr={ocr} params={params} />
+      <ReaderBody {...props} />
     </ToastProvider>
   );
 }
 
-function ReaderBody({
-  store,
-  ocr,
-  params,
-}: {
-  store: PdfStore;
-  ocr: OcrService | undefined;
-  params: ReaderParams;
-}) {
+function ReaderBody({ store, ocr, params, privacy: askWindow }: ReaderProps) {
   const { settings } = useSettings();
   useApplyTheme(settings?.theme);
   // Same rule as web capture: the database is shared with normal windows, so a private window
-  // stores nothing unless the person said it may (SECURITY_PRIVACY, ADR-003).
-  const persistAllowed = !inPrivateWindow() || settings?.allowIncognitoCapture === true;
+  // stores nothing unless the person said it may (SECURITY_PRIVACY, ADR-003). The window is asked,
+  // not assumed (privacy.ts); the storage write path enforces the same rule, so this state is what
+  // the page says and does, not the only guard.
+  const [privacy, setPrivacy] = useState<WindowPrivacy | null>(null);
+  useEffect(() => {
+    let live = true;
+    void askWindow().then((p) => live && setPrivacy(p));
+    return () => {
+      live = false;
+    };
+  }, [askWindow]);
+  // Until the setting has been read nothing is written and nothing is announced.
+  const policy =
+    settings === null
+      ? { persist: false, reason: null }
+      : writePolicy(privacy, settings.allowIncognitoCapture);
+  const persistAllowed = policy.persist;
   const [flagOff, setFlagOff] = useState(false);
   const [phase, setPhase] = useState<Phase>({ t: 'idle' });
   const [fileError, setFileError] = useState<string | null>(null);
@@ -98,6 +105,15 @@ function ReaderBody({
       setNotice(null);
       setPhase({ t: 'loading', stage: 'Opening' });
       try {
+        // Decided when the document opens, from the window and the setting as they are now (a
+        // render's copy can be older than the first-load effect that calls this).
+        const { persist } = writePolicy(
+          await askWindow(),
+          await getSettings().then(
+            (s) => s.allowIncognitoCapture,
+            () => false,
+          ),
+        );
         const session = await openSession({
           bytes,
           nameHint,
@@ -105,7 +121,7 @@ function ReaderBody({
           store,
           onPassword: askPassword,
           onStage: (stage) => setPhase({ t: 'loading', stage }),
-          persist: persistAllowed,
+          persist,
         });
         await current.current?.doc.destroy().catch(() => undefined);
         current.current = session;
@@ -118,7 +134,7 @@ function ReaderBody({
         setPassword(null);
       }
     },
-    [askPassword, params.highlight, params.page, persistAllowed, store],
+    [askPassword, askWindow, params.highlight, params.page, store],
   );
 
   /** Open a kept copy by document id (the `?doc=` address and the stored-copies list). */
@@ -162,6 +178,25 @@ function ReaderBody({
     [open],
   );
 
+  /** Origins this page was given access to for one fetch (never ones the person already had). */
+  const lent = useRef<Set<string>>(new Set());
+
+  const handBack = useCallback(async () => {
+    const patterns = [...lent.current];
+    lent.current.clear();
+    if (patterns.length === 0) return;
+    try {
+      // If what the person keeps on purpose cannot be read, the grant is left rather than guessed at.
+      const stored = await getSettings();
+      await withdrawOrigins(browser.permissions, patterns, [
+        ...stored.persistentOrigins,
+        ...(browser.runtime.getManifest().host_permissions ?? []),
+      ]);
+    } catch {
+      /* best effort: a grant that stays is still listed under the extension's site access */
+    }
+  }, []);
+
   const fetchWeb = useCallback(async () => {
     const src = params.src;
     if (!src?.ok) return;
@@ -172,35 +207,47 @@ function ReaderBody({
     const res = await fetchPdf(src.url, {
       signal: ac.signal,
       onProgress: (loaded, total) => setWeb({ t: 'fetching', loaded, total }),
+      // A redirect may end only on the origin that was asked for or on one the person allowed.
+      isOriginGranted: (pattern) => browser.permissions.contains({ origins: [pattern] }),
     });
+    // The transfer is over, whether it worked or not: hand back what it was given access for.
+    await handBack();
     if (!res.ok) {
       if (res.failure.kind !== 'aborted') setWeb({ t: 'failed', failure: res.failure });
       return;
     }
     await open(res.bytes, src.host, src.url);
-  }, [open, params.src]);
+  }, [handBack, open, params.src]);
 
-  /** Click handler: permissions.request must be the first await so the user gesture still counts. */
-  const allowAndOpen = useCallback(() => {
-    const src = params.src;
-    if (!src?.ok) return;
-    void browser.permissions.request({ origins: [src.pattern] }).then(
-      (granted) => {
-        if (!granted) {
-          setWeb({ t: 'denied' });
-          return undefined;
-        }
-        return fetchWeb();
-      },
-      (err: unknown) => {
-        const failure: FetchFailure = {
-          kind: 'permission',
-          message: errorMessage(err, 'Chrome did not allow the request for site access.'),
-        };
-        setWeb({ t: 'failed', failure });
-      },
-    );
-  }, [fetchWeb, params.src]);
+  /**
+   * Click handler. `requestOrigins` issues its permission calls before any await, so the click's
+   * user gesture still counts. `extra` is a redirect's destination the person was asked about.
+   */
+  const allowAndOpen = useCallback(
+    (extra: string[] = []) => {
+      const src = params.src;
+      if (!src?.ok) return;
+      void requestOrigins(browser.permissions, [src.pattern, ...extra]).then(
+        ({ granted, fresh }) => {
+          if (!granted) {
+            setWeb({ t: 'denied' });
+            return undefined;
+          }
+          // Only what this click made accessible is handed back afterwards.
+          for (const pattern of fresh) lent.current.add(pattern);
+          return fetchWeb();
+        },
+        (err: unknown) => {
+          const failure: FetchFailure = {
+            kind: 'permission',
+            message: errorMessage(err, 'Chrome did not allow the request for site access.'),
+          };
+          setWeb({ t: 'failed', failure });
+        },
+      );
+    },
+    [fetchWeb, params.src],
+  );
 
   // First load: what the address asked for.
   useEffect(() => {
@@ -303,6 +350,7 @@ function ReaderBody({
           ocr={ocr}
           settings={settings ?? defaultSettings()}
           persistAllowed={persistAllowed}
+          blockedReason={policy.reason ?? undefined}
           initialPage={phase.page}
           initialHighlight={phase.highlight}
           onOpenAnother={closeDocument}
@@ -333,7 +381,17 @@ function ReaderBody({
           src={params.src}
           web={web}
           fileError={fileError}
-          notice={notice ? <InlineNotice tone="info">{notice}</InlineNotice> : null}
+          notice={
+            <>
+              {policy.reason ? (
+                <InlineNotice tone="warning" live title="Nothing is being saved">
+                  {policy.reason} You can still open and read a PDF: its record, highlights and
+                  recognised text are not stored.
+                </InlineNotice>
+              ) : null}
+              {notice ? <InlineNotice tone="info">{notice}</InlineNotice> : null}
+            </>
+          }
           onFile={(f) => void openFile(f)}
           onAllowAndOpen={allowAndOpen}
           fileInputRef={inputRef}

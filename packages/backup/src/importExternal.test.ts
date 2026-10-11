@@ -2,7 +2,12 @@
 import { describe, expect, it } from 'vitest';
 import { exportHighlightsCsv, toCsv } from './csv';
 import { exportDataset, INJECTION_QUOTE } from './exportData';
-import { importCsvHighlights, importMarkdownHighlights } from './importExternal';
+import {
+  findLink,
+  importCsvHighlights,
+  importMarkdownHighlights,
+  parseHeading,
+} from './importExternal';
 import { exportMarkdown } from './markdown';
 import { normalizeQuote, quoteHash, safeHttpUrl } from './text';
 import { subtle } from './testkit';
@@ -228,5 +233,100 @@ describe('CSV import', () => {
       'comment_too_long',
     ]);
     expect(set.highlights).toHaveLength(0);
+  });
+});
+
+describe('Markdown import is linear on hostile lines', () => {
+  const MB = 1024 * 1024;
+  const quote = '> A normal quote that must survive next to the hostile lines.';
+
+  async function timed(md: string) {
+    const t0 = performance.now();
+    const set = await importMarkdownHighlights(md, opts);
+    return { set, ms: performance.now() - t0 };
+  }
+
+  it('a 1 MB quote line is cut and rejected as too long, quickly', async () => {
+    const { set, ms } = await timed(`${quote}\n\n> ${'a'.repeat(MB)}\n`);
+    expect(ms).toBeLessThan(2000);
+    expect(set.highlights.map((h) => h.quote)).toEqual([quote.slice(2)]);
+    expect(set.rejected).toHaveLength(1);
+    expect(set.rejected[0]?.reason).toBe('quote_too_long');
+  });
+
+  it.each([
+    ['a citation line of 1,000,000 "["', `${quote}\n\n-- ${'['.repeat(MB)}\n`],
+    ['a citation line of unclosed "[a]("', `${quote}\n\n-- ${'[a]('.repeat(MB / 4)}\n`],
+    ['a heading of spaces around one letter', `# a${' '.repeat(MB)}b\n\n${quote}\n`],
+    ['a heading of 1,000,000 "#"', `${'#'.repeat(MB)}\n\n${quote}\n`],
+    ['a comment line of spaces', `${quote}\n\n**Comment:** ${' '.repeat(MB)}x\n`],
+  ])('%s', async (_name, md) => {
+    const { set, ms } = await timed(md);
+    expect(ms).toBeLessThan(2000);
+    expect(set.highlights.map((h) => h.quote)).toContain(quote.slice(2));
+  });
+
+  it('a line of 300,000 tags is cut, read once, and the highlight is rejected for its tags', async () => {
+    const { set, ms } = await timed(`${quote}\n\n#a${' #a'.repeat(MB / 3)} !\n`);
+    expect(ms).toBeLessThan(2000);
+    expect(set.highlights).toHaveLength(0);
+    expect(set.rejected.map((r) => r.reason)).toEqual(['too_many_tags']);
+  });
+
+  it('a line of 300,000 block ids is cut and read once', async () => {
+    const { set, ms } = await timed(`${quote}\n\n^a${' ^a'.repeat(MB / 3)} !\n`);
+    expect(ms).toBeLessThan(2000);
+    expect(set.highlights.map((h) => h.quote)).toEqual([quote.slice(2)]);
+    expect(set.highlights[0]?.tags).toEqual([]);
+  });
+
+  it('a whole 4.5 MB file of such lines is still bounded by its size', async () => {
+    const line = `# a${' '.repeat(10_000)}b`;
+    const md = Array.from(
+      { length: 300 },
+      (_, i) => `${line}\n> quote ${i}\n-- [${'['.repeat(5000)}`,
+    ).join('\n');
+    expect(md.length).toBeGreaterThan(4 * MB);
+    const { set, ms } = await timed(md);
+    expect(ms).toBeLessThan(4000);
+    expect(set.highlights).toHaveLength(300);
+  });
+
+  it('the hand-written heading and link readers match the regular expressions they replace', () => {
+    const HEADING = /^(#{1,6})\s+(.*?)\s*#*\s*$/;
+    const LINK = /\[((?:\\.|[^\]\\])*)\]\(([^)\s]+)\)/;
+    const alphabet = [
+      '#',
+      '#',
+      ' ',
+      '\t',
+      'a',
+      'b',
+      '[',
+      '[',
+      ']',
+      '(',
+      ')',
+      '\\',
+      'x y',
+      '\u00a0',
+    ];
+    let state = 12345;
+    const next = () => (state = (Math.imul(state, 1103515245) + 12345) >>> 0);
+    for (let n = 0; n < 6000; n++) {
+      const len = 1 + (next() % 16);
+      let s = '';
+      for (let i = 0; i < len; i++) s += alphabet[next() % alphabet.length];
+      const h = HEADING.exec(s);
+      const mine = parseHeading(s);
+      expect(mine === null ? null : [mine.level, mine.text], JSON.stringify(s)).toEqual(
+        h === null ? null : [(h[1] as string).length, h[2]],
+      );
+      const l = LINK.exec(s);
+      const found = findLink(s);
+      expect(found === null ? null : [found.text, found.url], JSON.stringify(s)).toEqual(
+        l === null ? null : [l[1], l[2]],
+      );
+    }
   });
 });

@@ -26,6 +26,7 @@ describe('fetchPdf', () => {
   it('returns the bytes of a PDF (content type decides, not the extension)', async () => {
     const r = await fetchPdf('https://example.org/download?id=7', {
       fetchImpl: respond(PDF, { url: 'https://cdn.example.org/blob', redirected: true }),
+      isOriginGranted: async (pattern) => pattern === 'https://cdn.example.org/*',
     });
     expect(r.ok).toBe(true);
     if (r.ok) {
@@ -191,11 +192,27 @@ describe('reader address', () => {
     const parsed = parseReaderParams(path.slice(path.indexOf('?')));
     expect(parsed.page).toBe(4);
     expect(parsed.highlight).toBe('hl-0001abcd');
+    expect(parsed.incognito).toBe(false);
     expect(parseReaderParams('?doc=' + 'a'.repeat(64)).doc).toBe('a'.repeat(64));
     expect(parseReaderParams('?doc=../etc').doc).toBeNull();
     expect(parsed.src).toMatchObject({ ok: true, host: 'example.org' });
     expect(pdfReaderPath()).toBe('pdf-reader.html');
     expect(parseReaderParams('').src).toBeNull();
+  });
+});
+
+describe('reader address: private opener', () => {
+  it('carries "the opener was private" only when it was, and reads only the exact value 1', () => {
+    expect(pdfReaderPath({ src: 'https://example.org/a.pdf' })).not.toContain('incognito');
+    expect(pdfReaderPath({ src: 'https://example.org/a.pdf', incognito: false })).not.toContain(
+      'incognito',
+    );
+    const path = pdfReaderPath({ src: 'https://example.org/a.pdf', incognito: true });
+    expect(path).toContain('incognito=1');
+    expect(parseReaderParams(path.slice(path.indexOf('?'))).incognito).toBe(true);
+    for (const q of ['?incognito=0', '?incognito=true', '?incognito=', '?incognito=11']) {
+      expect(parseReaderParams(q).incognito, q).toBe(false);
+    }
   });
 });
 
@@ -305,5 +322,171 @@ describe('fetchPdf failure messages', () => {
   it('an extension-less address that answers application/pdf opens', async () => {
     const r = await fetchPdf('https://example.org/download/42', { fetchImpl: respond(PDF) });
     expect(r.ok).toBe(true);
+  });
+});
+
+describe('fetchPdf: where a redirect may end', () => {
+  const ASKED = 'https://example.org/download?id=7';
+
+  /** A PDF answer whose body reports being cancelled, so "never read" can be asserted. */
+  function observed(init: { url: string; type?: string; status?: number }) {
+    const seen = { cancelled: false };
+    const fetchImpl: typeof fetch = async () => {
+      const body = new ReadableStream<Uint8Array>({
+        pull(c) {
+          c.enqueue(PDF);
+          c.close();
+        },
+        cancel() {
+          seen.cancelled = true;
+        },
+      });
+      const headers = new Headers({ 'content-type': init.type ?? 'application/pdf' });
+      const res = new Response(body, { status: init.status ?? 200, headers });
+      Object.defineProperty(res, 'url', { value: init.url });
+      Object.defineProperty(res, 'redirected', { value: true });
+      return res;
+    };
+    return { fetchImpl, seen };
+  }
+
+  it('the origin that was asked for needs no one to be asked', async () => {
+    const isOriginGranted = vi.fn(async () => false);
+    const r = await fetchPdf(ASKED, {
+      fetchImpl: respond(PDF, { url: 'https://example.org/files/a.pdf', redirected: true }),
+      isOriginGranted,
+    });
+    expect(r.ok).toBe(true);
+    expect(isOriginGranted).not.toHaveBeenCalled();
+  });
+
+  it('another origin must be granted: otherwise it is named, its body is cancelled and not read', async () => {
+    const { fetchImpl, seen } = observed({ url: 'https://cdn.example.net/blob?sig=1' });
+    const onProgress = vi.fn();
+    const r = await fetchPdf(ASKED, {
+      fetchImpl,
+      onProgress,
+      isOriginGranted: async () => false,
+    });
+    expect(r).toMatchObject({
+      ok: false,
+      failure: {
+        kind: 'redirect-needs-access',
+        redirectTo: { host: 'cdn.example.net', pattern: 'https://cdn.example.net/*' },
+      },
+    });
+    expect(r.ok === false && r.failure.message).toContain('cdn.example.net');
+    expect(seen.cancelled).toBe(true);
+    expect(onProgress).not.toHaveBeenCalled();
+  });
+
+  it('a granted destination is read, and is asked about by its exact origin pattern', async () => {
+    const asked: string[] = [];
+    const r = await fetchPdf(ASKED, {
+      fetchImpl: respond(PDF, { url: 'https://cdn.example.net:8443/blob', redirected: true }),
+      isOriginGranted: async (pattern) => {
+        asked.push(pattern);
+        return true;
+      },
+    });
+    expect(r.ok).toBe(true);
+    expect(asked).toEqual(['https://cdn.example.net:8443/*']);
+  });
+
+  it('with no way to ask, only the origin that was asked for passes', async () => {
+    const r = await fetchPdf(ASKED, {
+      fetchImpl: respond(PDF, { url: 'https://cdn.example.net/blob', redirected: true }),
+    });
+    expect(r).toMatchObject({ ok: false, failure: { kind: 'redirect-needs-access' } });
+  });
+
+  it('a permission check that fails counts as "not granted"', async () => {
+    const r = await fetchPdf(ASKED, {
+      fetchImpl: respond(PDF, { url: 'https://cdn.example.net/blob', redirected: true }),
+      isOriginGranted: async () => {
+        throw new Error('permissions unavailable');
+      },
+    });
+    expect(r).toMatchObject({ ok: false, failure: { kind: 'redirect-needs-access' } });
+  });
+
+  it.each([
+    'http://192.168.0.1/a.pdf',
+    'http://example.org/a.pdf',
+    'file:///C:/a.pdf',
+    'data:application/pdf;base64,JVBERi0=',
+    'blob:https://example.org/0b0e2f9a',
+    'javascript:alert(1)',
+    'chrome-extension://abcdefghijklmnopabcdefghijklmnop/a.pdf',
+    'https://user:pw@cdn.example.net/a.pdf',
+  ])('an address the reader would never open is refused even when "granted": %s', async (end) => {
+    const isOriginGranted = vi.fn(async () => true);
+    const r = await fetchPdf(ASKED, {
+      fetchImpl: respond(PDF, { url: end, redirected: true }),
+      isOriginGranted,
+    });
+    expect(r).toMatchObject({ ok: false, failure: { kind: 'redirect-blocked' } });
+    expect(r.ok === false && r.failure.message).toContain('will not download from');
+    expect(isOriginGranted).not.toHaveBeenCalled();
+  });
+
+  it('plain http is accepted for localhost only, and is its own origin', async () => {
+    const asked: string[] = [];
+    const r = await fetchPdf(ASKED, {
+      fetchImpl: respond(PDF, { url: 'http://127.0.0.1:9000/a.pdf', redirected: true }),
+      isOriginGranted: async (pattern) => {
+        asked.push(pattern);
+        return false;
+      },
+    });
+    expect(r).toMatchObject({
+      ok: false,
+      failure: { kind: 'redirect-needs-access', redirectTo: { host: '127.0.0.1' } },
+    });
+    expect(asked).toEqual(['http://127.0.0.1:9000/*']);
+  });
+
+  it('reports what the destination answered with, without needing it to be granted', async () => {
+    const signIn = await fetchPdf(ASKED, {
+      fetchImpl: respond('no', {
+        status: 401,
+        type: 'text/html',
+        url: 'https://login.example.net/sso',
+        redirected: true,
+      }),
+    });
+    expect(signIn).toMatchObject({ ok: false, failure: { kind: 'sign-in', status: 401 } });
+    const page = await fetchPdf(ASKED, {
+      fetchImpl: respond('<html/>', {
+        type: 'text/html',
+        url: 'https://login.example.net/sso',
+        redirected: true,
+      }),
+    });
+    expect(page).toMatchObject({ ok: false, failure: { kind: 'redirected-non-pdf' } });
+  });
+
+  it('a long signed final address is held to the same rules, not to the 2,048-character bound', async () => {
+    const end = `https://cdn.example.net/blob?sig=${'a'.repeat(3000)}`;
+    const r = await fetchPdf(ASKED, {
+      fetchImpl: respond(PDF, { url: end, redirected: true }),
+      isOriginGranted: async (pattern) => pattern === 'https://cdn.example.net/*',
+    });
+    expect(r.ok).toBe(true);
+  });
+
+  it('still sends no cookies and no referrer, and still follows redirects (hops are not visible)', async () => {
+    let seen: RequestInit | undefined;
+    await fetchPdf(ASKED, {
+      fetchImpl: async (_u, init) => {
+        seen = init;
+        return respond(PDF)('x');
+      },
+    });
+    expect(seen).toMatchObject({
+      credentials: 'omit',
+      referrerPolicy: 'no-referrer',
+      redirect: 'follow',
+    });
   });
 });

@@ -35,25 +35,57 @@ const wantPerms = 'activeTab,contextMenus,scripting,sidePanel,storage';
 if (perms !== wantPerms) fail(`permissions "${perms}" != "${wantPerms}"`);
 const optHosts = [...(m.optional_host_permissions ?? [])].sort().join(',');
 if (optHosts !== 'http://*/*,https://*/*') fail(`optional_host_permissions "${optHosts}"`);
+// Optional, runtime-requested only: sync sign-in and its timer (docs/adr/009). Anything else added here
+// would be a new capability the user can be prompted for, so it must be a deliberate change to this pin.
+const optPerms = [...(m.optional_permissions ?? [])].sort().join(',');
+if (optPerms !== 'alarms,identity') fail(`optional_permissions "${optPerms}" != "alarms,identity"`);
+
+// The extension-pages policy, directive by directive (docs/adr/009). Adding a source or a directive is
+// a decision, so it changes this table in the same commit. Neither 'unsafe-inline' nor 'unsafe-eval'
+// appears; connect-src is the only directive wider than 'self' (AI, sync, PDF from a web address);
+// img-src data: is the reader's wavy-underline mask.
+const WANT_CSP = {
+  'default-src': ["'self'"],
+  'script-src': ["'self'", "'wasm-unsafe-eval'"],
+  'style-src': ["'self'"],
+  'img-src': ["'self'", 'data:'],
+  'font-src': ["'self'"],
+  'connect-src': ["'self'", 'https:', 'http://localhost:*', 'http://127.0.0.1:*'],
+  'worker-src': ["'self'"],
+  'media-src': ["'none'"],
+  'manifest-src': ["'none'"],
+  'object-src': ["'none'"],
+  'base-uri': ["'self'"],
+  'frame-src': ["'none'"],
+  'form-action': ["'none'"],
+};
+const parseCsp = (text) =>
+  Object.fromEntries(
+    text
+      .split(';')
+      .map((d) => d.trim().split(/\s+/))
+      .filter(([name]) => name)
+      .map(([name, ...sources]) => [name, sources]),
+  );
 const csp = m.content_security_policy?.extension_pages ?? '';
-const CONNECT_ALLOWED = new Set(["'self'", 'https:', 'http://localhost:*', 'http://127.0.0.1:*']);
-const connectTokens = (/connect-src ([^;]+)/.exec(csp)?.[1] ?? '').trim().split(/\s+/);
-for (const token of connectTokens) {
-  if (!CONNECT_ALLOWED.has(token)) fail(`connect-src token not allow-listed: ${token}`);
+const policy = parseCsp(csp);
+for (const name of new Set([...Object.keys(WANT_CSP), ...Object.keys(policy)])) {
+  const got = (policy[name] ?? ['<missing>']).join(' ');
+  const want = (WANT_CSP[name] ?? ['<not allowed>']).join(' ');
+  if (got !== want) fail(`CSP ${name} is "${got}", expected "${want}"`);
 }
-for (const directive of [
-  "script-src 'self' 'wasm-unsafe-eval'",
-  "connect-src 'self'",
-  "frame-src 'none'",
-  "form-action 'none'",
-]) {
-  if (!csp.includes(directive)) fail(`extension_pages CSP is missing ${directive}: ${csp}`);
+// Independent of the table above, in case it is edited carelessly: what may never appear, and where.
+for (const [name, sources] of Object.entries(policy)) {
+  const bad = sources.filter(
+    (s) =>
+      s === "'unsafe-eval'" ||
+      s === '*' ||
+      (s === "'unsafe-inline'" && name !== 'style-src') ||
+      ((s === 'data:' || s === 'blob:') && name !== 'img-src') ||
+      (/^https?:/.test(s) && name !== 'connect-src'),
+  );
+  if (bad.length) fail(`CSP ${name} must not carry ${bad.join(' ')}: ${csp}`);
 }
-if (
-  /(?<!wasm-)unsafe-eval|unsafe-inline/.test(csp) ||
-  /(script|object|base|frame|form)-[a-z]+[^;]*https?:/.test(csp)
-)
-  fail(`extension_pages CSP is too loose: ${csp}`);
 const commands = Object.keys(m.commands ?? {})
   .sort()
   .join(',');
@@ -65,6 +97,13 @@ for (const file of walk(prod).filter((f) => f.endsWith('.html'))) {
   const html = readFileSync(file, 'utf8');
   if (/<(script|link|img|iframe)[^>]+(src|href)=["']https?:/i.test(html))
     fail(`remote resource in ${file}`);
+  // style-src 'self' and script-src 'self' refuse these at runtime, so a build that has them is broken.
+  if (/<style[\s>]|\sstyle=["']/i.test(html)) fail(`inline style in ${file}`);
+  if (/<script(?![^>]*\ssrc=)[^>]*>/i.test(html)) fail(`inline script in ${file}`);
+}
+for (const file of walk(prod).filter((f) => f.endsWith('.css'))) {
+  if (/@import|url\(\s*["']?(https?:)?\/\//i.test(readFileSync(file, 'utf8')))
+    fail(`remote resource or @import in ${file}`);
 }
 if (walk(prod).some((f) => f.endsWith('.map'))) fail('source maps are shipped');
 
@@ -132,6 +171,17 @@ if (!existsSync(ocrDir)) {
 
 // --- the e2e variant must be the production React (a dev build hides real timing) -----------
 if (existsSync(e2e)) {
+  // ... and the manifest the e2e suite loads must be the shipped one, apart from loopback hosts.
+  const me = JSON.parse(readFileSync(join(e2e, 'manifest.json'), 'utf8'));
+  for (const key of [
+    'permissions',
+    'optional_permissions',
+    'optional_host_permissions',
+    'content_security_policy',
+  ]) {
+    if (JSON.stringify(me[key]) !== JSON.stringify(m[key]))
+      fail(`e2e manifest ${key} differs from the production manifest`);
+  }
   for (const file of walk(e2e).filter((f) => f.endsWith('.js'))) {
     if (readFileSync(file, 'utf8').includes('react-stack-top-frame'))
       fail(`React DEV build in ${file}`);
@@ -143,7 +193,8 @@ if (failures.length) {
   process.exit(1);
 }
 console.log(
-  `build ok: permissions=${perms}; optional hosts=${optHosts}; commands=${commands}; ` +
+  `build ok: permissions=${perms}; optional=${optPerms}; optional hosts=${optHosts}; ` +
+    `csp directives=${Object.keys(policy).length}; commands=${commands}; ` +
     `content script ${Math.round(size('content-scripts/highlighter.js') / KB)} KB; total ${Math.round(total / KB)} KB`,
 );
 console.log(

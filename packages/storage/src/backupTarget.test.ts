@@ -281,7 +281,7 @@ async function state(): Promise<Record<string, unknown>> {
 }
 
 const hasStagingDb = async (): Promise<boolean> =>
-  (await indexedDB.databases()).some((d) => d.name === RESTORE_STAGING_DB);
+  (await indexedDB.databases()).some((d) => d.name?.startsWith(RESTORE_STAGING_DB));
 
 const baseOptions = { includeLocalOnlyTables: ['attachments'] as string[], appVersion: 'test' };
 

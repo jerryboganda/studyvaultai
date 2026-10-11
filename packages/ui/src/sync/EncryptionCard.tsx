@@ -64,9 +64,21 @@ const REASON_TEXT = {
   no_key: 'This account has no encryption key on the server yet.',
 } as const;
 
+/** What choosing "without end-to-end encryption" means, in the words the person confirms. */
+export const PLAIN_UPLOAD_CONSEQUENCE =
+  'The operator of the sync server, and anyone who gets into it, can read everything that is uploaded: highlights, notes, flashcards, review history, page addresses and titles, and scanned-page text. The connection is encrypted (TLS), but that is not end-to-end encryption.';
+
+/** SECURITY_PRIVACY.md: end-to-end encryption does not extend to AI processing. */
+export const AI_AFTER_DECRYPTION_NOTE =
+  'If you use the optional AI features, the text you select is decrypted on this device and sent to your AI provider only after you give a separate consent for that request. End-to-end encryption does not cover what you choose to send to an AI provider.';
+
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
 /**
- * End-to-end encryption of synced content. The passphrase is sent only to the service worker of
- * this extension, held in memory there for a limited time, and never stored.
+ * How synced content is protected: the choice that gates the first upload, end-to-end encryption,
+ * its lock, and changing the passphrase. The passphrase is sent only to the service worker of this
+ * extension, which derives the key; the key is kept in memory-only session storage for a limited
+ * time (it is not written to disk) and the passphrase is never stored.
  */
 export function EncryptionCard({
   status,
@@ -80,6 +92,7 @@ export function EncryptionCard({
   const [pass, setPass] = useState('');
   const [again, setAgain] = useState('');
   const [lostAck, setLostAck] = useState(false);
+  const [plainAck, setPlainAck] = useState(false);
   const [unlockPass, setUnlockPass] = useState('');
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
@@ -89,14 +102,28 @@ export function EncryptionCard({
 
   const strength = assessPassphrase(pass);
   const nextStrength = assessPassphrase(next);
+  const undecided = status.encryptionChoice === 'undecided' && status.e2ee.mode === 'none';
+  const plain = status.encryptionChoice === 'plaintext' && status.e2ee.mode === 'none';
+  const setAsideNote = (n: number) =>
+    n > 0
+      ? ` ${plural(n, 'stored item')} on the server could not be proven to come from your devices, so ${n === 1 ? 'it was' : 'they were'} not carried over. ${n === 1 ? 'It is' : 'They are'} listed under “Refused changes”.`
+      : '';
 
   const setup = useAction(async () => {
     setMessage(null);
-    onChanged(await api.e2eeSetup(pass));
+    const view = await api.e2eeSetup(pass);
+    onChanged(view);
     setPass('');
     setAgain('');
     setLostAck(false);
-    setMessage('End-to-end encryption is on. Keep your passphrase safe.');
+    setMessage(
+      `End-to-end encryption is on. Keep your passphrase safe.${setAsideNote(view.e2ee.setAside ?? 0)}`,
+    );
+  });
+  const uploadPlain = useAction(async () => {
+    setMessage(null);
+    onChanged(await api.uploadPlain());
+    setPlainAck(false);
   });
   const unlock = useAction(async () => {
     setMessage(null);
@@ -122,7 +149,9 @@ export function EncryptionCard({
     setNext('');
     setNextAgain('');
     setRotateAck(false);
-    setMessage('The passphrase was changed and your synced data was re-encrypted.');
+    setMessage(
+      `The passphrase was changed and your synced data was re-encrypted.${setAsideNote(r.setAside ?? 0)}`,
+    );
     onChanged();
   });
 
@@ -136,6 +165,11 @@ export function EncryptionCard({
         : !lostAck
           ? 'Confirm that you understand a lost passphrase cannot be recovered.'
           : undefined;
+  const plainReason = !signedIn
+    ? 'Sign in first.'
+    : !plainAck
+      ? 'Confirm that you understand the operator of the server can read what is uploaded.'
+      : undefined;
   const rotateReason =
     current === ''
       ? 'Enter your current passphrase.'
@@ -147,6 +181,11 @@ export function EncryptionCard({
             ? 'Confirm that you understand a lost passphrase cannot be recovered.'
             : undefined;
 
+  const minutes =
+    status.e2ee.lockInSeconds === null
+      ? null
+      : Math.max(1, Math.round(status.e2ee.lockInSeconds / 60));
+
   return (
     <section
       className="sv-stack sv-stack--tight"
@@ -154,16 +193,39 @@ export function EncryptionCard({
       data-testid="e2ee-section"
     >
       <h3 id={headingId}>End-to-end encryption</h3>
+
+      {status.e2ee.warning ? (
+        <InlineNotice tone="error" title="Uploads are paused: the encryption key looks wrong" live>
+          <span data-testid="e2ee-warning">{status.e2ee.warning}</span>{' '}
+          <span>
+            Do not enter your passphrase for a server you do not trust. If you know the server was
+            reset, delete what it holds (below) to start again.
+          </span>
+        </InlineNotice>
+      ) : null}
+
+      {undecided ? (
+        <InlineNotice
+          tone="warning"
+          title="Nothing has been uploaded yet: choose how it is protected"
+        >
+          <span data-testid="e2ee-choice-note">
+            StudyVault does not send anything until you choose. Either set a passphrase below, so
+            your content is encrypted on this device before it leaves, or upload without end-to-end
+            encryption. {PLAIN_UPLOAD_CONSEQUENCE}
+          </span>
+        </InlineNotice>
+      ) : null}
+
       <p data-testid="e2ee-mode">
         {status.e2ee.mode === 'none'
-          ? 'Not set up. Without a passphrase, whoever runs the sync server can read your synced highlights and notes. The connection is encrypted (TLS), but that is not end-to-end encryption.'
+          ? plain
+            ? `Not set up. You chose to upload without end-to-end encryption. ${PLAIN_UPLOAD_CONSEQUENCE}`
+            : 'Not set up, and nothing has been uploaded. Without a passphrase, whoever runs the sync server could read what you upload. The connection is encrypted (TLS), but that is not end-to-end encryption.'
           : status.e2ee.mode === 'locked'
-            ? 'Set up, and locked on this device. Syncing is paused until you enter the passphrase.'
-            : status.e2ee.lockInSeconds !== null
-              ? `On, and unlocked on this device. It locks again in about ${Math.max(
-                  1,
-                  Math.round(status.e2ee.lockInSeconds / 60),
-                )} minute(s), and whenever the browser or extension restarts.`
+            ? 'Set up, and locked on this device. Locked means the key is not held here right now: syncing is paused, and nothing is uploaded unencrypted, until you enter the passphrase.'
+            : minutes !== null
+              ? `On, and unlocked on this device for about ${minutes} minute(s). Then the key is dropped, background syncing pauses and the status says locked until you enter the passphrase again. The key is held only in memory, and is also dropped when the browser or the extension restarts.`
               : 'On, and unlocked on this device.'}
       </p>
 
@@ -173,8 +235,21 @@ export function EncryptionCard({
       </InlineNotice>
       <p className="sv-muted sv-small">
         With encryption on, the server cannot read your content. It can still see which kinds of
-        items you have, their ids, how big they are and when they change.
+        items you have, their ids, whether each was created, changed or deleted, when, and how big
+        it is.
       </p>
+      <p className="sv-muted sv-small" data-testid="e2ee-ai-note">
+        {AI_AFTER_DECRYPTION_NOTE}
+      </p>
+
+      {(status.e2ee.setAside ?? 0) > 0 ? (
+        <InlineNotice tone="warning" title="Some stored items could not be verified">
+          <span data-testid="e2ee-set-aside">
+            When encryption was last set up or changed,
+            {setAsideNote(status.e2ee.setAside ?? 0)}
+          </span>
+        </InlineNotice>
+      ) : null}
 
       {status.e2ee.mode === 'none' ? (
         <div className="sv-stack sv-stack--tight">
@@ -204,6 +279,11 @@ export function EncryptionCard({
               I understand that if I lose this passphrase my synced data cannot be recovered.
             </span>
           </label>
+          <p className="sv-muted sv-small">
+            Turning encryption on re-sends what this device holds under the new key and replaces
+            what the server stores. Let your other devices sync first, so nothing they have not
+            uploaded yet is overwritten.
+          </p>
           <div className="sv-row">
             <Button
               variant="primary"
@@ -219,6 +299,39 @@ export function EncryptionCard({
             <InlineNotice tone="error" title="Could not set up encryption">
               {setup.error}
             </InlineNotice>
+          ) : null}
+
+          {undecided ? (
+            <div className="sv-stack sv-stack--tight" data-testid="e2ee-plain-choice">
+              <h4>Or upload without end-to-end encryption</h4>
+              <label className="sv-check">
+                <input
+                  type="checkbox"
+                  checked={plainAck}
+                  data-testid="e2ee-plain-ack"
+                  onChange={(e) => setPlainAck(e.target.checked)}
+                />
+                <span>
+                  I understand that the operator of the sync server can read everything that is
+                  uploaded.
+                </span>
+              </label>
+              <div className="sv-row">
+                <Button
+                  busy={uploadPlain.busy}
+                  disabledReason={plainReason}
+                  data-testid="e2ee-upload-plain"
+                  onClick={() => void uploadPlain.run()}
+                >
+                  Upload without end-to-end encryption
+                </Button>
+              </div>
+              {uploadPlain.error ? (
+                <InlineNotice tone="error" title="Could not start uploading">
+                  {uploadPlain.error}
+                </InlineNotice>
+              ) : null}
+            </div>
           ) : null}
         </div>
       ) : status.e2ee.mode === 'locked' ? (

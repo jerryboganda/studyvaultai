@@ -184,8 +184,74 @@ const TAG_RE = /(?:^|\s)#([\p{L}\p{N}_/-]+)/gu;
 const META_LINE =
   /^((—|–|--)\s|(#[\p{L}\p{N}_/-]+|\^[\w-]+)(\s+(#[\p{L}\p{N}_/-]+|\^[\w-]+))*$|\*\*Comment:\*\*|Also in:)/u;
 
+/** `\s` for one character (the ASCII cases without a regular expression: this runs per character). */
+function isSpace(ch: string | undefined): boolean {
+  if (ch === undefined) return false;
+  const c = ch.charCodeAt(0);
+  return c === 32 || (c >= 9 && c <= 13) || (c > 127 && /\s/.test(ch));
+}
+
+/**
+ * `^(#{1,6})\s+(.*?)\s*#*\s*$` by hand. The regular expression is cubic on a line of the form
+ * "# a" + many spaces + "b" (seconds at 2,000 characters, which a 1 MB line turns into forever);
+ * this is one pass.
+ */
+export function parseHeading(line: string): { level: number; text: string } | null {
+  let level = 0;
+  while (line[level] === '#') level++;
+  if (level < 1 || level > 6 || !isSpace(line[level])) return null;
+  // `.` in the regular expression does not match these, so such a line is not a heading
+  if (/[\u2028\u2029]/.test(line)) return null;
+  let start = level;
+  while (isSpace(line[start])) start++;
+  let end = line.length;
+  while (end > start && isSpace(line[end - 1])) end--;
+  while (end > start && line[end - 1] === '#') end--;
+  while (end > start && isSpace(line[end - 1])) end--;
+  return { level, text: line.slice(start, end) };
+}
+
+/**
+ * The first `[text](url)` of a line: the regular expression
+ * `\[((?:\\.|[^\]\\])*)\]\(([^)\s]+)\)` retried from every `[`, which is quadratic on "[[[[[…".
+ * Whatever the scan from one `[` finds at the next `]` is what every later `[` before it finds, so
+ * the search resumes after that `]`; and an address scan that failed at `end` without meeting a
+ * `)` fails the same way for every address that starts before `end`. The line is read once.
+ */
+export function findLink(t: string): { text: string; url: string } | null {
+  let doomedUntil = 0;
+  let open = t.indexOf('[');
+  while (open >= 0) {
+    let close = open + 1;
+    while (close < t.length && t[close] !== ']') {
+      if (t[close] === '\\') {
+        if (close + 1 >= t.length) return null; // a lone backslash ends the line: no `]` follows
+        close++;
+      }
+      close++;
+    }
+    if (close >= t.length) return null; // no unescaped `]` anywhere after this `[`
+    const from = close + 2;
+    if (t[close + 1] === '(' && from >= doomedUntil) {
+      let end = from;
+      while (end < t.length && t[end] !== ')' && !isSpace(t[end])) end++;
+      if (end > from && t[end] === ')') {
+        return { text: t.slice(open + 1, close), url: t.slice(from, end) };
+      }
+      doomedUntil = end;
+    }
+    open = t.indexOf('[', close + 1);
+  }
+  return null;
+}
+
 function parseMarkdown(text: string, limits: ImportLimits): Raw[] {
-  const lines = cleanText(text).split('\n');
+  // A line longer than anything a highlight or comment may hold is cut: a quote or comment cut here
+  // is still over its limit and is rejected as such, never imported shortened.
+  const lineCap = Math.max(limits.maxQuoteChars, limits.maxCommentChars) + 1024;
+  const lines = cleanText(text)
+    .split('\n')
+    .map((l) => (l.length > lineCap ? l.slice(0, lineCap) : l));
   let i = 0;
   if (lines[0]?.trim() === '---') {
     const end = lines.slice(1, 80).findIndex((l) => l.trim() === '---');
@@ -196,11 +262,10 @@ function parseMarkdown(text: string, limits: ImportLimits): Raw[] {
   const quoteRe = /^\s{0,3}>\s?(.*)$/;
   for (; i < lines.length; i++) {
     const line = lines[i] as string;
-    const h = /^(#{1,6})\s+(.*?)\s*#*\s*$/.exec(line);
+    const h = parseHeading(line);
     if (h) {
-      const level = (h[1] as string).length;
-      headings.length = level - 1;
-      headings[level - 1] = unescapeMd(h[2] as string);
+      headings.length = h.level - 1;
+      headings[h.level - 1] = unescapeMd(h.text);
       continue;
     }
     if (!quoteRe.test(line)) continue;
@@ -249,10 +314,10 @@ function parseMarkdown(text: string, limits: ImportLimits): Raw[] {
     for (const m of blockLines) {
       const t = m.trim();
       if (/^(—|–|--)\s/.test(t) && raw.sourceTitle === null && raw.sourceUrl === null) {
-        const link = /\[((?:\\.|[^\]\\])*)\]\(([^)\s]+)\)/.exec(t);
+        const link = findLink(t);
         const parts = t.replace(/^(—|–|--)\s*/, '').split(' · ');
-        raw.sourceTitle = unescapeMd(link ? (link[1] as string) : (parts[0] ?? ''));
-        raw.sourceUrl = link ? (link[2] as string) : null;
+        raw.sourceTitle = unescapeMd(link ? link.text : (parts[0] ?? ''));
+        raw.sourceUrl = link ? link.url : null;
         for (const p of parts.slice(1)) {
           const day = /^captured (\d{4}-\d{2}-\d{2})$/.exec(p.trim());
           if (day) raw.capturedAt = `${day[1]}T00:00:00.000Z`;

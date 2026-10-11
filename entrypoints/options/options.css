@@ -178,6 +178,7 @@
 .opt-input {
   flex: 1 1 200px;
   width: auto;
+  min-width: 0;
 }
 .opt-error {
   color: var(--sv-danger);
@@ -235,4 +236,35 @@
 code {
   font-family: var(--sv-font-mono);
   font-size: 0.9em;
+}
+
+/*
+ * A long unbroken value (the sync redirect address, chrome://extensions/shortcuts, a long host name)
+ * must wrap, not widen the page at 320 px or at 200% zoom.
+ */
+.opt__main code,
+.opt__main p,
+.opt__main li,
+.opt__main dd,
+.opt__main dt {
+  overflow-wrap: anywhere;
+}
+
+/*
+ * Grids of the shared sections whose columns have a fixed minimum would be wider than a 160 CSS px
+ * page (a 320 px window at 200% zoom). The minimum becomes "this, or the whole row if that is less".
+ */
+.opt__main .rv-grid,
+.opt__main .rv-preview-pair {
+  grid-template-columns: repeat(auto-fit, minmax(min(14rem, 100%), 1fr));
+}
+.opt__main .rv-grid--rows {
+  grid-template-columns: repeat(auto-fit, minmax(min(9rem, 100%), 1fr));
+}
+.opt__main .bk-facts {
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
+}
+.opt__main .bk-counts,
+.opt__main .sv-sync-versions {
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
 }

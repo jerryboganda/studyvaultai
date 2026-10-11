@@ -51,9 +51,21 @@ export const SyncStatusView = z.object({
   e2ee: z.object({
     mode: z.enum(['none', 'locked', 'unlocked']),
     version: z.number().int().nullable(),
-    /** Seconds until the key is dropped from memory, when unlocked. */
+    /** Seconds until the key is dropped (it is kept in memory-only session storage), when unlocked. */
     lockInSeconds: z.number().int().nullable(),
+    /**
+     * Why uploads are refused: this device enabled end-to-end encryption, and the server now shows
+     * no encryption key, an older one or another one (downgrade protection). Absent/null = none.
+     */
+    warning: z.string().nullable().optional(),
+    /** Stored items the last set-up or passphrase change could not vouch for (see "Refused changes"). */
+    setAside: z.number().int().min(0).optional(),
   }),
+  /**
+   * How uploads are protected. 'undecided' = the person has not chosen: nothing is uploaded yet.
+   * Absent (an older worker) is read as already decided.
+   */
+  encryptionChoice: z.enum(['undecided', 'plaintext', 'e2ee']).optional(),
   attention: z.object({
     conflicts: z.number().int().min(0),
     quarantined: z.number().int().min(0),
@@ -95,6 +107,11 @@ export const SyncRpc = {
     SyncStatusView,
   ),
   'sync.now': def(Empty, SyncStatusView),
+  /**
+   * The explicit choice to upload WITHOUT end-to-end encryption (the operator of the server can read
+   * everything). Until this or a passphrase is chosen, nothing is uploaded.
+   */
+  'sync.uploadPlain': def(Empty, SyncStatusView),
   'sync.e2ee.setup': def(z.object({ passphrase: Passphrase }), SyncStatusView),
   'sync.e2ee.unlock': def(
     z.object({ passphrase: Passphrase }),
@@ -103,7 +120,12 @@ export const SyncRpc = {
   'sync.e2ee.lock': def(Empty, SyncStatusView),
   'sync.e2ee.rotate': def(
     z.object({ current: Passphrase, next: Passphrase }),
-    z.object({ ok: z.boolean(), reason: z.enum(['wrong_passphrase', 'no_key']).nullable() }),
+    z.object({
+      ok: z.boolean(),
+      reason: z.enum(['wrong_passphrase', 'no_key']).nullable(),
+      /** Stored items that could not be vouched for and were not carried over. */
+      setAside: z.number().int().min(0).optional(),
+    }),
   ),
   'sync.conflict.resolve': def(
     z.object({ id: z.string().min(1).max(512), decision: ConflictDecision }),

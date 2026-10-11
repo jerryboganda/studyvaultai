@@ -17,7 +17,7 @@ import {
   type OnboardingStep,
 } from '@ui/shell/onboardingState';
 import { openDashboard } from '@ui/vault/dashboardLink';
-import { STEP_COUNT, STEP_TITLES, nextStep, prevStep, startStep, stepIndex } from './model';
+import { STEP_COUNT, nextStep, prevStep, startStep, stepIndex } from './model';
 import { findPreset, pruneExcluded, type ApplyResult } from './presets';
 import {
   AccessStep,
@@ -92,9 +92,12 @@ function Tour() {
   const step = moved ?? (tour.state ? startStep(tour.state) : null);
 
   // Each new step: the heading takes focus so the keyboard and screen readers start at its top.
+  // Keyed on what is actually on screen: the step is known before the settings it needs, and the
+  // heading only exists once both have arrived.
+  const shown = tour.state !== null && global.settings !== null && over === null ? step : null;
   useEffect(() => {
-    if (step !== null) heading.current?.focus();
-  }, [step]);
+    if (shown !== null) heading.current?.focus();
+  }, [shown]);
 
   const go = (to: OnboardingStep) => {
     setMoved(to);
@@ -157,7 +160,7 @@ function Tour() {
         <div className="sv-grow">
           <h1>Welcome to StudyVault AI</h1>
           <p className="sv-muted sv-small" data-testid={TID.progress}>
-            {STEP_TITLES[step]} · step {index + 1} of {STEP_COUNT}
+            Step {index + 1} of {STEP_COUNT}
           </p>
         </div>
         <Button variant="ghost" data-testid={TID.skip} onClick={skip}>
@@ -247,7 +250,7 @@ function Over({ kind }: { kind: 'skipped' | 'completed' }) {
             : 'Nothing else was changed. Any choice you already made in the tour is saved.'}
         </p>
         <p className="sv-muted">
-          You can open this tour again any time from Settings, under Your data.
+          You can open this tour again any time from Settings (the button at the top of the page).
         </p>
         <div className="sv-row">
           <Button variant="primary" onClick={() => void openDashboard()}>

@@ -737,6 +737,52 @@ test.describe('extension pages: axe WCAG 2.2 AA', () => {
       await expectNoViolations(panel);
     });
 
+    test(`sidepanel.html card with tags and a note editor, Search and Review (${scheme})`, async ({
+      env,
+    }) => {
+      test.slow(); // five axe scans of one panel, plus saving a highlight, in one test
+      const panel = await extensionPage(env, 'sidepanel.html');
+      await panel.emulateMedia({ colorScheme: scheme });
+      const page = await openFixture(env, '/article.html', { activate: false });
+      await page.bringToFront();
+      await expect(panel.getByRole('button', { name: 'Activate on this tab' })).toBeVisible();
+      await activate(env, page);
+      await tripleClick(page, '#p-intro');
+      await page.getByRole('button', { name: 'Save selection', exact: true }).click();
+      await expect(page.getByText('Saved to Inbox')).toBeVisible();
+      await page.bringToFront();
+      const card = panel.getByRole('article');
+      await expect(card).toHaveCount(1);
+
+      // A card with a tag chip, a rendered note, and both editors open.
+      await card.getByLabel('Add a tag').fill('exam pearl');
+      await card.getByRole('button', { name: 'Add tag' }).click();
+      await expect(card.getByRole('list', { name: 'Tags' })).toBeVisible();
+      await card.getByRole('button', { name: 'Add a note' }).click();
+      await card.getByLabel('New study note (Markdown)').fill('Rate **60-100** bpm');
+      await card.getByRole('button', { name: 'Save note' }).click();
+      await expect(card.getByTestId('card-note')).toBeVisible();
+      await card.getByRole('button', { name: /^Edit this note/ }).click();
+      await expect(card.getByLabel('Study note (Markdown)')).toBeVisible();
+      await expectNoViolations(panel);
+
+      // Search: syntax help open, facets open, results, then "no results".
+      await panel.getByRole('tab', { name: 'Search' }).click();
+      await panel.getByRole('searchbox').fill('sinoatrial');
+      await expect(panel.getByTestId('search-results').getByRole('article')).toHaveCount(1);
+      await panel.getByRole('button', { name: 'Search syntax' }).click();
+      await panel.getByRole('button', { name: 'Narrow results' }).click();
+      await expectNoViolations(panel);
+      await panel.getByRole('searchbox').fill('zyzzyva');
+      await expect(panel.getByText('No results')).toBeVisible();
+      await expectNoViolations(panel);
+
+      // Review: the empty state.
+      await panel.getByRole('tab', { name: 'Review' }).click();
+      await expect(panel.getByText('No cards to review yet')).toBeVisible();
+      await expectNoViolations(panel);
+    });
+
     test(`popup.html on a denied host (${scheme})`, async ({ env }) => {
       const popup = await extensionPage(env, 'popup.html');
       await popup.emulateMedia({ colorScheme: scheme });

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, configure, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { browser } from 'wxt/browser';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
@@ -27,6 +27,9 @@ vi.mock('@runtime', async (importOriginal) => {
   const { rpc: fake } = await import('@ui/testing/fakes');
   return { ...actual, callBackground: fake.callBackground, callTab: fake.callTab } as never;
 });
+
+// Several agents and CI shards share the CPU: waiting for the panel is not a failure.
+configure({ asyncUtilTimeout: 5_000 });
 
 interface FakeTab {
   id: number;

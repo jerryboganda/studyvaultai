@@ -13,7 +13,10 @@ export {
   listPageHighlights,
   listBanksWithCounts,
   wipeAllData,
+  getWipeState,
   repo,
+  type WipeOptions,
+  type WipeState,
 } from './repo';
 export { observe, type Observable } from './observe';
 export { normalizeQuote, quoteHash } from './normalize';
@@ -25,6 +28,7 @@ export {
   withWritableDb,
   toStorageError,
   onBeforeMigrate,
+  WipePendingError,
   DB_NAME,
   DB_VERSION,
   SCHEMA_V1,
@@ -108,6 +112,8 @@ export {
   saveOcrPage,
   getOcrPages,
   clearOcr,
+  setPdfWriteRestriction,
+  assertPdfWriteAllowed,
   MAX_CACHED_PDF_BYTES,
 } from './pdf';
 export { getStorageUsage } from './usage';
@@ -142,6 +148,7 @@ export type {
   PurgeResult,
   RepoApi,
   SaveOcrPageInput,
+  SearchFeedOptions,
   StorageUsage,
   TagLite,
   TagWithCount,
@@ -183,3 +190,7 @@ export {
   type SyncRuntime,
   type SyncRuntimeOptions,
 } from './sync';
+
+// Privileged sync configuration and the authoritative settings copy, in `meta` (see syncPrivate.ts).
+// Importing this module also registers the authoritative settings store with @runtime.
+export { readSyncPrivate, writeSyncPrivate, type SyncPrivateKey } from './syncPrivate';

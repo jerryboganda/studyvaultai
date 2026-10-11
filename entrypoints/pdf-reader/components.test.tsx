@@ -84,6 +84,31 @@ describe('OpenPanel', () => {
     expect(onAllowAndOpen).toHaveBeenCalled();
   });
 
+  it('a redirect to a site that was not allowed offers to allow exactly that site', async () => {
+    const onAllowAndOpen = vi.fn();
+    render(
+      <OpenPanel
+        {...base}
+        src={src}
+        onAllowAndOpen={onAllowAndOpen}
+        web={{
+          t: 'failed',
+          failure: {
+            kind: 'redirect-needs-access',
+            message: 'The address redirects to cdn.example.net, a different site.',
+            redirectTo: { host: 'cdn.example.net', pattern: 'https://cdn.example.net/*' },
+          },
+        }}
+      />,
+    );
+    expect(screen.getByText(/redirects to cdn\.example\.net/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Allow access to cdn.example.net and open' }),
+    );
+    expect(onAllowAndOpen).toHaveBeenCalledWith(['https://cdn.example.net/*']);
+  });
+
   it('shows download progress in a status region', () => {
     render(
       <OpenPanel

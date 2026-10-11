@@ -1,4 +1,5 @@
 import { uuidv7 } from 'uuidv7';
+import { getSettings } from '@runtime';
 import {
   Attachment,
   Highlight,
@@ -53,6 +54,38 @@ const PDF_TABLES = (db: StudyVaultDb) => [
   db.highlightBanks,
 ];
 
+// ---------------------------------------------------------------------------------------------
+// private-window write restriction
+// ---------------------------------------------------------------------------------------------
+
+/** Why writes are restricted in the page this module runs in, or null when they are not. */
+type WriteRestriction = () => string | null | Promise<string | null>;
+let restriction: WriteRestriction | null = null;
+
+/**
+ * The page that knows which window it is in (the PDF reader) registers this once. The database is
+ * shared with normal windows, so a page in a private window must not add to it unless the person
+ * turned on "Save from private windows". Null removes it. The service worker, imports and tests
+ * register nothing and are not restricted (the web capture path is checked in the worker, per tab).
+ */
+export function setPdfWriteRestriction(next: WriteRestriction | null): void {
+  restriction = next;
+}
+
+/**
+ * Throws `forbidden` (with the restriction's reason) when this page is restricted and
+ * `settings.allowIncognitoCapture` is off. The setting is read at the moment of the write, so
+ * turning it on or off applies without a reload. A restriction or settings read that fails refuses
+ * the write: it never guesses in favour of writing.
+ */
+export async function assertPdfWriteAllowed(): Promise<void> {
+  if (!restriction) return;
+  const reason = await restriction();
+  if (reason === null) return;
+  if ((await getSettings()).allowIncognitoCapture) return;
+  throw new StudyVaultError('forbidden', reason);
+}
+
 async function liveDocument(db: StudyVaultDb, id: string): Promise<PdfDocument> {
   const row = await db.documents.get(id);
   const doc = row ? parseRow(PdfDocument, row, 'document') : null;
@@ -67,6 +100,7 @@ async function liveDocument(db: StudyVaultDb, id: string): Promise<PdfDocument> 
 // ---------------------------------------------------------------------------------------------
 
 export async function upsertDocument(input: UpsertDocumentInput): Promise<PdfDocument> {
+  await assertPdfWriteAllowed();
   const parsed = parseInput(UpsertDocumentInput, input, 'document');
   // An address that is not http(s) (file:, blob:, garbage) is not provenance: store none.
   const originalUrl = parsed.originalUrl === null ? null : redactUrl(parsed.originalUrl);
@@ -202,6 +236,7 @@ async function pdfSource(db: StudyVaultDb, doc: PdfDocument, ts: string): Promis
 }
 
 export async function savePdfHighlight(input: PdfHighlightInput): Promise<CaptureResult> {
+  await assertPdfWriteAllowed();
   const capture = parseInput(PdfHighlightInput, input, 'PDF highlight');
   if (capture.anchorSet.documentFingerprint !== capture.documentId) {
     throw new StudyVaultError(
@@ -344,6 +379,7 @@ export async function cacheDocumentBytes(
   documentId: string,
   blob: Blob,
 ): Promise<CachedDocumentInfo> {
+  await assertPdfWriteAllowed();
   requireId(documentId);
   const checked = parseInput(Attachment.shape.blob, blob, 'file');
   if (checked.size === 0) throw new StudyVaultError('invalid_request', 'The file is empty');
@@ -411,6 +447,7 @@ export async function removeDocumentBytes(documentId: string): Promise<boolean> 
 // ---------------------------------------------------------------------------------------------
 
 export async function saveOcrPage(input: SaveOcrPageInput): Promise<OcrPage> {
+  await assertPdfWriteAllowed();
   requireId(input.documentId);
   const base = parseInput(
     OcrPage.pick({

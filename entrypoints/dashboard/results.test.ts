@@ -11,11 +11,10 @@ import {
 } from './results';
 import { EMPTY_FILTERS } from './filters';
 import { FakeVault, manyHighlights } from './testing';
-import { toIndexDocument } from '@ui/vault/searchHost';
 
 function indexOf(vault: FakeVault) {
   const index = createSearchIndex();
-  index.applyChanges(vault.searchDocs().map(toIndexDocument));
+  index.applyChanges(vault.searchDocs());
   return index;
 }
 

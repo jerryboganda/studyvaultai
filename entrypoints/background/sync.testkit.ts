@@ -6,7 +6,13 @@
 import { createMemoryTokenStore, type IdentityPort, type OidcEndpoints } from '@sync';
 import type { Settings } from '@shared';
 import { defaultSettings } from '@shared';
-import type { AlarmsPort, StoredSyncConfig, SyncServiceDeps } from './sync';
+import type {
+  AlarmsPort,
+  StoredEncryption,
+  StoredKey,
+  StoredSyncConfig,
+  SyncServiceDeps,
+} from './sync';
 
 const b64url = (text: string) =>
   btoa(text).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
@@ -129,13 +135,15 @@ export function fakeProvider(o: {
   return provider;
 }
 
+type AlarmInfo = { delayInMinutes?: number; when?: number; periodInMinutes?: number };
+
 export interface FakeAlarms extends AlarmsPort {
   names(): string[];
-  scheduled: Map<string, { delayInMinutes?: number; periodInMinutes?: number }>;
+  scheduled: Map<string, AlarmInfo>;
 }
 
 export function fakeAlarms(): FakeAlarms {
-  const scheduled = new Map<string, { delayInMinutes?: number; periodInMinutes?: number }>();
+  const scheduled = new Map<string, AlarmInfo>();
   return {
     scheduled,
     names: () => [...scheduled.keys()],
@@ -168,6 +176,11 @@ export function memoryDeps(o: {
     features: { ...defaultSettings().features, ...o.initial },
   };
   let config: StoredSyncConfig | null = null;
+  /** The copy a content script could plant in chrome.storage.local (never trusted by the service). */
+  let legacy: StoredSyncConfig | null = null;
+  let encryption: StoredEncryption | null = null;
+  let binding: string | null = null;
+  let key: StoredKey | null = null;
   let discovery: OidcEndpoints | null = null;
   const tokens = createMemoryTokenStore();
   const published: unknown[] = [];
@@ -191,7 +204,31 @@ export function memoryDeps(o: {
         config = c ? structuredClone(c) : null;
       },
     },
+    legacyConfig: {
+      load: async () => (legacy ? structuredClone(legacy) : null),
+      clear: async () => {
+        legacy = null;
+      },
+    },
+    encryption: {
+      load: async () => (encryption ? structuredClone(encryption) : null),
+      save: async (e) => {
+        encryption = e ? structuredClone(e) : null;
+      },
+    },
     tokens,
+    tokenBinding: {
+      load: async () => binding,
+      save: async (b) => {
+        binding = b;
+      },
+    },
+    keyVault: {
+      load: async () => (key ? structuredClone(key) : null),
+      save: async (k) => {
+        key = k ? structuredClone(k) : null;
+      },
+    },
     discoveryCache: {
       load: async () => discovery,
       save: async (e) => {
@@ -223,6 +260,26 @@ export function memoryDeps(o: {
     },
     get config() {
       return config;
+    },
+    get legacyConfig() {
+      return legacy;
+    },
+    /** What a content script could write into chrome.storage.local. */
+    plantLegacyConfig(c: StoredSyncConfig | null) {
+      legacy = c;
+    },
+    get encryption() {
+      return encryption;
+    },
+    get key() {
+      return key;
+    },
+    get binding() {
+      return binding;
+    },
+    /** Pretend tokens exist that were issued for another configuration. */
+    setBinding(b: string | null) {
+      binding = b;
     },
     get wipes() {
       return wipes;

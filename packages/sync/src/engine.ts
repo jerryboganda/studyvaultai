@@ -216,6 +216,28 @@ function emptyPayload(): OpPayload {
   return { v: 1, full: false, set: {}, prev: {}, base: {}, sets: {}, observed: null };
 }
 
+/**
+ * Decrypted body `{ v: 1, void: true }` of an operation that was deliberately emptied when
+ * encryption was set up or changed (see `buildRotation`): receivers skip it. Only meaningful inside
+ * an authenticated envelope.
+ */
+function isVoidMarker(body: unknown): boolean {
+  const b = body as { v?: unknown; void?: unknown; set?: unknown } | null;
+  return typeof b === 'object' && b !== null && b.v === 1 && b.void === true && b.set === undefined;
+}
+
+/** What `auditHistory` found on the server. */
+export interface HistoryAudit {
+  /** Every stored operation that parses as one, page by page. */
+  ops: SyncOperation[];
+  /** Ids of the operations from OTHER devices that passed this device's validation and were merged. */
+  accepted: Set<string>;
+  /** Entries that are not operations at all. */
+  unreadable: number;
+}
+
+const AUDIT_MAX_PAGES = 2_000;
+
 interface ChangeExtras {
   /** Extra clocks a field edit supersedes (conflict resolution). */
   supersedes?: Record<string, string[]>;
@@ -415,8 +437,12 @@ export class SyncEngine {
   // Sync run
   // ---------------------------------------------------------------------------------------------
 
-  /** One resumable run: pull (apply remote), then push. Never throws; the report says what happened. */
-  sync(options: { force?: boolean } = {}): Promise<SyncReport> {
+  /**
+   * One resumable run: pull (apply remote), then push. Never throws; the report says what happened.
+   * `push: false` is a pull-only run: nothing leaves the device (used until the person has chosen how
+   * uploads are protected). Everything unsent simply stays in the outbox.
+   */
+  sync(options: { force?: boolean; push?: boolean } = {}): Promise<SyncReport> {
     if (this.inFlight) return this.inFlight;
     const run = this.run(options).finally(() => {
       this.inFlight = null;
@@ -425,7 +451,7 @@ export class SyncEngine {
     return run;
   }
 
-  private async run(options: { force?: boolean }): Promise<SyncReport> {
+  private async run(options: { force?: boolean; push?: boolean }): Promise<SyncReport> {
     const report: SyncReport = {
       status: 'idle',
       pulled: 0,
@@ -501,7 +527,9 @@ export class SyncEngine {
 
       let locked = false;
       locked = (await this.pull(state, report)) || locked;
-      if (report.status !== 'disabled') locked = (await this.push(state, report)) || locked;
+      if (report.status !== 'disabled' && options.push !== false) {
+        locked = (await this.push(state, report)) || locked;
+      }
       if (!(await this.enabled())) return await finish('disabled');
 
       state.backoff = { attempt: 0, nextAttemptAt: null };
@@ -659,6 +687,11 @@ export class SyncEngine {
           'Authentication of the encrypted payload failed.',
         );
         return 'quarantined';
+      }
+      if (isVoidMarker(body)) {
+        // Only the key can make one: the history this operation stood for was re-sent as snapshots.
+        await this.d.store.deleteQuarantined(op.id);
+        return 'skipped';
       }
     } else if (codec?.required) {
       await this.quarantine(
@@ -1056,6 +1089,56 @@ export class SyncEngine {
     await this.save(state);
     report.pending = await this.d.log.countPending();
     return report;
+  }
+
+  /**
+   * Read the server's whole log from the start WITHOUT pushing, and apply it exactly as a pull does
+   * (applying is idempotent). Used before the log is re-keyed (encryption set up): the result says
+   * which stored operations from other devices this device validated and merged. Everything else
+   * (refused, unreadable, own-looking) is not vouched for and is never carried into the new key.
+   * Operations that name this device as their author are not "accepted" here: this device
+   * re-sends its own state instead of trusting the server's copy of its history.
+   */
+  async auditHistory(): Promise<HistoryAudit> {
+    const audit: HistoryAudit = { ops: [], accepted: new Set(), unreadable: 0 };
+    if (!(await this.enabled())) return audit;
+    const state = await this.loadState();
+    const report: SyncReport = {
+      status: 'idle',
+      pulled: 0,
+      applied: 0,
+      conflicts: 0,
+      quarantined: 0,
+      pushed: 0,
+      pending: 0,
+      more: false,
+      error: null,
+      retryAt: null,
+    };
+    let cursor: string | null = null;
+    for (let page = 0; page < AUDIT_MAX_PAGES; page++) {
+      const res = await this.d.transport.pull({ since: cursor, limit: this.opts.pullLimit });
+      this.checkEpoch(state, res.epoch);
+      const entries = [...res.ops].sort((a, b) => hlcKey(a.op).localeCompare(hlcKey(b.op)));
+      for (const entry of entries) {
+        const parsed = SyncOperation.safeParse(entry.op);
+        if (!parsed.success) {
+          audit.unreadable++;
+          continue;
+        }
+        audit.ops.push(parsed.data);
+        const outcome = await this.applyRemote(entry.op, state, report);
+        if (outcome === 'applied' && parsed.data.clientId !== state.clientId) {
+          audit.accepted.add(parsed.data.id);
+        }
+      }
+      cursor = res.nextCursor;
+      if (!res.hasMore) {
+        await this.save(state);
+        return audit;
+      }
+    }
+    throw new TransportError('protocol', 'The server log is too long to verify in one go.');
   }
 
   /** Drop expired tombstones, sent operations and old resolved conflicts. Safe to run any time. */

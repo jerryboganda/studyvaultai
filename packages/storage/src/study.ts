@@ -1089,17 +1089,23 @@ export async function markCardVerified(id: string): Promise<Card> {
   return card;
 }
 
-/** Apply a pure transformation to several live cards in one transaction. */
+/**
+ * Apply a pure transformation to several live cards in one transaction. With `intoDeck` the deck
+ * must be live in that same transaction (checked before anything is written, even for no cards):
+ * a check in another transaction could be followed by that deck's deletion.
+ */
 async function transformCards(
   ids: readonly string[],
   fn: (card: Card, ts: string) => Card,
   now?: DateInput,
+  intoDeck?: string,
 ): Promise<Card[]> {
   const wanted = unique(ids);
   wanted.forEach((id) => requireId(id));
-  if (wanted.length === 0) return [];
+  if (wanted.length === 0 && intoDeck === undefined) return [];
   const changed = await withWritableDb((db) =>
-    db.transaction('rw', db.cards, async () => {
+    db.transaction('rw', intoDeck === undefined ? [db.cards] : [db.cards, db.decks], async () => {
+      if (intoDeck !== undefined) await liveDeck(db, intoDeck);
       const ts = now === undefined ? nowIso() : toIso(toMs(now));
       const rows = await db.cards.bulkGet(wanted);
       const cards = parseCards(rows.filter((r) => r !== undefined)).filter(
@@ -1158,8 +1164,7 @@ export const resetCardProgress = (
 
 export async function moveCards(ids: readonly string[], deckId: string): Promise<Card[]> {
   requireId(deckId);
-  await withDb((db) => liveDeck(db, deckId));
-  return transformCards(ids, (c, ts) => ({ ...c, deckId, updatedAt: ts }));
+  return transformCards(ids, (c, ts) => ({ ...c, deckId, updatedAt: ts }), undefined, deckId);
 }
 
 /** Soft delete. The card, its history and its source link stay on this device until purged. */
@@ -1307,7 +1312,12 @@ export async function undoLastReview(
         .filter(notNull)
         .filter((l) => !l.userCorrection)
         .sort((a, b) => cmp(a.reviewedAt, b.reviewedAt) || cmp(a.id, b.id));
-      const last = logs[logs.length - 1];
+      // A clock set back holds the review time at the previous one, so two answers can share it and
+      // their ids may sort the other way. Among those, the answer the card is in now is the last.
+      const newest = logs[logs.length - 1]?.reviewedAt;
+      const last =
+        logs.findLast((l) => l.reviewedAt === newest && undoReview(card, l, ts).ok) ??
+        logs[logs.length - 1];
       if (!last) return { status: 'refused', reason: 'no_review' };
       if (options.expectLogId !== undefined && last.id !== options.expectLogId) {
         return { status: 'refused', reason: 'not_last_review' };

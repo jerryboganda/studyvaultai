@@ -7,16 +7,55 @@ const TRACKING_PARAMS =
   /^(utm_[a-z0-9_]+|fbclid|gclid|dclid|msclkid|mc_cid|mc_eid|igshid|yclid|_hsenc|_hsmi)$/i;
 
 /**
- * Parameters that carry a credential or a one-time grant (presigned-URL signatures, OAuth codes and
- * tokens). They are never persisted and never part of a source key: a rotating token would fork one
- * page into many sources and copy a live secret into the database, backups and the side panel.
+ * Long stems that never occur in an innocent word, matched in the name with its separators removed
+ * ("access-token", "accessToken" and "ACCESS_TOKEN" all become "accesstoken").
+ */
+const CREDENTIAL_STEM =
+  /token|secret|passw|passphrase|passcode|passkey|credential|bearer|session|sessid|csrf|xsrf|signature|authori[sz]ation|verifier|jwt|apikey|hmac|key(?:id)?$/;
+/** Short ones would also hit "author", "keyword", "design" or "assess": they must be a whole word. */
+const CREDENTIAL_WORD = /^(?:keys?|sigs?|sids?|sess|auth|oauth|otp|pwd|pw|pass|tickets?)$/;
+
+/**
+ * Whether a parameter name carries a credential or a one-time grant (presigned-URL signatures, OAuth
+ * codes and tokens, session ids, API keys). Such parameters are never persisted and never part of a
+ * source key: a rotating token would fork one page into many sources and copy a live secret into the
+ * database, backups, sync and the side panel. The name is judged case-insensitively as words
+ * (camelCase and any separator split them) and as one compact string; `code` counts as the last
+ * word only ("code", "auth_code", not "encode" or "codes"), and `x-amz-*` / `x-goog-*` as a family.
  * Deliberately broad: `code`, `key` and `session` are sometimes page identity, and then two pages
  * that differ only in that parameter share a source (the text anchors still tell them apart).
+ * Total: any string is a valid input.
  */
-const CREDENTIAL_NAME =
-  '(?:token|access_token|id_token|refresh_token|code|sig|signature|key|api[_-]?key|secret|session|session[_-]?id|auth|password|x-amz-[a-z0-9-]*|x-goog-[a-z0-9-]*)';
-const CREDENTIAL_PARAMS = new RegExp(`^${CREDENTIAL_NAME}$`, 'i');
-const CREDENTIAL_IN_ROUTE = new RegExp(`[/!&;]${CREDENTIAL_NAME}=`, 'i');
+function isCredentialName(name: string): boolean {
+  const words =
+    name
+      .replace(/([a-z\d])([A-Z])/g, '$1 $2')
+      .replace(/([A-Z])([A-Z][a-z])/g, '$1 $2')
+      .toLowerCase()
+      .match(/[a-z]+|\d+/g) ?? [];
+  return (
+    CREDENTIAL_STEM.test(words.join('')) ||
+    words.some((w) => CREDENTIAL_WORD.test(w)) ||
+    words.at(-1) === 'code' ||
+    (words[0] === 'x' && (words[1] === 'amz' || words[1] === 'goog'))
+  );
+}
+
+const safeDecode = (s: string): string => {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+};
+
+/** Removes `;name=value` path parameters (Java's ";jsessionid=...") whose name is a credential. */
+function dropPathCredentials(u: URL): void {
+  const pathname = u.pathname.replace(/;([^/;=]*)=[^/;]*/g, (m, name: string) =>
+    isCredentialName(safeDecode(name)) ? '' : m,
+  );
+  if (pathname !== u.pathname) u.pathname = pathname;
+}
 
 export function parseHttpUrl(input: string): URL | null {
   try {
@@ -31,15 +70,22 @@ export function parseHttpUrl(input: string): URL | null {
  * The part of a fragment that is page identity: a client-side route ("#/a/b?x=1", "#!/a") with its
  * credential parameters removed. Any other fragment ("#section", "#access_token=...") is dropped.
  */
-function routeFragment(hash: string): string {
-  if (!/^#(\/|!)/.test(hash)) return '';
+function routeFragment(input: string): string {
+  if (!/^#(\/|!)/.test(input)) return '';
+  // A second "#" starts nothing a router can use ("#/cb#access_token=..." is a credential blob).
+  const end = input.indexOf('#', 1);
+  const hash = end < 0 ? input : input.slice(0, end);
   const q = hash.indexOf('?');
   const path = q < 0 ? hash : hash.slice(0, q);
   // "#/access_token=...&token_type=bearer" is a credential blob in route clothing, not a route.
-  if (CREDENTIAL_IN_ROUTE.test(path)) return '';
+  const blob = path.split(/[/!&;]/).some((segment) => {
+    const eq = segment.indexOf('=');
+    return eq > 0 && isCredentialName(safeDecode(segment.slice(0, eq)));
+  });
+  if (blob) return '';
   if (q < 0) return hash;
   const params = new URLSearchParams(hash.slice(q + 1));
-  const secret = [...params.keys()].filter((name) => CREDENTIAL_PARAMS.test(name));
+  const secret = [...params.keys()].filter(isCredentialName);
   if (secret.length === 0) return hash;
   for (const name of secret) params.delete(name);
   const rest = params.toString();
@@ -57,11 +103,12 @@ export function redactUrl(input: string): string | null {
   u.username = '';
   u.password = '';
   const all = [...u.searchParams.entries()];
-  const kept = all.filter(([k]) => !CREDENTIAL_PARAMS.test(k));
+  const kept = all.filter(([k]) => !isCredentialName(k));
   if (kept.length !== all.length) {
     u.search = '';
     for (const [k, v] of kept) u.searchParams.append(k, v);
   }
+  dropPathCredentials(u);
   u.hash = routeFragment(u.hash);
   return u.toString();
 }
@@ -77,11 +124,12 @@ export function normalizeUrl(input: string): string | null {
   u.username = '';
   u.password = '';
   const kept = [...u.searchParams.entries()].filter(
-    ([k]) => !TRACKING_PARAMS.test(k) && !CREDENTIAL_PARAMS.test(k),
+    ([k]) => !TRACKING_PARAMS.test(k) && !isCredentialName(k),
   );
   kept.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   u.search = '';
   for (const [k, v] of kept) u.searchParams.append(k, v);
+  dropPathCredentials(u);
   u.hash = routeFragment(u.hash);
   if (u.pathname.length > 1) u.pathname = u.pathname.replace(/\/+$/, '') || '/';
   return u.toString();

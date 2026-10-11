@@ -257,7 +257,10 @@ function Panel() {
             </Button>
           </div>
         </div>
-        {identity ? <PageContext identity={identity} list={pageItems.data} /> : null}
+        {/* Title and count appear together: a count line that pops in later shifts the layout. */}
+        {identity && (pageItems.data !== undefined || pageItems.error !== null) ? (
+          <PageContext identity={identity} list={pageItems.data} />
+        ) : null}
       </header>
       {openSettings.error ? (
         <InlineNotice tone="error">Could not open settings: {openSettings.error}</InlineNotice>

@@ -1,4 +1,4 @@
-import { useId, useMemo, useRef, useState } from 'react';
+import { useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { seededRandom, type Deck } from '@study';
 import { buildTemplateDrafts, type TemplateInput, type TemplateName } from '@storage';
 import { Button, InlineNotice, Tabs, plural } from '@ui';
@@ -27,7 +27,9 @@ const TEMPLATES: { id: TemplateName; label: string; testId: string; about: strin
   },
   {
     id: 'definition',
-    label: 'Definition',
+    // Not just "Definition": the tab panel takes the tab's name, and the field below it is
+    // already called "Definition", which made two controls share one accessible name.
+    label: 'Term and definition',
     testId: TID.tplDefinition,
     about: 'A term on the front, its definition on the back.',
   },
@@ -83,6 +85,8 @@ export function TemplateEditor({
   const [wrapError, setWrapError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const area = useRef<HTMLTextAreaElement>(null);
+  /** Where the caret goes once the wrapped text is on screen (set by `wrap`, applied below). */
+  const restore = useRef<{ start: number; end: number } | null>(null);
 
   const input = useMemo(() => toTemplateInput(state), [state]);
   const built = useMemo(
@@ -130,13 +134,22 @@ export function TemplateEditor({
       return;
     }
     setWrapError(null);
+    restore.current = { start: out.selectionStart, end: out.selectionEnd };
     patch('cloze', { markup: out.text });
     setClozeHint('');
-    requestAnimationFrame(() => {
-      el.focus();
-      el.setSelectionRange(out.selectionStart, out.selectionEnd);
-    });
   };
+
+  // Placed right after the new text is committed, not in an animation frame: a later selection
+  // (by a person, a screen reader or a script) must never be overwritten by a late callback, which
+  // would wrap the wrong words (the nested {{c1::{{c2::...}}}} markup seen in CI).
+  useLayoutEffect(() => {
+    const target = restore.current;
+    const el = area.current;
+    if (!target || !el) return;
+    restore.current = null;
+    el.focus();
+    el.setSelectionRange(target.start, target.end);
+  }, [state.cloze.markup]);
 
   const save = async () => {
     if (!built.ok || busy) return;

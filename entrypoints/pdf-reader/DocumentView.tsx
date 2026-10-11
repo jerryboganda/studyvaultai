@@ -73,6 +73,7 @@ export function DocumentView({
   ocr: ocrService,
   settings,
   persistAllowed,
+  blockedReason = INCOGNITO_CAPTURE_REFUSAL,
   initialPage,
   initialHighlight,
   onOpenAnother,
@@ -83,6 +84,8 @@ export function DocumentView({
   settings: Settings;
   /** False in a private window without consent: reading works, nothing is written. */
   persistAllowed: boolean;
+  /** Why nothing is written while `persistAllowed` is false (private window, or window unknown). */
+  blockedReason?: string;
   initialPage: number | null;
   initialHighlight: string | null;
   onOpenAnother(): void;
@@ -498,7 +501,7 @@ export function DocumentView({
     async (draft: SaveDraft): Promise<{ summary: string }> => {
       const sel = selection;
       if (!sel) throw new Error('The selection is gone. Select the text again.');
-      if (!persistAllowed) throw new Error(INCOGNITO_CAPTURE_REFUSAL);
+      if (!persistAllowed) throw new Error(blockedReason);
       if (!persisted.current) {
         // Opened while saving was not allowed (private window), allowed since: the row is written now.
         await store.upsertDocument({
@@ -578,6 +581,7 @@ export function DocumentView({
       return { summary };
     },
     [
+      blockedReason,
       doc.pageCount,
       headingOf,
       paletteFor,
@@ -625,7 +629,7 @@ export function DocumentView({
 
   // ---- keep a copy ----------------------------------------------------------------------------
   const copyUnavailable = !persistAllowed
-    ? INCOGNITO_CAPTURE_REFUSAL
+    ? blockedReason
     : canKeepCopy
       ? undefined
       : 'Keeping copies is not available in this build.';
@@ -742,8 +746,8 @@ export function DocumentView({
       />
 
       {!persistAllowed ? (
-        <InlineNotice tone="warning" title="Private window">
-          {INCOGNITO_CAPTURE_REFUSAL} You can still read this PDF.
+        <InlineNotice tone="warning" live title="Nothing is being saved">
+          {blockedReason} You can still read this PDF.
         </InlineNotice>
       ) : null}
       {session.fingerprintNote ? (
@@ -791,7 +795,7 @@ export function DocumentView({
             offline. The result is machine-recognised text that may contain errors.
             {persistAllowed
               ? ''
-              : ' In a private window the recognised text is kept for this session only.'}
+              : ' Nothing is being saved in this window, so the recognised text is kept for this session only.'}
           </p>
           {ocrUnavailable ? <p className="sv-small">{ocrUnavailable}</p> : null}
         </InlineNotice>
@@ -902,7 +906,7 @@ export function DocumentView({
 
       {selection ? (
         <SaveBar
-          blockedReason={persistAllowed ? undefined : INCOGNITO_CAPTURE_REFUSAL}
+          blockedReason={persistAllowed ? undefined : blockedReason}
           selection={selection}
           banks={banks}
           defaultKind={settings.defaultKind}

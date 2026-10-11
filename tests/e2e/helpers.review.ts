@@ -6,7 +6,9 @@ import {
   type Page,
 } from '@playwright/test';
 import {
+  OVERLAY_HOST,
   activate as activateFixturePage,
+  bg,
   bgData,
   highlightsOf,
   toolbarOf,
@@ -125,8 +127,6 @@ export const TID = {
 export const ratingId = (rating: Rating) => `rv-rate-${rating}`;
 export const choiceId = (index: number) => `rv-choice-${index}`;
 export const blankId = (index: number) => `rv-blank-${index}`;
-export const deckRowId = (deckId: string) => `rv-deck-${deckId}`;
-export const deckStartId = (deckId: string) => `rv-start-${deckId}`;
 
 export type Rating = 1 | 2 | 3 | 4;
 export const RATING_NAMES: Record<Rating, string> = { 1: 'Again', 2: 'Hard', 3: 'Good', 4: 'Easy' };
@@ -197,7 +197,8 @@ export interface StudySettingsPatch {
 export async function writeStudySettings(page: Page, patch: StudySettingsPatch): Promise<void> {
   await page.evaluate(async (p) => {
     const key = 'studySettings';
-    const stored = (await chrome.storage.local.get(key))[key] as Record<string, unknown> | undefined;
+    const stored = (await chrome.storage.local.get(key))[key] as
+      Record<string, unknown> | undefined;
     await chrome.storage.local.set({ [key]: { schemaVersion: 1, ...(stored ?? {}), ...p } });
   }, patch);
 }
@@ -236,11 +237,45 @@ export interface Captured {
   quote: string;
 }
 
+const PERSISTENT = new WeakMap<BrowserContext, boolean>();
+
 /**
- * `tab.activate` has a fixed internal deadline; on a machine that is busy with other jobs it can
- * miss it ("did not answer" / "did not start"). That is load, not a defect of the flow under test,
- * so the harness reloads the tab and asks again (at most four times) before it gives up.
+ * True when captureHighlights could register the content script for the fixture origin, so that a
+ * tab the PRODUCT opens later (Jump to source) also runs it. When false the highlights were saved
+ * through `tab.activate` and a product-opened tab has no content script.
  */
+export const hasPersistentAccess = (ctx: Ctx): boolean => PERSISTENT.get(ctx.context) === true;
+
+/**
+ * Best effort: persistent site access for the fixture origin (a registered content script). It has
+ * no 5 s activation deadline (which a busy machine misses) and it makes a tab opened later by "Jump
+ * to source" run the content script. The worker keeps its authoritative settings copy in IndexedDB
+ * and only adopts `chrome.storage.local` before that copy exists, so the value is written the way
+ * the other specs' patchSettings does and the outcome is CHECKED through `site.sync`; false is
+ * returned (never thrown) when the worker did not register the origin.
+ */
+async function ensurePersistentAccess(ctx: Ctx, ext: Page): Promise<boolean> {
+  const pattern = `${ctx.origin}/*`;
+  await ext.evaluate(async (origin) => {
+    const stored = ((await chrome.storage.local.get('settings')).settings ?? {}) as {
+      persistentOrigins?: string[];
+    };
+    const have: string[] = stored.persistentOrigins ?? [];
+    if (!have.includes(origin)) {
+      await chrome.storage.local.set({
+        settings: { schemaVersion: 1, ...stored, persistentOrigins: [...have, origin] },
+      });
+    }
+  }, pattern);
+  // The worker answers within 15 s on an idle machine; on a busy one the first call can miss it,
+  // which says nothing about the flows under test, so ask again (at most three times).
+  let sync = await bg(ext, 'site.sync');
+  for (let attempt = 1; attempt < 3 && !sync.ok; attempt++) sync = await bg(ext, 'site.sync');
+  if (!sync.ok) return false;
+  return (sync.data as { registeredMatches: string[] }).registeredMatches.includes(pattern);
+}
+
+/** `tab.activate` (activeTab path) with a reload between attempts: it has a 5 s deadline. */
 async function activateWithRetry(ctx: Ctx, page: Page): Promise<void> {
   let last: unknown;
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -253,6 +288,31 @@ async function activateWithRetry(ctx: Ctx, page: Page): Promise<void> {
     }
   }
   throw last;
+}
+
+/** The content script runs in `page` and has finished its first rehydration. */
+async function waitForContentScript(ext: Page, page: Page): Promise<void> {
+  await expect(page.locator(OVERLAY_HOST)).toHaveCount(1, { timeout: 90_000 });
+  await expect
+    .poll(
+      () =>
+        ext.evaluate(async (pageUrl) => {
+          const tab = (await chrome.tabs.query({})).find((t) => t.url === pageUrl);
+          if (tab?.id === undefined) return 'no tab';
+          try {
+            const reply = await chrome.tabs.sendMessage(tab.id, {
+              v: 1,
+              type: 'content.pageStatus',
+              payload: {},
+            });
+            return reply ? 'ready' : 'no reply';
+          } catch (err) {
+            return `not yet: ${String((err as Error)?.message ?? err)}`;
+          }
+        }, page.url()),
+      { message: 'content script should finish its first rehydration', timeout: 90_000 },
+    )
+    .toBe('ready');
 }
 
 /** One toolbar save: real triple-click on `selector`, real click on the toolbar button. */
@@ -277,8 +337,8 @@ async function saveOne(ext: Page, page: Page, selector: string, bank?: string): 
 }
 
 /**
- * Open `path` of the fixture server, enable the content script through the real `tab.activate`
- * RPC and save each `#id` block with a real triple-click and the real toolbar. With `bank`, the
+ * Open `path` of the fixture server (the content script runs through persistent site access when
+ * the worker registers it, else through `tab.activate`) and save each `#id` block with a real triple-click and the real toolbar. With `bank`, the
  * highlight is filed through the toolbar's "More options" composer (the bank is created first).
  */
 export async function captureHighlights(
@@ -291,8 +351,11 @@ export async function captureHighlights(
   await ext.goto(`chrome-extension://${ctx.extensionId}/options.html`);
   const page = await ctx.context.newPage();
   try {
+    const persistent = await ensurePersistentAccess(ctx, ext);
+    PERSISTENT.set(ctx.context, persistent);
     await page.goto(`${ctx.origin}${path}`);
-    await activateWithRetry(ctx, page);
+    if (!persistent) await activateWithRetry(ctx, page);
+    await waitForContentScript(ext, page);
     if (opts.bank) {
       const { banks } = await bgData<{ banks: Array<{ name: string }> }>(ext, 'banks.list');
       if (!banks.some((b) => b.name === opts.bank)) {
@@ -518,7 +581,7 @@ export type CardSpec =
 const TEMPLATE_TAB: Record<CardSpec['t'], string> = {
   basic: 'Question and answer',
   cloze: 'Fill in the blank',
-  definition: 'Definition',
+  definition: 'Term and definition',
   compare: 'Compare',
   mcq: 'Multiple choice',
 };
@@ -530,13 +593,17 @@ export async function fillEditor(page: Page, spec: CardSpec): Promise<Locator> {
   await editor.getByRole('tab', { name: TEMPLATE_TAB[spec.t], exact: true }).click();
   switch (spec.t) {
     case 'basic':
-      await editor.getByLabel('Question', { exact: true }).fill(spec.question);
-      await editor.getByLabel('Answer', { exact: true }).fill(spec.answer);
+      await editor.getByRole('textbox', { name: 'Question', exact: true }).fill(spec.question);
+      await editor.getByRole('textbox', { name: 'Answer', exact: true }).fill(spec.answer);
       if (spec.explanation) {
-        await editor.getByLabel('Explanation (optional)', { exact: true }).fill(spec.explanation);
+        await editor
+          .getByRole('textbox', { name: 'Explanation (optional)', exact: true })
+          .fill(spec.explanation);
       }
       if (spec.tags) {
-        await editor.getByLabel('Tags (comma separated, optional)').fill(spec.tags);
+        await editor
+          .getByRole('textbox', { name: 'Tags (comma separated, optional)' })
+          .fill(spec.tags);
       }
       break;
     case 'cloze': {
@@ -545,20 +612,24 @@ export async function fillEditor(page: Page, spec: CardSpec): Promise<Locator> {
       if (spec.perDeletion === false) await box.uncheck();
       else await box.check();
       if (spec.explanation) {
-        await editor.getByLabel('Explanation (optional)', { exact: true }).fill(spec.explanation);
+        await editor
+          .getByRole('textbox', { name: 'Explanation (optional)', exact: true })
+          .fill(spec.explanation);
       }
       break;
     }
     case 'definition':
-      await editor.getByLabel('Term', { exact: true }).fill(spec.term);
-      await editor.getByLabel('Definition', { exact: true }).fill(spec.definition);
+      await editor.getByRole('textbox', { name: 'Term', exact: true }).fill(spec.term);
+      await editor.getByRole('textbox', { name: 'Definition', exact: true }).fill(spec.definition);
       if (spec.example) {
-        await editor.getByLabel('Example (optional)', { exact: true }).fill(spec.example);
+        await editor
+          .getByRole('textbox', { name: 'Example (optional)', exact: true })
+          .fill(spec.example);
       }
       break;
     case 'compare': {
-      await editor.getByLabel('First item', { exact: true }).fill(spec.left);
-      await editor.getByLabel('Second item', { exact: true }).fill(spec.right);
+      await editor.getByRole('textbox', { name: 'First item', exact: true }).fill(spec.left);
+      await editor.getByRole('textbox', { name: 'Second item', exact: true }).fill(spec.right);
       const aspects = editor.locator('fieldset', { hasText: 'Aspects' });
       for (let i = 0; i < spec.rows.length; i++) {
         if (i > 0) await aspects.getByRole('button', { name: 'Add aspect' }).click();
@@ -571,20 +642,72 @@ export async function fillEditor(page: Page, spec: CardSpec): Promise<Locator> {
       break;
     }
     case 'mcq':
-      await editor.getByLabel('Question', { exact: true }).fill(spec.stem);
+      await editor.getByRole('textbox', { name: 'Question', exact: true }).fill(spec.stem);
       for (let i = 0; i < spec.choices.length; i++) {
         if (i >= 4) await editor.getByRole('button', { name: 'Add option' }).click();
-        await editor.getByLabel(`Option ${i + 1} text`, { exact: true }).fill(spec.choices[i]!);
+        await editor
+          .getByRole('textbox', { name: `Option ${i + 1} text`, exact: true })
+          .fill(spec.choices[i]!);
       }
-      await editor.getByLabel(`Option ${spec.correct + 1} is correct`, { exact: true }).check();
+      await editor
+        .getByRole('radio', { name: `Option ${spec.correct + 1} is correct`, exact: true })
+        .check();
       if (spec.explanation) {
         await editor
-          .getByLabel('Why the answer is right (optional)', { exact: true })
+          .getByRole('textbox', { name: 'Why the answer is right (optional)', exact: true })
           .fill(spec.explanation);
       }
       break;
   }
+  await expectUniqueControlNames(editor, `card editor (${spec.t})`);
   return editor;
+}
+
+/**
+ * Accessible names of the controls (fields and tabs) inside `scope`: aria-label or the text of the
+ * associated <label>. (A tab panel is named by its own tab by design, so panels are not listed; a
+ * panel can only collide with a field through its tab's name, which is listed.)
+ */
+export async function controlNames(scope: Locator): Promise<string[]> {
+  return scope.evaluate((root) => {
+    const names: string[] = [];
+    const nameOf = (el: Element): string => {
+      const aria = el.getAttribute('aria-label');
+      if (aria) return aria;
+      const by = el.getAttribute('aria-labelledby');
+      if (by) {
+        return by
+          .split(/\s+/)
+          .map((id) => document.getElementById(id)?.textContent ?? '')
+          .join(' ');
+      }
+      const labels = (el as HTMLInputElement).labels;
+      if (labels && labels.length > 0) {
+        return Array.from(labels)
+          .map((l) => l.textContent ?? '')
+          .join(' ');
+      }
+      return el.getAttribute('role') === 'tab' ? (el.textContent ?? '') : '';
+    };
+    for (const el of root.querySelectorAll('input, textarea, select, [role="tab"]')) {
+      const name = nameOf(el).replace(/\s+/g, ' ').trim();
+      if (name !== '') names.push(name);
+    }
+    return names;
+  });
+}
+
+/** No two controls of `scope` may share one accessible name (a screen reader user could not tell them apart). */
+export async function expectUniqueControlNames(scope: Locator, what: string): Promise<void> {
+  const names = await controlNames(scope);
+  const seen = new Set<string>();
+  const dupes = names.filter((n) => {
+    const key = n.toLowerCase();
+    const dup = seen.has(key);
+    seen.add(key);
+    return dup;
+  });
+  expect(dupes, `${what}: controls that share an accessible name`).toEqual([]);
 }
 
 export async function cardCount(page: Page): Promise<number> {
@@ -597,7 +720,14 @@ export async function saveEditor(page: Page, spec: CardSpec, expectedNew: number
   await fillEditor(page, spec);
   await expect(page.getByTestId(TID.saveCards)).not.toHaveAttribute('aria-disabled', 'true');
   await page.getByTestId(TID.saveCards).click();
-  await expect.poll(() => cardCount(page), { message: 'cards were stored' }).toBe(before + expectedNew);
+  await expect
+    .poll(() => cardCount(page), { message: 'cards were stored' })
+    .toBe(before + expectedNew);
+  // The editor clears itself a moment AFTER the cards are stored; typing into it before that would
+  // be wiped. Its preview going back to the empty prompt is the signal that it is ready again.
+  await expect(page.getByTestId(TID.preview)).toContainText(
+    'Fill in the fields above to see the card.',
+  );
 }
 
 /** Author tab, a highlight from the picker, then the editor. */
@@ -660,19 +790,6 @@ export async function startAll(page: Page): Promise<void> {
   await expect(page.getByTestId(TID.session)).toBeVisible();
 }
 
-export interface Progress {
-  answered: number;
-  left: number;
-  percent: number;
-}
-
-export async function progress(page: Page): Promise<Progress> {
-  const text = (await page.getByTestId(TID.progressText).textContent()) ?? '';
-  const m = /(\d+) answered, (\d+) left \((\d+)%\)/.exec(text);
-  if (!m) throw new Error(`unrecognised progress text: ${text}`);
-  return { answered: Number(m[1]), left: Number(m[2]), percent: Number(m[3]) };
-}
-
 /** What the four rating buttons promise, read from the screen. */
 export async function previewLabels(page: Page): Promise<Record<Rating, string>> {
   const out = {} as Record<Rating, string>;
@@ -703,33 +820,48 @@ export async function answerWith(page: Page, rating: Rating): Promise<void> {
   await rateKey(page, rating);
 }
 
-/** Answer every card the session shows with the next rating of `ratings` (then Good). */
+export type SessionKind = 'card' | 'done' | 'waiting' | 'none';
+
+/** What the session surface shows right now (never throws; 'none' while it is changing). */
+export async function sessionKind(page: Page): Promise<SessionKind> {
+  if (await page.getByTestId(TID.reveal).isVisible()) return 'card';
+  if (await page.getByTestId(TID.summary).isVisible()) return 'done';
+  if (await page.getByTestId(TID.waiting).isVisible()) return 'waiting';
+  return 'none';
+}
+
+export async function settledSession(page: Page): Promise<SessionKind> {
+  let kind: SessionKind = 'none';
+  await expect
+    .poll(async () => (kind = await sessionKind(page)), { message: 'the session shows something' })
+    .not.toBe('none');
+  return kind;
+}
+
+export interface Answered {
+  question: string;
+  rating: Rating;
+}
+
+/**
+ * Answer every card the session shows with the next rating of `ratings` (then Good), until the
+ * summary or a "waiting for a learning step" screen. Returns what was answered, in order.
+ */
 export async function answerAll(
   page: Page,
   ratings: readonly Rating[],
   opts: { max?: number } = {},
-): Promise<number> {
-  let n = 0;
+): Promise<Answered[]> {
+  const out: Answered[] = [];
   const max = opts.max ?? 500;
-  for (; n < max; n++) {
-    const state = await Promise.race([
-      page
-        .getByTestId(TID.reveal)
-        .waitFor({ state: 'visible', timeout: 15_000 })
-        .then(() => 'card' as const),
-      page
-        .getByTestId(TID.summary)
-        .waitFor({ state: 'visible', timeout: 15_000 })
-        .then(() => 'done' as const),
-      page
-        .getByTestId(TID.waiting)
-        .waitFor({ state: 'visible', timeout: 15_000 })
-        .then(() => 'waiting' as const),
-    ]);
-    if (state !== 'card') break;
-    await answerWith(page, ratings[n] ?? 3);
+  while (out.length < max) {
+    if ((await settledSession(page)) !== 'card') break;
+    const rating = ratings[out.length] ?? 3;
+    const question = await questionText(page);
+    await answerWith(page, rating);
+    out.push({ question, rating });
   }
-  return n;
+  return out;
 }
 
 export const questionText = async (page: Page): Promise<string> =>
@@ -790,7 +922,10 @@ export async function fillDeckForm(form: Locator, patch: DeckSettingsPatch): Pro
   }
 }
 
-/** Fill the deck form and save it; waits for the saved notice. */
+/**
+ * Fill the deck form and save it. Waits for the settings to be in the database (not for the on-screen
+ * "Saved" notice: that notice is checked on its own in the settings test).
+ */
 export async function saveDeckSettings(
   page: Page,
   deckName: string,
@@ -799,7 +934,22 @@ export async function saveDeckSettings(
   const form = await openDeckForm(page, deckName);
   await fillDeckForm(form, patch);
   await form.getByTestId(TID.deckSettingsSave).click();
-  await expect(form.getByText(/^Saved\. The new rules apply from the next answer/)).toBeVisible();
+  const wanted: Record<string, unknown> = {};
+  if (patch.newPerDay !== undefined) wanted.newPerDay = Number(patch.newPerDay);
+  if (patch.reviewsPerDay !== undefined) wanted.reviewsPerDay = Number(patch.reviewsPerDay);
+  if (patch.maxIntervalDays !== undefined) wanted.maxIntervalDays = Number(patch.maxIntervalDays);
+  if (patch.leechThreshold !== undefined) wanted.leechThreshold = Number(patch.leechThreshold);
+  if (patch.fuzz !== undefined) wanted.enableFuzz = patch.fuzz;
+  if (patch.learningSteps !== undefined) wanted.learningSteps = patch.learningSteps.split(/\s+/);
+  if (patch.relearnSteps !== undefined) wanted.relearnSteps = patch.relearnSteps.split(/\s+/);
+  await expect
+    .poll(
+      async () =>
+        (await readStudyDb(page)).decks.find((d) => d.name === deckName && d.deletedAt === null)
+          ?.settings,
+      { message: `settings of deck ${deckName} were stored` },
+    )
+    .toMatchObject(wanted);
 }
 
 // -----------------------------------------------------------------------------------------------
@@ -866,5 +1016,120 @@ export async function axeReport(page: Page): Promise<string> {
 /** axe WCAG 2.2 AA over the whole document; failure message lists every violation. */
 export async function expectAccessible(page: Page, label: string): Promise<void> {
   const report = await axeReport(page);
-  expect(report, `axe WCAG 2.2 AA violations on ${label}`).toBe('');
+  // Soft: one failing state must not hide the violations of the states after it.
+  expect.soft(report, `axe WCAG 2.2 AA violations on ${label}`).toBe('');
+}
+
+// -----------------------------------------------------------------------------------------------
+// Checks shared by several tests
+// -----------------------------------------------------------------------------------------------
+
+/**
+ * A button label ("10m", "16d") must agree with the due date that was really stored for the card
+ * after that answer. `answeredAt` is the (pinned) time of the answer.
+ */
+export function expectDueMatchesLabel(
+  card: CardRow,
+  label: string,
+  answeredAt: number,
+  what: string,
+): void {
+  const { ms, tolerance } = labelToMs(label);
+  const delta = Date.parse(card.fsrs.due) - answeredAt;
+  expect(
+    Math.abs(delta - ms),
+    `${what}: button said ${label} (${ms} ms), stored due is ${delta} ms away`,
+  ).toBeLessThanOrEqual(tolerance);
+  expect(card.dueAt, `${what}: dueAt mirrors fsrs.due`).toBe(card.fsrs.due);
+}
+
+/** The text the card browser prints for an instant, produced by the page's own Intl in `timeZone`. */
+export async function whenText(page: Page, isoInstant: string, timeZone: string): Promise<string> {
+  return page.evaluate(
+    ({ at, tz }) =>
+      new Intl.DateTimeFormat(undefined, {
+        timeZone: tz,
+        weekday: 'short',
+        day: 'numeric',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+      }).format(new Date(at)),
+    { at: isoInstant, tz: timeZone },
+  );
+}
+
+/** Set the study day through the Settings view's own form and wait for its saved notice. */
+export async function setStudyDayInUi(
+  page: Page,
+  next: { timeZone: string; rolloverHour: number },
+): Promise<void> {
+  await gotoTab(page, 'Settings');
+  const form = page.getByTestId(TID.studyDay);
+  await form.getByTestId(TID.timeZone).fill(next.timeZone);
+  await form.getByTestId(TID.rollover).selectOption(String(next.rolloverHour));
+  await form.getByTestId(TID.studyDaySave).click();
+  await expect(
+    form.getByText(/^Saved\. Open review windows pick the new settings up/),
+  ).toBeVisible();
+}
+
+/** The study settings exactly as stored under chrome.storage.local. */
+export async function storedStudySettings(page: Page): Promise<Record<string, unknown>> {
+  return page.evaluate(async () => {
+    const got = await chrome.storage.local.get('studySettings');
+    return (got.studySettings ?? {}) as Record<string, unknown>;
+  });
+}
+
+/** Create basic typed cards (no source) in one visit to the author view. */
+export async function createBasicCards(
+  page: Page,
+  cards: ReadonlyArray<readonly [question: string, answer: string]>,
+): Promise<void> {
+  await openTypedCard(page);
+  for (const [question, answer] of cards) {
+    await saveEditor(page, { t: 'basic', question, answer }, 1);
+  }
+}
+
+/** Position (0-based) of the option whose text contains `text` in the on-screen choice list. */
+export async function optionIndex(page: Page, text: string): Promise<number> {
+  const n = await page.getByTestId(TID.choices).locator('li').count();
+  for (let i = 0; i < n; i++) {
+    if (((await page.getByTestId(choiceId(i)).textContent()) ?? '').includes(text)) return i;
+  }
+  throw new Error(`no option contains ${text}`);
+}
+
+/** Reload the page and open `tab` again (the address keeps the view the page was on). */
+export async function reloadTo(page: Page, tab: ReviewTab): Promise<void> {
+  await page.reload();
+  await expect(page.getByRole('heading', { name: 'Review', level: 1 })).toBeVisible();
+  await gotoTab(page, tab);
+}
+
+/** The id of the element that has focus (data-testid, else tag name). */
+export async function focusedId(page: Page): Promise<string> {
+  return page.evaluate(
+    () =>
+      document.activeElement?.getAttribute('data-testid') ??
+      document.activeElement?.textContent?.trim() ??
+      document.activeElement?.tagName ??
+      '',
+  );
+}
+
+/** Press Tab until the focused element satisfies `match`; fails after `max` presses. */
+export async function tabUntil(
+  page: Page,
+  match: (id: string) => boolean,
+  max = 60,
+): Promise<string> {
+  for (let i = 0; i < max; i++) {
+    const id = await focusedId(page);
+    if (match(id)) return id;
+    await page.keyboard.press('Tab');
+  }
+  throw new Error(`Tab never reached the target; focus is on ${await focusedId(page)}`);
 }

@@ -8,6 +8,7 @@ import { useAction } from '../hooks';
 import { errorMessage } from '../text';
 import { useSyncApi } from './api';
 import { ConflictsPanel } from './ConflictsPanel';
+import { NEVER_UPLOADED, PROVIDER_LEARNS, SERVER_STILL_SEES, syncedGroups } from './consent';
 import { EncryptionCard } from './EncryptionCard';
 import { STATUS_TEXT } from './labels';
 import type { SyncConfigInput, SyncStatusView } from './protocol';
@@ -138,28 +139,38 @@ function formatTime(ms: number | null): string {
 }
 
 function Explanation() {
+  const { groups } = syncedGroups();
   return (
     <div className="sv-stack sv-stack--tight" data-testid="sync-explanation">
       <p>
-        Sync keeps your highlights, notes, banks, tags, folders and PDF details the same on every
-        device you sign in on. It is off by default and StudyVault works fully without it.
+        Sync keeps your study data the same on every device you sign in on. It is off by default and
+        StudyVault works fully without it. If you turn it on, this is what is uploaded:
       </p>
+      <ul className="sv-sync-bullets" data-testid="sync-data-list">
+        {groups.map((g) => (
+          <li key={g.id} data-testid={`sync-data-${g.id}`}>
+            <strong>{g.label}:</strong> {g.detail}
+          </li>
+        ))}
+      </ul>
       <ul className="sv-sync-bullets">
+        <li data-testid="sync-never-sent">
+          <strong>What is never sent.</strong> {NEVER_UPLOADED}
+        </li>
         <li>
           <strong>There is no StudyVault server.</strong> You enter the address of a sync server
           that you or someone you trust runs. Your study data is sent only there, and only after you
-          turn sync on and sign in.
+          turn sync on, sign in and choose how it is protected: nothing is uploaded before that.
         </li>
         <li>
           <strong>Who can read it.</strong> Without a passphrase the operator of that server can
           read everything you sync. The connection is encrypted (TLS), but that is not end-to-end
-          encryption. With a passphrase your content is encrypted on this device before it is sent;
-          the server then still sees which kinds of items you have, their sizes and when they
-          change.
+          encryption. With a passphrase your content is encrypted on this device before it is sent.{' '}
+          <span data-testid="sync-server-sees">{SERVER_STILL_SEES}</span>
         </li>
         <li>
-          <strong>What is never sent.</strong> Pages you browse, and anything you did not save to
-          StudyVault. Cached PDF files and your AI settings stay on this device.
+          <strong>The sign-in provider.</strong>{' '}
+          <span data-testid="sync-provider-learns">{PROVIDER_LEARNS}</span>
         </li>
         <li>
           <strong>Permissions.</strong> Chrome will be asked to let StudyVault contact your sync
@@ -256,8 +267,8 @@ function SetupForm({
           onChange={(e) => setAck(e.target.checked)}
         />
         <span>
-          I understand that this sends my study data to the server above, and that its operator can
-          read it unless I set a sync passphrase.
+          I understand that my study data will be sent to the server above once I choose how it is
+          protected, and that its operator can read it unless I set a sync passphrase.
         </span>
       </label>
 
@@ -475,7 +486,8 @@ function Connected({
     onStatus(await api.rebind());
   });
 
-  const canSync = status.signedIn && status.status !== 'locked';
+  const awaitingChoice = status.status === 'awaiting_encryption_choice';
+  const canSync = status.signedIn && status.status !== 'locked' && !awaitingChoice;
   const attentionKey = `${status.attention.conflicts}:${status.attention.quarantined}:${status.lastSyncAt ?? 0}`;
   const outsideEnabledNeeds = status.permissions.missingOrigins;
 
@@ -521,6 +533,15 @@ function Connected({
         </InlineNotice>
       ) : null}
 
+      {awaitingChoice ? (
+        <InlineNotice tone="warning" title="Nothing is uploaded until you choose" live>
+          <span data-testid="sync-awaiting-choice">
+            You are signed in, but StudyVault has not sent anything yet. Set a passphrase, or choose
+            to upload without end-to-end encryption, in the encryption section below.
+          </span>
+        </InlineNotice>
+      ) : null}
+
       {status.scheduling === 'while-awake' ? (
         <InlineNotice tone="info" title="No background timer" live>
           <span data-testid="sync-scheduling-note">
@@ -547,9 +568,11 @@ function Connected({
                 disabledReason={
                   canSync
                     ? undefined
-                    : status.signedIn
-                      ? 'Unlock encryption first.'
-                      : 'Sign in first.'
+                    : !status.signedIn
+                      ? 'Sign in first.'
+                      : awaitingChoice
+                        ? 'Choose how your data is protected first (below).'
+                        : 'Unlock encryption first.'
                 }
                 data-testid="sync-now"
                 onClick={() => void syncNow.run()}

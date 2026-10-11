@@ -41,6 +41,7 @@ const CAPTURE_METHODS: Record<string, string> = {
   toolbar: 'the selection toolbar',
   shortcut: 'a keyboard shortcut',
   'context-menu': 'the context menu',
+  import: 'a Markdown or CSV import',
 };
 export const describeCaptureMethod = (method: string) => CAPTURE_METHODS[method] ?? method;
 

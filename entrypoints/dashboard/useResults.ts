@@ -60,8 +60,18 @@ const MAX_KEEP = 2_000;
 export function useResults(args: ResultsArgs): ResultsView {
   const { mode, scope, filters, sort, query, index, refreshOn } = args;
   const searching = mode === 'search';
-  const indexReady = index !== null;
-  const key = JSON.stringify([mode, scope, filters, sort, searching ? query : '', indexReady]);
+  /** Search mode, but the index is still restoring or rebuilding: nothing to ask yet. */
+  const waiting = searching && index === null;
+  // The index only matters to a search. While browsing, its becoming ready must not change the key
+  // (that blanked the list and re-read the first page right after the dashboard opened).
+  const key = JSON.stringify([
+    mode,
+    scope,
+    filters,
+    sort,
+    searching ? query : '',
+    searching && !waiting,
+  ]);
   const refreshKey = JSON.stringify(refreshOn);
 
   const [state, setState] = useState<State | null>(null);
@@ -70,7 +80,7 @@ export function useResults(args: ResultsArgs): ResultsView {
   const loadedCount = useRef(0);
 
   useEffect(() => {
-    if (searching && !indexReady) return undefined;
+    if (waiting) return undefined;
     let live = true;
     const a = latest.current.args;
     // The same query refreshed: reload as many rows as are on screen so the list does not jump.
@@ -144,7 +154,7 @@ export function useResults(args: ResultsArgs): ResultsView {
     return () => {
       live = false;
     };
-  }, [key, refreshKey, searching, indexReady, latest]);
+  }, [key, refreshKey, waiting, latest]);
 
   const loadMore = useCallback(() => {
     const { args: a, state: s, key: currentKey } = latest.current;
@@ -191,12 +201,12 @@ export function useResults(args: ResultsArgs): ResultsView {
   return {
     rows: current?.rows ?? [],
     total: current?.total ?? null,
-    loading: current === null && !(searching && !indexReady),
+    loading: current === null && !waiting,
     loadingMore: current?.loadingMore ?? false,
     error: current?.error ?? null,
     hasMore: current?.next != null,
     loadMore,
     extras: current?.extras ?? null,
-    waitingForIndex: searching && !indexReady,
+    waitingForIndex: waiting,
   };
 }

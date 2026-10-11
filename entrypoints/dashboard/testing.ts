@@ -598,10 +598,19 @@ function buildApi(self: FakeVault): DashboardApi {
       self.record('deleteNote', id);
       self.trashedNotes.add(id);
     },
+    // Like the real vault, setCustomFields MERGES into the stored fields.
     async setCustomFields(id, fields) {
       self.record('setCustomFields', id, fields);
-      self.row(id).customFields = { ...fields };
-      return fields;
+      const row = self.row(id);
+      row.customFields = { ...row.customFields, ...fields };
+      return row.customFields;
+    },
+    async clearCustomField(id, key) {
+      self.record('clearCustomField', id, key);
+      const row = self.row(id);
+      const { [key]: _removed, ...rest } = row.customFields ?? {};
+      row.customFields = rest;
+      return rest;
     },
     async addToBank({ highlightId, bankId, folderId }) {
       self.record('addToBank', { highlightId, bankId, folderId });

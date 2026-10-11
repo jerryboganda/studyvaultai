@@ -20,6 +20,7 @@ import {
   unique,
 } from './core';
 import { withDb, type StudyVaultDb } from './db';
+import type { SearchFeedOptions } from './types';
 
 /**
  * The feed the search package indexes. Plain objects, derived from the tables each time (the index
@@ -164,47 +165,64 @@ const parseHighlights = (rows: Array<unknown | undefined>) =>
 const parseNotes = (rows: Array<unknown | undefined>) =>
   rows.map((r) => (r ? parseRow(Note, r, 'note') : null)).filter(notNull);
 
-/** Everything, in id order. Page with `afterId` = the last document's id until an empty array. */
+/**
+ * Everything, in id order, `limit` documents at a time. A row that exists but cannot be read is
+ * passed over (counted in `onSkipped`) and the page is filled from the rows after it, so a page
+ * shorter than `limit` is the last one: callers page with "fewer than `limit` means done".
+ */
 export async function listSearchDocuments(
-  options: { afterId?: string; limit?: number } = {},
+  options: SearchFeedOptions = {},
 ): Promise<SearchDocument[]> {
   const limit = clampLimit(options.limit);
-  const after = options.afterId;
-  return withDb((db) =>
+  const docs: SearchDocument[] = [];
+  let skipped = 0;
+  await withDb((db) =>
     db.transaction('r', READ_TABLES(db), async () => {
-      const page = (table: typeof db.highlights | typeof db.notes) =>
-        (after === undefined ? table.orderBy(':id') : table.where(':id').above(after))
-          .limit(limit)
-          .toArray();
-      const [h, n] = await Promise.all([page(db.highlights), page(db.notes)]);
-      // Merge the two id-ordered streams and keep the first `limit` ids; the rest come next time.
-      const ids = unique([...h.map((r) => r.id), ...n.map((r) => r.id)])
-        .sort(cmp)
-        .slice(0, limit);
-      const keep = new Set(ids);
-      return buildDocuments(
-        db,
-        parseHighlights(h.filter((r) => keep.has(r.id))),
-        parseNotes(n.filter((r) => keep.has(r.id))),
-      );
+      let after = options.afterId;
+      while (docs.length < limit) {
+        const need = limit - docs.length;
+        const page = (table: typeof db.highlights | typeof db.notes) =>
+          (after === undefined ? table.orderBy(':id') : table.where(':id').above(after))
+            .limit(need)
+            .toArray();
+        const [h, n] = await Promise.all([page(db.highlights), page(db.notes)]);
+        // Merge the two id-ordered streams and keep the first `need` ids; the rest come next time.
+        const ids = unique([...h.map((r) => r.id), ...n.map((r) => r.id)])
+          .sort(cmp)
+          .slice(0, need);
+        if (ids.length === 0) break;
+        const keep = new Set(ids);
+        const hRows = h.filter((r) => keep.has(r.id));
+        const nRows = n.filter((r) => keep.has(r.id));
+        const hs = parseHighlights(hRows);
+        const ns = parseNotes(nRows);
+        skipped += hRows.length + nRows.length - hs.length - ns.length;
+        docs.push(...(await buildDocuments(db, hs, ns)));
+        after = ids[ids.length - 1];
+        if (ids.length < need) break; // both tables are exhausted
+      }
     }),
   );
+  if (skipped > 0) options.onSkipped?.(skipped);
+  return docs;
 }
 
 /**
  * Documents whose indexed content may have changed since `since` (an ISO time: the largest
  * `updatedAt` the caller has seen). Includes trashed ones (`deletedAt` set) so the index can drop
  * them. A purge leaves no row to report: compare `getLastPurgeAt()` and rebuild when it is newer.
+ * Paged like `listSearchDocuments`. An id that names no row (a tag link or membership left behind
+ * a purged highlight) is nothing to index: it is passed over and not counted as skipped.
  */
-export async function listSearchDocumentsChangedSince(options: {
-  since: string;
-  afterId?: string;
-  limit?: number;
-}): Promise<SearchDocument[]> {
+export async function listSearchDocumentsChangedSince(
+  options: SearchFeedOptions & { since: string },
+): Promise<SearchDocument[]> {
   const since = parseInput(IsoDate, options.since, 'since');
   const limit = clampLimit(options.limit);
   const after = options.afterId;
-  return withDb((db) =>
+  const docs: SearchDocument[] = [];
+  let skipped = 0;
+  await withDb((db) =>
     db.transaction('r', READ_TABLES(db), async () => {
       const ids = new Set<string>();
       const add = (keys: Array<unknown | undefined>) => {
@@ -236,12 +254,20 @@ export async function listSearchDocumentsChangedSince(options: {
       const ofChanged = await keysWhereIn(db.notes, 'highlightId', [...ids]);
       add(ofChanged);
 
-      const page = [...ids]
-        .filter((id) => after === undefined || id > after)
-        .sort(cmp)
-        .slice(0, limit);
-      const [h, n] = await Promise.all([db.highlights.bulkGet(page), db.notes.bulkGet(page)]);
-      return buildDocuments(db, parseHighlights(h), parseNotes(n));
+      const eligible = [...ids].filter((id) => after === undefined || id > after).sort(cmp);
+      // Chunks of what is still missing from the page: ids without a row, and rows that cannot be
+      // read, make a chunk yield less than it holds, and the next chunk fills the page.
+      for (let at = 0; docs.length < limit && at < eligible.length;) {
+        const chunk = eligible.slice(at, at + (limit - docs.length));
+        at += chunk.length;
+        const [h, n] = await Promise.all([db.highlights.bulkGet(chunk), db.notes.bulkGet(chunk)]);
+        const hs = parseHighlights(h);
+        const ns = parseNotes(n);
+        skipped += h.filter(Boolean).length + n.filter(Boolean).length - hs.length - ns.length;
+        docs.push(...(await buildDocuments(db, hs, ns)));
+      }
     }),
   );
+  if (skipped > 0) options.onSkipped?.(skipped);
+  return docs;
 }

@@ -159,10 +159,8 @@ export function PreviewFields({ detail }: { detail: HighlightDetail }) {
 
   const clear = async (name: string) => {
     try {
-      await api.setCustomFields(
-        detail.highlight.id,
-        Object.fromEntries(entries.filter(([k]) => k !== name)),
-      );
+      // setCustomFields MERGES, so a key can only be removed with clearCustomField.
+      await api.clearCustomField(detail.highlight.id, name);
       bump();
     } catch (err) {
       toast.push({ tone: 'error', message: errorMessage(err, 'Could not remove the field.') });
@@ -184,28 +182,31 @@ export function PreviewFields({ detail }: { detail: HighlightDetail }) {
           {entries.map(([k, v]) => (
             <div key={k} className="sv-row" data-testid="custom-field">
               <dt className="sv-label">{k}</dt>
-              <dd className="sv-grow" dir="auto">
-                {typeof v === 'boolean' ? (v ? 'Yes' : 'No') : String(v)}
+              {/* A <dl> may only hold dt/dd groups: the actions belong to the value's <dd>. */}
+              <dd className="sv-grow sv-row">
+                <span className="sv-grow" dir="auto">
+                  {typeof v === 'boolean' ? (v ? 'Yes' : 'No') : String(v)}
+                </span>
+                <Button
+                  variant="ghost"
+                  aria-label={`Edit field ${k}`}
+                  onClick={() => {
+                    setKey(k);
+                    setType(typeOf(v));
+                    setValue(typeof v === 'boolean' ? '' : String(v));
+                    setTruth(v === true);
+                  }}
+                >
+                  Edit
+                </Button>
+                <Button
+                  variant="ghost"
+                  aria-label={`Remove field ${k}`}
+                  onClick={() => void clear(k)}
+                >
+                  Remove
+                </Button>
               </dd>
-              <Button
-                variant="ghost"
-                aria-label={`Edit field ${k}`}
-                onClick={() => {
-                  setKey(k);
-                  setType(typeOf(v));
-                  setValue(typeof v === 'boolean' ? '' : String(v));
-                  setTruth(v === true);
-                }}
-              >
-                Edit
-              </Button>
-              <Button
-                variant="ghost"
-                aria-label={`Remove field ${k}`}
-                onClick={() => void clear(k)}
-              >
-                Remove
-              </Button>
             </div>
           ))}
         </dl>

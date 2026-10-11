@@ -66,9 +66,54 @@ export interface StagingDb {
   discard(): Promise<void>;
 }
 
+/**
+ * Per table: the fields a merge restore must never change on a row that already exists (capture
+ * provenance). The member `'*'` means every field of the row (append-only tables). A restore that
+ * would change one keeps the live row and reports a conflict.
+ */
+export type ImmutableFields = Readonly<Record<string, readonly string[]>>;
+
+/** Text of a passage an AI result may cite (a highlight's quote, a note's body). */
+export interface Passage {
+  /** Table the passage lives in (decides whether a citation names a highlight or a note). */
+  table: string;
+  text: string;
+}
+
+/**
+ * Port for a table whose rows make claims about the text of other rows (AI results cite highlights
+ * and notes). The restore finds the passages a row cites in the archive and in the live vault and
+ * hands them to `regrade`, so a forged archive cannot bring in a claim the local data does not back.
+ */
+export interface CitationGuard {
+  /** The table of rows that cite passages. */
+  readonly table: string;
+  /** Tables holding citeable passages, and the field with the text in each. */
+  readonly passages: Readonly<Record<string, string>>;
+  /** Ids of the passages a row cites. Receives rows that are not validated yet: be defensive. */
+  cited(row: Row): readonly string[];
+  /**
+   * The row to keep: the same object when its claims hold, otherwise a demoted copy (never one that
+   * claims more). Pure and deterministic: it runs once per scan and again when rows are staged.
+   */
+  regrade(row: Row, passages: ReadonlyMap<string, Passage>): Row;
+}
+
 /** Write side of the vault. Extends the source so dry runs can compare against live data. */
 export interface RestoreTarget extends BackupSource {
   createStaging(init: StagingInit): Promise<StagingDb>;
+  /**
+   * Which fields of existing rows a merge may not change. Required, so a target cannot forget to
+   * say; evaluated when a restore starts (schemas other modules register show up).
+   */
+  immutableFields(): ImmutableFields;
+  /** Re-checks rows that cite other rows' text (AI results). Absent: such rows are taken as they are. */
+  readonly citationGuard?: CitationGuard;
+  /**
+   * Runs `run` while no other restore uses this vault, from the live-data comparison to the commit.
+   * Rejects with `restore_in_progress` when another one does. Absent: no mutual exclusion.
+   */
+  exclusive?<T>(run: () => Promise<T>): Promise<T>;
 }
 
 // ---------------------------------------------------------------------------------------------

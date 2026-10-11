@@ -14,7 +14,6 @@ export {
   type ExportResult,
 } from './export';
 export {
-  DEFAULT_IMMUTABLE_FIELDS,
   inspectBackup,
   prepareRestore,
   restoreBackup,
@@ -41,7 +40,7 @@ export {
 export { DEFAULT_KDF_ITERATIONS, isEncryptedContainer, type Subtle } from './crypto';
 export { buildMigrationChain, migrateRow } from './migrate';
 export { canonicalJson } from './canonical';
-export { decide, type MergeDecision, type RowMeta } from './merge';
+export { ALL_FIELDS, decide, type MergeDecision, type RowMeta } from './merge';
 
 // Human-readable exports (pure functions over plain row arrays)
 export { buildHighlightViews, type ExportDataset, type HighlightView } from './views';

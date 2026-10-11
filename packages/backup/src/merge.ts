@@ -52,6 +52,9 @@ function shapeBinary(v: unknown, depth = 0): unknown {
   return out;
 }
 
+/** Member of an immutable-field list that stands for every field of the row (append-only tables). */
+export const ALL_FIELDS = '*';
+
 export function metaOf(
   row: Row,
   derived: readonly string[] | undefined,
@@ -61,9 +64,12 @@ export function metaOf(
   const fp = fingerprint(canonicalJson(omitFields(shaped, derived)));
   let ifp: string | null = null;
   if (immutable && immutable.length > 0) {
-    const picked: Row = {};
-    for (const f of immutable) if (f in shaped) picked[f] = shaped[f];
-    ifp = fingerprint(canonicalJson(picked));
+    if (immutable.includes(ALL_FIELDS)) ifp = fp;
+    else {
+      const picked: Row = {};
+      for (const f of immutable) if (f in shaped) picked[f] = shaped[f];
+      ifp = fingerprint(canonicalJson(picked));
+    }
   }
   return { fp, ifp, t: ms(row.updatedAt), d: ms(row.deletedAt) };
 }

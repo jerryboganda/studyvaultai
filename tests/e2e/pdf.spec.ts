@@ -16,7 +16,7 @@ import {
   wrappedDoc,
 } from '../fixtures/pdf/docs';
 import { startPdfServer, type PdfServer } from '../fixtures/pdf/server';
-import { expect, test, type Env } from './helpers.pages';
+import { expect, patchSettings, test, type Env } from './helpers.pages';
 
 /**
  * The PDF reader (ADR-006) in real Chromium with the real built extension: open, render, select,
@@ -264,6 +264,47 @@ async function storedHighlights(page: Page): Promise<Array<Record<string, unknow
         };
       }),
   );
+}
+
+/**
+ * Page numbers that have a recognised-text row in the vault right now. This is the durable fact an
+ * OCR test can wait on: a status line is a moment (a fast engine passes through "page 2" between two
+ * polls, which is what failed on CI), a saved row stays.
+ */
+async function storedOcrPages(page: Page): Promise<number[]> {
+  const rows = await storedRows<{ pageNumber: number }>(page, 'ocrPages');
+  return rows.map((r) => r.pageNumber).sort((a, b) => a - b);
+}
+
+/** Every row of one vault table (empty when the database or the table does not exist yet). */
+async function storedRows<T = Record<string, unknown>>(page: Page, store: string): Promise<T[]> {
+  return page.evaluate(async (store) => {
+    if (!(await indexedDB.databases()).some((d) => d.name === 'studyvault')) return [];
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      const open = indexedDB.open('studyvault');
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => resolve(open.result);
+    });
+    try {
+      if (!db.objectStoreNames.contains(store)) return [];
+      return await new Promise<unknown[]>((resolve, reject) => {
+        const all = db.transaction(store, 'readonly').objectStore(store).getAll();
+        all.onsuccess = () => resolve(all.result as unknown[]);
+        all.onerror = () => reject(all.error);
+      });
+    } finally {
+      db.close();
+    }
+  }, store) as Promise<T[]>;
+}
+
+/** How much of one document the vault holds: what a private window must leave at zero. */
+async function storedCounts(page: Page): Promise<Record<string, number>> {
+  const counts: Record<string, number> = {};
+  for (const store of ['documents', 'highlights', 'attachments', 'ocrPages']) {
+    counts[store] = (await storedRows(page, store)).length;
+  }
+  return counts;
 }
 
 // =============================================================================================
@@ -604,6 +645,10 @@ test.describe('navigation and documents', () => {
 // =============================================================================================
 
 test.describe('scanned pages and OCR', () => {
+  // The recognition engine (wasm + language data) is the heaviest thing the suite loads: these run
+  // one after another in one worker, each with its own bounded timeout.
+  test.describe.configure({ mode: 'serial' });
+
   test('a scanned document says so, and OCR is offered with its on-device promise', async ({
     env,
   }) => {
@@ -735,45 +780,72 @@ test.describe('scanned pages and OCR', () => {
 });
 
 test.describe('OCR resume', () => {
+  // The recognition engine is fast on a CI runner (about a second a page), so "cancel when the status
+  // line says page 2" is a race it loses. Instead: a document of several pages, a wait on the durable
+  // fact (page 1 is a saved row), a cancel straight after it with pages still to do, and every count
+  // below is read from the vault rather than assumed.
+  test.describe.configure({ mode: 'serial', timeout: OCR_TIMEOUT });
+
+  const ORGANS = ['nephron', 'glomerulus', 'tubule', 'ureter', 'bladder', 'urethra'];
+  const PAGE_COUNT = ORGANS.length;
+  const plural = (n: number, word: string): string => `${n} ${word}${n === 1 ? '' : 's'}`;
+
   test('a cancelled run keeps the pages it finished and resumes with the rest after a reload', async ({
     env,
   }) => {
-    test.setTimeout(OCR_TIMEOUT);
     const scratch = await env.context.newPage();
-    const bytes = await scannedPages(scratch, [
-      ['The first scanned page names the nephron'],
-      ['The second page names the glomerulus'],
-    ]);
+    const bytes = await scannedPages(
+      scratch,
+      ORGANS.map((organ, i) => [
+        `Scanned page ${i + 1} names the ${organ}`,
+        'Machine recognition is checked',
+        'before it is relied upon',
+      ]),
+    );
     await scratch.close();
-    const { page } = await openDocument(env, 'two-scans.pdf', bytes);
+    const { page } = await openDocument(env, 'six-scans.pdf', bytes);
     await expect(page.getByTestId('pdf-ocr')).toBeEnabled({ timeout: 30_000 });
+    expect(await storedOcrPages(page)).toEqual([]);
 
     await page.getByTestId('pdf-ocr').click();
-    // Page 1 is saved when the run moves on to page 2: cancel there.
-    await expect(page.getByTestId('pdf-ocr-status')).toContainText(/page 2/, {
-      timeout: OCR_TIMEOUT - 30_000,
-    });
-    await page.getByTestId('pdf-ocr-cancel').click();
+    // Wait on the saved row, not on a status line: cancel as soon as page 1 is kept, with pages left.
+    await expect
+      .poll(async () => (await storedOcrPages(page)).length, {
+        message: 'the first page is saved',
+        timeout: OCR_TIMEOUT - 60_000,
+        intervals: [50, 100, 200],
+      })
+      .toBeGreaterThan(0);
+    await page.getByTestId('pdf-ocr-cancel').click({ timeout: 10_000 });
     await expect(page.getByText('Text recognition cancelled')).toBeVisible({ timeout: 60_000 });
+
+    const kept = (await storedOcrPages(page)).length;
+    expect(kept, 'the run was stopped part-way, not after it had finished').toBeGreaterThan(0);
+    expect(kept, 'the run was stopped part-way, not after it had finished').toBeLessThan(
+      PAGE_COUNT,
+    );
     await expect(page.getByTestId('pdf-ocr-outcome')).toContainText(
-      '1 page recognised so far was kept',
+      `${plural(kept, 'page')} recognised so far ${kept === 1 ? 'was' : 'were'} kept`,
     );
     await expect.poll(async () => (await textOnPage(page, 1)).toLowerCase()).toContain('nephron');
 
-    // Reload and choose the same file: page 1 is back without recognising it again.
+    // Reload and choose the same file: the kept pages are back without recognising them again, and
+    // the run that follows recognises exactly the pages that were left.
     await page.reload();
-    await chooseFile(page, 'two-scans.pdf', bytes);
+    await chooseFile(page, 'six-scans.pdf', bytes);
     await expect.poll(async () => (await textOnPage(page, 1)).toLowerCase()).toContain('nephron');
     await expect(page.getByTestId('pdf-ocr')).toBeEnabled({ timeout: 30_000 });
     await page.getByTestId('pdf-ocr').click();
-    await expect(page.getByText('Recognised 1 page')).toBeVisible({
-      timeout: OCR_TIMEOUT - 30_000,
-    });
-    await page.getByTestId('pdf-page-input').fill('2');
+    await expect(
+      page.getByText(`Recognised ${plural(PAGE_COUNT - kept, 'page')}`, { exact: true }),
+    ).toBeVisible({ timeout: OCR_TIMEOUT - 60_000 });
+    expect(await storedOcrPages(page)).toEqual(Array.from({ length: PAGE_COUNT }, (_, i) => i + 1));
+
+    await page.getByTestId('pdf-page-input').fill(String(PAGE_COUNT));
     await page.getByTestId('pdf-page-input').press('Enter');
     await expect
-      .poll(async () => (await textOnPage(page, 2)).toLowerCase(), { timeout: 30_000 })
-      .toContain('glomerulus');
+      .poll(async () => (await textOnPage(page, PAGE_COUNT)).toLowerCase(), { timeout: 30_000 })
+      .toContain('urethra');
     await expect(page.getByTestId('pdf-ocr')).toHaveCount(0); // nothing left to recognise
   });
 });
@@ -905,6 +977,32 @@ test.describe('web open', () => {
     expect(server.requests).toHaveLength(0);
   });
 
+  test('a redirect to another origin that is allowed opens; nothing is sent to it but the request', async ({
+    env,
+  }) => {
+    // A second origin (another port of the loopback host the e2e build is allowed to reach).
+    const other = await startPdfServer({ '/files/final.pdf': { body: proseDoc(2, 'Final stop') } });
+    try {
+      server.route('/docs/bounce.pdf', {
+        status: 302,
+        type: null,
+        headers: { location: `${other.origin}/files/final.pdf` },
+      });
+      const { page, errors } = await reader(env, '/docs/bounce.pdf');
+      await expect(page.getByTestId('pdf-viewer')).toBeVisible({ timeout: 30_000 });
+      await expect(page.locator('.sv-doc__title')).toHaveText('Final stop');
+      const hits = other.requests.filter((r) => r.path === '/files/final.pdf');
+      expect(hits.length).toBeGreaterThan(0);
+      for (const hit of [...server.requests, ...other.requests]) {
+        expect(hit.headers.cookie, 'cookies are never sent').toBeUndefined();
+        expect(hit.headers.referer, 'no referrer').toBeUndefined();
+      }
+      expect(errors.filter((e) => /Content Security Policy|violates/i.test(e))).toEqual([]);
+    } finally {
+      await other.close();
+    }
+  });
+
   test('the menu opens the reader on the address its handler builds, and the menus are registered', async ({
     env,
   }) => {
@@ -932,6 +1030,77 @@ test.describe('web open', () => {
       return result;
     });
     for (const message of Object.values(duplicates)) expect(message).toMatch(/duplicate id/i);
+  });
+});
+
+// =============================================================================================
+// Private windows
+// =============================================================================================
+
+test.describe('private windows', () => {
+  test.fixme('in a real incognito window the reader stores nothing unless "Save from private windows" is on', () => {
+    // NOT DRIVABLE in this harness (same limit as overlay.spec.ts "private windows"): Playwright's
+    // persistent context is one non-incognito context, an unpacked extension is off in incognito until
+    // "Allow in Incognito" is switched on at chrome://extensions, and incognito windows made with
+    // chrome.windows.create({incognito:true}) are not attached to Playwright pages.
+    // What IS covered: detecting the window (windows/tabs.getCurrent().incognito, never the
+    // split-mode-only inIncognitoContext) by the unit tests of detectWindowPrivacy; the refusal at the
+    // storage write path by packages/storage/src/pdf.private.test.ts; and everything after detection
+    // in a real extension page by the next test, which opens the reader the way the context menu does
+    // for a private tab (?incognito=1).
+  });
+
+  test('a reader opened from a private tab reads in memory, stores nothing, says so, and saves once allowed', async ({
+    env,
+  }) => {
+    const bytes = wrappedDoc();
+    const { page } = await openReader(env, '?incognito=1');
+    // Said before anything is opened, as a status message.
+    await expect(
+      page.getByRole('status').filter({ hasText: 'Nothing is being saved' }),
+    ).toContainText('does not save from private');
+
+    await chooseFile(page, 'wrapped.pdf', bytes);
+    await expect(page.getByTestId('pdf-viewer')).toBeVisible({ timeout: 30_000 });
+    await textOnPage(page, 1); // reading works
+    await expect(
+      page.getByRole('status').filter({ hasText: 'Nothing is being saved' }),
+    ).toBeVisible();
+
+    // Keeping a copy is refused with the reason (checked first: a click elsewhere drops a selection).
+    await page.getByTestId('pdf-props').locator('summary').click();
+    await expect(page.getByTestId('pdf-keep-copy')).toHaveAttribute('aria-disabled', 'true');
+    // Saving a highlight is refused with the reason and cannot be triggered.
+    await dragSelect(page, 1, 'glomerulus filters', 'tubule reabsorbs');
+    await expect(page.getByTestId('pdf-savebar')).toContainText('does not save from private');
+    await expect(page.getByTestId('pdf-save')).toHaveAttribute('aria-disabled', 'true');
+
+    // The vault holds nothing about this document: no row, highlight, copy or recognised text.
+    expect(await storedCounts(page)).toEqual({
+      documents: 0,
+      highlights: 0,
+      attachments: 0,
+      ocrPages: 0,
+    });
+
+    // The person turns "Save from private windows" on: the open reader follows, no reload.
+    await patchSettings(page, { allowIncognitoCapture: true });
+    await expect(page.getByTestId('pdf-save')).not.toHaveAttribute('aria-disabled', 'true');
+    await saveSelection(page, 'saved after consent');
+    expect(await storedCounts(page)).toMatchObject({ documents: 1, highlights: 1 });
+
+    // Turning it off again blocks the next save: the open reader follows in both directions.
+    await patchSettings(page, { allowIncognitoCapture: false });
+    await dragSelect(page, 1, 'tubule reabsorbs', 'filtered water');
+    await expect(page.getByTestId('pdf-save')).toHaveAttribute('aria-disabled', 'true');
+    expect(await storedCounts(page)).toMatchObject({ documents: 1, highlights: 1 });
+  });
+
+  test('a normal window shows no such message and keeps what it saves', async ({ env }) => {
+    const { page } = await openDocument(env, 'wrapped.pdf', wrappedDoc());
+    await textOnPage(page, 1);
+    await expect(page.getByText('Nothing is being saved')).toHaveCount(0);
+    expect(await storedCounts(page)).toMatchObject({ documents: 1, highlights: 0 });
   });
 });
 

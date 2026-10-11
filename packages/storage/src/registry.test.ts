@@ -90,10 +90,11 @@ describe('table registry', () => {
         'decks',
         'knowledgePoints',
         'reviewLogs',
-        'aiResults',
         'syncOps',
       ]),
     );
+    // The AI repository is imported by the restore guards, so aiResults registers with the barrel.
+    expect(unregisteredTables()).not.toContain('aiResults');
     const Card = z.object({ id: z.string(), deckId: z.string(), front: z.string() });
     registerTableSchema('cards', Card);
     const cards = getTableRegistry().tables.find((t) => t.name === 'cards')!;

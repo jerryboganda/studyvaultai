@@ -5,6 +5,9 @@ extension origin). Schema: `PdfAnchorSet` in `packages/shared/src/schema.ts`.
 **Amended 2026-10-11 (wiring task):** OCR engine wired with correction UI and the OCR text stream; outline,
 thumbnails, document properties and stored-copy manager; context-menu entry; web-open hardening; drag
 selection fix. Amendments are folded into the sections below.
+**Amendment 2 (2026-10-11, privacy hardening)** is appended at the end: the private-window rule
+(`?incognito=1`), the per-origin grant lifecycle, the `redirect-needs-access` failure and the
+redirect rule. Where it differs from a section above, the amendment wins.
 
 ## What this is, and what it is not
 StudyVault annotates PDFs **only in its own reader page** (`pdf-reader.html`, an unlisted WXT page). It
@@ -277,3 +280,85 @@ about them depends on the cached bytes.
   annotation layers (links, widgets) are not rendered.
 - Not verified here: Chrome 120-127 (only a current Chromium was available), Edge, `file://` PDFs, real
   screen readers, cMaps for every CJK encoding (one Japanese path was exercised).
+
+## Amendment 2 (2026-10-11): private windows, the grant lifecycle and redirects
+
+**Status:** accepted · Refines "What this is" (the `?src=` row and the context menu), "Failure
+handling" and "Persistence". Tests are unit and integration tests; none has been run by CI.
+
+### Private windows (`?incognito=1`)
+The database is shared with normal windows, so a reader in a private window stores nothing unless
+"Save from private windows" is on (`settings.allowIncognitoCapture`, SECURITY_PRIVACY.md).
+
+- **The window is asked, not assumed.** `detectWindowPrivacy(hint)` in
+  `entrypoints/pdf-reader/privacy.ts`: `?incognito=1`, or `extension.inIncognitoContext`, answers
+  `private`; otherwise `tabs.getCurrent().incognito`, then `windows.getCurrent().incognito`
+  (neither needs the `tabs` permission); when nothing answers the result is `unknown`, which is
+  treated exactly like `private`. Any source that says private wins. `extension.inIncognitoContext`
+  is not the answer: Chrome sets it for extension pages only in split-mode extensions and this one
+  spans, so it is always false. One answer per page load (`onceWindowPrivacy`).
+- **`?incognito=1`** is built by `pdfReaderPath({ incognito: true })` (`@pdf/readerUrl`) from the
+  context-menu handler for a private tab (`entrypoints/background/pdf.ts`, `readerPathFor`, from
+  `tab.incognito`) and read by `parseReaderParams` only when it is exactly `1`. It can only make the
+  reader more careful. The popup and the side panel do not add it: the reader asks for itself.
+- **Enforced twice.** On the reader's screens (`writePolicy`: `openSession` receives `persist`; the
+  reader says "Nothing is being saved" with the reason; saving a highlight and keeping a copy are
+  disabled with it) and at the storage write path: `main.tsx` registers `setPdfWriteRestriction`
+  from `@storage`, and `assertPdfWriteAllowed` runs first in `upsertDocument`, `savePdfHighlight`,
+  `cacheDocumentBytes` and `saveOcrPage`. The setting is read at the moment of each write, so
+  turning it on or off applies to an open reader without a reload; a restriction or settings read
+  that fails refuses the write. Reading, deleting, removing a kept copy and clearing recognised text
+  stay possible; the service worker, imports and tests register no restriction.
+- Tests: `entrypoints/pdf-reader/privacy.test.ts`; `packages/storage/src/pdf.private.test.ts`;
+  `entrypoints/pdf-reader/Reader.test.tsx` "Reader: what is saved depends on the window";
+  `packages/pdf/src/source.test.ts` "reader address: private opener"; `tests/e2e/pdf.spec.ts`
+  "private windows" (drives the hint; the real-incognito test is `test.fixme`: Playwright cannot
+  automate an incognito extension context).
+
+### Grant lifecycle (`packages/pdf/src/grant.ts`)
+The reader asks for one origin, from a click, to fetch one file, and hands the access back when the
+transfer is over.
+
+- `requestOrigins(port, patterns)` is called synchronously from the click (both `contains` and
+  `request` are issued before any await, so the gesture counts). It returns `granted` and `fresh`,
+  the patterns this request made accessible; a pattern whose state cannot be read counts as already
+  granted and is never handed back on a guess.
+- `Reader.tsx` keeps `fresh` in `lent` and calls `handBack()` when the fetch ends, whether it worked
+  or not: `withdrawOrigins` removes a pattern only when it is exactly one origin and nothing in
+  `settings.persistentOrigins` or the manifest's `host_permissions` covers it (`isCoveredBy`: the same
+  origin, `<all_urls>`, an all-sites pattern for its scheme, a `*.suffix` wildcard). It is best effort: a refusal is not an
+  error of the fetch.
+- Consequences: access the person already held starts the download without a prompt and nothing is
+  removed; otherwise opening the same PDF again asks again; a grant Chrome refuses to remove stays
+  and is listed on Chrome's extension page; "Delete all data" revokes every optional host grant.
+- Tests: `packages/pdf/src/grant.test.ts`; `entrypoints/pdf-reader/Reader.test.tsx` "Reader: site
+  access for one fetch is handed back".
+
+### Redirects and the failure kind `redirect-needs-access`
+`fetch` follows redirects and does not expose the hops (a `manual` redirect is an opaque response),
+so the address the transfer **ended at** is the one place a rule can be enforced, and it is enforced
+after the status and content type and before any of the body is read (`vetFinalAddress` in
+`packages/pdf/src/source.ts`):
+
+1. the final address must pass the first address's rules (`checkAddress`: https, or http on
+   `localhost` / `127.0.0.1`, no user name or password; no 2,048-character bound, a signed download
+   link can be long), else `redirect-blocked`;
+2. the same origin as the one asked for passes;
+3. another origin passes only when `FetchOptions.isOriginGranted(pattern)` says the person granted it
+   (the reader passes `permissions.contains`; a check that throws counts as "not granted");
+4. otherwise the body is cancelled unread and the failure `redirect-needs-access` carries
+   `redirectTo: { host, pattern }`. The reader shows "Allow access to <host> and open", which asks
+   for both origins in one prompt and hands both back afterwards.
+
+**Limit.** The browser followed the redirect, so the other site may have received the request (IP
+address, the address redirected to, no cookies, no referrer); only its answer is withheld. The reader
+screen's advice for this failure currently says StudyVault "never contacts a site you have not
+allowed" (`entrypoints/pdf-reader/OpenPanel.tsx`; docs/PRIVACY_CLAIMS.md U-14).
+Tests: `packages/pdf/src/source.test.ts` "fetchPdf: where a redirect may end";
+`tests/e2e/pdf.spec.ts` "a redirect to another origin that is allowed opens; nothing is sent to it but
+the request".
+
+### Not verified here
+A real private window; Chrome's own permission prompt and `permissions.remove` for a pattern the
+person gave at the prompt (only mocked ports and the test harness's build-time grants were used);
+whether Chrome lists a handed-back grant at all afterwards.

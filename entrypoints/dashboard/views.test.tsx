@@ -87,6 +87,18 @@ describe('TrashView', () => {
     await waitFor(() => expect(screen.getByText('The trash is empty')).toBeTruthy());
   });
 
+  it('words the empty-trash counts in the singular for a single item', async () => {
+    const vault = new FakeVault([
+      { id: 'hl-00000001', quote: 'Only deleted quote', deletedAt: '2026-10-10T10:00:00.000Z' },
+    ]);
+    await mount(vault, () => <TrashView />);
+    await screen.findAllByTestId('trash-item-check');
+    fireEvent.click(screen.getByTestId('trash-empty'));
+    const lines = within(dialog()).getByTestId('explain-lines').textContent ?? '';
+    expect(lines).toContain('1 highlight will be removed for good.');
+    expect(lines).not.toContain('1 highlights');
+  });
+
   it('shows the empty state', async () => {
     await mount(new FakeVault([{ id: 'hl-00000001', quote: 'x' }]), () => <TrashView />);
     expect(await screen.findByText('The trash is empty')).toBeTruthy();

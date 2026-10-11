@@ -55,7 +55,8 @@ export type { Env };
 // Opening pages
 // -----------------------------------------------------------------------------------------------
 
-export const VIEWPORT = { width: 1440, height: 900 } as const;
+// Tall on purpose: the list is windowed, and a taller window shows more rows per scroll step.
+export const VIEWPORT = { width: 1440, height: 1800 } as const;
 
 const WATCH = new WeakMap<Page, { errors: string[]; external: string[] }>();
 
@@ -596,7 +597,9 @@ export function buildDataset(
 
   // The product's own schemas decide validity (a sample for the 10k workload keeps Node fast).
   const sampled = <T>(rows: T[]): T[] =>
-    options.validate === 'sample' ? rows.filter((_, i) => i % 97 === 0 || i === rows.length - 1) : rows;
+    options.validate === 'sample'
+      ? rows.filter((_, i) => i % 97 === 0 || i === rows.length - 1)
+      : rows;
   const parse = (schema: { parse(v: unknown): unknown }, rows: unknown[]) => {
     for (const row of sampled(rows)) schema.parse(row);
   };
@@ -661,7 +664,9 @@ export class Model {
   inFolder(folder: string, deep = true): HighlightSpec[] {
     const keys = deep ? this.folderTree(folder) : new Set([folder]);
     return this.live.filter((h) =>
-      this.placesOf(h).some((p) => p.folder !== undefined && p.folder !== null && keys.has(p.folder)),
+      this.placesOf(h).some(
+        (p) => p.folder !== undefined && p.folder !== null && keys.has(p.folder),
+      ),
     );
   }
 
@@ -715,6 +720,8 @@ export async function expectTotal(page: Page, total: number): Promise<void> {
  * more pages load on the way down and are collected too.
  */
 export async function collectIds(page: Page): Promise<string[]> {
+  // An empty result has no listbox at all (an empty state is shown instead).
+  if ((await listbox(page).count()) === 0) return [];
   return listbox(page).evaluate(async (el) => {
     const seen = new Map<number, string>();
     const frame = () =>
@@ -787,7 +794,8 @@ export async function expectResult(
 // Tree, dialogs, toasts, palette
 // -----------------------------------------------------------------------------------------------
 
-export const treeOf = (page: Page): Locator => page.getByRole('tree', { name: 'Banks and folders' });
+export const treeOf = (page: Page): Locator =>
+  page.getByRole('tree', { name: 'Banks and folders' });
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -817,6 +825,20 @@ export async function treeOutline(page: Page): Promise<string[]> {
 export async function treeCount(page: Page, name: string): Promise<number> {
   const text = (await treeItem(page, name).locator('.dash-tree__count').textContent()) ?? '';
   return Number(text.replace(/[^\d]/g, ''));
+}
+
+/** Wait until the tree reads exactly this outline (the tree loads independently of the list). */
+export async function expectOutline(page: Page, outline: readonly string[]): Promise<void> {
+  await expect
+    .poll(() => treeOutline(page), { message: 'the bank tree outline', timeout: 15_000 })
+    .toEqual([...outline]);
+}
+
+/** Wait until a tree node shows this count (counts refresh a moment after a write). */
+export async function expectTreeCount(page: Page, name: string, count: number): Promise<void> {
+  await expect
+    .poll(() => treeCount(page, name), { message: `count of ${name}`, timeout: 15_000 })
+    .toBe(count);
 }
 
 export const toast = (page: Page, text: string | RegExp): Locator =>

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, configure, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { browser } from 'wxt/browser';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
@@ -46,6 +46,9 @@ vi.mock('@ui/ai', async () => {
       ),
   };
 });
+
+// Several agents and CI shards share the CPU: waiting for the panel is not a failure.
+configure({ asyncUtilTimeout: 5_000 });
 
 interface FakeTab {
   id: number;

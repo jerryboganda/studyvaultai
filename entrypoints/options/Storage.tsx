@@ -19,7 +19,7 @@ import { storageLabel, storageRows } from './model';
  * never touches highlights, notes or recognised text; the PDF can be opened again from its file or
  * address.
  */
-export function Storage() {
+export function Storage({ syncOn }: { syncOn: boolean }) {
   const uid = useId();
   const { announce } = useToast();
   const epoch = useDataEpoch();
@@ -51,8 +51,10 @@ export function Storage() {
     <section className="sv-stack" aria-labelledby={`${uid}-h`} data-testid="storage-section">
       <h2 id={`${uid}-h`}>Storage</h2>
       <p>
-        Everything StudyVault keeps is stored in this Chrome profile, on this device. The numbers
-        below are counted from the database when this page opens and when something changes.
+        Everything StudyVault keeps is stored in this Chrome profile, on this device
+        {syncOn ? ' (sync, which you turned on, also keeps a copy on your server)' : ''}. The
+        numbers below are counted from this device&apos;s database when the page opens and when
+        something changes.
       </p>
 
       {usage.error ? (

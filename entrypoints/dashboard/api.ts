@@ -43,6 +43,7 @@ export interface DashboardApi extends Pick<
   | 'updateNote'
   | 'deleteNote'
   | 'setCustomFields'
+  | 'clearCustomField'
   | 'bulkMove'
   | 'bulkTag'
   | 'bulkDelete'

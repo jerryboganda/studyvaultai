@@ -5,6 +5,7 @@ import { browser } from 'wxt/browser';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { inspectBackup } from '@backup';
 import { PENDING_FOCUS_KEY } from '@shared';
+import { getTrustedSettings, updateSettings } from '@runtime';
 import {
   deletePreMigrationSnapshot,
   getPreMigrationInfo,
@@ -151,6 +152,21 @@ describe('background wiring', () => {
     expect(inspected.manifest?.createdBy.version).toBe('9.8.7'); // the manifest's version
   });
 
+  it('upgrades the database, with its copy, as soon as the worker hears about an update', async () => {
+    installFakes();
+    await seedV1(loadFixture('schema-v1.json'));
+    background.main();
+    expect(await getPreMigrationInfo()).toBeNull();
+
+    // Nothing else touches the database: no page, no message, no sync run.
+    await fakeBrowser.runtime.onInstalled.trigger({ reason: 'update', previousVersion: '0.0.1' });
+
+    await vi.waitFor(async () =>
+      expect(await getPreMigrationInfo()).toMatchObject({ status: 'kept', fromVersion: 1 }),
+    );
+    expect((await readPreMigrationSnapshot())?.info.toVersion).toBeGreaterThan(1);
+  });
+
   it('re-syncs on browser startup and when a permission is removed', async () => {
     const fakes = installFakes();
     fakes.permissions.contains.mockResolvedValue(false);
@@ -216,8 +232,69 @@ describe('background wiring', () => {
     expect(refused).toMatchObject({ ok: false, error: { code: 'forbidden' } });
     expect(refused.error!.message).toMatch(/private \(incognito\) windows/);
 
+    // A content script can write chrome.storage.local. The worker decides from the authoritative
+    // copy, so that write changes nothing ...
     await browser.storage.local.set({ settings: { allowIncognitoCapture: true } });
+    const planted = await send('capture.save', input, privateTab);
+    expect(planted).toMatchObject({ ok: false, error: { code: 'forbidden' } });
+    expect((await getTrustedSettings()).allowIncognitoCapture).toBe(false);
+
+    // ... while the person's own switch (an extension page calling updateSettings) is honoured.
+    await updateSettings((current) => ({ ...current, allowIncognitoCapture: true }));
     expect((await send('capture.save', input, privateTab)).ok).toBe(true);
+  });
+
+  it('keeps a denied site denied when a content script empties the stored deny list', async () => {
+    installFakes();
+    background.main();
+    await updateSettings((s) => ({ ...s, denyList: ['example.com'] }));
+    const send = async (type: string, payload: unknown, sender: object) => {
+      let response: unknown;
+      await fakeBrowser.runtime.onMessage.trigger({ v: 1, type, payload }, sender, (r: unknown) => {
+        response = r;
+      });
+      await vi.waitFor(() => expect(response).toBeDefined());
+      return response as { ok: boolean; error?: { code: string; message: string } };
+    };
+    const input = {
+      page: { url: 'https://example.com/a', canonicalUrl: null, title: 'A' },
+      exactQuote: 'Warfarin inhibits vitamin K epoxide reductase.',
+      anchorSet: {
+        type: 'html',
+        textAlgorithm: 'sv-text-v1',
+        textQuote: {
+          exact: 'Warfarin inhibits vitamin K epoxide reductase.',
+          prefix: '',
+          suffix: '',
+        },
+        textPosition: { start: 0, end: 46 },
+        structuralPath: null,
+        contentSignature: 'x',
+        documentTextLength: 100,
+      },
+      headingContext: null,
+      kind: 'essential',
+      color: 'amber',
+      bankId: null,
+      userComment: '',
+      priority: 3,
+      captureMethod: 'toolbar',
+    };
+    const page = { id: browser.runtime.id, tab: { id: 9 }, url: 'https://example.com/a' };
+    expect(await send('capture.save', input, page)).toMatchObject({
+      ok: false,
+      error: { code: 'forbidden' },
+    });
+
+    // The page-side copy is display data: emptying it must not lift the refusal.
+    await browser.storage.local.set({ settings: { denyList: [] } });
+    expect(await send('capture.save', input, page)).toMatchObject({
+      ok: false,
+      error: { code: 'forbidden' },
+    });
+    // Removing the entry through the settings API (the options page) does.
+    await updateSettings((s) => ({ ...s, denyList: [] }));
+    expect((await send('capture.save', input, page)).ok).toBe(true);
   });
 
   it('reconciles when a permission is added outside the extension UI', async () => {

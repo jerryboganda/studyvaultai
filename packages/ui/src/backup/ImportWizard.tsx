@@ -19,6 +19,7 @@ import {
   type PassphraseState,
 } from './PassphraseSetup';
 import { RestoreReportView } from './RestoreReportView';
+import { BACKUP_HOLDS, BACKUP_LEAVES_OUT, BACKUP_TITLE } from './scope';
 
 type Step =
   'idle' | 'working' | 'passphrase' | 'review' | 'blocked' | 'restoring' | 'done' | 'failed';
@@ -319,6 +320,10 @@ export function ImportWizard({
         Choose a StudyVault backup. StudyVault first checks the whole file and shows you what would
         change; nothing is written until you confirm.
       </p>
+      <p className="sv-small sv-muted" data-testid="backup-import-scope">
+        A backup holds {BACKUP_HOLDS}. Restoring changes only those: it does not read or change{' '}
+        {BACKUP_LEAVES_OUT}.
+      </p>
 
       <p className="sv-sr" role="status" data-testid="backup-import-announce">
         {ANNOUNCE[step]}
@@ -354,7 +359,7 @@ export function ImportWizard({
             }}
           />
           <p className="sv-small sv-muted">
-            Or drag a backup file onto this box. Files made by “Back up everything” end in .zip or
+            Or drag a backup file onto this box. Files made by “{BACKUP_TITLE}” end in .zip or
             .svbackup.
           </p>
         </div>
@@ -465,7 +470,7 @@ export function ImportWizard({
                 continueSkipping(problem.action === 'skip_invalid' ? 'invalid' : 'orphans')
               }
             >
-              Restore everything else, leave these items out
+              Restore the rest, leave these items out
             </Button>
             <Button onClick={reset}>Stop, change nothing</Button>
           </div>
@@ -507,9 +512,10 @@ export function ImportWizard({
                 onChange={() => changeMode('replace')}
               />
               <div>
-                <label htmlFor="bk-mode-replace">Replace everything with the backup</label>
+                <label htmlFor="bk-mode-replace">Replace my study data with the backup</label>
                 <p className="sv-small sv-muted">
-                  Makes your vault identical to the backup. Items that are not in it are deleted.
+                  Makes your banks, highlights, notes and study data identical to the backup. Items
+                  that are not in it are deleted. Your settings are not changed.
                 </p>
               </div>
             </div>

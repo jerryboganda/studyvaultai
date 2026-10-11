@@ -4,6 +4,8 @@
  * (`credentials: 'omit'`), so a sign-in wall is reported, never bypassed (SECURITY_PRIVACY).
  */
 
+import { checkAddress } from './readerUrl';
+
 /** Largest file the reader will load into memory (pdf.js needs the whole document in the worker). */
 export const MAX_PDF_BYTES = 300 * 1024 * 1024;
 
@@ -14,6 +16,7 @@ export type FetchFailureKind =
   | 'http-error'
   | 'redirected-non-pdf'
   | 'redirect-blocked'
+  | 'redirect-needs-access'
   | 'not-pdf'
   | 'network'
   | 'offline'
@@ -24,6 +27,8 @@ export interface FetchFailure {
   kind: FetchFailureKind;
   message: string;
   status?: number;
+  /** `redirect-needs-access`: the site the address ended at, so the reader can ask for exactly it. */
+  redirectTo?: { host: string; pattern: string };
 }
 
 export type FetchResult =
@@ -41,6 +46,14 @@ export interface FetchOptions {
   signal?: AbortSignal;
   maxBytes?: number;
   onProgress?: (loaded: number, total: number | null) => void;
+  /**
+   * Whether the person has granted access to an origin pattern (`https://host/*`). A redirect may
+   * end only on the origin that was asked for or on a granted one; without this callback only the
+   * asked-for origin passes. `fetch` does not expose the hops in between (a `manual` redirect is an
+   * opaque response), so the address the redirect ended at is the one place this can be enforced:
+   * no body is read from any other origin (the request itself may already have been sent).
+   */
+  isOriginGranted?: (pattern: string) => Promise<boolean>;
 }
 
 const PDF_TYPES = /^application\/(x-)?pdf\b/i;
@@ -70,11 +83,40 @@ const fail = (kind: FetchFailureKind, message: string, status?: number): FetchRe
 
 const hostOf = (url: string): string => {
   try {
-    return new URL(url).host;
+    return new URL(url).host || 'another address';
   } catch {
     return 'another site';
   }
 };
+
+/**
+ * Null when the address a request ended at may be read: the same origin that was asked for, or a
+ * granted one, under the rules of the first address (https, or http on localhost; no credentials).
+ */
+async function vetFinalAddress(
+  asked: string,
+  final: string,
+  isGranted: FetchOptions['isOriginGranted'],
+): Promise<FetchResult | null> {
+  const next = checkAddress(final);
+  if (!next.ok) {
+    return fail(
+      'redirect-blocked',
+      `The address redirected to ${hostOf(final)}, which StudyVault will not download from: only https addresses, or http on localhost, are opened.`,
+    );
+  }
+  const first = checkAddress(asked);
+  if (first.ok && first.origin === next.origin) return null;
+  if (isGranted && (await isGranted(next.pattern).catch(() => false))) return null;
+  return {
+    ok: false,
+    failure: {
+      kind: 'redirect-needs-access',
+      message: `The address redirects to ${next.host}, a different site. StudyVault downloads only from sites you allow, and ${next.host} is not one of them yet.`,
+      redirectTo: { host: next.host, pattern: next.pattern },
+    },
+  };
+}
 
 export async function fetchPdf(url: string, opts: FetchOptions = {}): Promise<FetchResult> {
   const doFetch = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
@@ -111,7 +153,7 @@ export async function fetchPdf(url: string, opts: FetchOptions = {}): Promise<Fe
     if (redirected) {
       return fail(
         'redirect-blocked',
-        'The address redirects to another site, which StudyVault does not have access to. That is often a sign-in page or a download server.',
+        'The address redirects somewhere StudyVault could not follow: another site it has no access to (often a sign-in page or a download server), or a redirect that never ends.',
       );
     }
     return fail(
@@ -153,6 +195,16 @@ export async function fetchPdf(url: string, opts: FetchOptions = {}): Promise<Fe
             'The address returned a web page (text/html) instead of a PDF. That is usually a sign-in, cookie-consent or error page.',
           )
         : fail('not-pdf', `The address returned ${contentType.split(';')[0]}, not a PDF.`);
+  }
+
+  // The body is about to be read: it must come from the origin that was asked for or one the person
+  // allowed. Only the status and type above were looked at; nothing of the body has been read.
+  if (finalUrl !== url) {
+    const refused = await vetFinalAddress(url, finalUrl, opts.isOriginGranted);
+    if (refused) {
+      void res.body?.cancel().catch(() => undefined);
+      return refused;
+    }
   }
 
   const declared = Number(res.headers.get('content-length'));

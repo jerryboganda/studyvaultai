@@ -12,6 +12,7 @@ import {
   passphraseProblem,
   type PassphraseState,
 } from './PassphraseSetup';
+import { BACKUP_HOLDS, BACKUP_LEAVES_OUT, BACKUP_TITLE } from './scope';
 
 type Run =
   | { step: 'idle' }
@@ -27,8 +28,9 @@ const PHASE: Record<ExportProgress['phase'], string> = {
 };
 
 /**
- * Full, lossless backup of the whole vault (the file the Restore wizard reads). Selected-bank
- * exports are the readable formats in <ReadableExports>.
+ * Full, lossless backup of the vault's tables (the file the Restore wizard reads). Settings are not
+ * part of it, and the copy says so (`scope.ts`). Selected-bank exports are the readable formats in
+ * <ReadableExports>.
  */
 export function ExportPanel({ deps }: { deps: BackupDeps }) {
   const [includePdfs, setIncludePdfs] = useState(false);
@@ -75,11 +77,14 @@ export function ExportPanel({ deps }: { deps: BackupDeps }) {
 
   return (
     <div className="sv-stack" data-testid="backup-export">
-      <h3>Back up everything</h3>
-      <p>
-        Saves one file with all your banks, highlights, notes, tags, folders and study data. It
-        keeps every quote and its source exactly as saved, and it can be restored in full on this or
-        another computer. Nothing is uploaded: the file is created on this device.
+      <h3>{BACKUP_TITLE}</h3>
+      <p data-testid="backup-export-holds">
+        Saves one file with {BACKUP_HOLDS}. It can be restored on this or another computer. Nothing
+        is uploaded: the file is created on this device.
+      </p>
+      <p data-testid="backup-export-leaves-out">
+        <strong>Not in the file:</strong> {BACKUP_LEAVES_OUT}. They stay on this device, so after
+        restoring on another computer set them up again.
       </p>
 
       <div className="sv-check">
@@ -226,9 +231,8 @@ export function ExportPanel({ deps }: { deps: BackupDeps }) {
                 </li>
               ))}
             </ul>
-            <p className="sv-small sv-muted">
-              Not included, by design: the AI key and other device secrets, and this device’s sync
-              queue.
+            <p className="sv-small sv-muted" data-testid="backup-export-done-leaves-out">
+              Not included, by design: {BACKUP_LEAVES_OUT}.
             </p>
           </div>
           <div className="sv-row">

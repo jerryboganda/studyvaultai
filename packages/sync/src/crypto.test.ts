@@ -12,6 +12,8 @@ import {
   buildRotation,
   createKey,
   createPayloadCodec,
+  exportKeyJwk,
+  importKeyJwk,
   unlockKey,
 } from './crypto.ts';
 import { CodecLockedError } from './ports.ts';
@@ -127,15 +129,17 @@ describe('E2EE key and payload encryption', () => {
     newCodec.unlock(two.key, two.profile.kid);
 
     const encrypted = await oldCodec.encrypt({ secret: 'x' }, aad);
+    const setAside: string[] = [];
     const request = await buildRotation({
       ops: [
         { ...aad, payload: encrypted, payloadEncrypted: true },
-        // A plaintext operation from before E2EE was switched on is migrated by the same call.
+        // The server is not a witness: plaintext that appears in an encrypted log is never blessed.
         { ...aad, id: 'op-A-000002', payload: { plain: true }, payloadEncrypted: false },
       ],
       oldCodec,
       newCodec,
       newProfile: two.profile,
+      onSetAside: (op, reason) => setAside.push(`${op.id}:${reason}`),
     });
     expect(request.replacements).toHaveLength(2);
     expect(request.profile.version).toBe(2);
@@ -143,6 +147,96 @@ describe('E2EE key and payload encryption', () => {
     await expect(oldCodec.decrypt(request.replacements[0]!.payload, aad)).rejects.toBeInstanceOf(
       KeyVersionError,
     );
+    // The plaintext operation was NOT re-encrypted as authentic: no key opens its replacement.
+    expect(setAside).toEqual(['op-A-000002:unencrypted']);
+    const laundered = request.replacements[1]!;
+    await expect(
+      newCodec.decrypt(laundered.payload, { ...aad, id: 'op-A-000002' }),
+    ).rejects.toThrow();
+  });
+
+  it('rotation re-encrypts only what authenticates under the old key', async () => {
+    const one = await keyOne();
+    const two = await keyTwo();
+    const oldCodec = createPayloadCodec(crypto);
+    oldCodec.unlock(one.key, one.profile.kid);
+    const newCodec = createPayloadCodec(crypto);
+    newCodec.unlock(two.key, two.profile.kid);
+
+    const good = await oldCodec.encrypt({ n: 1 }, aad);
+    // Valid ciphertext, but presented as another entity (the server moved it): not authentic here.
+    const moved = { ...aad, id: 'op-A-000003', entityId: 'hl-000777' };
+    const asides: string[] = [];
+    const request = await buildRotation({
+      ops: [
+        { ...aad, payload: good, payloadEncrypted: true },
+        { ...moved, payload: good, payloadEncrypted: true },
+      ],
+      oldCodec,
+      newCodec,
+      newProfile: two.profile,
+      onSetAside: (op, reason) => asides.push(`${op.id}:${reason}`),
+    });
+    expect(asides).toEqual(['op-A-000003:unauthenticated']);
+    expect(await newCodec.decrypt(request.replacements[0]!.payload, aad)).toEqual({ n: 1 });
+    await expect(newCodec.decrypt(request.replacements[1]!.payload, moved)).rejects.toThrow();
+  });
+
+  it('a plaintext operation can be kept (the caller validated it), or replaced by an authenticated void', async () => {
+    const two = await keyTwo();
+    const newCodec = createPayloadCodec(crypto);
+    newCodec.unlock(two.key, two.profile.kid);
+    const plain = createPayloadCodec(crypto); // never unlocked: only "old" for plaintext ops
+    const request = await buildRotation({
+      ops: [
+        { ...aad, id: 'op-A-000010', payload: { keep: true }, payloadEncrypted: false },
+        { ...aad, id: 'op-A-000011', payload: { forged: true }, payloadEncrypted: false },
+      ],
+      oldCodec: plain,
+      newCodec,
+      newProfile: two.profile,
+      plaintext: (op) => (op.id === 'op-A-000010' ? 'keep' : 'void'),
+    });
+    expect(
+      await newCodec.decrypt(request.replacements[0]!.payload, { ...aad, id: 'op-A-000010' }),
+    ).toEqual({ keep: true });
+    expect(
+      await newCodec.decrypt(request.replacements[1]!.payload, { ...aad, id: 'op-A-000011' }),
+    ).toEqual({ v: 1, void: true });
+  });
+
+  it('refuses to rotate without the old key instead of discarding everything as unverifiable', async () => {
+    const two = await keyTwo();
+    const locked = createPayloadCodec(crypto);
+    const newCodec = createPayloadCodec(crypto);
+    newCodec.unlock(two.key, two.profile.kid);
+    await expect(
+      buildRotation({
+        ops: [{ ...aad, payload: { v: 1 }, payloadEncrypted: true }],
+        oldCodec: locked,
+        newCodec,
+        newProfile: two.profile,
+      }),
+    ).rejects.toBeInstanceOf(CodecLockedError);
+  });
+
+  it('keeps the data key non-extractable unless asked, and exports it for the session store', async () => {
+    const closed = await keyOne();
+    await expect(exportKeyJwk(crypto, closed.key)).rejects.toThrow();
+
+    const open = await createKey({ crypto, passphrase: PASSPHRASE, now: 3, extractable: true });
+    const jwk = await exportKeyJwk(crypto, open.key);
+    expect(jwk).toMatchObject({ kty: 'oct', alg: 'A256GCM' });
+    const a = createPayloadCodec(crypto);
+    a.unlock(open.key, open.profile.kid);
+    const envelope = await a.encrypt({ n: 7 }, aad);
+    // Back from the JWK (what a restarted worker does): the same key, and no longer extractable.
+    const restored = await importKeyJwk(crypto, jwk);
+    const b = createPayloadCodec(crypto);
+    b.unlock(restored, open.profile.kid);
+    expect(await b.decrypt(envelope, aad)).toEqual({ n: 7 });
+    await expect(exportKeyJwk(crypto, restored)).rejects.toThrow();
+    await expect(importKeyJwk(crypto, { kty: 'oct', k: 'short' })).rejects.toThrow();
   });
 
   it('base64url round-trips arbitrary bytes', () => {

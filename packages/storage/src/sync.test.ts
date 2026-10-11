@@ -29,6 +29,7 @@ import {
   resetSyncIdentity,
   stopSyncCapture,
   suppressSyncCapture,
+  type SyncOpRow,
   type SyncRuntime,
 } from './sync';
 import { cap } from './test-fixtures';
@@ -396,6 +397,134 @@ describe('capture through the real repositories', () => {
     expect(
       (await pending()).filter((o) => o.entityType === 'highlights' && o.opType === 'delete'),
     ).toHaveLength(2);
+  });
+
+  describe('purge and the sync bookkeeping', () => {
+    const outbox = async () => (await getDb().syncOps.toArray()) as unknown as SyncOpRow[];
+    const rowsOf = async (entityType: string, entityId: string) =>
+      (await outbox())
+        .filter((r) => r.entityType === entityType && r.entityId === entityId)
+        .sort((a, b) => a.seq - b.seq);
+
+    it('an entity that was never sent ends as a content-free tombstone, with no copy of its text', async () => {
+      const h = await save('Verbatim quote that must not stay in the outbox');
+      const sourceId = (await getDb().highlights.get(h.id))!.sourceId;
+      await updateHighlight(h.id, { userComment: 'a private comment' });
+      expect(JSON.stringify(await pending())).toContain('Verbatim quote');
+
+      await bulkDelete([h.id]);
+      await purge([{ kind: 'highlight', id: h.id }]);
+
+      const mine = await rowsOf('highlights', h.id);
+      expect(mine.map((r) => r.op.opType)).toEqual(['delete']);
+      expect(mine[0]!.op).toMatchObject({ tombstone: true, entityId: h.id });
+      expect(payloadOf(mine[0]!.op).set).toEqual({});
+      // the membership and the source (purged with its only highlight) are tombstones too
+      for (const [type, id] of [
+        ['highlightBanks', `${h.id}|${INBOX_BANK_ID}`],
+        ['sources', sourceId],
+      ] as const) {
+        expect(
+          (await rowsOf(type, id)).map((r) => r.op.opType),
+          type,
+        ).toEqual(['delete']);
+      }
+      const text = JSON.stringify(await outbox());
+      expect(text).not.toContain('Verbatim quote');
+      expect(text).not.toContain('a private comment');
+      expect(text).not.toContain('example.com'); // the source address went with its create
+    });
+
+    it('keeps an unsent edit of an entity that was delivered, and drops the acknowledged copies', async () => {
+      const h = await save('Delivered quote text for the outbox test');
+      const first = (await pending()).map((o) => o.id);
+      await rt.log.markAttempted(first);
+      await rt.log.markSent(first, Date.now());
+      await updateHighlight(h.id, { userComment: 'edited while offline' });
+      await bulkDelete([h.id]);
+      expect(JSON.stringify(await outbox())).toContain('Delivered quote text');
+
+      await purge([{ kind: 'highlight', id: h.id }]);
+
+      const mine = await rowsOf('highlights', h.id);
+      // Acknowledged copies (they held the quote) are gone ...
+      expect(mine.filter((r) => r.pending === 0)).toEqual([]);
+      expect(JSON.stringify(await outbox())).not.toContain('Delivered quote text');
+      // ... the unsent patch stays (the tombstone's causal context refers to its clock) and the
+      // tombstone follows it.
+      expect(mine.map((r) => r.op.opType)).toEqual(['upsert', 'delete']);
+      expect(payloadOf(mine[0]!.op).full).toBe(false);
+      expect(mine[0]!.op.baseRevision).toBeGreaterThan(0);
+    });
+
+    it('an operation that was attempted may have reached the server: it is not rewritten', async () => {
+      const h = await save('Attempted but unacknowledged quote');
+      await rt.log.markAttempted((await pending()).map((o) => o.id));
+      await bulkDelete([h.id]);
+      await purge([{ kind: 'highlight', id: h.id }]);
+      const mine = await rowsOf('highlights', h.id);
+      // the attempted creation (with the quote), the later soft delete, and the tombstone
+      expect(mine.map((r) => [r.op.opType, r.attempts])).toEqual([
+        ['upsert', 1],
+        ['upsert', 0],
+        ['delete', 0],
+      ]);
+      expect(payloadOf(mine[0]!.op).full).toBe(true);
+    });
+
+    it('removes the conflict records and quarantined operations of a purged entity only', async () => {
+      const a = await save('Conflicted highlight to purge');
+      const b = await save('Conflicted highlight to keep');
+      const store = createDexieStateStore(getDb(), rt.active);
+      const conflict = (id: string, entityId: string) => ({
+        id,
+        entityType: 'highlights',
+        entityId,
+        field: 'userComment',
+        kind: 'text_edit' as const,
+        local: { value: 'my version', hlc: null },
+        remote: { value: 'their version', hlc: HLC(5) },
+        base: null,
+        detectedAt: 1,
+        resolution: null,
+      });
+      await store.putConflict(conflict('conflict-a', a.id));
+      await store.putConflict(conflict('conflict-b', b.id));
+      const quarantined = (id: string, entityId: string | null) => ({
+        id,
+        entityType: 'highlights',
+        entityId,
+        reason: 'awaiting_create' as const,
+        detail: 'their version',
+        at: 1,
+        op: { payload: { set: { userComment: 'their version' } } },
+      });
+      await store.putQuarantined(quarantined('quarantine-a', a.id));
+      await store.putQuarantined(quarantined('quarantine-b', b.id));
+      await store.putQuarantined(quarantined('quarantine-none', null));
+
+      await bulkDelete([a.id]);
+      await purge([{ kind: 'highlight', id: a.id }]);
+
+      expect((await listSyncConflicts()).map((c) => c.id)).toEqual(['conflict-b']);
+      expect((await listSyncQuarantine()).map((q) => q.id).sort()).toEqual([
+        'quarantine-b',
+        'quarantine-none',
+      ]);
+    });
+
+    it('does the same with capture off: nothing of the text stays, reconcile sends the tombstone', async () => {
+      const h = await save('Written while capture was running');
+      stopSyncCapture();
+      await bulkDelete([h.id]);
+      await purge([{ kind: 'highlight', id: h.id }]);
+      expect(JSON.stringify(await outbox())).not.toContain('Written while capture');
+
+      rt.startCapture();
+      const result = await rt.reconcile();
+      expect(result.deleted).toBeGreaterThan(0);
+      expect((await rowsOf('highlights', h.id)).map((r) => r.op.opType)).toEqual(['delete']);
+    });
   });
 
   it('PDF documents and OCR pages (compound numeric key) are captured', async () => {
@@ -826,6 +955,43 @@ describe('reconcile: what changed while capture was not running', () => {
     expect(result.changed).toBe(1);
     const op = (await pending()).find((o) => o.entityType === 'tags')!;
     expect(op.payload).toMatchObject({ sets: { aliases: { add: ['alias one'], remove: [] } } });
+  });
+
+  it('a live edit made while the sweep runs is recorded as it is now, not as the sweep first read it', async () => {
+    const db = getDb();
+    const h = await save('Quote edited while the first sweep runs');
+    const table = db.table('highlights'); // what the sweep reads through
+    const read = table.toArray.bind(table);
+    // The sweep has its copy of the table; the person edits the row before the sweep reaches it.
+    vi.spyOn(table, 'toArray').mockImplementationOnce((async () => {
+      const rows = await read();
+      await db.highlights.update(h.id, { userComment: 'typed during the sweep' });
+      return rows;
+    }) as never);
+
+    await rt.reconcile();
+
+    const op = (await pending()).find((o) => o.entityType === 'highlights' && o.entityId === h.id)!;
+    expect(payloadOf(op).set.userComment).toBe('typed during the sweep');
+    // And what is on disk agrees with what was recorded: the next sweep finds nothing to do.
+    expect(await rt.reconcile()).toMatchObject({ created: 0, changed: 0, deleted: 0 });
+  });
+
+  it('a row that is physically deleted while the sweep runs is not sent as a create', async () => {
+    const db = getDb();
+    const a = await save('Quote removed while the first sweep runs');
+    const table = db.table('highlights');
+    const read = table.toArray.bind(table);
+    vi.spyOn(table, 'toArray').mockImplementationOnce((async () => {
+      const rows = await read();
+      await db.highlights.delete(a.id); // gone after the sweep read it
+      return rows;
+    }) as never);
+
+    await rt.reconcile();
+
+    const ops = await pending();
+    expect(ops.some((o) => o.entityType === 'highlights' && o.entityId === a.id)).toBe(false);
   });
 
   it('a write from a transaction opened before capture started is noticed and reconciled', async () => {

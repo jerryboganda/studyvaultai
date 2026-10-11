@@ -44,10 +44,12 @@ class Store {
   listAllCalls = 0;
   changedCalls: Array<{ since: string; afterId?: string }> = [];
   failListAll: Error | null = null;
-  /** The port of a surface that never added `delete` (the null-write fallback). */
-  withoutDelete = false;
+  /** Ids that exist but cannot be read: pages are filled around them and report them. */
+  bad = new Set<string>();
   /** Runs inside the next full read, between its pages (a restore landing during a build). */
   duringList: (() => void) | null = null;
+  /** Runs right after the next read of the generation marker (a restore landing before a write). */
+  afterMarkerRead: (() => void) | null = null;
   meta = new Map<string, unknown>();
   now = new Date('2026-10-11T12:00:00.000Z');
 
@@ -57,32 +59,58 @@ class Store {
 
   ports(): SearchHostPorts {
     const sorted = () => [...this.docs.values()].sort((a, b) => (a.id < b.id ? -1 : 1));
-    const page = (list: SearchDocument[], afterId: string | undefined, limit = 500) =>
-      list.filter((d) => afterId === undefined || d.id > afterId).slice(0, limit);
+    // The vault's feed contract: `limit` readable documents unless the feed ended; rows it cannot
+    // read are passed over and reported once per page through `onSkipped`.
+    const page = (
+      list: SearchDocument[],
+      afterId: string | undefined,
+      limit = 500,
+      onSkipped?: (n: number) => void,
+    ) => {
+      const out: SearchDocument[] = [];
+      let skipped = 0;
+      for (const d of list) {
+        if (afterId !== undefined && d.id <= afterId) continue;
+        if (this.bad.has(d.id)) skipped++;
+        else out.push(d);
+        if (out.length === limit) break;
+      }
+      if (skipped > 0) onSkipped?.(skipped);
+      return out;
+    };
     const meta: MetaPort = {
-      get: async (key) => this.meta.get(key),
+      get: async (key) => {
+        const value = this.meta.get(key);
+        const hook = key === INDEX_STALE_KEY ? this.afterMarkerRead : null;
+        if (hook) {
+          this.afterMarkerRead = null;
+          hook();
+        }
+        return value;
+      },
       put: async (key, value) => void this.meta.set(key, value),
       putMany: async (entries) => {
         for (const e of entries) this.meta.set(e.key, e.value);
       },
-      ...(this.withoutDelete ? {} : { delete: async (key: string) => void this.meta.delete(key) }),
+      delete: async (key: string) => void this.meta.delete(key),
     };
     return {
-      listAll: async ({ afterId, limit } = {}) => {
+      listAll: async ({ afterId, limit, onSkipped } = {}) => {
         this.listAllCalls++;
         if (this.failListAll) throw this.failListAll;
-        const rows = page(sorted(), afterId, limit);
+        const rows = page(sorted(), afterId, limit, onSkipped);
         const hook = this.duringList;
         this.duringList = null;
         hook?.();
         return rows;
       },
-      listChangedSince: async ({ since, afterId, limit }) => {
+      listChangedSince: async ({ since, afterId, limit, onSkipped }) => {
         this.changedCalls.push({ since, afterId });
         return page(
           sorted().filter((d) => d.updatedAt >= since),
           afterId,
           limit,
+          onSkipped,
         );
       },
       getLastPurgeAt: async () => this.purgeAt,
@@ -313,7 +341,7 @@ describe('SearchHost: after a backup restore', () => {
     store.meta.set(INDEX_STALE_KEY, '2026-10-11T12:30:00.000Z');
   }
 
-  it('rebuilds on open, writes the new cache, and only then removes the marker', async () => {
+  it('rebuilds on open and writes a cache that records the generation it was built for', async () => {
     const store = await persisted();
     restoreInto(store);
     const host = make(store);
@@ -323,11 +351,16 @@ describe('SearchHost: after a backup restore', () => {
     });
 
     await host.start();
+    await host.flush();
 
     expect(reasons[0]).toBe('restore');
     expect(host.search('golgi').total).toBe(1);
     expect(host.search('ribosomes').total).toBe(0);
-    expect(store.meta.has(INDEX_STALE_KEY)).toBe(false);
+    // the marker is a generation, never consumed: other hosts compare against it too
+    expect(store.meta.get(INDEX_STALE_KEY)).toBe('2026-10-11T12:30:00.000Z');
+    expect(store.meta.get(INDEX_STATE_KEY)).toMatchObject({
+      generation: '2026-10-11T12:30:00.000Z',
+    });
     // the cache on disk is the rebuilt one: the next open is incremental and sees the same rows
     store.listAllCalls = 0;
     const again = make(store);
@@ -353,10 +386,12 @@ describe('SearchHost: after a backup restore', () => {
 
     expect(host.search('ribosomes').total).toBe(0);
     expect(host.search('golgi').total).toBe(1);
-    expect(store.meta.has(INDEX_STALE_KEY)).toBe(false);
+    expect(store.meta.get(INDEX_STATE_KEY)).toMatchObject({
+      generation: '2026-10-11T12:30:00.000Z',
+    });
   });
 
-  it('leaves the marker of a second restore that landed during the build', async () => {
+  it('rebuilds again for a second restore that landed during the build', async () => {
     const store = await persisted();
     restoreInto(store);
     store.duringList = () => store.meta.set(INDEX_STALE_KEY, '2026-10-11T12:45:00.000Z');
@@ -364,7 +399,7 @@ describe('SearchHost: after a backup restore', () => {
     await host.start();
     expect(store.meta.get(INDEX_STALE_KEY)).toBe('2026-10-11T12:45:00.000Z');
 
-    // the next pass sees it and reads the vault again, then clears it
+    // the next pass sees that its index is for the previous generation and reads the vault again
     store.listAllCalls = 0;
     vi.useFakeTimers();
     host.reconcileSoon();
@@ -372,21 +407,35 @@ describe('SearchHost: after a backup restore', () => {
     vi.useRealTimers();
     await host.flush();
     expect(store.listAllCalls).toBeGreaterThan(0);
-    expect(store.meta.has(INDEX_STALE_KEY)).toBe(false);
-  });
+    expect(store.meta.get(INDEX_STATE_KEY)).toMatchObject({
+      generation: '2026-10-11T12:45:00.000Z',
+    });
 
-  it('clears the marker with a null write when the port has no delete', async () => {
-    const store = await persisted();
-    store.withoutDelete = true;
-    restoreInto(store);
-    const host = make(store);
-    await host.start();
-    expect(store.meta.get(INDEX_STALE_KEY)).toBeNull();
-
-    // null is "absent": opening again does not rebuild
+    // and from then on nothing is rebuilt
     store.listAllCalls = 0;
     await make(store).start();
     expect(store.listAllCalls).toBe(0);
+  });
+
+  it('treats a null marker as absent (what an older build leaves when it clears it)', async () => {
+    const store = await persisted();
+    store.meta.set(INDEX_STALE_KEY, null);
+    await make(store).start();
+    expect(store.listAllCalls).toBe(0);
+  });
+
+  it('rebuilds when the marker is gone but the cache was built for a generation', async () => {
+    const store = await persisted();
+    restoreInto(store);
+    const first = make(store);
+    await first.start();
+    await first.flush();
+    first.dispose();
+
+    store.meta.delete(INDEX_STALE_KEY); // the vault was replaced without writing a generation
+    store.listAllCalls = 0;
+    await make(store).start();
+    expect(store.listAllCalls).toBeGreaterThan(0);
   });
 
   it('keeps the marker when the rebuild fails, so the next start tries again', async () => {
@@ -401,7 +450,141 @@ describe('SearchHost: after a backup restore', () => {
     store.failListAll = null;
     await host.start();
     expect(host.state.phase).toBe('ready');
-    expect(store.meta.has(INDEX_STALE_KEY)).toBe(false);
+    expect(host.search('golgi').total).toBe(1);
+    expect(store.meta.has(INDEX_STALE_KEY)).toBe(true);
+  });
+});
+
+/** A restore that two open pages (side panel, dashboard) must both see, one after the other. */
+describe('SearchHost: two hosts over one vault', () => {
+  const warfarin = (id: string) =>
+    doc(id, { quote: `Warfarin interacts with vitamin K (${id}).`, updatedAt: T0 });
+
+  async function reconcile(host: SearchHost) {
+    vi.useFakeTimers();
+    host.reconcileSoon();
+    await vi.advanceTimersByTimeAsync(RECONCILE_DELAY_MS + 5);
+    vi.useRealTimers();
+    await host.flush(); // waits for the queue
+  }
+
+  /** A replace restore: the vault had 6 rows (two about warfarin) and now has 4. */
+  function replaceRestore(store: Store, token = 'restore-1') {
+    store.docs.delete('w1');
+    store.docs.delete('w2');
+    store.meta.set(INDEX_STALE_KEY, token);
+  }
+
+  function seeded() {
+    const store = new Store();
+    store.put(doc('a'), doc('b'), doc('c'), doc('d'), warfarin('w1'), warfarin('w2'));
+    return store;
+  }
+
+  it('the hidden host converges too, after the visible one has rebuilt', async () => {
+    const store = seeded();
+    const panel = make(store);
+    const dashboard = make(store);
+    await panel.start();
+    await dashboard.start();
+    expect(dashboard.search('warfarin').total).toBe(2);
+
+    replaceRestore(store);
+    await reconcile(panel); // the visible side panel rebuilds and writes the cache first
+    expect(panel.state).toMatchObject({ phase: 'ready', documents: 4 });
+
+    await reconcile(dashboard); // later: it must not mistake "the marker was already used" for "nothing"
+    expect(dashboard.state).toMatchObject({ phase: 'ready', documents: 4 });
+    expect(dashboard.search('warfarin').total).toBe(0);
+    expect(store.meta.get(INDEX_STATE_KEY)).toMatchObject({ generation: 'restore-1' });
+  });
+
+  it('a dirty host does not write its old index over the cache another host rebuilt', async () => {
+    const store = seeded();
+    const dashboard = make(store);
+    await dashboard.start(); // built, not yet written (the write is pending)
+    expect(dashboard.search('warfarin').total).toBe(2);
+
+    replaceRestore(store);
+    const panel = make(store);
+    await panel.start(); // no usable cache: builds for the new generation
+    await panel.flush();
+    const good = store.meta.get(INDEX_KEY);
+    const goodState = store.meta.get(INDEX_STATE_KEY);
+    expect(good).toBeTypeOf('string');
+    expect(goodState).toMatchObject({ generation: 'restore-1' });
+
+    await dashboard.flush(); // its index still has the two warfarin rows
+    expect(store.meta.get(INDEX_KEY)).toBe(good);
+    expect(store.meta.get(INDEX_STATE_KEY)).toEqual(goodState);
+
+    await reconcile(dashboard); // and it rebuilds on its own catch-up
+    expect(dashboard.search('warfarin').total).toBe(0);
+    expect(dashboard.state).toMatchObject({ documents: 4 });
+  });
+
+  it('an old cache that still lands after the restore is not trusted by the next open', async () => {
+    const store = seeded();
+    const stale = make(store);
+    await stale.start(); // built for generation null, write pending
+    // the restore commits between the host's check and its write: the old index goes to disk
+    store.afterMarkerRead = () => replaceRestore(store);
+    await stale.flush();
+    expect(store.meta.get(INDEX_STATE_KEY)).toMatchObject({ generation: null });
+    expect(store.meta.get(INDEX_STALE_KEY)).toBe('restore-1');
+
+    store.listAllCalls = 0;
+    const reopened = make(store);
+    await reopened.start();
+    expect(store.listAllCalls).toBeGreaterThan(0);
+    expect(reopened.search('warfarin').total).toBe(0);
+  });
+});
+
+describe('SearchHost: unreadable rows', () => {
+  const many = (n: number, over: Partial<SearchDocument> = {}) =>
+    Array.from({ length: n }, (_, i) => doc(`h${String(i).padStart(5, '0')}`, over));
+
+  it('indexes everything around unreadable rows and counts them as rejected', async () => {
+    const store = new Store();
+    store.put(...many(1_101));
+    // inside a page, at the last place of the first page, and in the last page
+    for (const id of ['h00010', 'h00499', 'h01100']) store.bad.add(id);
+    const host = make(store);
+
+    await host.start();
+
+    expect(host.state).toMatchObject({ phase: 'ready', documents: 1_098, rejected: 3 });
+    expect(host.search('mitochondria').total).toBe(1_098);
+  });
+
+  it('does not stop at a whole page of unreadable rows', async () => {
+    const store = new Store();
+    store.put(...many(650));
+    for (let i = 0; i < 500; i++) store.bad.add(`h${String(i).padStart(5, '0')}`);
+    const host = make(store);
+    await host.start();
+    expect(host.state).toMatchObject({ phase: 'ready', documents: 150, rejected: 500 });
+  });
+
+  it('catches up around unreadable rows too', async () => {
+    const store = new Store();
+    store.put(doc('a0000'));
+    const first = make(store);
+    await first.start();
+    await first.flush();
+    first.dispose();
+
+    store.now = new Date('2026-10-11T13:00:00.000Z');
+    store.put(...many(1_101, { updatedAt: '2026-10-11T12:30:00.000Z' }));
+    for (const id of ['h00010', 'h00499', 'h01100']) store.bad.add(id);
+    store.listAllCalls = 0;
+
+    const second = make(store);
+    await second.start(); // restores the cache, then catches up
+
+    expect(store.listAllCalls).toBe(0);
+    expect(second.state).toMatchObject({ phase: 'ready', documents: 1 + 1_098, rejected: 3 });
   });
 });
 

@@ -36,9 +36,11 @@ export {
   hostOf,
   isAllSitesPattern,
   isPdfUrl,
+  isPlaceholderSourceUrl,
   normalizeDenyInput,
   patternHost,
   safeHref,
+  visibleSourceUrl,
   type AddressClass,
 } from './hosts';
 export { errorMessage, isRetryable, plural, truncate } from './text';

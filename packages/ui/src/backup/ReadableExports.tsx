@@ -16,6 +16,7 @@ import { plural } from '../text';
 import type { BackupDeps, DownloadFile } from './deps';
 import { explainBackupError } from './explain';
 import { fileStamp } from './format';
+import { BACKUP_TITLE } from './scope';
 
 type Format = 'markdown' | 'csv' | 'anki';
 type Layout = 'per-bank' | 'per-folder' | 'single';
@@ -151,7 +152,7 @@ export function ReadableExports({ deps }: { deps: BackupDeps }) {
       <h3>Export to Markdown, CSV or Anki</h3>
       <p>
         Readable copies for other tools. They are for reading and sharing, not for restoring: to
-        move your whole vault use “Back up everything”.
+        move your study data use “{BACKUP_TITLE}”.
       </p>
 
       <fieldset className="bk-fieldset">
@@ -168,7 +169,7 @@ export function ReadableExports({ deps }: { deps: BackupDeps }) {
               invalidate();
             }}
           />
-          <label htmlFor="bk-scope-all">Everything</label>
+          <label htmlFor="bk-scope-all">All banks</label>
         </div>
         <div className="sv-check">
           <input

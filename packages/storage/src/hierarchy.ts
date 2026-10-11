@@ -584,55 +584,64 @@ export async function mergeBanks(input: {
     throw new StudyVaultError('invalid_request', 'The Inbox cannot be merged into another bank.');
   }
   const result = await withWritableDb((db) =>
-    db.transaction('rw', [db.banks, db.folders, db.highlightBanks, db.highlights], async () => {
-      const ts = now();
-      const source = await liveBank(db, input.sourceId);
-      const target = await liveBank(db, input.targetId);
-      // Every folder row of the source bank, deleted ones included, so nothing keeps pointing at it.
-      const sourceRows = await db.folders.where('bankId').equals(source.id).toArray();
-      const targetTop = (await loadFolders(db, target.id)).values();
-      let position = Math.floor(
-        Math.max(
-          0,
-          ...[...targetTop].filter((f) => f.parentFolderId === null).map((f) => f.position),
-        ),
-      );
-      const topLevel = sourceRows
-        .filter((f) => f.parentFolderId === null)
-        .sort((a, b) => a.position - b.position || cmp(a.id, b.id));
-      for (const f of topLevel) {
-        position += 1;
-        await db.folders.update(f.id, { position });
-      }
-      for (const f of sourceRows)
-        await db.folders.update(f.id, { bankId: target.id, updatedAt: ts });
-
-      const members = await db.highlightBanks.where('bankId').equals(source.id).toArray();
-      for (const m of members) {
-        const existing = await db.highlightBanks.get([m.highlightId, target.id]);
-        if (existing) {
-          if (existing.folderId === null && m.folderId !== null) {
-            await db.highlightBanks.update([m.highlightId, target.id], { folderId: m.folderId });
-          }
-        } else {
-          await db.highlightBanks.put({
-            highlightId: m.highlightId,
-            bankId: target.id,
-            folderId: m.folderId,
-            addedAt: m.addedAt,
-          });
+    db.transaction(
+      'rw',
+      [db.banks, db.folders, db.highlightBanks, db.highlights, db.decks],
+      async () => {
+        const ts = now();
+        const source = await liveBank(db, input.sourceId);
+        const target = await liveBank(db, input.targetId);
+        // Decks that studied the source bank study the target now, so none is left pointing at a bank
+        // that is deleted here and may later be purged.
+        for (const deckId of await db.decks.where('bankId').equals(source.id).primaryKeys()) {
+          await db.decks.update(deckId, { bankId: target.id, updatedAt: ts });
         }
-        await db.highlightBanks.delete([m.highlightId, source.id]);
-      }
-      await touchHighlights(
-        db,
-        members.map((m) => m.highlightId),
-        ts,
-      );
-      await db.banks.update(source.id, { deletedAt: ts, updatedAt: ts });
-      await db.banks.update(target.id, { updatedAt: ts });
-      return { movedFolders: sourceRows.length, movedHighlights: members.length };
-    }),
+        // Every folder row of the source bank, deleted ones included, so nothing keeps pointing at it.
+        const sourceRows = await db.folders.where('bankId').equals(source.id).toArray();
+        const targetTop = (await loadFolders(db, target.id)).values();
+        let position = Math.floor(
+          Math.max(
+            0,
+            ...[...targetTop].filter((f) => f.parentFolderId === null).map((f) => f.position),
+          ),
+        );
+        const topLevel = sourceRows
+          .filter((f) => f.parentFolderId === null)
+          .sort((a, b) => a.position - b.position || cmp(a.id, b.id));
+        for (const f of topLevel) {
+          position += 1;
+          await db.folders.update(f.id, { position });
+        }
+        for (const f of sourceRows)
+          await db.folders.update(f.id, { bankId: target.id, updatedAt: ts });
+
+        const members = await db.highlightBanks.where('bankId').equals(source.id).toArray();
+        for (const m of members) {
+          const existing = await db.highlightBanks.get([m.highlightId, target.id]);
+          if (existing) {
+            if (existing.folderId === null && m.folderId !== null) {
+              await db.highlightBanks.update([m.highlightId, target.id], { folderId: m.folderId });
+            }
+          } else {
+            await db.highlightBanks.put({
+              highlightId: m.highlightId,
+              bankId: target.id,
+              folderId: m.folderId,
+              addedAt: m.addedAt,
+            });
+          }
+          await db.highlightBanks.delete([m.highlightId, source.id]);
+        }
+        await touchHighlights(
+          db,
+          members.map((m) => m.highlightId),
+          ts,
+        );
+        await db.banks.update(source.id, { deletedAt: ts, updatedAt: ts });
+        await db.banks.update(target.id, { updatedAt: ts });
+        return { movedFolders: sourceRows.length, movedHighlights: members.length };
+      },
+    ),
   );
   await signalChange();
   return result;

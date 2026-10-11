@@ -18,6 +18,7 @@ import {
   type TableRegistry,
   type TableSpec,
 } from '@shared';
+import { STUDY_TABLE_SPECS } from '@study/schema';
 import { DB_VERSION, withDb, type StudyVaultDb } from './db';
 import { normaliseRow } from './rows';
 
@@ -37,6 +38,12 @@ const MetaRowSchema = z.object({
 const keyedRow = z.looseObject({ id: z.string().min(1) });
 
 type Spec = Omit<TableSpec, 'schema'> & { schema: z.ZodType };
+
+function studyReferences(table: string): TableSpec['references'] {
+  const spec = STUDY_TABLE_SPECS.find((s) => s.name === table);
+  if (!spec) throw new StudyVaultError('internal', `The study module has no table ${table}`);
+  return spec.references;
+}
 
 const SPECS: readonly Spec[] = [
   { name: 'banks', primaryKey: 'id', schema: BankRecord, softDelete: true },
@@ -93,30 +100,28 @@ const SPECS: readonly Spec[] = [
       { field: 'sourceId', table: 'sources', nullable: true },
     ],
   },
+  // The study tables' references come from the module that owns their schemas: a field it adds
+  // (knowledgePoints.primaryQuoteId was once missing here) is checked without a second edit.
   {
     name: 'knowledgePoints',
     primaryKey: 'id',
     schema: keyedRow,
     softDelete: true,
-    references: [{ field: 'highlightId', table: 'highlights', nullable: true }],
+    references: studyReferences('knowledgePoints'),
   },
   {
     name: 'decks',
     primaryKey: 'id',
     schema: keyedRow,
     softDelete: true,
-    references: [{ field: 'bankId', table: 'banks', nullable: true }],
+    references: studyReferences('decks'),
   },
   {
     name: 'cards',
     primaryKey: 'id',
     schema: keyedRow,
     softDelete: true,
-    references: [
-      { field: 'deckId', table: 'decks', nullable: true },
-      { field: 'knowledgePointId', table: 'knowledgePoints', nullable: true },
-      { field: 'highlightId', table: 'highlights', nullable: true },
-    ],
+    references: studyReferences('cards'),
   },
   {
     // Append-only: a log entry is never edited or soft-deleted.
@@ -124,7 +129,7 @@ const SPECS: readonly Spec[] = [
     primaryKey: 'id',
     schema: keyedRow,
     softDelete: false,
-    references: [{ field: 'cardId', table: 'cards' }],
+    references: studyReferences('reviewLogs'),
   },
   {
     name: 'aiResults',

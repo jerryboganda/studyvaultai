@@ -1,5 +1,6 @@
 import Dexie, { type IndexableType, type Table } from 'dexie';
 import { uuidv7 } from 'uuidv7';
+import { browser } from 'wxt/browser';
 import { z } from 'zod';
 import {
   CustomFields,
@@ -22,6 +23,7 @@ import {
   type Tag as TagRow,
 } from '@shared';
 import {
+  BackupError,
   exportBackup,
   type BackupSource,
   type CommitPlan,
@@ -36,7 +38,7 @@ import {
   type StagingInit,
   type TableRead,
 } from '@backup';
-import { isPrimary, matchSources, now, parseRow, resolveTargetBank, signalChange } from './core';
+import { now, parseRow, resolveTargetBank, signalChange } from './core';
 import {
   DB_VERSION,
   onBeforeMigrate,
@@ -49,7 +51,8 @@ import {
 } from './db';
 import { normalizeQuote, quoteHash } from './normalize';
 import { getTableRegistry } from './registry';
-import { resetSyncIdentityIfUsed } from './sync';
+import { aiCitationGuard, immutableFieldsOf } from './restoreGuards';
+import { resetSyncIdentityIfUsed } from './syncIdentity';
 
 /**
  * Storage side of backup/restore (@backup is pure and talks to data only through ports).
@@ -63,7 +66,11 @@ import { resetSyncIdentityIfUsed } from './sync';
  *  - `importExternalHighlights`: the write side of the Markdown/CSV importer.
  */
 
-/** Throwaway database that holds an incoming restore until it is committed. */
+/**
+ * Prefix of the throwaway databases that hold an incoming restore until it is committed. Each
+ * restore uses `${RESTORE_STAGING_DB}-<unique id>`; the bare name is what older builds used.
+ * Everything that starts with this prefix is a staging database (`clearRestoreStaging`).
+ */
 export const RESTORE_STAGING_DB = 'studyvault-restore-staging';
 /** Holds the single automatic snapshot taken right before a schema upgrade. */
 export const PRE_MIGRATION_DB = 'studyvault-premigration';
@@ -235,6 +242,8 @@ class DexieStaging implements StagingDb {
   constructor(
     private stage: Dexie | null,
     private readonly tables: ReadonlySet<string>,
+    /** This restore's own database; null when nothing was staged. */
+    private readonly dbName: string | null = null,
   ) {}
 
   private store(name: string): Table<Row, IndexableType> {
@@ -313,11 +322,14 @@ class DexieStaging implements StagingDb {
       { key: 'sync.dirty', value: ts, updatedAt: ts },
     ];
     // A replace is not a series of local edits: sync's bookkeeping is reset in the same transaction.
+    // Every entity table is in scope even when the archive lacks it (an old or registry-limited
+    // archive): `assertNoIdCollisions` reads them, and a table outside the scope is NotFoundError.
+    const scope = [...new Set([...names, ...ENTITY_TABLES])];
     const apply = (db: StudyVaultDb) =>
       db.transaction(
         'rw',
         [
-          ...names.map((n) => tableOf(db, n)),
+          ...scope.map((n) => tableOf(db, n)),
           db.meta,
           ...(plan.mode === 'replace'
             ? [db.syncOps, db.syncEntityMeta, db.syncConflicts, db.syncQuarantine]
@@ -360,7 +372,7 @@ class DexieStaging implements StagingDb {
     this.released = true;
     this.stage?.close();
     this.stage = null;
-    await Dexie.delete(RESTORE_STAGING_DB).catch(() => undefined);
+    if (this.dbName) await Dexie.delete(this.dbName).catch(() => undefined);
   }
 }
 
@@ -387,9 +399,56 @@ async function assertNoIdCollisions(
   }
 }
 
-/** Remove a staging database left behind by a crashed restore (it can hold a copy of the data). */
+/**
+ * Remove every staging database (it can hold a copy of the data): the one of a restore that died
+ * half-way and the fixed-name database older builds used. Each restore stages into its own
+ * database, named `RESTORE_STAGING_DB` + "-" + a unique id, so this deletes by that prefix.
+ */
 export async function clearRestoreStaging(): Promise<void> {
-  await Dexie.delete(RESTORE_STAGING_DB);
+  if (typeof indexedDB === 'undefined') return;
+  const names = new Set<string>([RESTORE_STAGING_DB]);
+  try {
+    for (const info of await indexedDB.databases()) {
+      if (info.name?.startsWith(RESTORE_STAGING_DB)) names.add(info.name);
+    }
+  } catch {
+    // no `databases()` (very old engine): at least the fixed name goes
+  }
+  await Promise.all([...names].map((name) => Dexie.delete(name)));
+}
+
+/** Name of the Web Lock that serialises restores across every extension page. */
+export const RESTORE_LOCK_NAME = 'studyvault-restore';
+let restoreRunningHere = false;
+
+/**
+ * Run `run` while no other restore uses the vault, or reject with `restore_in_progress`. Two
+ * restores at once would interleave their staging and commits (the later one deciding from live
+ * data the earlier one is about to change). A Web Lock covers every extension page; where it is
+ * missing, an in-memory flag covers this context.
+ */
+export async function withRestoreLock<T>(run: () => Promise<T>): Promise<T> {
+  const busy = () =>
+    new BackupError(
+      'restore_in_progress',
+      'Another restore is already running. Wait for it to finish, then try again.',
+    );
+  if (restoreRunningHere) throw busy();
+  restoreRunningHere = true;
+  try {
+    const locks = typeof navigator === 'undefined' ? undefined : navigator.locks;
+    if (!locks) return await run();
+    return await locks.request(
+      RESTORE_LOCK_NAME,
+      { mode: 'exclusive', ifAvailable: true },
+      (lock) => {
+        if (!lock) throw busy();
+        return run();
+      },
+    );
+  } finally {
+    restoreRunningHere = false;
+  }
 }
 
 /** The vault as a restore target: pass it to `prepareRestore`/`restoreBackup` as `target`. */
@@ -397,20 +456,31 @@ export function createBackupTarget(): RestoreTarget {
   const live = liveSource();
   return {
     ...live,
+    immutableFields: () => immutableFieldsOf(backupTableRegistry),
+    citationGuard: aiCitationGuard,
+    exclusive: withRestoreLock,
     async createStaging(init: StagingInit): Promise<StagingDb> {
-      await Dexie.delete(RESTORE_STAGING_DB); // leftovers of an earlier crash
+      // Only one restore runs (see withRestoreLock), so whatever is here is a crash's leftovers.
+      await clearRestoreStaging();
       const specs = new Map(backupTableRegistry.tables.map((t) => [t.name, t] as const));
       const names = [...new Set(init.tables)];
       for (const n of names) {
         if (!specs.has(n)) throw new Error(`Cannot stage unknown table "${n}".`);
       }
       if (names.length === 0) return new DexieStaging(null, new Set());
-      const stage = new Dexie(RESTORE_STAGING_DB);
+      const dbName = `${RESTORE_STAGING_DB}-${uuidv7()}`;
+      const stage = new Dexie(dbName);
       stage
         .version(1)
         .stores(Object.fromEntries(names.map((n) => [n, pkSpec(specs.get(n) as TableSpec)])));
-      await stage.open();
-      return new DexieStaging(stage, new Set(names));
+      try {
+        await stage.open();
+      } catch (cause) {
+        stage.close();
+        await Dexie.delete(dbName).catch(() => undefined);
+        throw cause;
+      }
+      return new DexieStaging(stage, new Set(names), dbName);
     },
   };
 }
@@ -457,17 +527,37 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
 
 let installed: (() => void) | null = null;
 
+/** The extension's own version for the archive header; absent where there is no manifest (tests). */
+function manifestVersion(): string | undefined {
+  try {
+    const version = browser.runtime.getManifest().version;
+    return typeof version === 'string' ? version : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const megabytes = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+
 /**
  * Take an automatic backup of the whole database right before a schema upgrade, and keep the
  * latest one (replacing the previous). Best effort: a failure is recorded and the upgrade goes on,
- * because the upgrade itself is transactional. Call once, before the first database use, in the
- * context that opens the database after an extension update (the service worker). Returns the
- * unregister function. Not installed by importing this module.
+ * because the upgrade itself is transactional. The archive is built in memory, so `maxBytes` bounds
+ * both the uncompressed rows (estimated from counts and a sample before anything is read) and the
+ * archive; the cached PDF bytes (local-only) are never read for it.
+ *
+ * This module installs the default once in every context that loads it, because any context may be
+ * the one that meets the upgrade (the worker, a page opened right after an update, the sync
+ * runtime). Calling it again with options replaces the default; without options it is a no-op.
+ * Returns the unregister function.
  */
 export function installPreMigrationSnapshot(
   options: { maxBytes?: number; appVersion?: string } = {},
 ): () => void {
-  if (installed) return installed;
+  if (installed) {
+    if (Object.keys(options).length === 0) return installed;
+    installed();
+  }
   const maxBytes = options.maxBytes ?? MAX_PRE_MIGRATION_BYTES;
   const hook = async (ctx: MigrationContext) => {
     if (typeof indexedDB === 'undefined') return;
@@ -485,35 +575,53 @@ export function installPreMigrationSnapshot(
     };
     let record: PreMigrationRecord;
     try {
-      const raw = await ctx.snapshot();
-      // ordinary tables that existed at the old version, with their current schemas
-      const specs = backupTableRegistry.tables.filter((t) => !t.localOnly && t.name in raw);
-      const data = new Map(specs.map((s) => [s.name, raw[s.name] as Row[]] as const));
-      const out = await exportBackup(
-        memorySource({ schemaVersion: ctx.fromVersion, tables: specs }, data),
-        {
-          now: () => new Date(createdAt),
-          ...(options.appVersion ? { appVersion: options.appVersion } : {}),
-        },
-      );
-      const tables = Object.fromEntries(out.manifest.tables.map((t) => [t.name, t.rowCount]));
-      const common = { ...base, rows: out.stats.rows, tables, byteLength: out.bytes.length };
-      record =
-        out.bytes.length > maxBytes
-          ? {
-              ...common,
-              status: 'too_large',
-              reason: `The copy would be ${out.bytes.length} bytes; the limit is ${maxBytes}. Export a backup yourself.`,
-              sha256: null,
-              bytes: null,
-            }
-          : {
-              ...common,
-              status: 'kept',
-              reason: null,
-              sha256: await sha256Hex(out.bytes),
-              bytes: out.bytes,
-            };
+      // Look before reading: a count and a sample per table say whether a copy fits, so a vault that
+      // is too big costs a few rows of memory and not a full read. Ordinary tables that existed at
+      // the old version, with their current schemas; local-only tables (PDF bytes) are not in it.
+      const have = await ctx.counts();
+      const specs = backupTableRegistry.tables.filter((t) => !t.localOnly && t.name in have);
+      const names = specs.map((s) => s.name);
+      const estimate = await ctx.estimateBytes(names);
+      if (estimate > maxBytes) {
+        const tables = Object.fromEntries(names.map((n) => [n, have[n] ?? 0]));
+        const rows = Object.values(tables).reduce((sum, n) => sum + n, 0);
+        record = {
+          ...base,
+          status: 'too_large',
+          reason: `Your data is about ${megabytes(estimate)} uncompressed (${rows} items); the limit for the automatic copy is ${megabytes(maxBytes)}. Save a backup yourself from Settings.`,
+          rows,
+          tables,
+          byteLength: 0,
+          sha256: null,
+          bytes: null,
+        };
+      } else {
+        const raw = await ctx.snapshot(names);
+        const data = new Map(specs.map((s) => [s.name, raw[s.name] as Row[]] as const));
+        const appVersion = options.appVersion ?? manifestVersion();
+        const out = await exportBackup(
+          memorySource({ schemaVersion: ctx.fromVersion, tables: specs }, data),
+          { now: () => new Date(createdAt), ...(appVersion ? { appVersion } : {}) },
+        );
+        const tables = Object.fromEntries(out.manifest.tables.map((t) => [t.name, t.rowCount]));
+        const common = { ...base, rows: out.stats.rows, tables, byteLength: out.bytes.length };
+        record =
+          out.bytes.length > maxBytes
+            ? {
+                ...common,
+                status: 'too_large',
+                reason: `The copy would be ${out.bytes.length} bytes; the limit is ${maxBytes}. Export a backup yourself.`,
+                sha256: null,
+                bytes: null,
+              }
+            : {
+                ...common,
+                status: 'kept',
+                reason: null,
+                sha256: await sha256Hex(out.bytes),
+                bytes: out.bytes,
+              };
+      }
     } catch (err) {
       record = {
         ...base,
@@ -535,6 +643,10 @@ export function installPreMigrationSnapshot(
   };
   return installed;
 }
+
+// Whichever context opens the database first after an update upgrades it: the worker at update time,
+// but also a page that was opened right after, or the sync runtime. Not left to the entry points.
+installPreMigrationSnapshot();
 
 const infoOf = ({ bytes: _bytes, id: _id, ...info }: PreMigrationRecord): PreMigrationInfo => info;
 
@@ -673,9 +785,10 @@ const trimTo = (s: string, max: number) => (s.length > max ? s.slice(0, max) : s
 /**
  * Write reviewed rows from `importMarkdownHighlights` / `importCsvHighlights` into one bank, in one
  * transaction. Every row is re-validated (the UI is a boundary) and its hash recomputed. Rows get
- * `customFields: { importedFrom, needsReview: true }`; their Source is a 'web' source when the row
- * names an http(s) URL (a claim, not a capture) and an `IMPORTED_SOURCE_URL_PREFIX` placeholder
- * otherwise. Quotes already in the vault are skipped, so importing a file twice adds nothing.
+ * `customFields: { importedFrom, needsReview: true }` and `captureMethod: 'import'`. Their Source
+ * is always a new one made by this import (never a Source a capture made): it shows the row's
+ * http(s) address as the claim, or an `IMPORTED_SOURCE_URL_PREFIX` placeholder without one. Quotes
+ * already in the vault are skipped, so importing a file twice adds nothing.
  */
 export async function importExternalHighlights(
   rowSet: Pick<ImportRowSet, 'highlights'>,
@@ -695,7 +808,6 @@ export async function importExternalHighlights(
     // hash before the transaction: awaiting crypto.subtle inside it would let IndexedDB commit
     prepared.push({ row: parsed.data, normalized, hash: await quoteHash(normalized) });
   }
-  const ts = now();
   const batch = uuidv7();
 
   const { result, changed } = await withWritableDb((db) =>
@@ -703,6 +815,10 @@ export async function importExternalHighlights(
       'rw',
       [db.banks, db.sources, db.highlights, db.highlightBanks, db.tags, db.highlightTags],
       async () => {
+        // Stamp once this transaction holds its lock (a request resolves only then), not before the
+        // wait: the search catch-up looks for rows changed since a moment it may have passed.
+        await db.banks.count();
+        const ts = now();
         const bank = await resolveTargetBank(db, options.bankId, ts);
         const tags = (await db.tags.toArray()).flatMap((r) => {
           const t = parseRow(Tag, r, 'tag');
@@ -715,8 +831,8 @@ export async function importExternalHighlights(
             for (const alias of t.aliases) liveByKey.set(tagNameKey(alias), t);
           }
         }
-        const placeholders = new Map<string, Source>();
-        const webSources = new Map<string, Source>();
+        // The Sources made by THIS import: one per claimed address (or per label without one).
+        const made = new Map<string, Source>();
         const seen = new Set<string>();
         const out: ImportExternalResult = {
           created: 0,
@@ -727,45 +843,26 @@ export async function importExternalHighlights(
           highlightIds: [],
         };
 
+        // An imported highlight never joins a Source that a capture made: the file's address is a
+        // claim, and filing the text under a real page's Source would present it as captured there
+        // (and later captures of that page would show it as theirs). Every import makes Sources of
+        // its own, keyed `imported:<batch>:<n>`, which no page can ever match. The claimed address
+        // is kept as the link to show; without one the address is the stand-in placeholder.
         const sourceFor = async (row: z.infer<typeof ImportedRow>): Promise<Source> => {
           const keys = row.sourceUrl ? sourceKeys(row.sourceUrl, null) : null;
-          const originalUrl = row.sourceUrl ? redactUrl(row.sourceUrl) : null;
-          if (
-            keys &&
-            originalUrl &&
+          const claimed = row.sourceUrl ? redactUrl(row.sourceUrl) : null;
+          const usable =
+            keys !== null &&
+            claimed !== null &&
             keys.urlKey.length <= MAX_URL_CHARS &&
-            keys.visitedKey.length <= MAX_URL_CHARS &&
-            originalUrl.length <= MAX_URL_CHARS
-          ) {
-            const cached = webSources.get(keys.urlKey);
-            if (cached) return cached;
-            let source = (await matchSources(db, keys)).find((s) => isPrimary(s, keys));
-            if (!source) {
-              const host = new URL(row.sourceUrl as string).hostname;
-              source = {
-                id: uuidv7(),
-                schemaVersion: SCHEMA_VERSION,
-                createdAt: ts,
-                updatedAt: ts,
-                deletedAt: null,
-                type: 'web',
-                urlKey: keys.urlKey,
-                visitedKey: keys.visitedKey,
-                originalUrl,
-                canonicalUrl: null,
-                host,
-                title: trimTo(row.sourceTitle ?? host, MAX_TITLE_CHARS),
-              };
-              await db.sources.put(source);
-              out.sourcesCreated++;
-            }
-            webSources.set(keys.urlKey, source);
-            return source;
-          }
+            claimed.length <= MAX_URL_CHARS
+              ? { urlKey: keys.urlKey, claimed, host: new URL(row.sourceUrl as string).hostname }
+              : null;
           const label = row.sourceTitle ?? '';
-          const cached = placeholders.get(label);
+          const cacheKey = usable ? `url:${usable.urlKey}` : `label:${label}`;
+          const cached = made.get(cacheKey);
           if (cached) return cached;
-          const n = placeholders.size + 1;
+          const marker = `imported:${batch}:${made.size + 1}`;
           const source: Source = {
             id: uuidv7(),
             schemaVersion: SCHEMA_VERSION,
@@ -773,18 +870,21 @@ export async function importExternalHighlights(
             updatedAt: ts,
             deletedAt: null,
             type: 'web',
-            urlKey: `imported:${batch}:${n}`,
-            visitedKey: `imported:${batch}:${n}`,
-            originalUrl: `${IMPORTED_SOURCE_URL_PREFIX}${batch}/${n}`,
+            urlKey: marker,
+            visitedKey: marker,
+            originalUrl: usable
+              ? usable.claimed
+              : `${IMPORTED_SOURCE_URL_PREFIX}${batch}/${made.size + 1}`,
             canonicalUrl: null,
-            host: 'imported',
+            host: usable ? usable.host : 'imported',
             title: trimTo(
-              label || `Imported from ${row.format === 'csv' ? 'a CSV file' : 'a Markdown file'}`,
+              (usable ? row.sourceTitle || usable.host : label) ||
+                `Imported from ${row.format === 'csv' ? 'a CSV file' : 'a Markdown file'}`,
               MAX_TITLE_CHARS,
             ),
           };
           await db.sources.put(source);
-          placeholders.set(label, source);
+          made.set(cacheKey, source);
           out.sourcesCreated++;
           return source;
         };

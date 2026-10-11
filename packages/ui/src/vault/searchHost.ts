@@ -16,21 +16,30 @@ import type { MetaPort } from './meta';
  *
  * Persistence contract with the `meta` table:
  *   'searchIndex'       the text of `SearchIndex.serialize()` (a derived cache, never authoritative)
- *   'searchIndexState'  { v, since, purgeMark, checksum } bookkeeping for that exact text
- *   'searchIndexStale'  written by a backup restore: rows were replaced or removed without moving
- *                       any `updatedAt` this cache could see. Present = rebuild, then remove it.
+ *   'searchIndexState'  { v, since, purgeMark, checksum, generation } bookkeeping for that exact text
+ *   'searchIndexStale'  the GENERATION of the vault: an opaque token a backup restore (or "delete all
+ *                       data") replaces. Rows were replaced or removed without moving any
+ *                       `updatedAt` this cache could see, so every cache and every open host built for
+ *                       another generation is wrong. It is never removed: each host remembers the value
+ *                       it indexed (and persists it in `searchIndexState.generation`) and rebuilds when
+ *                       the vault's value differs. Absent and null both mean "never replaced".
  *
  * Opening: restore the cache; when it is missing, corrupt, from another analyzer/version, bound to
- * other bookkeeping, older than the last purge (a purge leaves no row to report) or marked stale by
- * a restore, rebuild from the vault with real progress. Otherwise catch up through
- * `listSearchDocumentsChangedSince`. The same two checks (purge, restore) run before every catch-up.
+ * other bookkeeping, older than the last purge (a purge leaves no row to report) or built for another
+ * generation, rebuild from the vault with real progress. Otherwise catch up through
+ * `listSearchDocumentsChangedSince`. The same two checks (purge, generation) run before every
+ * catch-up, and a write of the cache first checks the generation again (see `persist`).
  */
 
 export const INDEX_KEY = 'searchIndex';
 export const INDEX_STATE_KEY = 'searchIndexState';
 export const INDEX_STALE_KEY = 'searchIndexStale';
 const PAGE = 500;
-/** Writes land a little before a reconcile starts; look this far back so none is missed. */
+/**
+ * A catch-up asks for rows changed since (its start - this). Writers stamp a row once their
+ * transaction holds its lock, so this only has to cover how long one transaction runs. (A lookback
+ * wider than this re-reads, and re-counts as rejected, every unreadable row inside it.)
+ */
 export const SKEW_MS = 5_000;
 export const PERSIST_DELAY_MS = 3_000;
 export const RECONCILE_DELAY_MS = 250;
@@ -46,13 +55,20 @@ export type SearchHostState =
   | { phase: 'ready'; documents: number; rejected: number }
   | { phase: 'error'; message: string };
 
+/**
+ * The feed contract: a page holds `limit` documents unless the feed ended, so a page shorter than
+ * `limit` is the last one. Rows the feed passes over because they exist but cannot be read are
+ * reported through `onSkipped` (called at most once per page); they count as rejected.
+ */
+export interface FeedPageOptions {
+  afterId?: string;
+  limit?: number;
+  onSkipped?: (count: number) => void;
+}
+
 export interface SearchHostPorts {
-  listAll(options: { afterId?: string; limit?: number }): Promise<SearchDocument[]>;
-  listChangedSince(options: {
-    since: string;
-    afterId?: string;
-    limit?: number;
-  }): Promise<SearchDocument[]>;
+  listAll(options: FeedPageOptions): Promise<SearchDocument[]>;
+  listChangedSince(options: FeedPageOptions & { since: string }): Promise<SearchDocument[]>;
   getLastPurgeAt(): Promise<string | null>;
   /** How many documents a rebuild will read (for a real progress bar); null when unknown. */
   countDocuments?(): Promise<number | null>;
@@ -67,6 +83,8 @@ interface PersistedState {
   since: string;
   purgeMark: string | null;
   checksum: string;
+  /** The vault generation this cache was built for; absent in caches written before generations. */
+  generation?: string | null;
 }
 
 const isState = (value: unknown): value is PersistedState => {
@@ -76,7 +94,8 @@ const isState = (value: unknown): value is PersistedState => {
     s.v === 1 &&
     typeof s.since === 'string' &&
     typeof s.checksum === 'string' &&
-    (s.purgeMark === null || typeof s.purgeMark === 'string')
+    (s.purgeMark === null || typeof s.purgeMark === 'string') &&
+    (s.generation === undefined || s.generation === null || typeof s.generation === 'string')
   );
 };
 
@@ -93,8 +112,13 @@ export function checksumOf(text: string): string | null {
  */
 export const toIndexDocument = (doc: SearchDocument): SearchDocument => doc;
 
-/** Any value other than absent/null: `delete` may be missing from a port, which then writes null. */
-const isMarked = (value: unknown): boolean => value !== undefined && value !== null;
+/** The generation marker as a comparable value: absent and null (a cleared marker) are one. */
+const generationOf = (value: unknown): string | null =>
+  value === undefined || value === null
+    ? null
+    : typeof value === 'string'
+      ? value
+      : JSON.stringify(value);
 
 export class SearchHost {
   private readonly ports: SearchHostPorts;
@@ -105,6 +129,8 @@ export class SearchHost {
   private dirty = false;
   private since = '';
   private purgeMark: string | null = null;
+  /** The vault generation (`searchIndexStale`) the in-memory index was built or restored for. */
+  private generation: string | null = null;
   private rejected = 0;
   private rev = 0;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
@@ -205,15 +231,16 @@ export class SearchHost {
 
   private async load(): Promise<void> {
     this.set({ phase: 'restoring' });
-    const [text, state, purgeAt, stale] = await Promise.all([
+    const [text, state, purgeAt, marker] = await Promise.all([
       this.ports.meta.get(INDEX_KEY),
       this.ports.meta.get(INDEX_STATE_KEY),
       this.ports.getLastPurgeAt(),
       this.ports.meta.get(INDEX_STALE_KEY),
     ]);
-    if (isMarked(stale)) return this.build('restore');
+    const generation = generationOf(marker);
     if (typeof text !== 'string' || text === '') return this.build('missing');
     if (!isState(state) || state.checksum !== checksumOf(text)) return this.build('corrupt');
+    if ((state.generation ?? null) !== generation) return this.build('restore');
     if (purgeAt !== null && (state.purgeMark === null || state.purgeMark < purgeAt)) {
       return this.build('purge');
     }
@@ -226,6 +253,7 @@ export class SearchHost {
     this.current = loaded.index;
     this.since = state.since;
     this.purgeMark = state.purgeMark;
+    this.generation = generation;
     this.dirty = false;
     await this.catchUp();
   }
@@ -233,8 +261,9 @@ export class SearchHost {
   private async build(reason: RebuildReason): Promise<void> {
     const startedAt = this.now();
     const purgeAt = await this.ports.getLastPurgeAt();
-    // Read before the vault is: a restore that lands during the build leaves a different value.
-    const staleSeen = await this.ports.meta.get(INDEX_STALE_KEY);
+    // Read before the vault is: a restore that lands during the build leaves a different value, and
+    // the next catch-up (or write of the cache) sees that this index is for the previous one.
+    const generation = generationOf(await this.ports.meta.get(INDEX_STALE_KEY));
     const total = (await this.ports.countDocuments?.()) ?? null;
     this.current = null;
     this.set({ phase: 'building', reason, done: 0, total });
@@ -243,7 +272,16 @@ export class SearchHost {
     let done = 0;
     let rejected = 0;
     for (;;) {
-      const docs = await this.ports.listAll({ afterId, limit: PAGE });
+      let skipped = 0;
+      const docs = await this.ports.listAll({
+        afterId,
+        limit: PAGE,
+        onSkipped: (n) => {
+          skipped += n;
+        },
+      });
+      rejected += skipped;
+      done += skipped;
       if (docs.length === 0) break;
       const result = await fresh.applyChangesAsync(docs);
       rejected += result.rejected.length;
@@ -256,25 +294,11 @@ export class SearchHost {
     this.rejected = rejected;
     this.since = this.sinceFor(startedAt);
     this.purgeMark = purgeAt;
+    this.generation = generation;
     this.dirty = true;
     this.rev++;
     this.set({ phase: 'ready', documents: fresh.stats().documents, rejected });
-    if (!isMarked(staleSeen)) {
-      this.persistSoon();
-      return;
-    }
-    // The old cache is wrong: write the new one before the marker goes, so a crash in between
-    // rebuilds again instead of bringing the old cache back.
-    await this.persist();
-    if (!this.dirty) await this.clearStale(staleSeen);
-  }
-
-  private async clearStale(seen: unknown): Promise<void> {
-    const { meta } = this.ports;
-    // Another restore finished while this build read the vault: leave its marker for the next pass.
-    if ((await meta.get(INDEX_STALE_KEY)) !== seen) return;
-    if (meta.delete) await meta.delete(INDEX_STALE_KEY);
-    else await meta.put(INDEX_STALE_KEY, null);
+    this.persistSoon();
   }
 
   private async catchUp(): Promise<void> {
@@ -285,12 +309,24 @@ export class SearchHost {
     if (purgeAt !== null && (this.purgeMark === null || this.purgeMark < purgeAt)) {
       return this.build('purge');
     }
-    if (isMarked(await this.ports.meta.get(INDEX_STALE_KEY))) return this.build('restore');
+    // Compared, never consumed: every host that holds an index must see the same change.
+    if (generationOf(await this.ports.meta.get(INDEX_STALE_KEY)) !== this.generation) {
+      return this.build('restore');
+    }
     this.set({ phase: 'updating', documents: index.stats().documents });
     let afterId: string | undefined;
     let changed = false;
     for (;;) {
-      const docs = await this.ports.listChangedSince({ since: this.since, afterId, limit: PAGE });
+      let skipped = 0;
+      const docs = await this.ports.listChangedSince({
+        since: this.since,
+        afterId,
+        limit: PAGE,
+        onSkipped: (n) => {
+          skipped += n;
+        },
+      });
+      this.rejected += skipped;
       if (docs.length === 0) break;
       const result: ApplyResult = await index.applyChangesAsync(docs);
       this.rejected += result.rejected.length;
@@ -319,6 +355,15 @@ export class SearchHost {
   private async persist(): Promise<void> {
     const index = this.current;
     if (!index || !this.dirty) return;
+    // The vault was restored or wiped since this index was built (another page did it): writing
+    // this index, with its `since`, would put rows that are gone over a cache that is right. Drop
+    // the write and let the next catch-up rebuild. (A write that still slips in between this read
+    // and the put carries the old generation, so every loader rejects it.)
+    if (generationOf(await this.ports.meta.get(INDEX_STALE_KEY)) !== this.generation) {
+      this.dirty = false;
+      this.reconcileSoon();
+      return;
+    }
     const text = index.serialize();
     const checksum = checksumOf(text);
     if (checksum === null) return; // not our format: never write bookkeeping for it
@@ -327,6 +372,7 @@ export class SearchHost {
       since: this.since,
       purgeMark: this.purgeMark,
       checksum,
+      generation: this.generation,
     };
     const entries = [
       { key: INDEX_KEY, value: text },

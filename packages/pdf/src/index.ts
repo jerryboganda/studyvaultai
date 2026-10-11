@@ -6,6 +6,7 @@ export * from './fingerprint';
 export * from './textStatus';
 export * from './source';
 export * from './readerUrl';
+export * from './grant';
 export * from './search';
 export * from './virtualizer';
 export * from './overlay';

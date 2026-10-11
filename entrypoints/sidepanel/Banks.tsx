@@ -25,7 +25,7 @@ export function Banks({
       <NewBankForm />
       {scope ? (
         <div className="sv-row" data-testid="bank-scope">
-          <Badge glyph="⌖">
+          <Badge>
             <span dir="auto">Recent and Search show only {scopeLabel(scope)}</span>
           </Badge>
           <Button variant="ghost" onClick={() => onScope(null)}>

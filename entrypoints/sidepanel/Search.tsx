@@ -174,7 +174,7 @@ export function SearchTab({
 
       {scope ? (
         <div className="sv-row" data-testid="search-scope">
-          <Badge glyph="⌖">
+          <Badge>
             <span dir="auto">Only in {scopeLabel(scope)}</span>
           </Badge>
           <Button variant="ghost" onClick={onClearScope}>

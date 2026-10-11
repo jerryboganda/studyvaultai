@@ -11,8 +11,11 @@ import {
 } from '@shared';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { canonicalJson, keyString, omitFields, rowKey } from './canonical';
+import { BackupError } from './errors';
 import type {
+  CitationGuard,
   CommitPlan,
+  ImmutableFields,
   ReadOptions,
   RestoreTarget,
   Row,
@@ -296,8 +299,32 @@ export function compareKeys(a: RowKey, b: RowKey): number {
   return 0;
 }
 
+/**
+ * What a storage layer derives from the sync policy for TEST_REGISTRY (packages/sync/src/policy.ts
+ * names the same fields). The restore engine itself has no list: the target says.
+ */
+export const TEST_IMMUTABLE_FIELDS: ImmutableFields = {
+  folders: ['bankId'],
+  sources: ['type', 'urlKey', 'visitedKey', 'originalUrl', 'canonicalUrl', 'host'],
+  highlights: [
+    'sourceId',
+    'exactQuote',
+    'normalizedQuote',
+    'quoteHash',
+    'anchorSet',
+    'headingContext',
+    'captureMethod',
+    'capturedAt',
+    'capturedUrl',
+    'capturedTitle',
+  ],
+};
+
 export interface VaultOptions {
   registry?: TableRegistry;
+  /** Provenance fields a merge may not change. Default TEST_IMMUTABLE_FIELDS. */
+  immutableFields?: ImmutableFields;
+  citationGuard?: CitationGuard;
   /** Serve pages as an AsyncIterable instead of one Promise per page. */
   streaming?: boolean;
   failStagingOn?: 'putRows' | 'validate' | 'commit' | 'create';
@@ -392,6 +419,28 @@ export class MemoryVault implements RestoreTarget {
     const s = new MemoryStaging(this);
     this.lastStaging = s;
     return Promise.resolve(s);
+  }
+
+  immutableFields(): ImmutableFields {
+    return this.options.immutableFields ?? TEST_IMMUTABLE_FIELDS;
+  }
+
+  get citationGuard(): CitationGuard | undefined {
+    return this.options.citationGuard;
+  }
+
+  private busy = false;
+  /** Same contract as the Dexie target's lock: a second restore is refused while one runs. */
+  async exclusive<T>(run: () => Promise<T>): Promise<T> {
+    if (this.busy) {
+      throw new BackupError('restore_in_progress', 'Another restore is already running.');
+    }
+    this.busy = true;
+    try {
+      return await run();
+    } finally {
+      this.busy = false;
+    }
   }
 }
 

@@ -69,6 +69,8 @@ export const STATUS_TEXT: Record<SyncStatus, string> = {
   backoff: 'The server asked StudyVault to slow down. It will try again shortly.',
   auth_required: 'Sign in to sync.',
   locked: 'Locked. Enter your sync passphrase to continue.',
+  awaiting_encryption_choice:
+    'Signed in. Nothing has been uploaded yet: choose how your data is protected first.',
   resync_required:
     "The server's data was erased, restored or replaced. Nothing was changed on this device.",
   account_mismatch: 'This device holds data that belongs to a different account.',

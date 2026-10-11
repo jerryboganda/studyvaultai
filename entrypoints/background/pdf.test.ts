@@ -170,6 +170,17 @@ describe('click -> reader address', () => {
     expect(readerPathFor({ menuItemId: OPEN_PAGE_MENU_ID }, undefined)).toBeNull();
   });
 
+  it('tells the reader when the tab that asked is private, and only then', () => {
+    const click = { menuItemId: OPEN_LINK_MENU_ID, linkUrl: 'https://example.org/a.pdf' };
+    const flag = (path: string | null) =>
+      path === null ? null : new URLSearchParams(path.slice(path.indexOf('?'))).get('incognito');
+    expect(flag(readerPathFor(click, undefined, true))).toBe('1');
+    expect(flag(readerPathFor(click, undefined, false))).toBeNull();
+    expect(flag(readerPathFor(click, undefined))).toBeNull();
+    // the address itself is unchanged
+    expect(src(readerPathFor(click, undefined, true))).toBe('https://example.org/a.pdf');
+  });
+
   it('a plain-http address on the open web is handed over so the reader can say why it is refused', () => {
     const path = readerPathFor(
       { menuItemId: OPEN_LINK_MENU_ID, linkUrl: 'http://example.org/a.pdf' },
@@ -221,6 +232,27 @@ describe('registerPdfReaderMenu (worker wiring)', () => {
     expect(arg.url).toContain('pdf-reader.html?src=');
     expect(decodeURIComponent(arg.url)).toContain('https://files.example.org/notes.pdf');
     expect(arg).toMatchObject({ windowId: 2, index: 4 });
+  });
+
+  it('a click from a private tab opens the reader in that window, marked as private', async () => {
+    const { clicks, open } = await wire();
+    clicks[0]!(
+      { menuItemId: OPEN_LINK_MENU_ID, linkUrl: 'https://files.example.org/notes.pdf' },
+      { id: 7, windowId: 9, index: 0, url: 'https://example.org/', incognito: true },
+    );
+    await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(1));
+    const arg = open.mock.calls[0]![0] as { url: string; windowId: number };
+    const query = (url: string) => new URLSearchParams(url.slice(url.indexOf('?')));
+    expect(arg.windowId).toBe(9);
+    expect(query(arg.url).get('incognito')).toBe('1');
+
+    clicks[0]!(
+      { menuItemId: OPEN_LINK_MENU_ID, linkUrl: 'https://files.example.org/notes.pdf' },
+      { id: 8, windowId: 2, index: 0, url: 'https://example.org/', incognito: false },
+    );
+    await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(2));
+    const normal = open.mock.calls[1]![0] as { url: string };
+    expect(query(normal.url).has('incognito')).toBe(false);
   });
 
   it('opens nothing for another menu or an address that is not a PDF', async () => {

@@ -51,8 +51,10 @@ function makeTest(extensionPath: string) {
         args: [`--disable-extensions-except=${extensionPath}`, `--load-extension=${extensionPath}`],
       });
       await use(context);
-      await context.close();
-      fs.rmSync(userDataDir, { recursive: true, force: true });
+      // A browser that already went away (a test closed it, or Windows tore the profile down first)
+      // is not a product failure: the test body has already passed or failed on its own assertions.
+      await context.close().catch(() => undefined);
+      fs.rmSync(userDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     },
     serviceWorker: async ({ context }, use) => {
       const existing = context.serviceWorkers()[0];

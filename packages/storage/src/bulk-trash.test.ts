@@ -12,11 +12,20 @@ import {
   bulkTag,
 } from './bulk';
 import { getDb } from './db';
-import { createFolder, deleteBank, deleteFolder } from './hierarchy';
+import { createFolder, deleteBank, deleteFolder, mergeBanks } from './hierarchy';
 import { addToBank } from './membership';
-import { createNote } from './notes';
+import { createNote, deleteNote as trashNote } from './notes';
 import { listHighlights } from './query';
+import { checkIntegrity } from './registry';
 import { createBank, listBanks, softDeleteHighlight } from './repo';
+import {
+  createDeck,
+  createKnowledgePoint,
+  createManualCards,
+  getKnowledgePoint,
+  reviewCard,
+  updateKnowledgePoint,
+} from './study';
 import { attachTags, createTag } from './tags';
 import { emptyTrash, getLastPurgeAt, listTrash, purge, purgeOlderThan, restore } from './trash';
 import { dump, freshDatabase, save, saveOn, trackEpochs } from './test-vault';
@@ -363,6 +372,13 @@ describe('trash', () => {
       const folder = await createFolder({ bankId: bank.id, name: 'F' });
       const h = await save('Survives the bank', { bankId: bank.id });
       await addToBank({ highlightId: h.id, bankId: bank.id, folderId: folder.id });
+      // The bank's deck, with a card and its review history, must not be left pointing at it.
+      const deck = await createDeck({ name: 'Purged bank deck', bankId: bank.id });
+      const [card] = await createManualCards(
+        [{ template: 'basic', question: 'Which bank?', answer: 'The purged one' }],
+        { deckId: deck.id },
+      );
+      await reviewCard(card!.id, 3);
       await deleteBank(bank.id);
 
       const result = await purge([{ kind: 'bank', id: bank.id }]);
@@ -375,6 +391,140 @@ describe('trash', () => {
       ]);
       await expect(purge([{ kind: 'bank', id: INBOX_BANK_ID }])).rejects.toMatchObject({
         code: 'invalid_request',
+      });
+
+      // The deck outlives its bank as a free-standing deck, with its card and review log.
+      expect(await getDb().decks.get(deck.id)).toMatchObject({ bankId: null, deletedAt: null });
+      expect(await getDb().cards.get(card!.id)).toBeDefined();
+      expect(await getDb().reviewLogs.count()).toBe(1);
+      expect(await checkIntegrity()).toMatchObject({ ok: true, issues: [] });
+    });
+
+    it('merging banks re-points the decks of the merged bank, so a later purge orphans nothing', async () => {
+      const from = await createBank('Merged away');
+      const into = await createBank('Merged into');
+      const deck = await createDeck({ name: 'Deck of the merged bank', bankId: from.id });
+      await mergeBanks({ sourceId: from.id, targetId: into.id });
+      expect(await getDb().decks.get(deck.id)).toMatchObject({ bankId: into.id });
+
+      await purge([{ kind: 'bank', id: from.id }]);
+      expect(await getDb().decks.get(deck.id)).toMatchObject({ bankId: into.id });
+      expect(await checkIntegrity()).toMatchObject({ ok: true, issues: [] });
+    });
+
+    describe('derived text', () => {
+      it('removes an AI result when ANY of its inputs is purged, not only the first highlight', async () => {
+        const first = await save('First input of the AI result');
+        const second = await save('Second input of the AI result');
+        const keep = await save('Unrelated highlight');
+        const note = await createNote({ highlightId: keep.id, body: 'A note used as an input' });
+        const db = getDb();
+        await db.aiResults.bulkPut([
+          // highlightId names only the FIRST input that is a stored highlight.
+          { id: 'ai-multi-001', highlightId: first.id, inputSourceIds: [first.id, second.id] },
+          { id: 'ai-note-0001', highlightId: keep.id, inputSourceIds: [keep.id, note.id] },
+          { id: 'ai-other-001', highlightId: keep.id, inputSourceIds: [keep.id] },
+          { id: 'ai-legacy-01', highlightId: second.id },
+        ]);
+        await bulkDelete([second.id]);
+        const result = await purge([second.id]);
+        // Purging the second input removes the result that only listed it, and the legacy row.
+        expect(result.related.aiResults).toBe(2);
+        expect((await db.aiResults.toArray()).map((r) => r.id).sort()).toEqual([
+          'ai-note-0001',
+          'ai-other-001',
+        ]);
+
+        // A purged note takes with it every result it was an input of.
+        await trashNote(note.id);
+        const noteResult = await purge([{ kind: 'note', id: note.id }]);
+        expect(noteResult.related.aiResults).toBe(1);
+        expect((await db.aiResults.toArray()).map((r) => r.id)).toEqual(['ai-other-001']);
+      });
+
+      it('removes AI results through every purge path (emptyTrash, purgeOlderThan)', async () => {
+        const a = await save('Input purged by emptyTrash');
+        const b = await save('Input purged by age');
+        const db = getDb();
+        await db.aiResults.bulkPut([
+          { id: 'ai-empty-001', highlightId: null, inputSourceIds: ['zz-gone-0001', a.id] },
+          { id: 'ai-aged-001', highlightId: null, inputSourceIds: [b.id] },
+        ]);
+        await softDeleteHighlight(b.id);
+        await db.highlights.update(b.id, {
+          deletedAt: new Date(Date.now() - 40 * 86_400_000).toISOString(),
+        });
+        await purgeOlderThan(30);
+        expect((await db.aiResults.toArray()).map((r) => r.id)).toEqual(['ai-empty-001']);
+        await softDeleteHighlight(a.id);
+        await emptyTrash();
+        expect(await db.aiResults.count()).toBe(0);
+      });
+
+      it('strips purged evidence from knowledge points that survive, and keeps them valid', async () => {
+        const own = await save('The highlight the point was written on');
+        const cited = await save('A second highlight used as evidence and primary quote');
+        const stays = await save('A third highlight that stays cited');
+        const kp = await createKnowledgePoint({
+          highlightId: own.id,
+          primaryQuoteId: cited.id,
+          shortOneLiner: 'Cites two highlights',
+          claims: [
+            { text: 'First claim', evidenceHighlightIds: [cited.id], reliability: 'unrated' },
+            {
+              text: 'Second claim',
+              evidenceHighlightIds: [cited.id, stays.id],
+              reliability: 'unrated',
+            },
+          ],
+        });
+        await updateKnowledgePoint(kp.id, { verificationStatus: 'source_supported' });
+        const onlyEvidence = await createKnowledgePoint({
+          highlightId: own.id,
+          shortOneLiner: 'Supported only by the purged highlight',
+          claims: [{ text: 'Only claim', evidenceHighlightIds: [cited.id], reliability: 'high' }],
+        });
+        await updateKnowledgePoint(onlyEvidence.id, { verificationStatus: 'source_supported' });
+
+        await bulkDelete([cited.id]);
+        await purge([cited.id]);
+
+        const after = await getKnowledgePoint(kp.id);
+        expect(after).toMatchObject({
+          // re-homed to the point's own highlight, which exists
+          primaryQuoteId: own.id,
+          // still supported: one claim keeps its other evidence
+          verificationStatus: 'source_supported',
+        });
+        expect(after!.claims.map((c) => c.evidenceHighlightIds)).toEqual([[], [stays.id]]);
+        const bare = await getKnowledgePoint(onlyEvidence.id);
+        expect(bare!.claims[0]!.evidenceHighlightIds).toEqual([]);
+        // no evidence left: the label the schema requires, never a stale "source supported"
+        expect(bare!.verificationStatus).toBe('not_checked');
+        // and the claims can be saved again
+        await expect(
+          updateKnowledgePoint(bare!.id, { claims: bare!.claims }),
+        ).resolves.toBeDefined();
+        expect(await checkIntegrity()).toMatchObject({ ok: true, issues: [] });
+      });
+
+      it('removes a source that only a purged note kept alive', async () => {
+        const h = await save('Only highlight of a page that also has a source-level note');
+        const db = getDb();
+        const sourceId = (await db.highlights.get(h.id))!.sourceId;
+        const note = await createNote({ sourceId, body: 'A note on the page itself' });
+
+        await bulkDelete([h.id]);
+        const first = await purge([h.id]);
+        // The note still refers to the source, so it stays.
+        expect(first.related.sources).toBe(0);
+        expect(await db.sources.get(sourceId)).toBeDefined();
+
+        await trashNote(note.id);
+        const second = await purge([{ kind: 'note', id: note.id }]);
+        expect(second.related.sources).toBe(1);
+        expect(await db.sources.get(sourceId)).toBeUndefined();
+        expect(await checkIntegrity()).toMatchObject({ ok: true, issues: [] });
       });
     });
 

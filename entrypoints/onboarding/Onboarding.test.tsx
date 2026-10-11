@@ -55,9 +55,11 @@ describe('the tour', () => {
     expect(heading()).toBe('What StudyVault does');
     expect(screen.getByText('Everything stays on this device by default')).toBeTruthy();
     expect(screen.getByTestId(TID.skip)).toBeTruthy();
-    expect(screen.getByTestId(TID.progress).textContent).toMatch(/step 1 of 7/);
+    expect(screen.getByTestId(TID.progress).textContent).toMatch(/Step 1 of 7/);
     // Focus starts on the step heading, so the keyboard and a screen reader begin at its top.
-    expect(document.activeElement).toBe(screen.getByRole('heading', { level: 2 }));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('heading', { level: 2 })),
+    );
     // Nothing is stored just by looking.
     expect((await browser.storage.local.get(ONBOARDING_KEY))[ONBOARDING_KEY]).toBeUndefined();
   });
@@ -66,7 +68,9 @@ describe('the tour', () => {
     render(<Onboarding />);
     await go('Start');
     await waitFor(() => expect(heading()).toBe('Your privacy choices'));
-    expect(document.activeElement).toBe(screen.getByRole('heading', { level: 2 }));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('heading', { level: 2 })),
+    );
     await waitFor(async () =>
       expect(await getOnboardingState()).toMatchObject({ status: 'pending', step: 'privacy' }),
     );
@@ -147,13 +151,12 @@ describe('privacy choices', () => {
   it('saves the two switches straight away', async () => {
     render(<Onboarding />);
     await walkTo('privacy');
+    // One at a time: jsdom has no Web Locks, which in Chrome serialise the two writes.
     await userEvent.click(screen.getByTestId(TID.privateWindows));
+    await waitFor(async () => expect((await getSettings()).allowIncognitoCapture).toBe(true));
     await userEvent.click(screen.getByTestId(TID.paintHighlights));
-    await waitFor(async () => {
-      const s = await getSettings();
-      expect(s.allowIncognitoCapture).toBe(true);
-      expect(s.paintHighlights).toBe(false);
-    });
+    await waitFor(async () => expect((await getSettings()).paintHighlights).toBe(false));
+    expect((await getSettings()).allowIncognitoCapture).toBe(true);
   });
 
   it('reports a setting that could not be saved', async () => {
@@ -322,12 +325,10 @@ describe('theme, shortcuts and the end', () => {
     render(<Onboarding />);
     await walkTo('look');
     await userEvent.click(screen.getByTestId(TID.theme('dark')));
+    await waitFor(async () => expect((await getSettings()).theme).toBe('dark'));
     await userEvent.click(screen.getByTestId(TID.density('compact')));
-    await waitFor(async () => {
-      const s = await getSettings();
-      expect(s.theme).toBe('dark');
-      expect(s.density).toBe('compact');
-    });
+    await waitFor(async () => expect((await getSettings()).density).toBe('compact'));
+    expect((await getSettings()).theme).toBe('dark');
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe('dark'));
   });
 

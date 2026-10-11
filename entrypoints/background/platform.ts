@@ -1,6 +1,6 @@
 import { browser } from 'wxt/browser';
 import { StudyVaultError } from '@shared';
-import { callTab, getSettings, updateSettings } from '@runtime';
+import { callTab, getTrustedSettings, updateSettings } from '@runtime';
 import type { Badge, CommandDeps, MenuPort } from './commands';
 import type { SessionArea } from './handlers';
 import {
@@ -23,7 +23,8 @@ const ALL_SITES_PATTERNS = new Set(['https://*/*', 'http://*/*', '*://*/*', '<al
 
 export function browserSiteDeps(): SiteAccessDeps {
   return {
-    getSettings,
+    // The authoritative copy (deny list, hint): a content script can write chrome.storage.local.
+    getSettings: getTrustedSettings,
     hasPermission: (origin) =>
       browser.permissions.contains({ origins: [origin] }).catch(() => false),
     grantedOrigins: async () => {
@@ -94,7 +95,7 @@ export function browserCommandDeps(site: SiteAccess): CommandDeps {
     activate: (tabId) => site.activate(tabId),
     captureSelection: (tabId, method) =>
       callTab(tabId, 'content.captureSelection', { method, bankId: null }),
-    allowIncognitoCapture: async () => (await getSettings()).allowIncognitoCapture,
+    allowIncognitoCapture: async () => (await getTrustedSettings()).allowIncognitoCapture,
     focusToolbar: (tabId) => callTab(tabId, 'content.focusToolbar', {}),
     stepHighlight: (tabId, direction) => callTab(tabId, 'content.stepHighlight', { direction }),
     openSidePanel: async (windowId) => {

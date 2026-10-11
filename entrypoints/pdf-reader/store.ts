@@ -1,4 +1,5 @@
 import {
+  assertPdfWriteAllowed,
   cacheDocumentBytes,
   createBank,
   getDocument,
@@ -49,6 +50,10 @@ export function createStorageStore(): PdfStore {
           originalUrl: d.document.originalUrl,
         })),
     listBanks: () => listBanks(),
-    createBank: (name) => createBank(name),
+    // createBank lives in the repo, outside the PDF write path: the same restriction applies.
+    createBank: async (name) => {
+      await assertPdfWriteAllowed();
+      return createBank(name);
+    },
   };
 }

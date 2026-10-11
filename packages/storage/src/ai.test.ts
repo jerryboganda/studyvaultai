@@ -45,7 +45,10 @@ import {
   createSnapshotSource,
 } from './backupTarget';
 import { getDb } from './db';
+import { createNote, deleteNote } from './notes';
 import { checkIntegrity, getTableRegistry } from './registry';
+import { softDeleteHighlight } from './repo';
+import { purge } from './trash';
 import { dump, freshDatabase, save } from './test-vault';
 
 const KEY = 'sk-test-0123456789abcdefSECRETKEY';
@@ -644,6 +647,71 @@ describe('checkAiEndpoint', () => {
       expect(r.ok, bad).toBe(false);
       if (!r.ok) expect(r.reason.length).toBeGreaterThan(10);
     }
+  });
+});
+
+describe('purging the inputs of a result', () => {
+  it('removes the result (output and evidence quotes) whichever highlight input is purged', async () => {
+    const result = await pearl(); // inputs: h1 (what the highlightId index names) and h2
+    const stored = await saveAiResult(result);
+    expect(stored.highlightId).toBe(h1.id);
+    expect(stored.inputSourceIds).toEqual(expect.arrayContaining([h1.id, h2.id]));
+
+    await softDeleteHighlight(h2.id);
+    const purged = await purge([{ kind: 'highlight', id: h2.id }]);
+    expect(purged.related.aiResults).toBe(1);
+    expect(await getAiResult(result.id)).toBeNull();
+    expect(await countAiResults()).toBe(0);
+    // the other input is untouched
+    expect(await getDb().highlights.get(h1.id)).toBeDefined();
+  });
+
+  it('removes the result when a NOTE input is purged, and keeps unrelated results', async () => {
+    const note = await createNote({ highlightId: h1.id, body: 'Study note used as AI input' });
+    const withNote = await produce('exam_pearl', {
+      chunks: [chunk(h1), { id: note.id, kind: 'note', text: note.body }],
+    });
+    const unrelated = await produce('exam_pearl', { chunks: [chunk(h2)] });
+    await saveAiResult(withNote);
+    await saveAiResult(unrelated);
+    expect(await countAiResults()).toBe(2);
+
+    await deleteNote(note.id);
+    await purge([{ kind: 'note', id: note.id }]);
+    expect(await getAiResult(withNote.id)).toBeNull();
+    expect(await getAiResult(unrelated.id)).not.toBeNull();
+    // the highlight the note was written on is still there, and so is the unrelated result
+    expect(await getDb().highlights.get(h1.id)).toBeDefined();
+  });
+
+  it('removes the results of a highlight together with its notes in one purge, atomically', async () => {
+    const note = await createNote({ highlightId: h2.id, body: 'A note on the second highlight' });
+    const viaNote = await produce('exam_pearl', {
+      chunks: [chunk(h1), { id: note.id, kind: 'note', text: note.body }],
+    });
+    await saveAiResult(viaNote);
+    await softDeleteHighlight(h2.id);
+
+    // A failure after the result was removed (the last step writes the purge marker) rolls the whole
+    // purge back: nothing is half-deleted.
+    const db = getDb();
+    const boom = () => {
+      throw new Error('injected');
+    };
+    db.meta.hook('creating', boom);
+    try {
+      await expect(purge([{ kind: 'highlight', id: h2.id }])).rejects.toBeDefined();
+    } finally {
+      db.meta.hook('creating').unsubscribe(boom);
+    }
+    expect(await db.highlights.get(h2.id)).toBeDefined();
+    expect(await getAiResult(viaNote.id)).not.toBeNull();
+    expect(await db.notes.get(note.id)).toBeDefined();
+
+    await purge([{ kind: 'highlight', id: h2.id }]);
+    // the note went with its highlight, and the result that used the note as an input with it
+    expect(await db.notes.get(note.id)).toBeUndefined();
+    expect(await getAiResult(viaNote.id)).toBeNull();
   });
 });
 

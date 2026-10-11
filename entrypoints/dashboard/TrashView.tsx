@@ -247,10 +247,11 @@ export function TrashView() {
         <ExplainDialog
           title="Empty the trash?"
           lines={[
-            ...KINDS.filter((k) => counts.has(k)).map(
-              (k) =>
-                `${(counts.get(k) ?? 0).toLocaleString()}${capped && (counts.get(k) ?? 0) >= LIMIT ? '+' : ''} ${KIND_LABELS[k].many} will be removed for good.`,
-            ),
+            ...KINDS.filter((k) => counts.has(k)).map((k) => {
+              const n = counts.get(k) ?? 0;
+              const noun = n === 1 ? KIND_LABELS[k].one : KIND_LABELS[k].many;
+              return `${n.toLocaleString()}${capped && n >= LIMIT ? '+' : ''} ${noun} will be removed for good.`;
+            }),
             'This cannot be undone.',
           ]}
           confirmLabel="Empty the trash"

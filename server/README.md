@@ -89,9 +89,10 @@ this API must not start accepting cookies.
 
 ### What the server can and cannot see
 
-- **Without E2EE** (the default when sync is on): the operator can read every payload. TLS protects it in
-  transit and the database can be encrypted at rest, but that is *not* end-to-end encryption and the
-  client never calls it that.
+- **Without E2EE** (only when the person explicitly chose "Upload without end-to-end encryption": the
+  extension uploads nothing until it has either that choice or a passphrase): the operator can read
+  every payload. TLS protects it in transit and the database can be encrypted at rest, but that is
+  *not* end-to-end encryption and the client never calls it that.
 - **With E2EE** (the user chose a passphrase): payloads are AES-256-GCM ciphertext. The key is derived on
   the device (PBKDF2-SHA-256, 600,000 rounds) and never sent; the server stores only salt, cost and a
   check value. The server still sees entity type and id, operation type, revision, clock, sizes and
@@ -175,7 +176,11 @@ decisions and resources that are not in it. Each box is something a person has t
       click that turns sync on (a token endpoint on another origin, from the next click).
 - [ ] Privacy policy and Chrome Web Store data-use disclosures that name the server operator, the data
       categories, and the difference between E2EE and non-E2EE sync.
-- [ ] A user-facing explanation in the settings screen before the flag can be switched on.
+- [x] A user-facing explanation in the settings screen before the flag can be switched on. Done in
+      the extension (`Explanation` in `packages/ui/src/sync/SyncSection.tsx`, generated from the sync
+      policy and unit-tested; no end-to-end run yet): it says what is uploaded, that nothing is
+      uploaded until the person chooses a passphrase or "Upload without end-to-end encryption", and
+      what the server and the sign-in provider learn.
 
 ## 6. Known limitations
 
@@ -187,5 +192,17 @@ decisions and resources that are not in it. Each box is something a person has t
   cannot know.
 - Rotation re-encrypts the live log; copies of the old ciphertext in backups remain readable with the
   old passphrase until those backups expire.
+- The server cannot be asked to vouch for what it stores. When the client sets up or changes
+  encryption it re-encrypts only the operations it can authenticate (or, when it migrates a
+  plaintext log, ones it validated itself) and replaces every other stored payload with an
+  envelope no key opens, because `POST /v1/e2ee/rotate` insists on covering every operation. A
+  server that injects operations therefore sees them become undecryptable on every device, not
+  authentic, with one exception: a plaintext log authenticates nobody, so when the client migrates
+  one, an injected operation that passes its validation under the sync policy (well-formed, a known
+  entity type, no protected field changed, attributed to another device) is kept and then
+  encrypted. Choosing a passphrase before the first upload avoids that case
+  (docs/adr/010-module-seams.md amendment 1, THREAT_MODEL.md R16). A server that later stops
+  presenting the key profile, or presents an older or a different one, is refused by a client
+  that enabled encryption: it uploads nothing until the person deletes the server data.
 - The JWT verifier checks signature and claims, not revocation: a revoked access token stays valid until
   it expires (keep lifetimes short).

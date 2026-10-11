@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createSearchIndex, type SearchHit } from '@search';
 import type { SearchDocument } from '@shared';
+import { toIndexDocument } from '@ui/vault/searchHost';
 import { describeIndex, hitReveal, rowsFromHits } from './searchModel';
 
 const doc = (id: string, over: Partial<SearchDocument> = {}): SearchDocument => ({
@@ -26,7 +27,7 @@ const doc = (id: string, over: Partial<SearchDocument> = {}): SearchDocument => 
 
 function search(docs: SearchDocument[], query: string): SearchHit[] {
   const index = createSearchIndex();
-  index.applyChanges(docs);
+  index.applyChanges(docs.map(toIndexDocument));
   return index.search(query).hits;
 }
 
@@ -57,9 +58,9 @@ describe('rowsFromHits', () => {
           docType: 'note',
           highlightId: 'hl-00000001',
           quote: 'Mitochondria are the powerhouse.',
-          kind: '',
-          priority: 0,
-          resolveStatus: '',
+          kind: null,
+          priority: null,
+          resolveStatus: null,
         }),
       ],
       'mitochondria',
@@ -77,9 +78,9 @@ describe('rowsFromHits', () => {
           docType: 'note',
           highlightId: null,
           quote: 'Remember the Krebs cycle.',
-          kind: '',
-          priority: 0,
-          resolveStatus: '',
+          kind: null,
+          priority: null,
+          resolveStatus: null,
         }),
       ],
       'krebs',

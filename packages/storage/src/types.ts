@@ -113,8 +113,9 @@ export interface RepoApi {
    * chrome.storage.local (settings, change epochs) and chrome.storage.session (pending focus), and
    * revokes the optional host permissions, then notifies other contexts. The caller re-syncs the
    * persistent content script afterwards (`site.sync`). Not refused by data from a newer build:
-   * this is the way out of it. Rejects with storage_unavailable when another window keeps the
-   * database open.
+   * this is the way out of it. When another window keeps the database open the delete stays queued
+   * and this keeps waiting (the implementation takes `WipeOptions`: `onState` to show "close the
+   * other windows", `signal` to stop waiting); the other stores are cleared once it completes.
    */
   wipeAllData(): Promise<void>;
 }
@@ -321,6 +322,22 @@ export interface StorageUsage {
   estimate: { usage: number | null; quota: number | null } | null;
 }
 
+/**
+ * Paging of the search feed. A page holds `limit` documents unless the feed has ended (rows that
+ * cannot be read, and ids that name no row, are passed over and the page is filled from what
+ * follows), so a page shorter than `limit` is the last one. Continue with `afterId` = the id of the
+ * last document.
+ */
+export interface SearchFeedOptions {
+  afterId?: string;
+  limit?: number;
+  /**
+   * Called once, with how many rows this page passed over because they exist but cannot be read.
+   * An indexer counts them as items it could not index.
+   */
+  onSkipped?: (count: number) => void;
+}
+
 export interface VaultApi {
   // hierarchy
   createFolder(input: {
@@ -443,12 +460,10 @@ export interface VaultApi {
   getHighlightDetail(id: string, options?: { includeDeleted?: boolean }): Promise<HighlightDetail>;
 
   // search feed
-  listSearchDocuments(options?: { afterId?: string; limit?: number }): Promise<SearchDocument[]>;
-  listSearchDocumentsChangedSince(options: {
-    since: string;
-    afterId?: string;
-    limit?: number;
-  }): Promise<SearchDocument[]>;
+  listSearchDocuments(options?: SearchFeedOptions): Promise<SearchDocument[]>;
+  listSearchDocumentsChangedSince(
+    options: SearchFeedOptions & { since: string },
+  ): Promise<SearchDocument[]>;
   getLastPurgeAt(): Promise<string | null>;
 
   // PDF store

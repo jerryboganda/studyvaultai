@@ -436,6 +436,28 @@ describe('undo', () => {
     expect(await undoLastReview(id)).toEqual({ status: 'refused', reason: 'no_review' });
   });
 
+  it('undoes the answer the card is in, even when two logs share a review time (clock set back)', async () => {
+    const { cards } = await seedDeck(1);
+    const id = cards[0]!.id;
+    // The newer answer's id sorts BEFORE the older one: an ordering by (reviewedAt, id) alone would
+    // call the older answer "the last".
+    const first = await reviewCard(id, 3, { now: T0, boundary: UTC, logId: 'log-zzzz-first' });
+    const second = await reviewCard(id, 3, {
+      now: T0 - 5 * MIN, // the clock went back: the review time is held at the previous one
+      boundary: UTC,
+      logId: 'log-aaaa-second',
+    });
+    if (first.status !== 'reviewed' || second.status !== 'reviewed') throw new Error('setup');
+    expect(second.clockAdjusted).toBe(true);
+    expect(second.log.reviewedAt).toBe(first.log.reviewedAt);
+
+    const undone = await undoLastReview(id, { now: T0 + MIN, expectLogId: second.log.id });
+    expect(undone.status).toBe('undone');
+    if (undone.status !== 'undone') return;
+    expect(undone.log.id).toBe('log-aaaa-second');
+    expect(undone.card.fsrs).toEqual(first.card.fsrs);
+  });
+
   it('refuses when the card has moved on or the learner meant another answer', async () => {
     const { cards } = await seedDeck(1);
     const id = cards[0]!.id;
@@ -818,6 +840,26 @@ describe('editing and managing cards', () => {
     await expect(updateCard(card!.id, { answerChoiceId: 'ch9' })).rejects.toMatchObject({
       code: 'invalid_request',
     });
+  });
+
+  it('a deck deleted while cards are being moved never ends up holding live cards', async () => {
+    const { cards } = await seedDeck(1);
+    const target = await createDeck({ name: 'Target' });
+    // The check of the deck and the move must be one transaction: started together, either the move
+    // commits first (and the delete takes the card with its deck) or it finds the deck gone.
+    const [moved] = await Promise.allSettled([
+      moveCards([cards[0]!.id], target.id),
+      deleteDeck(target.id),
+    ]);
+    if (moved.status === 'rejected') {
+      expect(moved.reason).toMatchObject({ code: 'not_found' });
+    }
+    const db = getDb();
+    const decks = new Map((await db.decks.toArray()).map((d) => [d.id, d] as const));
+    for (const card of await db.cards.toArray()) {
+      if (card.deletedAt !== null) continue;
+      expect(decks.get(card.deckId as string)?.deletedAt, `deck of ${card.id}`).toBeNull();
+    }
   });
 
   it('suspends, reschedules, resets and moves, each with one change signal', async () => {

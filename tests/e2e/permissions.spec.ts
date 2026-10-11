@@ -3,6 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { Page } from '@playwright/test';
 import { DEFAULT_DENY_HOSTS } from '@shared';
+import { E2E_EXTENSION_PATH, PROD_EXTENSION_PATH } from './fixtures';
 import {
   OVERLAY_HOST,
   activate,
@@ -752,6 +753,9 @@ test.describe('restricted pages: tab.activate answers with a specific error and 
     await expect(popup.getByText("PDFs open in Chrome's built-in viewer")).toBeVisible();
     await expect(popup.getByText(/cannot highlight here/)).toBeVisible();
     await expect(popup.getByRole('button', { name: 'Activate on this tab' })).toHaveCount(0);
+    // What IS possible: StudyVault's own reader (a loopback or https address; the e2e server is
+    // loopback). The popup only offers it; the reader itself is covered by pdf.spec.ts.
+    await expect(popup.getByRole('button', { name: 'Open in StudyVault reader' })).toBeVisible();
     // The side panel works without the page (saved highlights from every page), so it is offered here
     // too; what is not possible on this page is said above.
     await expect(popup.getByRole('button', { name: 'Open side panel' })).toBeVisible();
@@ -812,10 +816,32 @@ prodTest.describe('production build', () => {
     expect(manifest.side_panel).toEqual({ default_path: 'sidepanel.html' });
     expect(manifest.options_ui).toEqual({ open_in_tab: true, page: 'options.html' });
     expect(manifest.background).toEqual({ service_worker: 'background.js' });
-    // Extension pages may only talk to themselves (SECURITY_PRIVACY: "nothing leaves the device").
-    expect(manifest.content_security_policy).toEqual({
-      extension_pages:
-        "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; base-uri 'self'; connect-src 'self' https: http://localhost:* http://127.0.0.1:*; frame-src 'none'; form-action 'none'",
+    // The exact policy (docs/adr/009), directive by directive so a reordering is not a failure but
+    // any added source is. connect-src is the only directive wider than 'self' (AI, sync, PDF from a
+    // web address); there is no unsafe-inline or unsafe-eval anywhere. That Chrome ENFORCES it is
+    // proven in pages.spec.ts ("the policy is enforced").
+    const csp = manifest.content_security_policy as { extension_pages?: string } | undefined;
+    const policy = Object.fromEntries(
+      (csp?.extension_pages ?? '')
+        .split(';')
+        .map((d) => d.trim().split(/\s+/))
+        .filter((parts) => parts[0])
+        .map(([name = '', ...sources]) => [name, sources] as const),
+    );
+    expect(policy).toEqual({
+      'default-src': ["'self'"],
+      'script-src': ["'self'", "'wasm-unsafe-eval'"],
+      'style-src': ["'self'"],
+      'img-src': ["'self'", 'data:'],
+      'font-src': ["'self'"],
+      'connect-src': ["'self'", 'https:', 'http://localhost:*', 'http://127.0.0.1:*'],
+      'worker-src': ["'self'"],
+      'media-src': ["'none'"],
+      'manifest-src': ["'none'"],
+      'object-src': ["'none'"],
+      'base-uri': ["'self'"],
+      'frame-src': ["'none'"],
+      'form-action': ["'none'"],
     });
     expect(Object.keys(manifest.commands ?? {}).sort()).toEqual([
       'focus-toolbar',
@@ -872,14 +898,11 @@ prodTest.describe('production build', () => {
     // Runtime verification would need a content script running on a page, which this harness cannot
     // obtain on the production build (see the header comment). The e2e build is the same code with
     // mode "open"; the shipped bundle must carry mode "closed" and no "open" for the overlay.
-    const prod = fs.readFileSync(
-      path.resolve('.output/chrome-mv3/content-scripts/highlighter.js'),
-      'utf8',
-    );
-    const e2e = fs.readFileSync(
-      path.resolve('.output/chrome-mv3-e2e/content-scripts/highlighter.js'),
-      'utf8',
-    );
+    // Paths follow SV_OUT_DIR (a private build folder), like the fixtures that load the extension.
+    const script = (root: string) =>
+      fs.readFileSync(path.join(root, 'content-scripts/highlighter.js'), 'utf8');
+    const prod = script(PROD_EXTENSION_PATH);
+    const e2e = script(E2E_EXTENSION_PATH);
     const mode = (src: string) => /position:`inline`,[^}]*?mode:`(open|closed)`/.exec(src)?.[1];
     expect(mode(prod)).toBe('closed');
     expect(mode(e2e)).toBe('open'); // proves the pattern really finds the overlay's setting

@@ -66,25 +66,46 @@ export default defineConfig({
         description: 'Go to the previous highlight on the page',
       },
     },
-    // Defence in depth. Core features make no network request at all. The OPTIONAL AI and sync
-    // features talk to an endpoint the USER configures, which cannot be listed statically, so https:
-    // (and loopback, for local models) is allowed here; each such call additionally needs the feature
-    // flag, an explicit consent token / sign-in, and a per-origin host permission. See docs/adr/009.
-    // 'wasm-unsafe-eval' permits compiling WebAssembly ONLY (the OCR engine and PDF decoders need it);
-    // it does not allow eval()/new Function(), which stay blocked. See docs/adr/008.
+    // Defence in depth. Local features (capture, banks, search, review, backup, OCR) make no network
+    // request. Three user-initiated paths do, and their endpoints are chosen by the USER so they cannot
+    // be listed statically: the optional AI call, the optional sync, and opening a PDF from a web
+    // address. So connect-src allows https: (and loopback, for local models and dev); each call
+    // additionally needs a user action, a feature flag / consent token and a per-origin host permission.
+    // See docs/adr/009. Everything else is fixed to the extension itself:
+    //  - 'wasm-unsafe-eval' permits compiling WebAssembly ONLY (OCR engine, PDF decoders); eval() and
+    //    new Function() stay blocked (docs/adr/008). Nothing here allows inline script.
+    //  - style-src 'self' has no 'unsafe-inline': React/pdf.js assign styles through the CSSOM, which
+    //    CSP allows; only <style> tags and style="" markup are refused.
+    //  - img-src data: is for the PDF reader's wavy-underline mask (an inline SVG in reader.css).
+    //  - worker-src 'self': the pdf.js and tesseract workers are extension files (tesseract is started
+    //    with workerBlobURL:false). Chromium still lets extension code start a blob: Worker under
+    //    'self'; that is no gain for injected script, which script-src already stops (docs/adr/009).
     content_security_policy: {
       extension_pages:
-        "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; base-uri 'self'; connect-src 'self' https: http://localhost:* http://127.0.0.1:*; frame-src 'none'; form-action 'none'",
+        "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self' https: http://localhost:* http://127.0.0.1:*; worker-src 'self'; media-src 'none'; manifest-src 'none'; object-src 'none'; base-uri 'self'; frame-src 'none'; form-action 'none'",
     },
   },
   hooks: {
     // registration:'runtime' makes WXT copy content-script `matches` into host_permissions.
     // We register scripts ourselves from optional permissions, so install-time hosts must stay empty.
-    'build:manifestGenerated': (_wxt, manifest) => {
+    'build:manifestGenerated': (wxt, manifest) => {
       delete manifest.host_permissions;
       // e2e variant only: the native chrome.permissions.request prompt cannot be driven by
       // Playwright, so the test build is granted loopback origins up front. Never shipped.
       if (E2E) manifest.host_permissions = ['http://127.0.0.1/*', 'http://localhost/*'];
+      // `wxt` dev server only (never a build): Vite injects <style> tags and serves workers and
+      // assets from http://localhost:PORT, which the strict fetch directives would refuse. Dev
+      // keeps only the script/connect/frame rules, as before the hardening. scripts/check-build.mjs
+      // pins the built policy, so this cannot reach a build.
+      const csp = manifest.content_security_policy;
+      if (wxt.config.command === 'serve' && typeof csp === 'object' && csp.extension_pages) {
+        const strictOnly = ['default-src', 'style-src', 'img-src', 'font-src', 'worker-src'];
+        csp.extension_pages = csp.extension_pages
+          .split(';')
+          .map((d) => d.trim())
+          .filter((d) => d && !strictOnly.includes(d.split(/\s+/)[0] ?? ''))
+          .join('; ');
+      }
     },
   },
   zip: { name: 'studyvault-ai' },

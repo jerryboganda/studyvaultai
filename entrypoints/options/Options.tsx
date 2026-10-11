@@ -1,6 +1,14 @@
 import { useEffect, useState } from 'react';
 import { browser } from 'wxt/browser';
-import { Button, InlineNotice, ToastProvider, useAction, useApplyTheme, useSettings } from '@ui';
+import {
+  Button,
+  ErrorBoundary,
+  InlineNotice,
+  ToastProvider,
+  useAction,
+  useApplyTheme,
+  useSettings,
+} from '@ui';
 import { AiSettingsSection } from '@ui/ai';
 import { BackupSection } from '@ui/backup';
 import { reviewPageUrl } from '@ui/review/links';
@@ -85,18 +93,35 @@ function QuickActions({ reviewOn }: { reviewOn: boolean }) {
   );
 }
 
+/**
+ * False until one task after the first render of the sections. The sections that read the database
+ * or ask the worker (review, AI, sync, backup, storage) mount then, so the settings-only sections
+ * (site access above all) are on screen without waiting for IndexedDB, and a slow or failing data
+ * section can never hold up the ones that do not need it.
+ */
+function useDataSections(ready: boolean): boolean {
+  const [late, setLate] = useState(false);
+  useEffect(() => {
+    if (!ready) return undefined;
+    const timer = window.setTimeout(() => setLate(true), 0);
+    return () => window.clearTimeout(timer);
+  }, [ready]);
+  return late;
+}
+
 function OptionsBody() {
   const { settings, error, retry, update } = useSettings();
   useApplyTheme(settings?.theme);
   const ready = settings !== null;
+  const dataReady = useDataSections(ready);
 
   // The sections render after the settings are read, so the browser cannot scroll to a deep link
-  // (options.html#ai) by itself: do it once they exist.
+  // (options.html#ai) by itself: do it once they exist (the data sections arrive one task later).
   useEffect(() => {
-    if (!ready) return;
+    if (!dataReady) return;
     const id = sectionFromHash(window.location.hash);
     if (id) document.getElementById(id)?.scrollIntoView?.();
-  }, [ready]);
+  }, [dataReady]);
 
   return (
     <div className="opt">
@@ -130,29 +155,49 @@ function OptionsBody() {
                 <Capture settings={settings} update={update} />
               </div>
               <div id="review">
-                <ReviewSection settings={settings} update={update} />
+                {dataReady ? (
+                  <ErrorBoundary surface="review settings">
+                    <ReviewSection settings={settings} update={update} />
+                  </ErrorBoundary>
+                ) : null}
               </div>
               <div id="ai">
-                <AiSettingsSection />
+                {dataReady ? (
+                  <ErrorBoundary surface="AI settings">
+                    <AiSettingsSection />
+                  </ErrorBoundary>
+                ) : null}
               </div>
               <div id="sync">
-                <SyncSection />
+                {dataReady ? (
+                  <ErrorBoundary surface="sync settings">
+                    <SyncSection />
+                  </ErrorBoundary>
+                ) : null}
               </div>
               <div id="backup">
-                <BackupSection appVersion={browser.runtime.getManifest().version} />
+                {dataReady ? (
+                  <ErrorBoundary surface="backup settings">
+                    <BackupSection appVersion={browser.runtime.getManifest().version} />
+                  </ErrorBoundary>
+                ) : null}
               </div>
               <div id="storage">
-                <Storage />
+                {dataReady ? (
+                  <ErrorBoundary surface="storage figures">
+                    <Storage syncOn={settings.features.sync} />
+                  </ErrorBoundary>
+                ) : null}
               </div>
               <div id="shortcuts">
                 <KeyboardShortcuts />
               </div>
               <div id="privacy" className="sv-stack">
-                <Privacy />
+                <Privacy syncOn={settings.features.sync} />
                 <About />
               </div>
               <div id="data">
-                <YourData />
+                <YourData syncOn={settings.features.sync} />
               </div>
             </>
           )}

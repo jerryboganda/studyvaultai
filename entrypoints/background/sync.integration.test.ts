@@ -4,7 +4,8 @@ import { webcrypto } from 'node:crypto';
 import Dexie from 'dexie';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
-import { getSettings, updateSettings } from '@runtime';
+import { getTrustedSettings, updateSettings } from '@runtime';
+import { aadOf, SyncOperation, createPayloadCodec, unlockKey } from '@sync';
 import {
   closeDb,
   countSyncAttention,
@@ -38,20 +39,36 @@ interface Device {
   name: string;
   db: StudyVaultDb;
   service: SyncService;
+  deps: SyncServiceDeps;
   provider: FakeProvider;
-  net: { online: boolean };
+  /** `profile`: what the server shows for GET /v1/e2ee/profile (a hostile one lies). */
+  net: { online: boolean; profile?: 'hidden' | 'swapped' };
   mem: ReturnType<typeof memoryDeps>;
   /** Number of requests that reached the sync server from this device. */
   requests(): number;
 }
 let devices: Device[] = [];
 
-async function makeDevice(name: 'A' | 'B', o: { expiresInSeconds?: number } = {}): Promise<Device> {
-  const net = { online: true };
+async function makeDevice(
+  name: 'A' | 'B' | 'C',
+  o: { expiresInSeconds?: number } = {},
+): Promise<Device> {
+  const net: Device['net'] = { online: true };
   let sent = 0;
   const passthrough: typeof fetch = async (input, init) => {
     if (!net.online) throw new TypeError('Failed to fetch');
     sent++;
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    if (net.profile && url.endsWith('/v1/e2ee/profile') && (init?.method ?? 'GET') === 'GET') {
+      if (net.profile === 'hidden') {
+        return new Response(JSON.stringify({ error: { code: 'not_found', message: 'none' } }), {
+          status: 404,
+        });
+      }
+      const real = await fetch(input, init);
+      const body = (await real.json()) as { version: number; kid: string };
+      return new Response(JSON.stringify({ ...body, kid: 'k0-rolledback' }), { status: 200 });
+    }
     return fetch(input, init);
   };
   const provider = fakeProvider({
@@ -65,14 +82,14 @@ async function makeDevice(name: 'A' | 'B', o: { expiresInSeconds?: number } = {}
     ...(o.expiresInSeconds === undefined ? {} : { expiresInSeconds: o.expiresInSeconds }),
   });
   const mem = memoryDeps({ issuer: ISSUER, provider, redirectUrl: REDIRECT, alarms: null });
-  const db = name === 'A' ? getDb() : new StudyVaultDb('studyvault-device-b');
+  const db = name === 'A' ? getDb() : new StudyVaultDb(`studyvault-device-${name.toLowerCase()}`);
   const deps: SyncServiceDeps = {
     ...mem.base,
     // Device A is the real extension profile: its flag lives in (fake) chrome.storage, so the
     // per-connection gate of its repositories follows it. B keeps the flag in memory.
     ...(name === 'A'
       ? {
-          getSettings,
+          getSettings: getTrustedSettings,
           setFlag: async (enabled: boolean) => {
             await updateSettings((s) => ({ ...s, features: { ...s.features, sync: enabled } }));
           },
@@ -96,6 +113,7 @@ async function makeDevice(name: 'A' | 'B', o: { expiresInSeconds?: number } = {}
     name,
     db,
     service: createSyncService(deps),
+    deps,
     provider,
     net,
     mem,
@@ -105,8 +123,11 @@ async function makeDevice(name: 'A' | 'B', o: { expiresInSeconds?: number } = {}
   return device;
 }
 
-/** Configure, grant, enable and sign in: what the settings page does, step by step. */
-async function connect(d: Device, over: { grant?: boolean } = {}) {
+/**
+ * Configure, grant, enable, sign in and (unless `choose: 'none'`) take the choice that opens the
+ * first upload: what the settings page does, step by step. Nothing is uploaded before the choice.
+ */
+async function connect(d: Device, over: { grant?: boolean; choose?: 'plain' | 'none' } = {}) {
   await d.service.configure({ serverUrl: server.base, issuer: ISSUER, clientId: CLIENT_ID });
   if (over.grant !== false) {
     d.mem.granted.origins.add(`${new URL(server.base).origin}/*`);
@@ -116,6 +137,10 @@ async function connect(d: Device, over: { grant?: boolean } = {}) {
   const result = await d.service.signIn();
   expect(result.needsOrigins).toEqual([]);
   await d.service.settled();
+  if (over.choose !== 'none') {
+    await d.service.uploadWithoutEncryption();
+    await d.service.settled();
+  }
 }
 
 const sync = async (d: Device) => {
@@ -133,8 +158,9 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  for (const d of devices) if (d.name === 'B') d.db.close();
+  for (const d of devices) if (d.name !== 'A') d.db.close();
   await Dexie.delete('studyvault-device-b');
+  await Dexie.delete('studyvault-device-c');
   closeDb();
   await server.close();
 });
@@ -482,7 +508,7 @@ describe('end-to-end encryption through the service', () => {
 
     // Device B finds out the account is encrypted and waits for the passphrase.
     const b = await makeDevice('B');
-    await connect(b);
+    await connect(b, { choose: 'none' });
     const locked = await sync(b);
     expect(locked.status).toBe('locked');
     expect(locked.e2ee.mode).toBe('locked');
@@ -520,15 +546,17 @@ describe('end-to-end encryption through the service', () => {
       ok: false,
       reason: 'wrong_passphrase',
     });
+    // A genuine rotation has nothing to set aside.
     expect(await a.service.e2eeRotate(PASSPHRASE, 'a brand new long passphrase')).toEqual({
       ok: true,
       reason: null,
+      setAside: 0,
     });
     await a.service.settled();
     expect((await a.service.status()).e2ee.version).toBe(2);
 
     const b = await makeDevice('B');
-    await connect(b);
+    await connect(b, { choose: 'none' });
     await sync(b);
     expect(await b.service.e2eeUnlock(PASSPHRASE)).toEqual({
       ok: false,
@@ -542,5 +570,332 @@ describe('end-to-end encryption through the service', () => {
     await sync(b);
     expect((await b.db.highlights.get(h.highlight.id))?.exactQuote).toBe('Rotated secret text');
     void softDeleteHighlight;
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+
+/** What the user's key makes of one stored operation (null: it does not authenticate). */
+async function openWithPassphrase(passphrase: string) {
+  const res = await api(server.base, 'GET', '/v1/e2ee/profile', { token: TOKEN_A });
+  const profile = res.json;
+  const key = await unlockKey({
+    crypto: webcrypto as unknown as Crypto,
+    passphrase,
+    profile,
+  });
+  const codec = createPayloadCodec(webcrypto as unknown as Crypto);
+  codec.unlock(key, profile.kid);
+  return async (stored: unknown): Promise<unknown | null> => {
+    const op = SyncOperation.parse(stored);
+    if (!op.payloadEncrypted) return null;
+    try {
+      return await codec.decrypt(op.payload as never, aadOf(op));
+    } catch {
+      return null;
+    }
+  };
+}
+
+async function storedOps() {
+  const res = await api(server.base, 'GET', '/v1/ops?limit=500', { token: TOKEN_A });
+  return (res.json.ops as Array<{ op: Record<string, unknown> }>).map((o) => o.op);
+}
+
+const posts = () => server.events.filter((e) => e.route === 'POST /v1/ops').length;
+
+const forgedHighlightOp = (id: string, clientId: string, entityId: string) => ({
+  id,
+  clientId,
+  entityType: 'highlights',
+  entityId,
+  opType: 'upsert',
+  revision: 50,
+  hlc: `${(Date.now() + 5_000).toString(36).padStart(9, '0')}.0000.${clientId}`,
+  baseRevision: 49,
+  payload: {
+    v: 1,
+    full: false,
+    set: { id: entityId, exactQuote: 'FORGED QUOTE' },
+    prev: {},
+    base: {},
+    sets: {},
+    observed: null,
+  },
+  payloadEncrypted: false,
+  tombstone: false,
+  idempotencyKey: `${clientId}:${id}`,
+  createdAt: new Date().toISOString(),
+});
+
+describe('the first upload waits for an explicit choice', () => {
+  it('after sign-in nothing is uploaded, from the first run, the timer or "Sync now"', async () => {
+    await saveCapture(cap('Made before sync existed, still private.', 100));
+    const a = await makeDevice('A');
+    await connect(a, { choose: 'none' });
+
+    const view = await sync(a);
+    expect(view.status).toBe('awaiting_encryption_choice');
+    expect(view.encryptionChoice).toBe('undecided');
+    expect(view.pending).toBeGreaterThan(0); // queued here, not sent
+    expect((await a.service.runSync('alarm')).status).toBe('awaiting_encryption_choice');
+    expect(posts()).toBe(0);
+    expect(await storedOps()).toEqual([]);
+
+    // The explicit, informed choice opens it: what waited is now sent, unencrypted.
+    await a.service.uploadWithoutEncryption();
+    await a.service.settled();
+    const after = await sync(a);
+    expect(after.status).toBe('idle');
+    expect(after.pending).toBe(0);
+    expect(posts()).toBeGreaterThan(0);
+    expect((await a.service.status()).encryptionChoice).toBe('plaintext');
+  });
+
+  it('choosing a passphrase first means no plaintext ever reaches the server', async () => {
+    const SECRET = 'the very first upload must already be encrypted';
+    await saveCapture(cap(SECRET, 100));
+    const a = await makeDevice('A');
+    await connect(a, { choose: 'none' });
+    expect((await sync(a)).status).toBe('awaiting_encryption_choice');
+
+    await a.service.e2eeSetup(PASSPHRASE);
+    await a.service.settled();
+    expect((await sync(a)).status).toBe('idle');
+
+    const ops = await storedOps();
+    expect(ops.length).toBeGreaterThan(0);
+    expect(JSON.stringify(ops)).not.toContain(SECRET);
+    expect(ops.every((o) => o.payloadEncrypted === true)).toBe(true);
+    // Order on the wire: the key profile existed before the first operation was accepted.
+    const routes = server.events.map((e) => e.route);
+    const rotated = routes.indexOf('POST /v1/e2ee/rotate');
+    const firstPush = routes.indexOf('POST /v1/ops');
+    expect(rotated).toBeGreaterThanOrEqual(0);
+    expect(firstPush).toBeGreaterThan(rotated);
+  });
+
+  it('a device that joins an encrypted account cannot be talked into uploading plaintext', async () => {
+    await saveCapture(cap('Encrypted from the start.', 100));
+    const a = await makeDevice('A');
+    await connect(a, { choose: 'none' });
+    await a.service.e2eeSetup(PASSPHRASE);
+    await a.service.settled();
+    await sync(a);
+
+    const b = await makeDevice('B');
+    await connect(b, { choose: 'none' });
+    await sync(b);
+    await expect(b.service.uploadWithoutEncryption()).rejects.toMatchObject({
+      code: 'invalid_request',
+    });
+    expect((await sync(b)).status).toBe('locked');
+  });
+});
+
+describe('re-keying never blesses what the server planted', () => {
+  it('setting up encryption keeps what other devices wrote and validated, and sets the forgery aside', async () => {
+    const h = await saveCapture(cap('The real quote, written on device A.', 100));
+    const a = await makeDevice('A');
+    const b = await makeDevice('B');
+    await connect(a);
+    await sync(a);
+    await connect(b);
+    await sync(b);
+    // Device B makes a genuine edit that device A has not seen yet.
+    await b.db.highlights.update(h.highlight.id, {
+      userComment: 'genuinely written on device B',
+      updatedAt: new Date().toISOString(),
+    });
+    await sync(b);
+    await sync(a);
+
+    // The server plants plaintext operations: a rewrite of the provenance, and a made-up record.
+    const planted = [
+      forgedHighlightOp('forged-op-000001', 'client-forger-01', h.highlight.id),
+      {
+        ...forgedHighlightOp('forged-op-000002', 'client-forger-02', 'something-else-1'),
+        entityType: 'secretTable',
+      },
+    ];
+    const pushed = await api(server.base, 'POST', '/v1/ops', {
+      token: TOKEN_A,
+      body: { v: 1, clientId: 'client-forger-01', ops: planted.slice(0, 1) },
+    });
+    expect(pushed.json.results[0].status).toBe('accepted');
+    await api(server.base, 'POST', '/v1/ops', {
+      token: TOKEN_A,
+      body: { v: 1, clientId: 'client-forger-02', ops: planted.slice(1) },
+    });
+
+    const view = await a.service.e2eeSetup(PASSPHRASE);
+    await a.service.settled();
+
+    // The user is told: how many, and each one is listed with its reason.
+    expect(view.e2ee.setAside).toBeGreaterThanOrEqual(2);
+    const refused = await listSyncQuarantine();
+    expect(refused.map((q) => q.id)).toEqual(
+      expect.arrayContaining(['forged-op-000001', 'forged-op-000002']),
+    );
+
+    const open = await openWithPassphrase(PASSPHRASE);
+    const ops = await storedOps();
+    expect(ops.every((o) => o.payloadEncrypted === true)).toBe(true); // nothing readable is left
+    for (const id of ['forged-op-000001', 'forged-op-000002']) {
+      const forgery = ops.find((o) => o.id === id)!;
+      expect(await open(forgery), id).toBeNull(); // not authentic under the user's key
+    }
+    // Device B's validated edit was carried over as it is: it authenticates and says what B wrote.
+    const bClient = (await b.db.meta.get('sync.clientId'))!.value as string;
+    const fromB = ops.filter((o) => o.clientId === bClient);
+    const edits = await Promise.all(fromB.map((o) => open(o)));
+    expect(
+      edits.some((p) => (p as { set?: Record<string, unknown> } | null)?.set?.userComment),
+    ).toBe(true);
+    // Device A's own history was replaced by the authenticated "ignore" marker and re-sent as state.
+    const aClient = (await getDb().meta.get('sync.clientId'))!.value as string;
+    const ownMarkers = await Promise.all(
+      ops
+        .filter((o) => o.clientId === aClient && !String(o.idempotencyKey).includes('forged'))
+        .map(open),
+    );
+    expect(ownMarkers.some((p) => (p as { void?: boolean } | null)?.void === true)).toBe(true);
+
+    // A new device receives the real state, not the forgery.
+    const c = await makeDevice('C');
+    await connect(c, { choose: 'none' });
+    await sync(c);
+    expect(await c.service.e2eeUnlock(PASSPHRASE)).toEqual({ ok: true, reason: null });
+    await c.service.settled();
+    await sync(c);
+    const received = (await c.db.highlights.get(h.highlight.id))!;
+    expect(received.exactQuote).toBe('The real quote, written on device A.');
+    expect(received.userComment).toBe('genuinely written on device B');
+  });
+
+  it('changing the passphrase does not bless a plaintext operation the server added to an encrypted log', async () => {
+    const h = await saveCapture(cap('Rotated, and still only mine.', 100));
+    const a = await makeDevice('A');
+    await connect(a);
+    await a.service.e2eeSetup(PASSPHRASE);
+    await a.service.settled();
+    await sync(a);
+
+    // The server appends a plaintext operation to the encrypted account.
+    await api(server.base, 'POST', '/v1/ops', {
+      token: TOKEN_A,
+      body: {
+        v: 1,
+        clientId: 'client-forger-01',
+        ops: [forgedHighlightOp('forged-op-000009', 'client-forger-01', h.highlight.id)],
+      },
+    });
+    const before = await sync(a);
+    expect(before.attention.quarantined).toBeGreaterThan(0); // refused as plaintext in E2EE mode
+
+    const next = 'a brand new long passphrase';
+    const rotated = await a.service.e2eeRotate(PASSPHRASE, next);
+    await a.service.settled();
+    expect(rotated.ok).toBe(true);
+    expect(rotated.setAside).toBe(1);
+    expect((await a.service.status()).e2ee.setAside).toBe(1);
+
+    const open = await openWithPassphrase(next);
+    const ops = await storedOps();
+    expect(ops.every((o) => o.payloadEncrypted === true)).toBe(true);
+    expect(await open(ops.find((o) => o.id === 'forged-op-000009'))).toBeNull();
+    // Everything that did authenticate under the old key still reads under the new one.
+    const real = ops.filter((o) => o.id !== 'forged-op-000009');
+    expect(real.length).toBeGreaterThan(0);
+    for (const op of real) expect(await open(op)).not.toBeNull();
+  });
+});
+
+describe('the key and the worker', () => {
+  it('a suspended worker comes back with the key, syncs in the background, and stops at the expiry', async () => {
+    const h = await saveCapture(cap('Background sync must survive suspension.', 100));
+    const a = await makeDevice('A');
+    await connect(a);
+    await a.service.e2eeSetup(PASSPHRASE);
+    await a.service.settled();
+    expect((await a.service.status()).e2ee.mode).toBe('unlocked');
+    expect(a.mem.key?.kid).toBeTruthy();
+
+    // The service worker is suspended: its memory is gone. A new one starts over the same
+    // persisted state (database, session storage). No passphrase is entered.
+    const reborn = createSyncService(a.deps);
+    await updateHighlight(h.highlight.id, { userComment: 'edited after the worker restarted' });
+    const pushesBefore = posts();
+    const view = await reborn.runSync('alarm', { force: true });
+    await reborn.settled();
+    expect(view.status).toBe('idle');
+    expect(view.e2ee.mode).toBe('unlocked');
+    expect(posts()).toBeGreaterThan(pushesBefore);
+    expect(JSON.stringify(await storedOps())).not.toContain('edited after the worker restarted');
+
+    // The absolute expiry passes while the worker sleeps: the next run finds no key and sends nothing.
+    const record = a.mem.key!;
+    await a.deps.keyVault.save({ ...record, expiresAt: Date.now() - 1 });
+    await updateHighlight(h.highlight.id, { userComment: 'edited after the key expired' });
+    const requestsBefore = a.requests();
+    const locked = await createSyncService(a.deps).runSync('alarm', { force: true });
+    expect(locked.status).toBe('locked');
+    expect(locked.e2ee.mode).toBe('locked');
+    expect(a.requests()).toBe(requestsBefore);
+    expect(a.mem.key).toBeNull();
+  });
+
+  it('never presents tokens that were issued for another configuration', async () => {
+    await saveCapture(cap('Tokens belong to one configuration.', 100));
+    const a = await makeDevice('A');
+    await connect(a);
+    expect((await sync(a)).status).toBe('idle');
+
+    const sent = a.requests();
+    const events = server.events.length;
+    // The configuration no longer matches what the tokens were issued for.
+    a.mem.setBinding(JSON.stringify(['https://elsewhere.example.org', ISSUER, CLIENT_ID]));
+    const view = await sync(a);
+    expect(view.status).toBe('auth_required');
+    expect(view.signedIn).toBe(false);
+    expect(a.requests()).toBe(sent);
+    expect(server.events.length).toBe(events);
+    expect(await a.mem.tokens.load()).toBeNull();
+  });
+});
+
+describe('downgrade protection', () => {
+  it('uploads nothing while the server shows no key, and carries on when it shows the right one', async () => {
+    const h = await saveCapture(cap('Downgrade attempts must not leak.', 100));
+    const a = await makeDevice('A');
+    await connect(a);
+    await a.service.e2eeSetup(PASSPHRASE);
+    await a.service.settled();
+    await sync(a);
+
+    a.net.profile = 'hidden';
+    await updateHighlight(h.highlight.id, { userComment: 'written while the key was hidden' });
+    const pushes = posts();
+    const hidden = await sync(a);
+    expect(hidden.status).toBe('error');
+    expect(hidden.e2ee.warning).toMatch(/no encryption key/);
+    expect(posts()).toBe(pushes);
+    expect(JSON.stringify(await storedOps())).not.toContain('written while the key was hidden');
+    // asking to unlock again does not get around it
+    expect((await a.service.e2eeUnlock(PASSPHRASE)).ok).toBe(false);
+
+    // A different key (here: another key id at the same version) is the same: refused.
+    a.net.profile = 'swapped';
+    const swapped = await sync(a);
+    expect(swapped.status).toBe('error');
+    expect(posts()).toBe(pushes);
+
+    // The right key is back: the warning clears and the waiting change goes out, encrypted.
+    a.net.profile = undefined;
+    const back = await sync(a);
+    expect(back.status).toBe('idle');
+    expect(back.e2ee.warning ?? null).toBeNull();
+    expect(posts()).toBeGreaterThan(pushes);
+    expect(JSON.stringify(await storedOps())).not.toContain('written while the key was hidden');
   });
 });

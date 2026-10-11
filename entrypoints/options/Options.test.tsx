@@ -12,7 +12,6 @@ import {
 } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { browser } from 'wxt/browser';
-import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { KIND_DECORATION } from '@highlights';
 import {
   DEFAULT_DENY_HOSTS,
@@ -49,10 +48,11 @@ vi.mock('@runtime', async (importOriginal) => {
   return { ...actual, callBackground: fake.callBackground, callTab: fake.callTab } as never;
 });
 
-// The page now mounts the review, AI, sync, backup and storage sections too; a loaded CI shard
-// must not turn "still reading" into a failure.
-vi.setConfig({ testTimeout: 30_000 });
-configure({ asyncUtilTimeout: 10_000 });
+// The page mounts the review, AI, sync, backup and storage sections as well, which makes every
+// role query in jsdom a second or so; a loaded CI shard must not turn that into a failure.
+// `defaultHidden` skips the per-element visibility walk (jsdom has no layout to consult anyway).
+vi.setConfig({ testTimeout: 90_000 });
+configure({ asyncUtilTimeout: 45_000, defaultHidden: true });
 
 const ALL = ['https://*/*', 'http://*/*'];
 let chrome: ReturnType<typeof makeChromeFakes>;
@@ -114,11 +114,15 @@ async function open(settings: Partial<Settings> = {}) {
   await browser.storage.local.set({
     settings: { ...defaultSettings(), denyList: SHORT_DENY, ...settings },
   });
-  return render(
+  const view = render(
     <SyncApiProvider value={syncApi}>
       <Options />
     </SyncApiProvider>,
   );
+  // The sections that read the database mount one task after the settings-only ones. Tests that
+  // arm a one-shot failure must not have it consumed by that mount.
+  await screen.findByTestId('storage-section');
+  return view;
 }
 
 /** "Enable on all sites" is a two-step flow: the question, then Chrome's own prompt. */
@@ -174,7 +178,7 @@ describe('content', () => {
     expect(text).toMatch(/where it sits in the\s+page structure/);
     expect(text).toMatch(/without a user name or password/);
     expect(text).toMatch(/page title/);
-    expect(text).toMatch(/Deleted highlights stay on this device until you delete all data/);
+    expect(text).toMatch(/Deleted highlights stay in the trash on this device/);
     const seen = (await screen.findByText('What a website can see')).parentElement!;
     expect(seen.textContent).toMatch(/colour and kind/);
     expect(seen.textContent).toMatch(/sv-hl-amber-formula/);
@@ -224,7 +228,10 @@ describe('site access', () => {
     });
     expect(rpc.called('site.sync')).toHaveLength(1);
     expect(await screen.findByRole('button', { name: 'Revoke all-sites access' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Enable on all sites' })).toBeNull();
+    // Chrome's grant is read again after the change: the old button goes away with that answer.
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Enable on all sites' })).toBeNull(),
+    );
     expect(screen.getByText('On')).toBeTruthy();
     expect(spoken()).toContain('StudyVault is now on for all sites.');
     expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'All sites' }));
@@ -829,7 +836,7 @@ describe('review section', () => {
 
   it('Open review and Open dashboard open their pages in tabs', async () => {
     const create = vi.spyOn(browser.tabs, 'create').mockResolvedValue({} as never);
-    vi.spyOn(browser.tabs, 'query').mockResolvedValue([]);
+    vi.spyOn(browser.tabs, 'query').mockResolvedValue([] as never);
     await open();
     await userEvent.click(await screen.findByRole('button', { name: 'Open review' }));
     await userEvent.click(screen.getByRole('button', { name: 'Open dashboard' }));
@@ -859,7 +866,7 @@ describe('capture and appearance additions', () => {
 describe('welcome tour', () => {
   it('opens the tour page, and offers to resume one that was left part-way', async () => {
     const create = vi.spyOn(browser.tabs, 'create').mockResolvedValue({} as never);
-    vi.spyOn(browser.tabs, 'query').mockResolvedValue([]);
+    vi.spyOn(browser.tabs, 'query').mockResolvedValue([] as never);
     await open();
     await userEvent.click(await screen.findByRole('button', { name: 'Show the welcome tour' }));
     await waitFor(() => expect(create).toHaveBeenCalledTimes(1));

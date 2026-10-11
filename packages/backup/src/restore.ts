@@ -32,8 +32,11 @@ import { decide, metaOf, type MergeDecision, type RowMeta } from './merge';
 import { buildMigrationChain, migrateRow } from './migrate';
 import { readAll } from './source';
 import type {
+  CitationGuard,
   CommitPlan,
+  ImmutableFields,
   MigrationStep,
+  Passage,
   RestoreProgress,
   RestoreTarget,
   Row,
@@ -45,10 +48,8 @@ import type {
 // Options and report
 // ---------------------------------------------------------------------------------------------
 
-/** Fields that provenance rules forbid a merge to overwrite when the same id is seen twice. */
-export const DEFAULT_IMMUTABLE_FIELDS: Readonly<Record<string, readonly string[]>> = {
-  highlights: ['sourceId', 'exactQuote', 'quoteHash', 'anchorSet', 'capturedAt'],
-};
+// Which fields a merge may not change comes from the target (`RestoreTarget.immutableFields`): the
+// storage layer derives it from the sync policy, so there is one list of provenance fields.
 
 export interface RestoreOptions {
   target: RestoreTarget;
@@ -57,8 +58,6 @@ export interface RestoreOptions {
   passphrase?: string;
   /** Pure per-version row upgrades, oldest first. Required when the archive is older. */
   migrations?: readonly MigrationStep[];
-  /** Per table: fields a merge must never change. Defaults to DEFAULT_IMMUTABLE_FIELDS. */
-  immutableFields?: Readonly<Record<string, readonly string[]>>;
   /** What to do with rows that fail their schema. Default 'abort' (typed error `row_invalid`). */
   invalidRows?: 'abort' | 'skip';
   /** What to do with broken references. Default 'abort' (typed error `integrity_violation`). */
@@ -206,7 +205,6 @@ const REPORT_CAP = 100;
 interface RawRow {
   value: unknown;
   line: number;
-  suspicious: boolean;
 }
 
 interface ArchiveReader {
@@ -236,6 +234,14 @@ async function validateManifest(
     throw new BackupError('not_a_backup', 'This file is not a StudyVault backup.');
   }
   const obj = raw as Record<string, unknown>;
+  // Rows of a single-file JSON are checked one by one (and can be skipped); the head must be clean.
+  const { data: _rows, ...head } = obj;
+  if (hasForbiddenKey(head)) {
+    throw new BackupError(
+      'manifest_invalid',
+      'The backup manifest contains a field name that is not allowed.',
+    );
+  }
   if (obj.format !== expectedFormat) {
     throw new BackupError('not_a_backup', 'This file is not a StudyVault backup.', {
       format: typeof obj.format === 'string' ? obj.format.slice(0, 64) : null,
@@ -315,7 +321,7 @@ function* ndjsonRows(bytes: Uint8Array, table: string, maxRowBytes: number): Gen
             cause,
           );
         }
-        yield { value, line, suspicious: text.includes('__proto__') };
+        yield { value, line };
       }
     }
     pos = end + 1;
@@ -340,19 +346,8 @@ async function openArchive(
     return holder.bytes;
   };
   if (looksLikeZip(bytes)) {
-    const entries: Map<string, ZipInfo> = listZip(bytes, limits.maxEntries);
-    let total = 0;
-    for (const e of entries.values()) total += e.originalSize;
-    if (total > limits.maxTotalBytes) {
-      throw new BackupError(
-        'limit_exceeded',
-        'The archive expands to more than the allowed size.',
-        {
-          declaredBytes: total,
-          maxTotalBytes: limits.maxTotalBytes,
-        },
-      );
-    }
+    // Entry count and declared sizes are capped inside listZip, before anything is decompressed.
+    const entries: Map<string, ZipInfo> = listZip(bytes, limits);
     if (!entries.has(MANIFEST_FILE)) {
       throw new BackupError(
         'not_a_backup',
@@ -431,8 +426,7 @@ async function openArchive(
             table: entry.name,
           });
         }
-        for (let i = 0; i < rows.length; i++)
-          yield { value: rows[i], line: i + 1, suspicious: true };
+        for (let i = 0; i < rows.length; i++) yield { value: rows[i], line: i + 1 };
       },
       blob() {
         return Promise.reject(
@@ -486,6 +480,11 @@ interface TableScan {
   entry: ManifestTable;
   archiveRows: number;
   meta: Map<string, RowMeta>;
+  /**
+   * Line of the one row that passed every check, per key. Staging takes exactly that line: a
+   * forged archive may repeat a key, with an invalid row before the valid one.
+   */
+  lines: Map<string, number>;
   refs: Ref[];
   invalidCount: number;
   droppedByMigration: number;
@@ -503,10 +502,29 @@ class CappedList<T> {
   }
 }
 
-function hasProtoKey(v: unknown, depth = 0): boolean {
-  if (typeof v !== 'object' || v === null || depth > 64) return false;
-  if (Array.isArray(v)) return v.some((x) => hasProtoKey(x, depth + 1));
-  return Object.keys(v).some((k) => k === '__proto__' || hasProtoKey((v as Row)[k], depth + 1));
+/**
+ * Member names a parsed JSON graph must not have, whatever escapes the text used to spell them
+ * (JSON.parse creates `__proto__` as an ordinary own property, which a later assignment or merge
+ * turns into a prototype change). Run on the PARSED value, for every row of every file.
+ *  - `__proto__` anywhere;
+ *  - `constructor` or `prototype` holding an object: the `constructor.prototype` path that
+ *    deep-merge gadgets walk. A plain string/number under those names is ordinary data (a custom
+ *    field called "constructor") and is accepted, so a user's own backup always restores.
+ * Nesting deeper than the 64 levels the exporter can write is refused (fail closed).
+ */
+function hasForbiddenKey(v: unknown, depth = 0): boolean {
+  if (typeof v !== 'object' || v === null) return false;
+  if (depth > 64) return true;
+  if (Array.isArray(v)) return v.some((x) => hasForbiddenKey(x, depth + 1));
+  for (const k of Object.keys(v)) {
+    const x = (v as Row)[k];
+    if (k === '__proto__') return true;
+    if ((k === 'constructor' || k === 'prototype') && typeof x === 'object' && x !== null) {
+      return true;
+    }
+    if (hasForbiddenKey(x, depth + 1)) return true;
+  }
+  return false;
 }
 
 function issueText(issues: readonly { path: PropertyKey[]; message: string }[]): string {
@@ -517,6 +535,13 @@ function issueText(issues: readonly { path: PropertyKey[]; message: string }[]):
     .slice(0, 300);
 }
 
+/** The target's citation guard with what it needs: ids cited by archive rows, and their text. */
+interface GuardState {
+  guard: CitationGuard;
+  cited: Set<string>;
+  passages: Map<string, Passage>;
+}
+
 interface Context {
   options: RestoreOptions;
   target: RestoreTarget;
@@ -525,7 +550,9 @@ interface Context {
   reader: ArchiveReader;
   chain: MigrationStep[];
   specs: Map<string, TableSpec>;
-  immutable: Readonly<Record<string, readonly string[]>>;
+  immutable: ImmutableFields;
+  /** Null when the target has no guard or the archive has nothing to guard. */
+  guard: GuardState | null;
   batchSize: number;
   signal: AbortSignal | undefined;
   progress: (p: Partial<RestoreProgress> & Pick<RestoreProgress, 'phase'>) => void;
@@ -536,6 +563,17 @@ interface ScanState {
   invalid: CappedList<InvalidRowInfo>;
   verifiedBlobs: Set<string>;
   rowsSeen: number;
+  /** Rows the citation guard demoted. */
+  regraded: number;
+}
+
+const own = (o: Readonly<Record<string, string>>, k: string): string | undefined =>
+  Object.hasOwn(o, k) ? o[k] : undefined;
+
+/** A row as the vault will hold it: after the guard has re-checked what it cites. */
+function guarded(ctx: Context, table: string, row: Row): Row {
+  const g = ctx.guard;
+  return g && g.guard.table === table ? g.guard.regrade(row, g.passages) : row;
 }
 
 async function scanTable(
@@ -555,6 +593,7 @@ async function scanTable(
     entry,
     archiveRows: 0,
     meta: new Map(),
+    lines: new Map(),
     refs: [],
     invalidCount: 0,
     droppedByMigration: 0,
@@ -603,8 +642,8 @@ async function scanTable(
       invalid(raw.line, 'not_an_object', 'The row is not a JSON object.');
       continue;
     }
-    if (raw.suspicious && hasProtoKey(value)) {
-      invalid(raw.line, 'forbidden_key', 'The row contains a "__proto__" member.');
+    if (hasForbiddenKey(value)) {
+      invalid(raw.line, 'forbidden_key', 'The row contains a member name that is not allowed.');
       continue;
     }
 
@@ -669,7 +708,31 @@ async function scanTable(
       invalid(raw.line, 'duplicate_key', 'Another row in this table has the same key.');
       continue;
     }
+    // Passages that AI results cite (only the ones some archive row names are kept in memory).
+    const passageField = ctx.guard ? own(ctx.guard.guard.passages, spec.name) : undefined;
+    if (ctx.guard && passageField !== undefined) {
+      const id = row.id;
+      const text = row[passageField];
+      if (
+        typeof id === 'string' &&
+        typeof text === 'string' &&
+        ctx.guard.cited.has(id) &&
+        !ctx.guard.passages.has(id)
+      ) {
+        ctx.guard.passages.set(id, { table: spec.name, text });
+      }
+    }
+    let kept: Row;
+    try {
+      kept = guarded(ctx, spec.name, row);
+    } catch (cause) {
+      invalid(raw.line, 'schema', `re-check failed: ${(cause as Error).message}`.slice(0, 300));
+      continue;
+    }
+    if (kept !== row) state.regraded++;
+    row = kept;
     scan.meta.set(key, metaOf(row, derived, immutable));
+    scan.lines.set(key, raw.line);
     for (const ref of spec.references ?? []) {
       const v = row[ref.field];
       if (v === null || v === undefined) {
@@ -726,6 +789,52 @@ async function scanTable(
     );
   }
   return scan;
+}
+
+const MAX_CITED_IDS = 200_000;
+
+/**
+ * Pass 0 for a table whose rows cite other rows' text: the ids those rows cite, and (merge) the
+ * text the live vault already holds for them. Passages that only the archive has are collected by
+ * the scan of their own tables, which runs before the guarded table.
+ */
+async function openGuard(
+  ctx: Context,
+  guard: CitationGuard,
+  entry: ManifestTable,
+  mode: 'merge' | 'replace',
+): Promise<GuardState> {
+  const cited = new Set<string>();
+  for (const raw of ctx.reader.rows(entry)) {
+    const v = raw.value;
+    if (typeof v !== 'object' || v === null || Array.isArray(v) || hasForbiddenKey(v)) continue;
+    try {
+      for (const id of guard.cited(v as Row)) {
+        if (typeof id === 'string' && cited.size < MAX_CITED_IDS) cited.add(id);
+      }
+    } catch {
+      // not a row the guard understands: the scan reports it
+    }
+  }
+  const state: GuardState = { guard, cited, passages: new Map() };
+  if (mode === 'merge' && cited.size > 0) {
+    for (const [table, field] of Object.entries(guard.passages)) {
+      const spec = ctx.specs.get(table);
+      if (!spec) continue;
+      for await (const page of readAll(ctx.target, spec, ctx.batchSize)) {
+        for (const row of page) {
+          const id = row.id;
+          const text = row[field];
+          if (typeof id === 'string' && typeof text === 'string' && cited.has(id)) {
+            if (!state.passages.has(id)) state.passages.set(id, { table, text });
+          }
+        }
+        throwIfAborted(ctx.signal);
+        await yieldIfDue();
+      }
+    }
+  }
+  return state;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -953,11 +1062,18 @@ async function evaluate(
       overwrittenNewerLiveRows: overwrittenNewerLive,
       removedLiveOnlyRows: removedLiveOnly,
     },
-    warnings: skippedTables.length
-      ? [
-          `Ignored ${skippedTables.length} table(s) this version does not know: ${skippedTables.join(', ')}.`,
-        ]
-      : [],
+    warnings: [
+      ...(skippedTables.length
+        ? [
+            `Ignored ${skippedTables.length} table(s) this version does not know: ${skippedTables.join(', ')}.`,
+          ]
+        : []),
+      ...(state.regraded > 0
+        ? [
+            `${state.regraded} AI result(s) are not backed by the passages in your vault; they are restored as unverified drafts and the citations that could not be found were removed.`,
+          ]
+        : []),
+    ],
   };
   const commitPlan: CommitPlan =
     mode === 'replace' ? { mode: 'replace', tables: tablesCleared } : { mode: 'merge', upsert };
@@ -1064,7 +1180,8 @@ export async function prepareRestore(
     reader,
     chain,
     specs,
-    immutable: options.immutableFields ?? DEFAULT_IMMUTABLE_FIELDS,
+    immutable: options.target.immutableFields(),
+    guard: null,
     batchSize,
     signal,
     progress: (p) => emit({ tablesTotal: known.length, rowsTotal, ...p }),
@@ -1074,9 +1191,23 @@ export async function prepareRestore(
     invalid: new CappedList<InvalidRowInfo>(),
     verifiedBlobs: new Set(),
     rowsSeen: 0,
+    regraded: 0,
   };
 
-  for (const entry of known) {
+  // Rows that cite other rows' text (AI results) are scanned last, once the passages they may cite
+  // have been seen; the guard re-checks them against those passages and the live vault.
+  const guard = options.target.citationGuard;
+  const guardedEntry = guard
+    ? known.find((t) => t.name === guard.table && t.rowCount > 0)
+    : undefined;
+  if (guard && guardedEntry) {
+    ctx.guard = await openGuard(ctx, guard, guardedEntry, mode);
+  }
+  const order = ctx.guard
+    ? [...known.filter((t) => t !== guardedEntry), ...known.filter((t) => t === guardedEntry)]
+    : known;
+
+  for (const entry of order) {
     throwIfAborted(signal);
     const spec = specs.get(entry.name) as TableSpec;
     state.scans.set(entry.name, await scanTable(ctx, state, spec, entry));
@@ -1114,7 +1245,9 @@ export async function prepareRestore(
       }
       used = true;
       try {
-        return await commitRestore(ctx, state, manifest, skippedTables, migratedFrom, mode);
+        // One restore at a time, from the live-data comparison (it is redone inside) to the commit.
+        const run = () => commitRestore(ctx, state, manifest, skippedTables, migratedFrom, mode);
+        return await (ctx.target.exclusive ? ctx.target.exclusive(run) : run());
       } finally {
         holder.bytes = null;
       }
@@ -1164,7 +1297,9 @@ async function commitRestore(
   try {
     staging = await target.createStaging({ tables: evaluation.tablesRestored, expectedRows });
   } catch (cause) {
-    throw new BackupError('staging_failed', 'Could not create the staging area.', {}, cause);
+    throw isBackupError(cause)
+      ? cause
+      : new BackupError('staging_failed', 'Could not create the staging area.', {}, cause);
   }
 
   const written: Record<string, number> = {};
@@ -1197,6 +1332,9 @@ async function commitRestore(
           row = migrateRow(name, raw.value as Row, ctx.chain);
           if (row === null) continue;
           key = keyString(rowKey(scan.spec, row));
+          // Only the line the scan accepted: an earlier line with the same key failed a check.
+          if (scan.lines.get(key) !== raw.line) continue;
+          row = guarded(ctx, name, row);
         } catch {
           continue; // already reported as invalid in the scan
         }

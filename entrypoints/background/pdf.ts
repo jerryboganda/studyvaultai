@@ -64,7 +64,12 @@ export interface PdfMenuClick {
  * not look like a PDF (menus can be created with patterns the page then does not match exactly, e.g.
  * a redirect). A page uses the TAB's address; a frame uses the frame's.
  */
-export function readerPathFor(click: PdfMenuClick, tabUrl: string | undefined): string | null {
+export function readerPathFor(
+  click: PdfMenuClick,
+  tabUrl: string | undefined,
+  /** The tab that was clicked is private: the reader is told, and treats its own window likewise. */
+  incognito = false,
+): string | null {
   let target: string | undefined;
   if (click.menuItemId === OPEN_LINK_MENU_ID) target = click.linkUrl;
   else if (click.menuItemId === OPEN_PAGE_MENU_ID) {
@@ -73,7 +78,7 @@ export function readerPathFor(click: PdfMenuClick, tabUrl: string | undefined): 
   if (!target || !isLikelyPdfUrl(target)) return null;
   const checked = parseSrc(target);
   // A refused address (plain http on another host) is still handed over: the reader says why.
-  return pdfReaderPath({ src: checked?.ok ? checked.url : target });
+  return pdfReaderPath({ src: checked?.ok ? checked.url : target, incognito });
 }
 
 export interface PdfMenuPort {
@@ -116,7 +121,7 @@ export function registerPdfReaderMenu(report: (err: unknown) => void = console.e
     installPdfMenus(browserPort()).catch(report);
   });
   browser.contextMenus.onClicked.addListener((info, tab) => {
-    const path = readerPathFor(info, tab?.url);
+    const path = readerPathFor(info, tab?.url, tab?.incognito === true);
     if (path === null) return;
     browser.tabs
       .create({

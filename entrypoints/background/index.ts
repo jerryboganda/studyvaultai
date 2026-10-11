@@ -1,8 +1,8 @@
 import { browser } from 'wxt/browser';
 import { defineBackground } from 'wxt/utils/define-background';
 import { BackgroundRpc } from '@shared';
-import { getSettings, serveRpc, updateSettings } from '@runtime';
-import { installPreMigrationSnapshot, repo } from '@storage';
+import { getTrustedSettings, serveRpc, updateSettings } from '@runtime';
+import { repo, withDb } from '@storage';
 import { onboardingPath } from '@ui/shell/paths';
 import { createCommandHandlers, installContextMenu } from './commands';
 import { createHandlers } from './handlers';
@@ -21,12 +21,12 @@ const report = (err: unknown) => console.error('[StudyVault]', err);
 
 // MV3 service worker: this body runs on every worker start and registers every listener
 // synchronously. Nothing here may hold state that must outlive the worker.
-export default defineBackground(() => {
-  // Before anything can open the database: when an update raises its schema, the old data is first
-  // kept as a restorable archive (Settings > Backup). Only here: this is the context that meets the
-  // upgrade, and a page that also installed it would track the hook in its own liveQuery.
-  installPreMigrationSnapshot({ appVersion: browser.runtime.getManifest().version });
+declare const __SV_E2E__: boolean | undefined;
 
+export default defineBackground(() => {
+  // The old data is kept as a restorable archive before an update raises the schema (Settings >
+  // Backup). The storage layer installs that for every context that loads it, so it no longer
+  // depends on which one opens the database first; the `update` branch below makes that the worker.
   const site = createSiteAccess(browserSiteDeps());
   const commands = createCommandHandlers(browserCommandDeps(site));
 
@@ -34,7 +34,8 @@ export default defineBackground(() => {
     BackgroundRpc,
     createHandlers({
       repo,
-      getSettings,
+      // The authoritative copy: a content script can write chrome.storage.local, not the database.
+      getSettings: getTrustedSettings,
       updateSettings,
       site,
       extensionBaseUrl: browser.runtime.getURL('/'),
@@ -52,11 +53,16 @@ export default defineBackground(() => {
 
   // Registrations may not survive an update and permissions can change outside the UI.
   browser.runtime.onInstalled.addListener((details) => {
+    // An update may raise the schema. Upgrade now, here, with the pre-update copy, rather than
+    // whenever a page or the sync run first touches the database.
+    if (details.reason === 'update') withDb(async () => {}).catch(report);
     installContextMenu(browserMenuPort()).catch(report);
     site.sync().catch(report);
     // The welcome tour opens once, on the first install: never for an update, a browser update or
     // a reload. It is skippable and can be reopened from the popup and the settings page.
-    if (details.reason === 'install') {
+    // The e2e build skips it: Playwright launches a fresh profile per test and would otherwise
+    // get an extra page in every spec (the tour page itself is covered by its own e2e and unit test).
+    if (details.reason === 'install' && !(typeof __SV_E2E__ !== 'undefined' && __SV_E2E__)) {
       browser.tabs
         .create({ url: browser.runtime.getURL(`/${onboardingPath}` as never) })
         .catch(report);

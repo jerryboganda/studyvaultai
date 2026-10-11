@@ -281,6 +281,8 @@ export const SYNC_STATUSES = [
   'backoff',
   'auth_required',
   'locked',
+  /** Signed in, but the person has not yet chosen how uploads are protected: nothing is sent. */
+  'awaiting_encryption_choice',
   'resync_required',
   'account_mismatch',
   'error',

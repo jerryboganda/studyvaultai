@@ -18,7 +18,7 @@ import {
 import { settingsPath } from '@ui/shell/paths';
 import type { OnboardingState } from '@ui/shell/onboardingState';
 import { openDashboard } from '@ui/vault/dashboardLink';
-import { STEP_COUNT, STEP_TITLES, stepIndex } from './model';
+import { STEP_COUNT, STEP_TITLES } from './model';
 import {
   BANK_PRESETS,
   applyPreset,
@@ -53,9 +53,6 @@ export function StepFrame({
   const id = useId();
   return (
     <section className="ob__step sv-stack" aria-labelledby={id} data-testid={TID.step(step)}>
-      <p className="sv-muted sv-small">
-        Step {stepIndex(step) + 1} of {STEP_COUNT}
-      </p>
       <h2 id={id} ref={heading} tabIndex={-1} className="ob__heading">
         {STEP_TITLES[step]}
       </h2>
@@ -540,7 +537,7 @@ export function BanksStep({
         <StepNav
           onBack={onBack}
           next={{
-            label: 'Create and continue',
+            label: 'Create the bank and folders',
             testId: TID.create,
             busy: create.busy,
             ...(nothingSelected ? { disabledReason: 'Tick at least the bank itself.' } : {}),

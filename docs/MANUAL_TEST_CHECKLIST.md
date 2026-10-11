@@ -8,6 +8,9 @@ fill in the evidence table at the bottom, and attach it to the draft GitHub rele
 Do not mark a row **Pass** from memory or from CI. A row that was not run is **Not run**, and a
 release with a **Fail** in a "blocker" row does not ship (ROADMAP.md Phase 7 gate).
 
+Status on 2026-10-11: no row of this checklist has been run; every evidence cell is empty. Section 11
+covers surfaces that were added after the first version of the list.
+
 ## 0. Set-up (once per run)
 
 | Item | Value to record |
@@ -32,7 +35,7 @@ of an unpacked extension is derived from its path.
 | MT-01 | Load unpacked, open the extension's details page | No errors listed under "Errors". "Site access" reads "On click" (no site is pre-granted). Permissions shown: no "all sites" access | yes |
 | MT-02 | Open the popup on a normal article tab | Heading "StudyVault AI", the host name, an "Activate on this tab" button and an "Always enable on <host>" button; no console errors (inspect popup) | yes |
 | MT-03 | Open the popup on `chrome://extensions`, the Chrome Web Store, `about:blank` | "StudyVault cannot run on this page" with the reason; no Activate button; "Open side panel" and "Settings and privacy" still work | yes |
-| MT-04 | Open Settings from the popup | Sections: Site access, Appearance, Capture, Keyboard shortcuts, Privacy. The Privacy section lists the same permissions as the details page and names the deny list | yes |
+| MT-04 | Open Settings from the popup | Eleven sections, in this order (`SETTINGS_SECTIONS` in `packages/ui/src/shell/paths.ts`): Site access, Appearance, Capture, Review, AI assistance, Sync, Backup and restore, Storage, Keyboard shortcuts, Privacy, Your data. Each is reachable by its `#hash` link and by keyboard. The Privacy section lists the same permissions as the details page (including the optional ones) and names the deny list | yes |
 
 ## 2. Site access and native permission prompts
 
@@ -83,7 +86,8 @@ Use **Chrome and Edge**. Record the screen-reader name and version.
 | MT-21b | **Both on.** Turn on "Save from private windows"; save a passage | It saves; the popup and panel of a normal window show it (shared database, as the setting says); turning the setting off again refuses new captures | yes |
 | MT-22 | **Offline restart.** Save 5 passages on 3 pages; go offline (disable the network adapter); quit the browser completely; relaunch | All data present; highlights repaint on revisit; capture, undo, notes and search work; the extension's service worker (inspect it, Network tab) made no requests; no errors on the details page | yes |
 | MT-22a | With AI and sync off, watch the service worker's and the panel's Network tab during a 10-minute session of normal use | No request leaves the browser; only `chrome-extension://` URLs | yes |
-| MT-23 | Settings > Delete all data, then reload an open page | Confirmation names what is removed; afterwards the database, settings and site grants are gone, open pages repaint without highlights, the details page shows no site access | yes |
+| MT-23 | Settings > Your data > Delete all data, then reload an open page | Confirmation names what is removed (and, if sync was used, says the server's copy is a separate control); afterwards the database, settings and site grants are gone, open pages repaint without highlights, the details page shows no site access | yes |
+| MT-23b | After MT-23, open DevTools > Application on an extension page | IndexedDB lists no `studyvault`, `studyvault-premigration` or `studyvault-restore-staging`; extension storage (local and session) is empty. Record anything else that remains. Known gaps until the fix in `docs/PRIVACY_CLAIMS.md` P15 lands: the `localStorage` keys `sv.dashboard.contrast` and `sv.dashboard.collapsed`, and the optional `identity` and `alarms` permissions (check with `await chrome.permissions.getAll()` in an extension page console). Any other leftover is a Fail | yes |
 | MT-23a | Remove the extension from `chrome://extensions`, install the same build again | No highlights, banks, settings or site grants are present (the browser removes the extension's storage on removal); backups you exported are untouched | yes |
 
 ## 6. Upgrade and data safety
@@ -143,6 +147,23 @@ check both repaint, check selection/copy/links still work, then open the side pa
 | MT-33 | Open the privacy policy URL from the listing and from Settings | Same document, current effective date | yes |
 | MT-34 | View each screenshot next to the running build | Each matches what the build really does today | yes |
 
+## 11. Surfaces added after the first checklist
+
+These check the dashboard, review, backup, welcome tour, web PDFs, AI consent and two-profile sync.
+Where a row restates an earlier one (MT-30, MT-31) it adds the points that the privacy documents now
+promise (`docs/PRIVACY_CLAIMS.md`).
+
+| ID | Check | Expected | Blocker |
+| --- | --- | --- | --- |
+| MT-35 | **Dashboard.** Open it from the popup. Create a bank, folder, topic and subtopic; move a highlight between banks; search with a filter; delete a highlight, find it in Trash and restore it; delete another and use "Empty the trash". Keyboard only for one pass | Every step works by keyboard with visible focus; counts match what you did; after emptying the trash the item is no longer found by search or in any bank view; a restore before the purge brings it back to a visible bank; no errors on the details page | yes |
+| MT-36 | **Review session.** Create flashcards (or accept AI-created ones); start a review from the popup; rate several cards; close the tab part-way and reopen; change the study time zone and the rollover hour in Settings > Review | Due counts update after each rating; the session resumes where it stopped and nothing is rated twice; the new day boundary applies; a service-worker restart (chrome://serviceworker-internals, Stop) loses nothing | yes |
+| MT-37 | **Backup round trip.** Settings > Backup and restore: export an encrypted backup including cached PDFs; Delete all data; restore the file | Counts and a sample of quotes, notes, cards, review history and OCR text match; address, title and capture time are identical; the settings (theme, deny list, enabled sites, study-day settings), the AI key and the sync sign-in are **not** restored, and the UI says so; a wrong passphrase changes nothing; with sync on, replace-restore shows the note that the account is not shrunk (ADR-010) | yes |
+| MT-38 | **Onboarding first run.** Remove the extension, install the build into a clean profile | The welcome tour opens once, in a new tab, on first install; every step can be skipped and resumed; reloading or updating the extension does not open it again; nothing is requested from Chrome until a button names it; AI and sync stay off; Settings can reopen the tour | yes |
+| MT-39 | **PDF from a web address.** Right-click a link to a public PDF and a page that is a PDF; choose "Open in StudyVault reader". Repeat for the same host | The two menu items appear only on PDF-looking addresses; Chrome's prompt names only that host; after Allow the file downloads; DevTools > Network on the reader page shows one request to that host, with no cookies and no `Referer`; a second open on the same host starts the download without a prompt; a PDF behind a sign-in says it could not be fetched and offers the file picker; the host grant is listed on the details page and is removed by Delete all data | yes |
+| MT-39a | **OCR.** Open a scanned PDF, run OCR, cancel part-way, resume, correct one line, reload, then go offline and reopen | Progress is real; cancel stops; finished pages are kept; the correction is kept apart from the recognised text and persists; the Network tab shows no request during recognition; text is selectable and a highlight anchors | yes |
+| MT-40 | **AI consent preview.** Turn on AI with a provider (a loopback model is enough), select two highlights, run an action, edit or remove one chunk in the preview, cancel once, then confirm | Nothing is sent before Send; after edits the preview text equals the request body byte for byte (proxy or DevTools); the key is absent from the preview, errors and console; "Remove access" revokes the host grant (details page); a result is labelled unverified, and accepting one whose citations were found shows "Cited text found in your sources (you accepted it)" and nothing stronger; the key is not in a backup file | yes |
+| MT-41 | **Sync, two profiles.** Two clean profiles with the same build, a reference server (server/README.md) and a sign-in provider you control. Turn on sync in A (the prompt lists the server, the provider, `identity` and `alarms`), sign in, set a passphrase, change a note, leave A idle for a minute; sign in on B, enter the passphrase; edit the same note offline on both and reconnect; sign out of B choosing "remove data"; use "Delete my data from the server" on A | **Record, do not assume,** whether the first upload after A's sign-in was readable by the server (known gap P25a); after the passphrase, new changes are ciphertext on the server; after the idle minute A reports "locked" until the passphrase is entered (P25b); B receives A's data; the conflict shows both versions; B's sign-out removes its local data only; the server delete empties the account and leaves A's local data; Delete all data on A leaves the server's copy | yes |
+
 ## Evidence table
 
 Copy this table into the release notes or an issue and fill one row per check you ran. Attach
@@ -172,12 +193,19 @@ screenshots, screen recordings or logs; name the files after the ID.
 | MT-20 / 20a / 20b | | | | | | | | |
 | MT-21 / 21a / 21b | | | | | | | | |
 | MT-22 / 22a | | | | | | | | |
-| MT-23 / 23a | | | | | | | | |
+| MT-23 / 23a / 23b | | | | | | | | |
 | MT-24 | | | | | | | | |
 | MT-25 to MT-29 | | | | | | | | |
 | MT-30 / 30a / 30b / 30c | | | | | | | | |
 | MT-31 / 31a | | | | | | | | |
 | MT-32 to MT-34 | | | | | | | | |
+| MT-35 | | | | | | | | |
+| MT-36 | | | | | | | | |
+| MT-37 | | | | | | | | |
+| MT-38 | | | | | | | | |
+| MT-39 / 39a | | | | | | | | |
+| MT-40 | | | | | | | | |
+| MT-41 | | | | | | | | |
 
 Summary line for the release notes: *"Manual checklist run on <date> against <zip SHA-256 prefix>:
 N pass, N fail, N not run. Blocker failures: none / <list>."*

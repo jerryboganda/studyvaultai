@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { browser } from 'wxt/browser';
-import { fakeBrowser } from 'wxt/testing/fake-browser';
 import {
   DEFAULT_DENY_HOSTS,
   StudyVaultError,

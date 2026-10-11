@@ -1,0 +1,38 @@
+# Dependency update pull requests (THREAT_MODEL O9). Updates are proposals: every one still goes
+# through ci.yml (lint, typecheck, unit, build, release gates, e2e), the licence allow-list and the
+# exact-pin rule in docs/adr/002. Heavy checks run on GitHub Actions, never locally (AGENTS.md Rule 1).
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    groups:
+      # Minor and patch updates arrive together per kind; a major update is always its own PR so its
+      # breaking changes (and its peer ranges, see docs/adr/002) are reviewed alone.
+      production-minor-and-patch:
+        dependency-type: production
+        update-types:
+          - minor
+          - patch
+      development-minor-and-patch:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    groups:
+      github-actions:
+        patterns:
+          - '*'

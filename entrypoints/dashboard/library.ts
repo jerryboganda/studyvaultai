@@ -110,7 +110,8 @@ export function useLibrary(args: LibraryArgs): Library {
     sort,
     query,
     index,
-    refreshOn: [dataVersion, indexVersion],
+    // A browse list does not depend on the search index, so its revisions do not re-read it.
+    refreshOn: searching ? [dataVersion, indexVersion] : [dataVersion],
   });
 
   const identity = JSON.stringify([mode, scope, filters, query]);

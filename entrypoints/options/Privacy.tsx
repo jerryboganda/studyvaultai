@@ -3,7 +3,7 @@ import { browser } from 'wxt/browser';
 import { MAX_CONTEXT_CHARS, MAX_HEADING_CHARS, MAX_QUOTE_CHARS, MAX_TITLE_CHARS } from '@shared';
 import { PERMISSION_PURPOSES } from './model';
 
-export function Privacy() {
+export function Privacy({ syncOn }: { syncOn: boolean }) {
   const uid = useId();
   const manifest = browser.runtime.getManifest();
   const permissions = manifest.permissions ?? [];
@@ -15,9 +15,20 @@ export function Privacy() {
       <p>
         <strong>Everything stays on this device by default.</strong> StudyVault has no account, no
         analytics and no server of its own, and it does not send your highlights, notes or browsing
-        anywhere. Two optional features can send data, and only after you turn them on here and see
-        what would be sent: AI assistance (the highlights you select, to the AI provider you choose)
-        and sync (your study data, to a sync server you choose). Both are off by default.
+        anywhere. Optional features can send data, and only after you turn them on here and see what
+        would be sent: AI assistance (the highlights you select, to the AI provider you choose) and
+        sync (your study data, to a sync server you choose). Both are off by default.
+      </p>
+      {syncOn ? (
+        <p>
+          <strong>Sync is on.</strong> Your study data is also held on the sync server you chose,
+          and it is not covered by &ldquo;stays on this device&rdquo;. Turn sync off, or delete what
+          the server holds, under <a href="#sync">Sync</a>.
+        </p>
+      ) : null}
+      <p>
+        Opening a PDF from a web address in the StudyVault reader downloads it from that site, which
+        then sees your IP address and the PDF address, like any visit.
       </p>
       <div>
         <h3>What is stored on this device</h3>
@@ -64,9 +75,11 @@ export function Privacy() {
           been sent.
         </p>
         <p>
-          <strong>Deleted highlights stay on this device until you delete all data.</strong>{' '}
-          Deleting a highlight only hides it, so Undo works. &ldquo;Delete all StudyVault
-          data&rdquo; under <a href="#data">Your data</a> removes them for good.
+          <strong>Deleted highlights stay in the trash on this device</strong> until you empty the
+          trash in the dashboard or delete all data. Deleting a highlight only moves it there, so
+          Undo works. &ldquo;Delete all StudyVault data&rdquo; under <a href="#data">Your data</a>{' '}
+          removes everything, trash included
+          {syncOn ? ', from this device (not from your sync server)' : ''}.
         </p>
         <p className="sv-muted sv-small">
           StudyVault does not read pages you have not enabled, and it never reads your browsing

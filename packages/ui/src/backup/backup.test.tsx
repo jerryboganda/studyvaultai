@@ -178,6 +178,62 @@ describe('explainBackupError', () => {
   });
 });
 
+describe('what a backup says it holds', () => {
+  const HOLDS = ['banks', 'highlights', 'notes', 'tags', 'folders', 'flashcards', 'AI drafts'];
+  const LEAVES_OUT = [
+    'settings',
+    'blocked sites',
+    'appearance',
+    'study-day',
+    'AI provider',
+    'key',
+    'sync account',
+    'saved searches',
+  ];
+
+  it('the export panel names what is in the file and what is not, and never says "everything"', async () => {
+    await seed();
+    render(<ExportPanel deps={harness().deps} />);
+    expect(screen.getByTestId('backup-export').textContent).not.toMatch(/everything/i);
+    const holds = screen.getByTestId('backup-export-holds').textContent ?? '';
+    for (const word of HOLDS) expect(holds, word).toContain(word);
+    const leavesOut = screen.getByTestId('backup-export-leaves-out').textContent ?? '';
+    expect(leavesOut).toMatch(/^Not in the file:/);
+    for (const word of LEAVES_OUT) expect(leavesOut, word).toContain(word);
+
+    await userEvent.setup().click(screen.getByTestId('backup-export-start'));
+    await screen.findByTestId('backup-export-done', {}, TIMEOUT);
+    const after = screen.getByTestId('backup-export-done-leaves-out').textContent ?? '';
+    for (const word of LEAVES_OUT) expect(after, word).toContain(word);
+  });
+
+  it('the restore wizard says it holds the same and does not touch settings, in both modes', async () => {
+    await seed();
+    const backup = await makeBackup();
+    render(<ImportWizard deps={harness().deps} />);
+    const scope = screen.getByTestId('backup-import-scope').textContent ?? '';
+    for (const word of HOLDS) expect(scope, word).toContain(word);
+    for (const word of LEAVES_OUT) expect(scope, word).toContain(word);
+    expect(scope).toMatch(/does not read or change/);
+    expect(screen.getByTestId('backup-import').textContent).not.toMatch(/everything/i);
+
+    await userEvent.setup().upload(screen.getByTestId('backup-import-file'), asFile(backup));
+    await screen.findByTestId('backup-import-review', {}, TIMEOUT);
+    const wizard = screen.getByTestId('backup-import');
+    expect(wizard.textContent).not.toMatch(/everything/i);
+    expect(screen.getByText('Replace my study data with the backup')).toBeTruthy();
+    expect(wizard.textContent).toMatch(/Your settings are not changed/);
+  }, 60_000);
+
+  it('readable exports point at the full backup by its real name', () => {
+    render(<ReadableExports deps={harness().deps} />);
+    expect(screen.getByTestId('backup-readable').textContent).toContain(
+      '“Back up your study data”',
+    );
+    expect(screen.getByTestId('backup-readable').textContent).not.toMatch(/everything/i);
+  });
+});
+
 describe('ExportPanel', () => {
   it('creates an unencrypted backup, shows what is inside with its SHA-256 and downloads it', async () => {
     await seed();

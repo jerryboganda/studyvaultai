@@ -263,6 +263,13 @@ describe('Preview: custom fields', () => {
     ]);
   });
 
+  it('keeps each field’s actions inside its <dd>, so the <dl> stays valid', async () => {
+    await open([{ id: 'hl-00000001', quote: QUOTE, customFields: { chapter: '4' } }]);
+    const group = screen.getByTestId('custom-field');
+    expect(Array.from(group.children).map((c) => c.localName)).toEqual(['dt', 'dd']);
+    expect(group.querySelector('dd button')).not.toBeNull();
+  });
+
   it('rejects a number that is not one, and a missing name, with a message', async () => {
     const { vault } = await open();
     fireEvent.change(screen.getByTestId('field-key'), { target: { value: 'score' } });
@@ -273,13 +280,16 @@ describe('Preview: custom fields', () => {
     expect(vault.called('setCustomFields')).toHaveLength(0);
   });
 
-  it('removes a field', async () => {
+  it('removes a field with clearCustomField, because setCustomFields only merges', async () => {
     const { vault } = await open([
       { id: 'hl-00000001', quote: QUOTE, customFields: { chapter: '4', reviewed: true } },
     ]);
     fireEvent.click(screen.getByRole('button', { name: 'Remove field chapter' }));
-    await waitFor(() => expect(vault.called('setCustomFields')).toHaveLength(1));
-    expect(vault.called('setCustomFields')[0]!.args[1]).toEqual({ reviewed: true });
+    await waitFor(() => expect(vault.called('clearCustomField')).toHaveLength(1));
+    expect(vault.called('clearCustomField')[0]!.args).toEqual(['hl-00000001', 'chapter']);
+    expect(vault.called('setCustomFields')).toHaveLength(0);
+    await waitFor(() => expect(screen.getAllByTestId('custom-field')).toHaveLength(1));
+    expect(screen.getByTestId('custom-field').textContent).toContain('reviewed');
   });
 });
 

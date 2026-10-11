@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { strToU8, unzipSync, Zip, ZipDeflate, ZipPassThrough } from 'fflate';
+import { inflateSync, strFromU8, strToU8, Zip, ZipDeflate, ZipPassThrough } from 'fflate';
 import { IsoDate } from '@shared';
 import { BackupError } from './errors';
 import { concatBytes } from './canonical';
@@ -148,6 +148,8 @@ export interface ZipInfo {
   size: number;
   originalSize: number;
   compression: number;
+  /** Offset of the entry's local header. */
+  offset: number;
 }
 
 const ZIP_LOCAL = [0x50, 0x4b, 0x03, 0x04];
@@ -171,39 +173,112 @@ export function looksLikeJson(bytes: Uint8Array): boolean {
   return false;
 }
 
-export function listZip(bytes: Uint8Array, maxEntries: number): Map<string, ZipInfo> {
-  const entries = new Map<string, ZipInfo>();
-  let dup: string | null = null;
-  let overflow = false;
-  try {
-    unzipSync(bytes, {
-      filter: (f) => {
-        if (entries.has(f.name)) dup = f.name;
-        else
-          entries.set(f.name, {
-            size: f.size,
-            originalSize: f.originalSize,
-            compression: f.compression,
-          });
-        if (entries.size > maxEntries) overflow = true;
-        return false;
-      },
-    });
-  } catch (cause) {
-    throw new BackupError(
+const SIG_EOCD = 0x06054b50;
+const SIG_CENTRAL = 0x02014b50;
+const SIG_LOCAL_HEADER = 0x04034b50;
+const SIG_ZIP64_LOCATOR = 0x07064b50;
+const U16_MARKER = 0xffff;
+const U32_MARKER = 0xffffffff;
+/** The longest name StudyVault writes is ~80 bytes; anything above this is not one of ours. */
+const MAX_ENTRY_NAME_BYTES = 1024;
+
+const notReadable = (what: string, details: Record<string, unknown> = {}): BackupError =>
+  new BackupError(
+    'corrupt_archive',
+    `The file is not a readable ZIP archive (${what}); it may be truncated or damaged.`,
+    details,
+  );
+
+/**
+ * The entry table of a ZIP file, read from its central directory by this function alone (fflate's
+ * reader is never run on untrusted bytes: it walks as many entries as a forged ZIP64 record claims,
+ * and a ~200-byte file can keep it busy for hours). Everything is checked before anything is read
+ * or allocated, in O(entries) with `maxEntries` as the hard bound:
+ *  - no ZIP64: its markers (locator signature, 0xFFFF counts, 0xFFFFFFFF sizes or offsets) are
+ *    refused, StudyVault never writes it (archives are far below 4 GiB and 65535 entries);
+ *  - the entry count and the sum of declared uncompressed sizes are capped (`limit_exceeded`);
+ *  - every central-directory record must lie inside the directory, with a bounded name.
+ */
+export function listZip(
+  bytes: Uint8Array,
+  limits: Pick<RestoreLimits, 'maxEntries' | 'maxTotalBytes'>,
+): Map<string, ZipInfo> {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const u16 = (at: number) => view.getUint16(at, true);
+  const u32 = (at: number) => view.getUint32(at, true);
+
+  // End of central directory: the last signature within the 64 KiB comment window.
+  if (bytes.length < 22) throw notReadable('no end-of-directory record');
+  const lowest = Math.max(0, bytes.length - (22 + 0xffff));
+  let eocd = bytes.length - 22;
+  while (eocd >= lowest && u32(eocd) !== SIG_EOCD) eocd--;
+  if (eocd < lowest) throw notReadable('no end-of-directory record');
+
+  const zip64 = () =>
+    new BackupError(
       'corrupt_archive',
-      'The file is not a readable ZIP archive (it may be truncated or damaged).',
-      {},
-      cause,
+      'ZIP64 archives are not supported: StudyVault does not write them, so this file was not made by StudyVault.',
+      { zip64: true },
     );
+  if (eocd >= 20 && u32(eocd - 20) === SIG_ZIP64_LOCATOR) throw zip64();
+  const disk = u16(eocd + 4);
+  const directoryDisk = u16(eocd + 6);
+  const entriesOnDisk = u16(eocd + 8);
+  const total = u16(eocd + 10);
+  const directorySize = u32(eocd + 12);
+  const directoryOffset = u32(eocd + 16);
+  if (
+    entriesOnDisk === U16_MARKER ||
+    total === U16_MARKER ||
+    directorySize === U32_MARKER ||
+    directoryOffset === U32_MARKER
+  ) {
+    throw zip64();
   }
-  if (overflow) {
-    throw new BackupError('limit_exceeded', 'The archive has too many entries.', { maxEntries });
+  if (disk !== 0 || directoryDisk !== 0 || entriesOnDisk !== total) {
+    throw notReadable('multi-disk archives are not supported');
   }
-  if (dup !== null) {
-    throw new BackupError('corrupt_archive', 'The archive lists the same entry twice.', {
-      entry: dup,
+  if (total > limits.maxEntries) {
+    throw new BackupError('limit_exceeded', 'The archive has too many entries.', {
+      maxEntries: limits.maxEntries,
+      declaredEntries: total,
     });
+  }
+  const end = directoryOffset + directorySize;
+  if (end > eocd) throw notReadable('the directory lies outside the file');
+
+  const entries = new Map<string, ZipInfo>();
+  let declared = 0;
+  let at = directoryOffset;
+  for (let i = 0; i < total; i++) {
+    if (at + 46 > end || u32(at) !== SIG_CENTRAL) throw notReadable('the directory is damaged');
+    const flags = u16(at + 8);
+    const compression = u16(at + 10);
+    const size = u32(at + 20);
+    const originalSize = u32(at + 24);
+    const nameLength = u16(at + 28);
+    const next = at + 46 + nameLength + u16(at + 30) + u16(at + 32);
+    const offset = u32(at + 42);
+    if (size === U32_MARKER || originalSize === U32_MARKER || offset === U32_MARKER) throw zip64();
+    if (nameLength > MAX_ENTRY_NAME_BYTES || next > end) {
+      throw notReadable('the directory is damaged');
+    }
+    const name = strFromU8(bytes.subarray(at + 46, at + 46 + nameLength), (flags & 2048) === 0);
+    if (entries.has(name)) {
+      throw new BackupError('corrupt_archive', 'The archive lists the same entry twice.', {
+        entry: name,
+      });
+    }
+    declared += originalSize;
+    if (declared > limits.maxTotalBytes) {
+      throw new BackupError(
+        'limit_exceeded',
+        'The archive expands to more than the allowed size.',
+        { declaredBytes: declared, maxTotalBytes: limits.maxTotalBytes },
+      );
+    }
+    entries.set(name, { size, originalSize, compression, offset });
+    at = next;
   }
   return entries;
 }
@@ -237,16 +312,29 @@ export function readZipEntry(
       maxBytes,
     });
   }
-  try {
-    const out = unzipSync(bytes, { filter: (f) => f.name === name })[name];
-    if (!out || out.length !== info.originalSize) throw new Error('size mismatch');
-    return out;
-  } catch (cause) {
-    throw new BackupError(
+  const unreadable = (cause?: unknown) =>
+    new BackupError(
       'corrupt_archive',
       `"${name}" could not be decompressed.`,
       { entry: name },
       cause,
     );
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const header = info.offset;
+  if (header + 30 > bytes.length || view.getUint32(header, true) !== SIG_LOCAL_HEADER) {
+    throw unreadable();
+  }
+  const start = header + 30 + view.getUint16(header + 26, true) + view.getUint16(header + 28, true);
+  if (start + info.size > bytes.length) throw unreadable();
+  try {
+    const raw = bytes.subarray(start, start + info.size);
+    const out =
+      info.compression === 0
+        ? raw.slice()
+        : inflateSync(raw, { out: new Uint8Array(info.originalSize) });
+    if (out.length !== info.originalSize) throw new Error('size mismatch');
+    return out;
+  } catch (cause) {
+    throw unreadable(cause);
   }
 }

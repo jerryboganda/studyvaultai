@@ -165,8 +165,11 @@ export function SiteAccess({ settings }: { settings: Settings }) {
         </p>
         <p className="sv-muted sv-small">
           Turning this on shows Chrome&apos;s permission prompt for reading and changing pages on
-          all websites. Your highlights stay on this device either way, and you can revoke access
-          here at any time.
+          all websites. Your highlights stay on this device either way
+          {settings.features.sync
+            ? ' (unless you turned sync on, which sends them to your server)'
+            : ''}
+          , and you can revoke access here at any time.
         </p>
         {warning ? <InlineNotice tone="warning">{warning}</InlineNotice> : null}
         {allAct.error || grants.error ? (
@@ -214,8 +217,11 @@ export function SiteAccess({ settings }: { settings: Settings }) {
         >
           <p>
             StudyVault will start by itself on every http and https page you open, except the sites
-            on your deny list. It reads the page text to place your highlights; nothing leaves this
-            device.
+            on your deny list. It reads the page text on this device to place your highlights, and
+            does not send the page text anywhere.
+            {settings.features.sync
+              ? ' Because you turned sync on, the highlights you save are sent to your sync server.'
+              : ''}
           </p>
           <p>{DENY_LIST_SCOPE_NOTE}</p>
           {stayOff.length === 0 ? (

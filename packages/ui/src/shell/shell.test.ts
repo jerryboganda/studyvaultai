@@ -100,7 +100,7 @@ describe('openOnboarding', () => {
 
   it('creates the tab when none is open', async () => {
     const create = vi.spyOn(browser.tabs, 'create').mockResolvedValue({} as never);
-    vi.spyOn(browser.tabs, 'query').mockResolvedValue([]);
+    vi.spyOn(browser.tabs, 'query').mockResolvedValue([] as never);
     await openOnboarding();
     expect(create).toHaveBeenCalledWith({ url: onboardingUrl() });
     expect(onboardingUrl()).toMatch(/\/onboarding\.html$/);

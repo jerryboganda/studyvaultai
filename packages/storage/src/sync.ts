@@ -45,6 +45,7 @@ import { sha256Hex } from '@sync/sha256';
 import {
   NEWER_DATA_MESSAGE,
   assertNoNewerRows,
+  ensureOpen,
   getDb,
   setConnectionGate,
   suppressSyncCapture,
@@ -56,6 +57,7 @@ import {
 } from './db';
 import { tableRegistry, unregisteredTables } from './registry';
 import { isNewerRow, normaliseRow } from './rows';
+import { META_CLIENT, META_DIRTY, META_STATE, ensureClientId } from './syncIdentity';
 
 /**
  * Storage side of optional synchronisation. `@sync` is pure: it asks for an outbox, a state store and
@@ -74,14 +76,6 @@ import { isNewerRow, normaliseRow } from './rows';
  * Nothing here runs while the flag is off: the connection gate reads the flag once per connection,
  * and the interceptor is installed only when it is on.
  */
-
-// ---------------------------------------------------------------------------------------------
-// Keys of the device-local rows kept in `meta`
-// ---------------------------------------------------------------------------------------------
-
-const META_STATE = 'sync.state';
-const META_CLIENT = 'sync.clientId';
-const META_DIRTY = 'sync.dirty';
 
 const nowIso = () => new Date().toISOString();
 
@@ -118,7 +112,7 @@ async function inTx<T>(
   fn: (tx: IDBTransaction) => Promise<T>,
 ): Promise<T> {
   if (tx) return fn(tx);
-  if (!db.isOpen()) await db.open();
+  await ensureOpen(db);
   const own = db.backendDB().transaction([...new Set(stores)], mode);
   const finished = new Promise<void>((resolve, reject) => {
     own.oncomplete = () => resolve();
@@ -614,54 +608,9 @@ export function createDexieApplier(db: StudyVaultDb, active: ActiveSyncPolicy): 
 // Identity
 // ---------------------------------------------------------------------------------------------
 
-/** This installation's id (UUIDv7), created once. Never part of a backup. */
-export async function ensureClientId(db: StudyVaultDb = getDb()): Promise<string> {
-  return db.transaction('rw', db.meta, async () => {
-    const row = await db.meta.get(META_CLIENT);
-    if (typeof row?.value === 'string' && row.value.length >= 8) return row.value;
-    const id = uuidv7();
-    await putMetaRow(db, META_CLIENT, id);
-    return id;
-  });
-}
-
-/**
- * Call after data was replaced behind sync's back (a profile import, a database copy): new client
- * id, so operations from the old identity are not mistaken for this device's own, and a clean
- * start for the bookkeeping. The next enable reconciles the rows with the server.
- */
-export async function resetSyncIdentity(db: StudyVaultDb = getDb()): Promise<string> {
-  const id = uuidv7();
-  await db.transaction(
-    'rw',
-    [db.meta, db.syncOps, db.syncEntityMeta, db.syncConflicts, db.syncQuarantine] as AnyTable[],
-    async () => {
-      await db.syncOps.clear();
-      await db.syncEntityMeta.clear();
-      await db.syncConflicts.clear();
-      await db.syncQuarantine.clear();
-      await db.meta.delete(META_STATE);
-      await putMetaRow(db, META_CLIENT, id);
-    },
-  );
-  return id;
-}
-
-/**
- * A restore replaced this database's rows wholesale. When the database has a sync identity (sync was
- * switched on here at some point), start a new one: the replaced rows are not a series of local
- * edits, so the old bookkeeping must not turn the rows the backup lacks into tombstones, and the old
- * history must not be mistaken for this device's own. The next run re-sends what is stored and
- * pulls the account's history again. Null when this database never synchronised.
- *
- * Call inside the restore transaction, whose scope must include `meta` and the four bookkeeping
- * tables (syncOps, syncEntityMeta, syncConflicts, syncQuarantine): the reset then commits or rolls
- * back with the restore.
- */
-export async function resetSyncIdentityIfUsed(db: StudyVaultDb): Promise<string | null> {
-  if ((await db.meta.get(META_CLIENT)) === undefined) return null;
-  return resetSyncIdentity(db);
-}
+// ensureClientId, resetSyncIdentity and resetSyncIdentityIfUsed live in ./syncIdentity: the restore
+// path needs them without this module (it registers the connection gate when it is imported).
+export { ensureClientId, resetSyncIdentity } from './syncIdentity';
 
 /** The client id stored right now: another context may have replaced it behind this one's back. */
 async function storedClientId(tx: IDBTransaction): Promise<string | undefined> {
@@ -806,7 +755,8 @@ export interface SyncRuntime {
 
 export async function createSyncRuntime(o: SyncRuntimeOptions): Promise<SyncRuntime> {
   const db = o.db ?? getDb();
-  if (!db.isOpen()) await db.open();
+  // The shared opening path: the upgrade may be this call's, and it must take the pre-update copy.
+  await ensureOpen(db);
   const active = activeSyncPolicy(o.registry, o.policy, o.unregistered);
   const clientId = await ensureClientId(db);
   const resolved = new Map(Object.entries(active.policy).map(([n, p]) => [n, resolvePolicy(p)]));
@@ -902,11 +852,90 @@ export async function createSyncRuntime(o: SyncRuntimeOptions): Promise<SyncRunt
     },
   };
 
-  /** One entity per transaction: serialised against captures from other contexts. */
-  const recordIn = async (spec: TableSpec, change: LocalChange): Promise<boolean> =>
-    inTx(db, undefined, [...BOOKKEEPING_STORES, spec.name], 'readwrite', (t) =>
-      recordSafely(bind(t), change),
+  /**
+   * One entity per transaction: serialised against captures from other contexts. A sweep reads its
+   * copy of a table long before it reaches a row, and a live edit may have landed since, so what is
+   * recorded is decided here, from the row and merge metadata as they are now (`decide` returns null
+   * for nothing to record). `ok` is false when the outbox is full.
+   */
+  const recordFresh = async <D extends { change: LocalChange }>(
+    spec: TableSpec,
+    entityId: string,
+    decide: (row: Record<string, unknown> | undefined, meta: MetaRecord | undefined) => D | null,
+  ): Promise<{ ok: boolean; decision: D } | null> => {
+    let key: IDBValidKey;
+    try {
+      key = entityKey(spec, entityId);
+    } catch {
+      return null; // an id this table cannot hold was never recorded either
+    }
+    return inTx(db, undefined, [...BOOKKEEPING_STORES, spec.name], 'readwrite', async (t) => {
+      const row = await wrap<Record<string, unknown> | undefined>(
+        t.objectStore(spec.name).get(key),
+      );
+      const meta = await wrap<MetaRecord | undefined>(
+        t.objectStore('syncEntityMeta').get([spec.name, entityId]),
+      );
+      const decision = decide(row, meta);
+      if (!decision) return null;
+      return { ok: await recordSafely(bind(t), decision.change), decision };
+    });
+  };
+
+  /** What reconcile records for `row` (undefined: it is gone) given its merge metadata. */
+  const decideRow = (
+    spec: TableSpec,
+    entityId: string,
+    row: Record<string, unknown> | undefined,
+    meta: MetaRecord | undefined,
+  ): { change: LocalChange; bucket: 'created' | 'changed' | 'deleted' } | null => {
+    const policy = resolved.get(spec.name)!;
+    if (!row) {
+      // Gone: a tombstone for an entity that was sent (or queued) and is still alive here.
+      return meta && meta.born && isAlive(meta)
+        ? {
+            change: { kind: 'delete', entityType: spec.name, entityId, before: null },
+            bucket: 'deleted',
+          }
+        : null;
+    }
+    if (!meta || !meta.born || !meta.hf || !isAlive(meta)) {
+      return {
+        change: { kind: 'upsert', entityType: spec.name, entityId, before: null, after: row },
+        bucket: !meta || !meta.born ? 'created' : 'changed',
+      };
+    }
+    const now = fieldHashes(row, policy);
+    const was = meta.hf;
+    const changedFields = [...new Set([...Object.keys(now), ...Object.keys(was)])].filter(
+      (f) => now[f] !== was[f],
     );
+    // The previous state as far as it is known: changed fields are left out (so the diff
+    // contains them), removed ones are null, and set fields use the merge metadata's members.
+    const before: Record<string, unknown> = { ...row };
+    for (const f of changedFields) {
+      if (f in now) delete before[f];
+      else before[f] = null;
+    }
+    let setsChanged = false;
+    for (const f of policy.sets) {
+      const members = presentMembers(meta.sets[f] ?? {});
+      before[f] = members;
+      const next = Array.isArray(row[f]) ? (row[f] as unknown[]) : [];
+      if (
+        next.length !== members.length ||
+        next.some((m) => typeof m !== 'string' || !members.includes(m))
+      ) {
+        setsChanged = true;
+      }
+    }
+    return changedFields.length > 0 || setsChanged
+      ? {
+          change: { kind: 'upsert', entityType: spec.name, entityId, before, after: row },
+          bucket: 'changed',
+        }
+      : null;
+  };
 
   const reconcile = async (): Promise<ReconcileResult> => {
     const result: ReconcileResult = { created: 0, changed: 0, deleted: 0, incomplete: false };
@@ -916,7 +945,6 @@ export async function createSyncRuntime(o: SyncRuntimeOptions): Promise<SyncRunt
       return r;
     };
     for (const spec of active.tables) {
-      const policy = resolved.get(spec.name)!;
       const known = new Map(
         (
           (await db.syncEntityMeta.where('entityType').equals(spec.name).toArray()) as MetaRecord[]
@@ -924,6 +952,19 @@ export async function createSyncRuntime(o: SyncRuntimeOptions): Promise<SyncRunt
       );
       const seen = new Set<string>();
       const rows = (await db.table(spec.name).toArray()) as Array<Record<string, unknown>>;
+
+      // The copy above only tells which entities may need a record (most need none, and cost no
+      // transaction). What is recorded is decided again from the row as it is when its turn comes.
+      const sweep = async (entityId: string, copy: Record<string, unknown> | undefined) => {
+        if (!decideRow(spec, entityId, copy, known.get(entityId))) return true;
+        const done = await recordFresh(spec, entityId, (row, meta) =>
+          decideRow(spec, entityId, row, meta),
+        );
+        if (!done) return true; // the live state needs nothing (a live capture already recorded it)
+        if (!done.ok) return false;
+        result[done.decision.bucket]++;
+        return true;
+      };
 
       for (const row of rows) {
         let entityId: string;
@@ -933,57 +974,18 @@ export async function createSyncRuntime(o: SyncRuntimeOptions): Promise<SyncRunt
           continue;
         }
         seen.add(entityId);
-        const meta = known.get(entityId);
-        let change: LocalChange | null = null;
-        let bucket: 'created' | 'changed' = 'changed';
-        if (!meta || !meta.born || !meta.hf || !isAlive(meta)) {
-          change = { kind: 'upsert', entityType: spec.name, entityId, before: null, after: row };
-          bucket = !meta || !meta.born ? 'created' : 'changed';
-        } else {
-          const now = fieldHashes(row, policy);
-          const was = meta.hf;
-          const changedFields = [...new Set([...Object.keys(now), ...Object.keys(was)])].filter(
-            (f) => now[f] !== was[f],
-          );
-          // The previous state as far as it is known: changed fields are left out (so the diff
-          // contains them), removed ones are null, and set fields use the merge metadata's members.
-          const before: Record<string, unknown> = { ...row };
-          for (const f of changedFields) {
-            if (f in now) delete before[f];
-            else before[f] = null;
-          }
-          let setsChanged = false;
-          for (const f of policy.sets) {
-            const members = presentMembers(meta.sets[f] ?? {});
-            before[f] = members;
-            const next = Array.isArray(row[f]) ? (row[f] as unknown[]) : [];
-            if (
-              next.length !== members.length ||
-              next.some((m) => typeof m !== 'string' || !members.includes(m))
-            ) {
-              setsChanged = true;
-            }
-          }
-          if (changedFields.length > 0 || setsChanged) {
-            change = { kind: 'upsert', entityType: spec.name, entityId, before, after: row };
-          }
-        }
-        if (!change) continue;
-        if (!(await recordIn(spec, change))) {
+        if (!(await sweep(entityId, row))) {
           result.incomplete = true;
           return finish(result);
         }
-        result[bucket]++;
       }
 
-      for (const [entityId, meta] of known) {
-        if (seen.has(entityId) || !meta.born || !isAlive(meta)) continue;
-        const gone: LocalChange = { kind: 'delete', entityType: spec.name, entityId, before: null };
-        if (!(await recordIn(spec, gone))) {
+      for (const entityId of known.keys()) {
+        if (seen.has(entityId)) continue;
+        if (!(await sweep(entityId, undefined))) {
           result.incomplete = true;
           return finish(result);
         }
-        result.deleted++;
       }
     }
     return result;
@@ -1015,9 +1017,23 @@ export async function createSyncRuntime(o: SyncRuntimeOptions): Promise<SyncRunt
       let queued = 0;
       for (const spec of active.tables) {
         const rows = (await db.table(spec.name).toArray()) as Array<Record<string, unknown>>;
-        for (const change of backfillChanges(registry, active.policy, spec.name, rows)) {
-          if (!(await recordIn(spec, change))) return { queued };
-          queued++;
+        for (const { entityId } of backfillChanges(registry, active.policy, spec.name, rows)) {
+          // The row as it is now: it may have been edited, or removed, since the table was read.
+          const done = await recordFresh(spec, entityId, (row) =>
+            row
+              ? {
+                  change: {
+                    kind: 'upsert',
+                    entityType: spec.name,
+                    entityId,
+                    before: null,
+                    after: row,
+                  },
+                }
+              : null,
+          );
+          if (done && !done.ok) return { queued };
+          if (done) queued++;
         }
       }
       return { queued };

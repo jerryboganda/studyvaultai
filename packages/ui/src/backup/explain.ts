@@ -128,7 +128,7 @@ const BY_CODE: Record<BackupErrorCode, Entry> = {
   },
   row_invalid: {
     title: 'Some items in the backup do not match StudyVault’s data model',
-    body: `They may come from a damaged file or a different program. You can stop here, or restore everything that is valid and leave these items out. ${UNCHANGED}`,
+    body: `They may come from a damaged file or a different program. You can stop here, or restore the valid items and leave these out. ${UNCHANGED}`,
   },
   import_invalid: {
     title: 'This file cannot be imported',
@@ -137,11 +137,16 @@ const BY_CODE: Record<BackupErrorCode, Entry> = {
   },
   integrity_violation: {
     title: 'Some items point at data that does not exist',
-    body: `For example a highlight whose page is missing. You can stop here, or restore everything that is consistent and leave these items out. ${UNCHANGED}`,
+    body: `For example a highlight whose page is missing. You can stop here, or restore the consistent items and leave these out. ${UNCHANGED}`,
   },
   safety_backup_failed: {
     title: 'The safety copy of your current data could not be saved',
     body: `Because of that, nothing was restored. ${UNCHANGED} Try again, or turn the safety copy off if you already have a recent backup.`,
+    retryable: true,
+  },
+  restore_in_progress: {
+    title: 'Another restore is already running',
+    body: `A restore is in progress in another StudyVault tab or window. Wait for it to finish, then try again. ${UNCHANGED}`,
     retryable: true,
   },
   staging_failed: {
@@ -171,7 +176,7 @@ export const describeInvalidRow = (r: Pick<InvalidRowInfo, 'table' | 'line' | 'r
 
 const CONFLICT_REASONS = {
   immutable_field_changed:
-    'the saved quote or its location differs between the backup and your vault (your copy is kept)',
+    'the saved quote, where it came from, or how it was captured differs between the backup and your vault (your copy is kept)',
   same_timestamp_different_content:
     'both copies were last changed at the same moment but differ (your copy is kept)',
   no_timestamp_different_content:

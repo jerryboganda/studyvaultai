@@ -118,6 +118,25 @@ describe('card author', () => {
     expect(cards.every((c) => c.highlightId === h.id)).toBe(true);
   });
 
+  it('keeps the wrapped words selected without waiting for an animation frame', async () => {
+    // A late animation-frame callback used to re-select the previous words after a person (or a
+    // script) had already selected new ones, so the next wrap nested a deletion inside the first.
+    // No frame ever fires here: the selection must already be where the helper promises.
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(() => 0);
+    const user = userEvent.setup();
+    const h = await save('Aspirin irreversibly inhibits cyclooxygenase.');
+    renderAuthor(h.id);
+    await screen.findByTestId(TID.editor);
+    await user.click(tab('Fill in the blank'));
+
+    const area = screen.getByTestId(TID.clozeText) as HTMLTextAreaElement;
+    area.setSelectionRange(0, 7);
+    await user.click(screen.getByTestId(TID.clozeWrap));
+    expect(area.value).toBe('{{c1::Aspirin}} irreversibly inhibits cyclooxygenase.');
+    expect([area.selectionStart, area.selectionEnd]).toEqual([6, 13]);
+    expect(area.value.slice(area.selectionStart, area.selectionEnd)).toBe('Aspirin');
+  });
+
   it('a multiple-choice card needs two options and a marked answer', async () => {
     const user = userEvent.setup();
     const h = await save('Warfarin inhibits vitamin K epoxide reductase.');

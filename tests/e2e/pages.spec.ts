@@ -584,6 +584,26 @@ test.describe('side panel: narrow widths', () => {
     ).toBeLessThanOrEqual(report.innerWidth);
     expect(report.offenders, report.offenders.join('\n')).toEqual([]);
     await expect(side.getByRole('button', { name: 'Delete' }).first()).toBeVisible();
+
+    // All five tabs stay reachable at 160 CSS px (they wrap), and no tab's content overflows.
+    await expect(side.getByRole('tab')).toHaveCount(5);
+    for (const name of ['Recent', 'Search', 'Banks', 'Review']) {
+      await side.getByRole('tab', { name, exact: true }).click();
+      await expect(side.getByRole('tab', { name, exact: true })).toHaveAttribute(
+        'aria-selected',
+        'true',
+      );
+      if (name === 'Search') {
+        await side.getByRole('searchbox').fill('A'.repeat(300));
+        await side.getByRole('button', { name: 'Search syntax' }).click();
+      }
+      report = await layoutReport(side);
+      expect(
+        report.scrollWidth,
+        `the ${name} tab must not scroll horizontally at 200% zoom`,
+      ).toBeLessThanOrEqual(report.innerWidth);
+      expect(report.offenders, `${name}: ${report.offenders.join('\n')}`).toEqual([]);
+    }
   });
 
   test('the popup stays within its 360 px column with long unbroken text', async ({ env }) => {
@@ -596,6 +616,241 @@ test.describe('side panel: narrow widths', () => {
     const report = await layoutReport(popup);
     expect(report.scrollWidth).toBeLessThanOrEqual(report.innerWidth);
     expect(report.offenders, report.offenders.join('\n')).toEqual([]);
+  });
+});
+
+test.describe('side panel: tabs, address hash and Search', () => {
+  test('five tabs in order; the address hash picks the tab and tab changes update it', async ({
+    env,
+  }) => {
+    const page = await openFixture(env, '/pages-b.html');
+    const side = await viewing(env, 'sidepanel', page);
+    await expect(side.getByRole('tab')).toHaveText([
+      /^This page/,
+      /^Recent$/,
+      /^Search$/,
+      /^Banks$/,
+      /^Review/,
+    ]);
+
+    await side.getByRole('tab', { name: 'Search' }).click();
+    await expect.poll(() => side.evaluate(() => location.hash)).toBe('#search');
+    await side.reload();
+    await expect(side.getByRole('tab', { name: 'Search' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    await expect(
+      side.getByRole('searchbox', { name: 'Search highlights and notes' }),
+    ).toBeVisible();
+  });
+
+  test('Search finds a saved quote with the words marked, works offline and says when nothing matches', async ({
+    env,
+  }) => {
+    const ext = await openExt(env, 'options');
+    const page = await openFixture(env, '/article.html');
+    await saveBlock(ext, page, '#p-intro');
+    await saveBlock(ext, page, '#p-refs');
+    const side = await viewing(env, 'sidepanel', page);
+    await side.getByRole('tab', { name: 'Search' }).click();
+    const box = side.getByRole('searchbox', { name: 'Search highlights and notes' });
+
+    await env.context.setOffline(true);
+    try {
+      await box.fill('sinoatrial');
+      const cards = side.getByTestId('search-results').getByRole('article');
+      await expect(cards).toHaveCount(1);
+      await expect(cards.locator('mark')).toHaveText('sinoatrial');
+      await expect(side.getByTestId('search-status')).toContainText('1 match');
+
+      await box.fill('guyton');
+      await expect(cards).toHaveCount(1);
+      await expect(cards).toContainText('Guyton and Hall');
+
+      await box.fill('zyzzyva');
+      await expect(side.getByText('No results')).toBeVisible();
+      await expect(side.getByTestId('search-status')).toHaveText('No matches.');
+    } finally {
+      await env.context.setOffline(false);
+    }
+    expect(errorsOf(side)).toEqual([]);
+  });
+
+  test('a hit can be shown on the page, opened in the dashboard and turned into a flashcard', async ({
+    env,
+  }) => {
+    const ext = await openExt(env, 'options');
+    const page = await openFixture(env, '/article.html');
+    await saveBlock(ext, page, '#p-intro');
+    const [row] = await highlightsOf(ext, page.url());
+    const side = await viewing(env, 'sidepanel', page);
+    await side.getByRole('tab', { name: 'Search' }).click();
+    await side.getByRole('searchbox').fill('sinoatrial');
+    const card = side.getByTestId('search-results').getByRole('article');
+    await expect(card).toHaveCount(1);
+
+    await card.getByRole('button', { name: 'Show on page' }).click();
+    await expect(card.getByText('Showing this highlight on the page.')).toBeVisible();
+    await expect
+      .poll(() => activeTexts(page))
+      .toEqual([expect.stringContaining('sinoatrial node')]);
+
+    const [author] = await Promise.all([
+      env.context.waitForEvent('page'),
+      card.getByRole('button', { name: 'Make flashcard' }).click(),
+    ]);
+    await author.waitForURL(/review\.html\?/);
+    const authorUrl = new URL(author.url());
+    expect(authorUrl.searchParams.get('view')).toBe('create');
+    expect(authorUrl.searchParams.get('highlight')).toBe(row!.id);
+    await author.close();
+
+    await page.bringToFront();
+    await expect(card).toHaveCount(1);
+    const [dashboard] = await Promise.all([
+      env.context.waitForEvent('page'),
+      card.getByRole('button', { name: 'Open in dashboard' }).click(),
+    ]);
+    await dashboard.waitForURL(/dashboard\.html\?/);
+    expect(new URL(dashboard.url()).searchParams.get('highlight')).toBe(row!.id);
+    await dashboard.close();
+  });
+
+  test('a hit from another page cannot be shown here, and says why', async ({ env }) => {
+    const ext = await openExt(env, 'options');
+    const a = await openFixture(env, '/article.html');
+    await saveBlock(ext, a, '#p-intro');
+    const b = await openFixture(env, '/pages-b.html');
+    await saveBlock(ext, b, '#p-gfr');
+    const side = await viewing(env, 'sidepanel', a);
+    await side.getByRole('tab', { name: 'Search' }).click();
+    await side.getByRole('searchbox').fill('glomerular');
+    const card = side.getByTestId('search-results').getByRole('article');
+    await expect(card).toHaveCount(1);
+    const show = card.getByRole('button', { name: 'Show on page' });
+    await expect(show).toHaveAttribute('aria-disabled', 'true');
+    await expect(show).toHaveAccessibleDescription(/from another page/);
+  });
+});
+
+test.describe('side panel: tags and notes on a card', () => {
+  test('a tag and a Markdown note are added on the card, survive a reload, and are searchable', async ({
+    env,
+  }) => {
+    const ext = await openExt(env, 'options');
+    const page = await openFixture(env, '/article.html');
+    await saveBlock(ext, page, '#p-intro');
+    const side = await viewing(env, 'sidepanel', page);
+    const card = side.getByRole('article');
+
+    await card.getByLabel('Add a tag').fill('exam pearl');
+    await card.getByRole('button', { name: 'Add tag' }).click();
+    await expect(card.getByRole('list', { name: 'Tags' }).getByText('exam pearl')).toBeVisible();
+
+    await card.getByRole('button', { name: 'Add a note' }).click();
+    await card.getByLabel('New study note (Markdown)').fill('Resting rate **60-100** bpm');
+    await card.getByRole('button', { name: 'Save note' }).click();
+    await expect(card.getByTestId('card-note').locator('strong')).toHaveText('60-100');
+
+    await side.reload();
+    const again = side.getByRole('article');
+    await expect(again.getByRole('list', { name: 'Tags' }).getByText('exam pearl')).toBeVisible();
+    await expect(again.getByTestId('card-note').locator('strong')).toHaveText('60-100');
+    // The quick note keeps its place as the first text field of the card (the hand-over target).
+    await expect(again.locator('textarea').first()).toHaveAttribute('id', /-note$/);
+
+    await side.getByRole('tab', { name: 'Search' }).click();
+    const box = side.getByRole('searchbox');
+    await box.fill('tag:"exam pearl"');
+    await expect(side.getByTestId('search-results').getByRole('article')).toHaveCount(1);
+    await box.fill('bpm');
+    const hit = side.getByTestId('search-results').getByRole('article');
+    await expect(hit).toHaveCount(1);
+    await expect(hit.getByText('Matched a note')).toBeVisible();
+    expect(errorsOf(side)).toEqual([]);
+  });
+
+  test('removing a tag detaches it from this highlight only', async ({ env }) => {
+    const ext = await openExt(env, 'options');
+    const page = await openFixture(env, '/article.html');
+    await saveBlock(ext, page, '#p-intro');
+    const side = await viewing(env, 'sidepanel', page);
+    const card = side.getByRole('article');
+    await card.getByLabel('Add a tag').fill('rhythm');
+    await card.getByLabel('Add a tag').press('Enter');
+    await expect(card.getByRole('list', { name: 'Tags' })).toContainText('rhythm');
+
+    await card.getByRole('button', { name: 'Remove tag rhythm' }).click();
+    await expect(card.getByText('No tags yet.')).toBeVisible();
+    // The vocabulary keeps the tag: the field offers it again.
+    const listId = await card.getByLabel('Add a tag').getAttribute('list');
+    await expect(side.locator(`datalist[id="${listId}"] option[value="rhythm"]`)).toHaveCount(1);
+  });
+});
+
+test.describe('side panel: banks, folders and the bank filter', () => {
+  test('a bank chosen in Banks narrows Recent and Search to it, and opens in the dashboard', async ({
+    env,
+  }) => {
+    const ext = await openExt(env, 'options');
+    const page = await openFixture(env, '/article.html');
+    await saveBlock(ext, page, '#p-refs'); // Inbox (the default bank)
+    const side = await viewing(env, 'sidepanel', page);
+    await side.getByRole('tab', { name: 'Banks' }).click();
+    await side.getByLabel('New bank').fill('Cardiology');
+    await side.getByRole('button', { name: 'Create bank' }).click();
+    await expect(side.getByRole('list', { name: 'Your banks' })).toContainText('Cardiology');
+    await saveBlockToBank(ext, page, '#p-intro', 'Cardiology');
+
+    const bank = side.getByRole('listitem').filter({ hasText: 'Cardiology' });
+    await expect(bank).toContainText('1 highlight');
+    await bank.getByRole('button', { name: 'Show folders of Cardiology' }).click();
+    await expect(bank.getByText('No folders in this bank yet.')).toBeVisible();
+    await bank.getByRole('button', { name: 'Show Cardiology in Recent and Search' }).click();
+    await expect(side.getByTestId('bank-scope')).toContainText('only Cardiology');
+
+    await side.getByRole('tab', { name: 'Recent' }).click();
+    await expect(side.getByRole('article')).toHaveCount(1);
+    await expect(side.getByRole('article')).toContainText('sinoatrial node');
+    await expect(side.getByTestId('recent-scope')).toContainText('Only Cardiology');
+
+    await side.getByRole('tab', { name: 'Search' }).click();
+    await expect(side.getByTestId('search-scope')).toContainText('Only in Cardiology');
+    // No words typed: the bank itself is the query.
+    const hit = side.getByTestId('search-results').getByRole('article');
+    await expect(hit).toHaveCount(1);
+    await expect(hit).toContainText('sinoatrial node');
+    await side.getByRole('searchbox').fill('guyton');
+    await expect(side.getByText('No results')).toBeVisible();
+    await side.getByTestId('search-everywhere').click();
+    await expect(side.getByTestId('search-results').getByRole('article')).toHaveCount(1);
+
+    await side.getByRole('tab', { name: 'Banks' }).click();
+    const [dashboard] = await Promise.all([
+      env.context.waitForEvent('page'),
+      side.getByRole('button', { name: 'Open Cardiology in the dashboard' }).click(),
+    ]);
+    await dashboard.waitForURL(/dashboard\.html\?/);
+    expect(new URL(dashboard.url()).searchParams.get('bank')).toBeTruthy();
+    await dashboard.close();
+  });
+});
+
+test.describe('side panel: Review tab', () => {
+  test('explains that there are no cards yet and opens the card author', async ({ env }) => {
+    const page = await openFixture(env, '/pages-b.html');
+    const side = await viewing(env, 'sidepanel', page);
+    await side.getByRole('tab', { name: 'Review' }).click();
+    await expect(side.getByText('No cards to review yet')).toBeVisible();
+
+    const [author] = await Promise.all([
+      env.context.waitForEvent('page'),
+      side.getByRole('button', { name: 'Create cards' }).click(),
+    ]);
+    await author.waitForURL(/review\.html\?/);
+    expect(new URL(author.url()).searchParams.get('view')).toBe('create');
+    await author.close();
   });
 });
 
@@ -1015,5 +1270,129 @@ test.describe('options: delete all data', () => {
     await expect
       .poll(() => paintedByColor(page), { message: 'the open page drops the paint' })
       .toEqual({});
+  });
+});
+
+// =============================================================================================
+// CONTENT SECURITY POLICY (docs/adr/008, docs/adr/009)
+// =============================================================================================
+
+test.describe('extension pages: content security policy', () => {
+  /**
+   * Every violation the page reports, as the directive that refused it. The `securitypolicyviolation`
+   * event is used (not the console) because eval, workers and inline styles do not all reach it, and
+   * it is installed before the page's own scripts run.
+   */
+  async function watchViolations(page: Page): Promise<() => Promise<string[]>> {
+    type Seen = { __svCsp: string[] };
+    await page.addInitScript(() => {
+      const seen: string[] = [];
+      (window as unknown as Seen).__svCsp = seen;
+      window.addEventListener(
+        'securitypolicyviolation',
+        (e) => seen.push(`${e.effectiveDirective} blocked ${e.blockedURI || 'inline'}`),
+        true,
+      );
+    });
+    return () => page.evaluate(() => (window as unknown as Seen).__svCsp.slice());
+  }
+
+  test('every extension page loads and settles with no violation', async ({ env }) => {
+    const names = [
+      'popup',
+      'sidepanel',
+      'options',
+      'dashboard',
+      'review',
+      'onboarding',
+      'pdf-reader',
+    ];
+    for (const name of names) {
+      const page = await env.context.newPage();
+      const violations = await watchViolations(page);
+      await page.goto(`chrome-extension://${env.extensionId}/${name}.html`);
+      // `#root > *` would match the empty toast host, so wait for real content.
+      await expect(
+        page.locator('#root :is(h1, h2, button):visible').first(),
+        `${name}.html`,
+      ).toBeVisible();
+      await page.waitForLoadState('networkidle');
+      expect(await violations(), `${name}.html`).toEqual([]);
+      await page.close();
+    }
+  });
+
+  // The manifest string is asserted in permissions.spec.ts; this proves Chrome ENFORCES it (a CSP that
+  // fails validation is silently replaced by the default one, which has no style/img/connect rules).
+  test('the policy is enforced: inline or remote content, plain http, eval and blob scripts are refused; CSSOM styles, data images and wasm still work', async ({
+    env,
+  }) => {
+    const page = await env.context.newPage();
+    const violations = await watchViolations(page);
+    await page.goto(`chrome-extension://${env.extensionId}/options.html`);
+    await expect(page.locator('#root :is(h1, h2, button):visible').first()).toBeVisible();
+
+    const allowed = await page.evaluate(async () => {
+      const el = document.createElement('div');
+      document.body.append(el);
+      el.style.color = 'rgb(1, 2, 3)'; // CSSOM: how React and pdf.js style elements
+      const dataImage = await new Promise<boolean>((resolve) => {
+        const img = new Image();
+        img.onload = () => resolve(true);
+        img.onerror = () => resolve(false);
+        img.src = 'data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA=';
+      });
+      const wasm = await WebAssembly.compile(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])).then(
+        () => true,
+        () => false,
+      );
+      return { color: getComputedStyle(el).color, dataImage, wasm };
+    });
+    expect(allowed).toEqual({ color: 'rgb(1, 2, 3)', dataImage: true, wasm: true });
+    expect(await violations(), 'the allowed operations raise nothing').toEqual([]);
+
+    await page.evaluate(async () => {
+      const style = document.createElement('style');
+      style.textContent = 'body { outline: 1px solid red; }';
+      document.head.append(style); // style-src-elem
+      document.body.setAttribute('style', 'outline: 1px solid red'); // style-src-attr
+      new Image().src = 'https://example.invalid/pixel.png'; // img-src
+      new Audio('https://example.invalid/clip.mp3'); // media-src
+      const frame = document.createElement('iframe');
+      frame.src = 'https://example.invalid/'; // frame-src
+      document.body.append(frame);
+      await fetch('http://example.invalid/').catch(() => undefined); // connect-src: http only on loopback
+      // Outside this evaluate call: DevTools-initiated evaluation is itself exempt from the eval ban.
+      await new Promise<void>((resolve) =>
+        setTimeout(() => {
+          try {
+            // eslint-disable-next-line no-restricted-syntax -- refusing this is what is under test
+            new Function('return 1')(); // script-src: no unsafe-eval
+          } catch {
+            /* EvalError is the point */
+          }
+          resolve();
+        }, 0),
+      );
+      // script-src-elem: no code from blob: (a blob Worker is NOT blocked by worker-src 'self' in
+      // Chromium; see docs/adr/009 amendment, so it is deliberately not asserted here).
+      await import(/* @vite-ignore */ URL.createObjectURL(new Blob(['export {}']))).catch(
+        () => undefined,
+      );
+    });
+    await expect
+      .poll(async () => [...new Set((await violations()).map((v) => v.split(' ')[0]))].sort())
+      .toEqual(
+        [
+          'connect-src',
+          'frame-src',
+          'img-src',
+          'media-src',
+          'script-src',
+          'script-src-elem',
+          'style-src-attr',
+          'style-src-elem',
+        ].sort(),
+      );
   });
 });

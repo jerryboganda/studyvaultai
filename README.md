@@ -1,5 +1,52 @@
 # StudyVault AI - Claude Code Development Blueprint
 
+## Current status and documents (2026-10-11)
+
+**Pre-release, version 0.1.0, not published.** The repository (<https://github.com/jerryboganda/studyvaultai>)
+holds a Manifest V3 extension. Code exists for each phase of `ROADMAP.md` (Phase 6 covers optional
+sync against a server you operate only: there is no account system and no hosted service), but
+verification lags: on 2026-10-11 every completed GitHub Actions run of `ci.yml` had concluded `failure`, the
+release workflows had never run, and the manual checklist had not been run. Read
+`docs/PRIVACY_CLAIMS.md` for what each privacy and store statement is actually backed by, and treat
+`PRIVACY_POLICY.md` and `STORE_LISTING.md` as drafts.
+
+**Stack in use** (exact pins in `package.json`, rationale in ADR-002): WXT 0.21.4, Vite 8.3.4, React
+19.3.0, TypeScript 6.0.3, Dexie 4.4.6 on IndexedDB, Zod 4.6.5, `pdfjs-dist` 6.4.299 (legacy build,
+bundled), `tesseract.js` 7.0.0 with bundled language data, `ts-fsrs` 5.4.2, MiniSearch 7.2.0,
+`marked` with DOMPurify, Vitest 5.0.3 and Playwright 1.64.0 on pnpm. Styling is plain CSS with custom
+properties inside a Shadow DOM for the page overlay; **Tailwind was not adopted** (ADR-002).
+
+**Layout.** `entrypoints/` holds the extension surfaces (`background`, `highlighter.content`,
+`popup`, `sidepanel`, `options`, `dashboard`, `review`, `onboarding`, `pdf-reader`); `packages/*/src`
+holds the aliased modules (`@shared`, `@runtime`, `@storage`, `@highlights`, `@search`, `@study`,
+`@ai`, `@pdf`, `@ocr`, `@sync`, `@backup`, `@ui`; ADR-001); `server/` is a reference sync server,
+deliberately not production-complete (there is no hosted StudyVault service); `scripts/` holds the
+build, release-document, SBOM and licence gates; `tests/e2e/` holds the Playwright suite.
+
+**How to build and test.** Heavy compute runs on GitHub Actions, not on a developer machine
+(`AGENTS.md` Rule 1). Push a branch and read the run: `.github/workflows/ci.yml` runs lint,
+typecheck, format, unit tests, production and e2e builds, the release gates and Playwright on Linux
+and Windows. Locally you may run only scoped checks on files you touched
+(`pnpm exec vitest run <file>`, `pnpm exec eslint <files>`, `pnpm exec prettier --write <files>`) and
+a single failing Playwright spec with one worker; do not run the full `pnpm test`, `pnpm test:e2e` or
+`pnpm build` loop locally. Cite a run URL as evidence, never "it should pass".
+
+**Documents.**
+
+| Group | Files |
+| --- | --- |
+| Engineering contract | `CLAUDE.md`, `AGENTS.md` |
+| Product and design | `PRD.md`, `ARCHITECTURE.md`, `DATA_MODEL.md`, `UX_DESIGN.md`, `ROADMAP.md`, `TEST_PLAN.md`, `REFERENCES.md` |
+| Security and privacy | `SECURITY_PRIVACY.md` (rules), `THREAT_MODEL.md`, `SECURITY.md` (reporting), `PRIVACY_POLICY.md` (draft), `docs/PRIVACY_CLAIMS.md` (evidence ledger) |
+| Release | `RELEASE.md`, `STORE_LISTING.md` (draft), `CHANGELOG.md`, `docs/MANUAL_TEST_CHECKLIST.md` |
+| Plans | `docs/plans/EXECUTION_BRIEF.md`, `prompts/` |
+| Decisions | `docs/adr/001` module layout; `002` toolchain pins and styling; `003` least-privilege site access and injection; `004` text anchoring and highlight rendering; `005` free text only in extension-origin surfaces; `006` PDF reader; `007` release pipeline and store-document gates; `008` `'wasm-unsafe-eval'`; `009` network egress for AI and sync; `010` module seams |
+
+The blueprint below is the original product description of 2026-10-10 and is kept as written. Where
+it differs from this section (creating a new repository, Tailwind), this section is current.
+
+---
+
 Version: 1.0 | Prepared: 2026-10-10
 
 ## Product in one sentence
@@ -35,7 +82,7 @@ A local-first Manifest V3 Chrome study companion that captures cited highlights 
 - Functionality must be demonstrably complete, not just visually presented.
 
 ## Recommended stack
-WXT + Chrome Manifest V3 + React + TypeScript + Vite + Tailwind + accessible component primitives; content-script Shadow DOM; IndexedDB with Dexie; chrome.storage for settings; PDF.js packaged locally; `ts-fsrs` for review scheduling; Zod at boundaries; Vitest + Playwright + extension test harness; optional Postgres + object storage + API for sync.
+WXT + Chrome Manifest V3 + React + TypeScript + Vite + Tailwind (not adopted: ADR-002) + accessible component primitives; content-script Shadow DOM; IndexedDB with Dexie; chrome.storage for settings; PDF.js packaged locally; `ts-fsrs` for review scheduling; Zod at boundaries; Vitest + Playwright + extension test harness; optional Postgres + object storage + API for sync.
 
 ## Quick instruction
 Start with Phase 0 in the master prompt and continue in verified vertical slices. The principal risk is persistent text/PDF anchoring, not the visual UI.

@@ -75,7 +75,11 @@ class PanelExtras {
       for (const id of input.highlightIds) {
         this.liveItem(id);
         const set = this.links.get(id) ?? new Set<string>();
-        for (const t of input.tagIds) if (!set.has(t)) (set.add(t), linked++);
+        for (const t of input.tagIds) {
+          if (set.has(t)) continue;
+          set.add(t);
+          linked++;
+        }
         this.links.set(id, set);
       }
       store.notify();

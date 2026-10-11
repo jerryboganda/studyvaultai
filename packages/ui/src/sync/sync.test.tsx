@@ -126,6 +126,10 @@ function fakeApi(initial: SyncStatusView, extra: Partial<SyncApi> = {}) {
       calls.push('syncNow');
       return set({ lastSyncAt: 1_700_000_000_000, pending: 0 });
     }),
+    uploadPlain: vi.fn(async () => {
+      calls.push('uploadPlain');
+      return set({ encryptionChoice: 'plaintext', status: 'idle' });
+    }),
     e2eeSetup: vi.fn(async () => {
       calls.push('e2eeSetup');
       return set({ e2ee: { mode: 'unlocked', version: 1, lockInSeconds: 900 } });
@@ -260,6 +264,32 @@ describe('turning sync on', () => {
     expect(text).toMatch(/not end-to-end\s+encryption/i);
     expect(text).toMatch(/never sent/i);
     expect(byId('sync-redirect-url').textContent).toMatch(/chromiumapp\.org/);
+  });
+
+  it('lists what is uploaded from the sync policy, including what used to be left out', async () => {
+    const fake = fakeApi(view());
+    mount(fake);
+    const list = (await screen.findByTestId('sync-data-list')).textContent ?? '';
+    for (const wanted of [
+      /Highlights/,
+      /address and title of the page/i,
+      /Banks, folders and tags/,
+      /Notes/,
+      /Flashcards/,
+      /Review history/,
+      /every answer you gave/i,
+      /PDF details/,
+      /web address it was opened from/i,
+      /Text recognised in scanned PDF pages/,
+      /position of every word/i,
+    ]) {
+      expect(list).toMatch(wanted);
+    }
+    // and says what stays here, what the server still sees under encryption, and the provider
+    expect(byId('sync-never-sent').textContent).toMatch(/PDF files themselves/);
+    expect(byId('sync-server-sees').textContent).toMatch(/kinds of items/);
+    expect(byId('sync-server-sees').textContent).toMatch(/fingerprint and the page number/);
+    expect(byId('sync-provider-learns').textContent).toMatch(/learns that this extension signs in/);
   });
 
   it('cannot be turned on without the acknowledgement, and says why', async () => {
@@ -543,6 +573,186 @@ describe('end-to-end encryption card', () => {
     await userEvent.click(byId('e2ee-lock'));
     await waitFor(() => expect(fake.api.e2eeLock).toHaveBeenCalled());
     expect(await screen.findByTestId('e2ee-unlock')).toBeInTheDocument();
+  });
+});
+
+describe('the encryption decision', () => {
+  const WAITING = {
+    ...ON,
+    signedIn: true,
+    account: 'user-1',
+    status: 'awaiting_encryption_choice' as const,
+    encryptionChoice: 'undecided' as const,
+    pending: 12,
+  };
+
+  it('says nothing was uploaded, and what each choice means, before anything else', async () => {
+    const fake = fakeApi(view(WAITING));
+    mount(fake);
+    expect(await screen.findByTestId('sync-awaiting-choice')).toHaveTextContent(
+      /has not sent anything yet/,
+    );
+    expect(byId('sync-status')).toHaveTextContent(/Nothing has been uploaded yet/);
+    const note = byId('e2ee-choice-note');
+    expect(note).toHaveTextContent(/does not send anything until you choose/);
+    expect(note).toHaveTextContent(/operator of the sync server/);
+    expect(note).toHaveTextContent(/not end-to-end encryption/);
+    expect(note).toHaveTextContent(/review history/);
+    expect(note).toHaveTextContent(/page addresses and titles/);
+    expect(note).toHaveTextContent(/scanned-page text/);
+  });
+
+  it('"Sync now" is disabled with its reason, so it cannot look like an upload', async () => {
+    const fake = fakeApi(view(WAITING));
+    mount(fake);
+    const button = await screen.findByTestId('sync-now');
+    expect(button.getAttribute('aria-disabled')).toBe('true');
+    expect(button.getAttribute('title')).toMatch(/Choose how your data is protected first/);
+  });
+
+  it('uploading without encryption needs the acknowledgement, and then does exactly that', async () => {
+    const fake = fakeApi(view(WAITING));
+    mount(fake);
+    const upload = await screen.findByTestId('e2ee-upload-plain');
+    expect(upload).toHaveTextContent('Upload without end-to-end encryption');
+    expect(upload.getAttribute('aria-disabled')).toBe('true');
+    expect(upload.getAttribute('title')).toMatch(/operator of the server can read/);
+    await userEvent.click(upload);
+    expect(fake.api.uploadPlain).not.toHaveBeenCalled();
+
+    await userEvent.click(byId('e2ee-plain-ack'));
+    await userEvent.click(upload);
+    await waitFor(() => expect(fake.api.uploadPlain).toHaveBeenCalledTimes(1));
+    // decided: the choice block is gone and the mode line states the consequence
+    await waitFor(() => expect(screen.queryByTestId('e2ee-plain-choice')).toBeNull());
+    await waitFor(() =>
+      expect(byId('e2ee-mode')).toHaveTextContent(/chose to upload without end-to-end encryption/),
+    );
+  });
+
+  it('setting a passphrase is the other way out, and is offered right there', async () => {
+    const fake = fakeApi(view(WAITING));
+    mount(fake);
+    await userEvent.type(
+      await screen.findByTestId('e2ee-passphrase'),
+      'correct horse battery staple',
+    );
+    await userEvent.type(byId('e2ee-confirm'), 'correct horse battery staple');
+    await userEvent.click(byId('e2ee-lost-ack'));
+    await userEvent.click(byId('e2ee-setup'));
+    await waitFor(() =>
+      expect(fake.api.e2eeSetup).toHaveBeenCalledWith('correct horse battery staple'),
+    );
+    expect(fake.api.uploadPlain).not.toHaveBeenCalled();
+  });
+
+  it('is not offered once decided, and is never offered on an encrypted account', async () => {
+    const decided = fakeApi(view({ ...WAITING, status: 'idle', encryptionChoice: 'plaintext' }));
+    mount(decided);
+    await screen.findByTestId('e2ee-section');
+    expect(screen.queryByTestId('e2ee-plain-choice')).toBeNull();
+    expect(screen.queryByTestId('sync-awaiting-choice')).toBeNull();
+    cleanup();
+
+    const encrypted = fakeApi(
+      view({
+        ...WAITING,
+        status: 'locked',
+        encryptionChoice: 'e2ee',
+        e2ee: { mode: 'locked', version: 1, lockInSeconds: null },
+      }),
+    );
+    mount(encrypted);
+    await screen.findByTestId('e2ee-unlock');
+    expect(screen.queryByTestId('e2ee-upload-plain')).toBeNull();
+  });
+});
+
+describe('what the card says about the lock and about AI', () => {
+  it('says that AI use of decrypted text needs a separate consent', async () => {
+    const fake = fakeApi(view({ ...ON, signedIn: true }));
+    mount(fake);
+    const note = await screen.findByTestId('e2ee-ai-note');
+    expect(note).toHaveTextContent(/decrypted on this device/);
+    expect(note).toHaveTextContent(/separate consent/);
+    expect(note).toHaveTextContent(/does not cover what you choose to send to an AI provider/);
+  });
+
+  it('explains what locked means and what happens at the lock time', async () => {
+    const unlocked = fakeApi(
+      view({
+        ...ON,
+        signedIn: true,
+        encryptionChoice: 'e2ee',
+        e2ee: { mode: 'unlocked', version: 1, lockInSeconds: 900 },
+      }),
+    );
+    mount(unlocked);
+    const text = (await screen.findByTestId('e2ee-mode')).textContent ?? '';
+    expect(text).toMatch(/about 15 minute/);
+    expect(text).toMatch(/background syncing pauses/);
+    expect(text).toMatch(/dropped when the browser or the extension restarts/);
+    cleanup();
+
+    const locked = fakeApi(
+      view({
+        ...ON,
+        signedIn: true,
+        encryptionChoice: 'e2ee',
+        status: 'locked',
+        e2ee: { mode: 'locked', version: 1, lockInSeconds: null },
+      }),
+    );
+    mount(locked);
+    expect(await screen.findByTestId('e2ee-mode')).toHaveTextContent(
+      /key is not held here right now/,
+    );
+  });
+
+  it('shows the downgrade warning and what was set aside', async () => {
+    const fake = fakeApi(
+      view({
+        ...ON,
+        signedIn: true,
+        status: 'error',
+        encryptionChoice: 'e2ee',
+        e2ee: {
+          mode: 'unlocked',
+          version: 2,
+          lockInSeconds: 120,
+          warning: 'The server now reports no encryption key. Nothing was uploaded.',
+          setAside: 3,
+        },
+      }),
+    );
+    mount(fake);
+    expect(await screen.findByTestId('e2ee-warning')).toHaveTextContent(/Nothing was uploaded/);
+    expect(byId('e2ee-set-aside')).toHaveTextContent(
+      /3 stored items on the server could not be proven/,
+    );
+  });
+
+  it('tells the person what setting up encryption could not vouch for', async () => {
+    const fake = fakeApi(view({ ...ON, signedIn: true, account: 'user-1' }), {
+      e2eeSetup: vi.fn(async () =>
+        view({
+          ...ON,
+          signedIn: true,
+          e2ee: { mode: 'unlocked', version: 1, lockInSeconds: 900, setAside: 2 },
+        }),
+      ),
+    });
+    mount(fake);
+    await userEvent.type(
+      await screen.findByTestId('e2ee-passphrase'),
+      'correct horse battery staple',
+    );
+    await userEvent.type(byId('e2ee-confirm'), 'correct horse battery staple');
+    await userEvent.click(byId('e2ee-lost-ack'));
+    await userEvent.click(byId('e2ee-setup'));
+    expect(await screen.findByTestId('e2ee-message')).toHaveTextContent(
+      /2 stored items on the server could not be proven to come from your devices/,
+    );
   });
 });
 

@@ -131,3 +131,12 @@ describe('normalizeDenyInput', () => {
     expect(normalizeDenyInput(input)).toHaveProperty('error');
   });
 });
+
+describe('the package barrel', () => {
+  it('exports the source-address helpers next to the other address helpers', async () => {
+    const ui = await import('./index');
+    expect(ui.isPlaceholderSourceUrl('https://studyvault.invalid/pdf/doc-1')).toBe(true);
+    expect(ui.visibleSourceUrl('https://studyvault.invalid/pdf/doc-1')).toBe('');
+    expect(ui.visibleSourceUrl('https://example.org/a')).toBe('https://example.org/a');
+  });
+});

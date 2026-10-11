@@ -6,11 +6,15 @@ import { webcrypto } from 'node:crypto';
 import type { SyncRuntime } from '@storage';
 import type { SyncReport } from '@sync';
 import {
+  ALARM_LOCK,
   ALARM_PERIODIC,
   ALARM_SOON,
   PERIODIC_MINUTES,
+  createSessionBinding,
+  createSessionKeyVault,
   createSessionTokenStore,
   createSyncService,
+  registerSync,
   registerSyncRpc,
   type SyncService,
   type SyncServiceDeps,
@@ -68,11 +72,18 @@ function stubRuntime() {
     },
     isDirty: async () => false,
     isCurrent: async () => true,
-    resendAll: async () => ({ queued: 0 }),
+    resendAll: vi.fn(async () => ({ queued: 0 })),
     rebind: async () => ({ created: 0, changed: 0, deleted: 0, incomplete: false }),
     log: { pending: async () => [], replace: async () => undefined },
-    store: { listQuarantined: async () => [], deleteQuarantined: async () => undefined },
+    store: {
+      listQuarantined: async () => [],
+      deleteQuarantined: async () => undefined,
+      putQuarantined: vi.fn(async () => undefined),
+      listTombstones: async () => [],
+    },
     engine: {
+      auditHistory: vi.fn(async () => ({ ops: [], accepted: new Set<string>(), unreadable: 0 })),
+      recordLocalChange: vi.fn(async () => null),
       getState: async () => state,
       sync: vi.fn(async () => {
         calls.push('sync');
@@ -106,12 +117,19 @@ interface Harness {
 }
 
 function harness(
-  over: { initial?: { sync?: boolean }; alarms?: FakeAlarms | null; identity?: boolean } = {},
+  over: {
+    initial?: { sync?: boolean };
+    alarms?: FakeAlarms | null;
+    identity?: boolean;
+    /** The sync server: everything that is not the identity provider. */
+    server?: typeof fetch;
+    now?: () => number;
+  } = {},
 ) {
   const fetched: string[] = [];
-  const passthrough: typeof fetch = async (input) => {
+  const passthrough: typeof fetch = async (input, init) => {
     fetched.push(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
-    return new Response('{}', { status: 200 });
+    return over.server ? over.server(input, init) : new Response('{}', { status: 200 });
   };
   const provider = fakeProvider({
     issuer: ISSUER,
@@ -129,6 +147,7 @@ function harness(
     redirectUrl: REDIRECT,
     alarms,
     initial: { sync: over.initial?.sync ?? false },
+    ...(over.now ? { now: over.now } : {}),
   });
   const stub = stubRuntime();
   const createRuntime = vi.fn(async () => stub.runtime);
@@ -629,5 +648,478 @@ describe('who may call the service', () => {
     await new Promise((r) => setTimeout(r, 5));
     expect(replies[0]).toMatchObject({ ok: false });
     expect(h.mem.config).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// The first upload waits for an explicit encryption decision
+// ---------------------------------------------------------------------------------------------
+
+describe('the first upload', () => {
+  const calledWith = (h: Harness) =>
+    h.stub.engine.sync.mock.calls.map((c) => (c as unknown as [Record<string, unknown>?])[0] ?? {});
+
+  async function signedIn(h: Harness) {
+    await configure(h);
+    await h.service.enable();
+    grantAll(h);
+    await h.service.signIn();
+    await h.service.settled();
+  }
+
+  it('is a pull-only run after sign-in, and the view says nothing was sent', async () => {
+    const h = harness();
+    await signedIn(h);
+    expect(calledWith(h).length).toBeGreaterThan(0);
+    for (const options of calledWith(h)) expect(options).toMatchObject({ push: false });
+
+    const view = await h.service.status();
+    expect(view.signedIn).toBe(true);
+    expect(view.encryptionChoice).toBe('undecided');
+    expect(view.status).toBe('awaiting_encryption_choice');
+    expect(h.mem.encryption).toBeNull();
+  });
+
+  it('is also pull-only for the timer and for "Sync now"', async () => {
+    const h = harness();
+    await signedIn(h);
+    h.stub.engine.sync.mockClear();
+    await h.service.onAlarm(ALARM_PERIODIC);
+    await h.service.onAlarm(ALARM_SOON);
+    await h.service.runSync('manual', { force: true });
+    expect(calledWith(h)).toHaveLength(3);
+    for (const options of calledWith(h)) expect(options).toMatchObject({ push: false });
+  });
+
+  it('opens only on the explicit choice to upload without end-to-end encryption, and remembers it', async () => {
+    const h = harness();
+    await signedIn(h);
+    h.stub.engine.sync.mockClear();
+
+    const view = await h.service.uploadWithoutEncryption();
+    await h.service.settled();
+    expect(view.encryptionChoice).toBe('plaintext');
+    expect(h.mem.encryption).toMatchObject({ mode: 'plaintext' });
+    expect(calledWith(h).length).toBeGreaterThan(0);
+    for (const options of calledWith(h)) expect(options).not.toHaveProperty('push');
+
+    // A restarted worker (a new service over the same persisted state) still knows.
+    const restarted = createSyncService(h.deps);
+    h.stub.engine.sync.mockClear();
+    await restarted.runSync('startup');
+    expect(calledWith(h)[0]).not.toHaveProperty('push');
+    expect((await restarted.status()).status).toBe('idle');
+  });
+
+  it('is forgotten when the server or the provider changes', async () => {
+    const h = harness();
+    await signedIn(h);
+    await h.service.uploadWithoutEncryption();
+    await h.service.settled();
+    expect(h.mem.encryption).not.toBeNull();
+    await h.service.configure({
+      serverUrl: 'https://elsewhere.example.org',
+      issuer: ISSUER,
+      clientId: CLIENT,
+    });
+    expect(h.mem.encryption).toBeNull();
+  });
+
+  it('needs sync to be on and a server', async () => {
+    const h = harness();
+    await expect(h.service.uploadWithoutEncryption()).rejects.toMatchObject({
+      code: 'invalid_request',
+    });
+    expect(h.mem.encryption).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Privileged configuration is not read from chrome.storage.local
+// ---------------------------------------------------------------------------------------------
+
+describe('where the configuration comes from', () => {
+  const planted = {
+    v: 1 as const,
+    serverUrl: 'https://attacker.example',
+    issuer: 'https://attacker.example',
+    clientId: 'evil',
+    e2ee: null,
+  };
+
+  it('ignores a copy a content script wrote into chrome.storage.local, and removes it', async () => {
+    const h = harness({ initial: { sync: true } });
+    await configure(h);
+    h.mem.plantLegacyConfig(planted);
+    const restarted = createSyncService(h.deps); // the planted copy is there when a worker starts
+    const view = await restarted.status();
+    expect(view.config).toEqual({ serverUrl: SERVER, issuer: ISSUER, clientId: CLIENT });
+    expect(h.mem.legacyConfig).toBeNull();
+    expect(h.mem.config?.serverUrl).toBe(SERVER);
+  });
+
+  it('moves a copy from before the move once, when Chrome already holds both origins', async () => {
+    const h = harness({ initial: { sync: true } });
+    h.mem.plantLegacyConfig({ ...planted, serverUrl: SERVER, issuer: ISSUER, clientId: CLIENT });
+    grantAll(h);
+    const view = await h.service.status();
+    expect(view.config?.serverUrl).toBe(SERVER);
+    expect(h.mem.config?.serverUrl).toBe(SERVER);
+    expect(h.mem.legacyConfig).toBeNull();
+  });
+
+  it('drops a copy that points at origins the person never allowed', async () => {
+    const h = harness({ initial: { sync: true } });
+    h.mem.plantLegacyConfig(planted);
+    const view = await h.service.status();
+    expect(view.config).toBeNull();
+    expect(h.mem.config).toBeNull();
+    expect(h.mem.legacyConfig).toBeNull();
+    // and nothing can be signed in to: there is no configuration
+    await expect(h.service.signIn()).rejects.toMatchObject({ code: 'invalid_request' });
+  });
+});
+
+describe('tokens belong to one configuration', () => {
+  it('are forgotten, and never sent, when they were issued for another server', async () => {
+    const h = harness();
+    await configure(h);
+    await h.service.enable();
+    grantAll(h);
+    await h.service.signIn();
+    await h.service.settled();
+    expect(h.mem.binding).toBe(JSON.stringify([SERVER, ISSUER, CLIENT]));
+    expect((await h.service.status()).signedIn).toBe(true);
+
+    // The tokens were issued for a different (server, issuer, client id): they must not be used.
+    h.mem.setBinding(JSON.stringify(['https://other.example.org', ISSUER, CLIENT]));
+    h.fetched.length = 0;
+    const view = await h.service.runSync('test');
+    expect(view.signedIn).toBe(false);
+    // Anything that would use them finds none: the request is not made, and they are forgotten.
+    await expect(h.service.e2eeUnlock('a long enough passphrase')).rejects.toBeDefined();
+    expect(await h.mem.tokens.load()).toBeNull();
+    expect(h.fetched).toEqual([]);
+  });
+
+  it('a status read reports them as absent without destroying them', async () => {
+    const h = harness();
+    await configure(h);
+    await h.mem.tokens.save({
+      accessToken: 'token-0123456789abcdef',
+      tokenType: 'Bearer',
+      expiresAt: Date.now() + 60_000,
+      refreshToken: null,
+      idToken: null,
+      scope: null,
+      subject: 'user-1',
+    });
+    expect((await h.service.status()).signedIn).toBe(false); // no binding recorded
+    expect(await h.mem.tokens.load()).not.toBeNull(); // looking is not forgetting
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// The key outlives a suspended worker, until an absolute expiry
+// ---------------------------------------------------------------------------------------------
+
+describe('the unlocked key', () => {
+  const KID = 'k1-testkid';
+
+  async function withKey(clock: { t: number }) {
+    const h = harness({ initial: { sync: true }, now: () => clock.t });
+    await configure(h);
+    const cfg = h.mem.config!;
+    await h.deps.config.save({ ...cfg, e2ee: { kid: KID, version: 1 } });
+    const key = await webcrypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, [
+      'encrypt',
+      'decrypt',
+    ]);
+    const jwk = await webcrypto.subtle.exportKey('jwk', key);
+    await h.deps.keyVault.save({ jwk: jwk as never, kid: KID, expiresAt: clock.t + 900_000 });
+    return h;
+  }
+
+  it('is picked up again by a restarted worker', async () => {
+    const clock = { t: 1_000_000 };
+    const h = await withKey(clock);
+    const restarted = createSyncService(h.deps); // a new closure: nothing in memory
+    const view = await restarted.status();
+    expect(view.e2ee).toMatchObject({ mode: 'unlocked', lockInSeconds: 900 });
+    clock.t += 300_000;
+    expect((await restarted.status()).e2ee.lockInSeconds).toBe(600);
+  });
+
+  it('is gone after the expiry, from memory and from session storage', async () => {
+    const clock = { t: 1_000_000 };
+    const h = await withKey(clock);
+    const restarted = createSyncService(h.deps);
+    expect((await restarted.status()).e2ee.mode).toBe('unlocked');
+    clock.t += 900_001;
+    const view = await restarted.status();
+    expect(view.e2ee.mode).toBe('locked');
+    expect(h.mem.key).toBeNull();
+  });
+
+  it('is dropped by the lock alarm even when the worker was asleep', async () => {
+    const clock = { t: 1_000_000 };
+    const h = await withKey(clock);
+    const restarted = createSyncService(h.deps);
+    await restarted.onAlarm(ALARM_LOCK);
+    expect(h.mem.key).toBeNull();
+    expect((await restarted.status()).e2ee.mode).toBe('locked');
+  });
+
+  it('is not used for another key version', async () => {
+    const clock = { t: 1_000_000 };
+    const h = await withKey(clock);
+    const cfg = (await h.deps.config.load())!;
+    await h.deps.config.save({ ...cfg, e2ee: { kid: 'k2-other', version: 2 } });
+    expect((await createSyncService(h.deps).status()).e2ee.mode).toBe('locked');
+    expect(h.mem.key).toBeNull();
+  });
+
+  it('is dropped by sign-out, by turning sync off, and by the explicit lock', async () => {
+    for (const how of ['signOut', 'disable', 'lock'] as const) {
+      const clock = { t: 1_000_000 };
+      const h = await withKey(clock);
+      const s = createSyncService(h.deps);
+      expect((await s.status()).e2ee.mode).toBe('unlocked');
+      if (how === 'signOut') await s.signOut({ wipeLocalData: false, revokeAtProvider: false });
+      else if (how === 'disable') await s.disable();
+      else await s.e2eeLock();
+      expect(h.mem.key, how).toBeNull();
+    }
+  });
+
+  it('is dropped when a restore replaced the database behind the worker', async () => {
+    const clock = { t: 1_000_000 };
+    const h = await withKey(clock);
+    const s = createSyncService(h.deps);
+    expect((await s.status()).e2ee.mode).toBe('unlocked');
+    vi.spyOn(h.stub.runtime, 'isCurrent').mockResolvedValue(false);
+    await s.status();
+    expect(h.mem.key).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Downgrade protection
+// ---------------------------------------------------------------------------------------------
+
+describe('a server that stops showing the encryption key', () => {
+  const profile = (over: Record<string, unknown> = {}) => ({
+    v: 1,
+    kdf: 'PBKDF2-SHA256',
+    iterations: 600_000,
+    salt: 'A'.repeat(22),
+    kid: 'k1-aaaaaa',
+    version: 1,
+    keyCheck: 'A'.repeat(43),
+    createdAt: '2026-10-11T00:00:00.000Z',
+    ...over,
+  });
+  const json = (body: unknown, status = 200) =>
+    new Response(JSON.stringify(body), {
+      status,
+      headers: { 'content-type': 'application/json' },
+    });
+  const none = () => json({ error: { code: 'not_found', message: 'none' } }, 404);
+
+  async function enabledAccount(show: () => Response) {
+    const h = harness({
+      server: async (input) => {
+        const url =
+          typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        if (url.endsWith('/v1/e2ee/profile')) return show();
+        return json({ ok: true });
+      },
+    });
+    await configure(h);
+    await h.service.enable();
+    grantAll(h);
+    await h.service.signIn();
+    await h.service.settled();
+    // This device turned end-to-end encryption on, with key version 2.
+    const cfg = (await h.deps.config.load())!;
+    await h.deps.config.save({ ...cfg, e2ee: { kid: 'k2-bbbbbb', version: 2 } });
+    await h.deps.encryption.save({
+      v: 1,
+      mode: 'e2ee',
+      profile: { kid: 'k2-bbbbbb', version: 2 },
+      at: 1,
+      rekey: null,
+      warning: null,
+    });
+    // ... and it is unlocked: a locked device touches neither the network nor the data.
+    const key = await webcrypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, [
+      'encrypt',
+      'decrypt',
+    ]);
+    await h.deps.keyVault.save({
+      jwk: (await webcrypto.subtle.exportKey('jwk', key)) as never,
+      kid: 'k2-bbbbbb',
+      expiresAt: Date.now() + 900_000,
+    });
+    h.stub.engine.sync.mockClear();
+    return h;
+  }
+
+  it.each([
+    ['none at all', none],
+    ['an older one', () => json(profile({ version: 1, kid: 'k1-aaaaaa' }))],
+    ['another one of the same version', () => json(profile({ version: 2, kid: 'k2-cccccc' }))],
+  ])('is refused when it presents %s', async (_label, show) => {
+    const h = await enabledAccount(show);
+    const view = await h.service.runSync('test');
+    expect(h.stub.engine.sync).not.toHaveBeenCalled(); // nothing pulled, nothing pushed
+    expect(view.status).toBe('error');
+    expect(view.e2ee.warning).toMatch(/Nothing was uploaded/);
+    // the warning is remembered: a restarted worker shows it without asking the server again
+    expect((await createSyncService(h.deps).status()).e2ee.warning).toMatch(/Nothing was uploaded/);
+  });
+
+  it('is accepted when another device rotated the key forward, or when nothing changed', async () => {
+    for (const show of [
+      () => json(profile({ version: 3, kid: 'k3-dddddd' })),
+      () => json(profile({ version: 2, kid: 'k2-bbbbbb' })),
+    ]) {
+      const h = await enabledAccount(show);
+      const view = await h.service.runSync('test');
+      expect(h.stub.engine.sync).toHaveBeenCalled();
+      expect(view.e2ee.warning ?? null).toBeNull();
+    }
+  });
+
+  it('cannot be answered by turning encryption on again from here', async () => {
+    const h = await enabledAccount(none);
+    await h.deps.config.save({ ...(await h.deps.config.load())!, e2ee: null });
+    await expect(h.service.e2eeSetup('a long enough passphrase')).rejects.toMatchObject({
+      code: 'invalid_request',
+      message: expect.stringMatching(/no longer has the key/),
+    });
+    expect(h.stub.engine.auditHistory).not.toHaveBeenCalled();
+  });
+
+  it('is cleared by the person deleting what the server holds', async () => {
+    const h = await enabledAccount(none);
+    await h.service.runSync('test');
+    expect(h.mem.encryption?.warning).toMatch(/Nothing was uploaded/);
+    await h.service.deleteServerData();
+    expect(h.mem.encryption).toBeNull();
+    expect((await h.deps.config.load())?.e2ee).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// An interrupted set-up, and the real session-storage adapters
+// ---------------------------------------------------------------------------------------------
+
+describe('an interrupted encryption set-up', () => {
+  it('re-sends this device’s own state as soon as the key is available again, once', async () => {
+    const clock = { t: 1_000_000 };
+    const h = harness({ initial: { sync: true }, now: () => clock.t });
+    await configure(h);
+    await h.deps.config.save({ ...h.mem.config!, e2ee: { kid: 'k1-testkid', version: 1 } });
+    const key = await webcrypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, [
+      'encrypt',
+      'decrypt',
+    ]);
+    await h.deps.keyVault.save({
+      jwk: (await webcrypto.subtle.exportKey('jwk', key)) as never,
+      kid: 'k1-testkid',
+      expiresAt: clock.t + 900_000,
+    });
+    // The server's copy of this device's history was emptied, and the worker died before it was re-sent.
+    await h.deps.encryption.save({
+      v: 1,
+      mode: 'e2ee',
+      profile: { kid: 'k1-testkid', version: 1 },
+      at: 1,
+      rekey: { kind: 'setup', at: 1, setAside: 0 },
+      warning: null,
+      resend: true,
+    });
+    const resend = vi.spyOn(h.stub.runtime, 'resendAll');
+
+    const restarted = createSyncService(h.deps);
+    await restarted.runSync('startup');
+    expect(resend).toHaveBeenCalledTimes(1);
+    expect(h.mem.encryption?.resend).toBe(false);
+    await restarted.runSync('startup');
+    expect(resend).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for the passphrase when the key is gone, and does it after the unlock', async () => {
+    const h = harness({ initial: { sync: true } });
+    await configure(h);
+    await h.deps.config.save({ ...h.mem.config!, e2ee: { kid: 'k1-testkid', version: 1 } });
+    await h.deps.encryption.save({
+      v: 1,
+      mode: 'e2ee',
+      profile: { kid: 'k1-testkid', version: 1 },
+      at: 1,
+      rekey: null,
+      warning: null,
+      resend: true,
+    });
+    const resend = vi.spyOn(h.stub.runtime, 'resendAll');
+    await createSyncService(h.deps).runSync('startup');
+    expect(resend).not.toHaveBeenCalled(); // locked: nothing is pushed, nothing is sent
+    expect(h.mem.encryption?.resend).toBe(true);
+  });
+});
+
+describe('the session-storage adapters', () => {
+  const area = (initial: Record<string, unknown> = {}) => {
+    const data = { ...initial };
+    return {
+      data,
+      get: async (k: string) => ({ [k]: data[k] }),
+      set: async (items: Record<string, unknown>) => void Object.assign(data, items),
+      remove: async (k: string) => void delete data[k],
+    };
+  };
+
+  it('keeps the key under syncKey, ignores a damaged value, and removes it on null', async () => {
+    const a = area({ syncKey: { jwk: 'not a key', kid: 1 } });
+    const vault = createSessionKeyVault(a);
+    expect(await vault.load()).toBeNull();
+    const record = { jwk: { kty: 'oct', k: 'x'.repeat(43) }, kid: 'k1-abc', expiresAt: 5 };
+    await vault.save(record);
+    expect(Object.keys(a.data)).toEqual(['syncKey']);
+    expect(await vault.load()).toMatchObject({ kid: 'k1-abc', expiresAt: 5 });
+    await vault.save(null);
+    expect(await vault.load()).toBeNull();
+  });
+
+  it('keeps the token binding as a plain string', async () => {
+    const a = area();
+    const binding = createSessionBinding(a);
+    expect(await binding.load()).toBeNull();
+    await binding.save('["https://s","https://i","c"]');
+    expect(await binding.load()).toBe('["https://s","https://i","c"]');
+    await binding.save(null);
+    expect(await binding.load()).toBeNull();
+  });
+});
+
+describe('registerSync', () => {
+  it('closes the session area to content scripts explicitly, and survives a browser without the call', () => {
+    const setAccessLevel = vi.fn(async () => undefined);
+    Object.assign(browser.storage.session, { setAccessLevel });
+    const h = harness();
+    void h;
+    registerSync('chrome-extension://abcdefghijklmnopabcdefghijklmnop/');
+    expect(setAccessLevel).toHaveBeenCalledWith({ accessLevel: 'TRUSTED_CONTEXTS' });
+
+    Object.assign(browser.storage.session, {
+      setAccessLevel: () => {
+        throw new Error('not implemented');
+      },
+    });
+    expect(() =>
+      registerSync('chrome-extension://abcdefghijklmnopabcdefghijklmnop/'),
+    ).not.toThrow();
   });
 });

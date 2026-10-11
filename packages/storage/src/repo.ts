@@ -46,7 +46,7 @@ import {
   toViews,
 } from './core';
 import { clearRestoreStaging, deletePreMigrationSnapshot } from './backupTarget';
-import { deleteDatabase, withDb, withWritableDb } from './db';
+import { WipePendingError, deleteDatabase, withDb, withWritableDb } from './db';
 import { normalizeQuote, quoteHash } from './normalize';
 import type { BankWithCount, HighlightListItem, RepoApi } from './types';
 
@@ -76,10 +76,14 @@ export async function saveCapture(input: CaptureInput): Promise<CaptureResult> {
   if (normalized === '') throw new StudyVaultError('invalid_request', 'Quote is empty');
   // Hash before the transaction: awaiting crypto.subtle inside would let IndexedDB auto-commit it.
   const hash = await quoteHash(normalized);
-  const ts = now();
 
   const { result, changed } = await withWritableDb((db) =>
     db.transaction('rw', allTables(db), async () => {
+      // Stamp once this transaction holds its lock (a request resolves only then): a capture that
+      // waited behind a restore must not carry a time from before the wait, or the search catch-up,
+      // which looks for rows changed since a moment it has already passed, would never see it.
+      await db.banks.count();
+      const ts = now();
       const bank = await resolveTargetBank(db, capture.bankId, ts);
       const sources = await matchSources(db, keys);
 
@@ -406,11 +410,45 @@ export async function listBanksWithCounts(): Promise<BankWithCount[]> {
   );
 }
 
-export async function wipeAllData(): Promise<void> {
-  // The database first: if it cannot be deleted (another window holds it) nothing else is touched.
-  // Deleting the database drops every table of every schema version (vault, study, ai, sync, PDF
-  // bytes and OCR text included); the next use recreates it empty.
-  await deleteDatabase();
+/**
+ * Where "Delete all data" is:
+ *  - `deleting`: the database delete was requested (normally over within a moment);
+ *  - `blocked`: another StudyVault window still holds the database. The request stays queued and the
+ *    wipe continues by itself the moment that window is closed;
+ *  - `cleaning`: the database is gone; the pre-update copy, restore staging, settings and site
+ *    access are being removed.
+ */
+export type WipeState = 'deleting' | 'blocked' | 'cleaning';
+
+export interface WipeOptions {
+  /** Called at once with the current state and again at every change. */
+  onState?: (state: WipeState) => void;
+  /**
+   * Stop waiting. The wipe itself cannot be taken back: the delete is already queued in IndexedDB.
+   * This call rejects with `WipePendingError`; the wipe goes on and finishes by itself.
+   */
+  signal?: AbortSignal;
+}
+
+interface WipeRun {
+  state: WipeState;
+  done: Promise<void>;
+  watchers: Set<(state: WipeState) => void>;
+}
+let wipeRun: WipeRun | null = null;
+
+/** The wipe that is running in this context, if any (for a view that mounts while it runs). */
+export const getWipeState = (): WipeState | null => wipeRun?.state ?? null;
+
+async function runWipe(set: (state: WipeState) => void): Promise<void> {
+  // The database first, and without a deadline. An IndexedDB delete cannot be withdrawn once it is
+  // requested: giving up on it would leave it queued, and it would still run later, after the
+  // pre-update copy, the settings and the site access had been left in place. So the other stores
+  // come last, after the delete has really completed. Deleting the database drops every table of
+  // every schema version (vault, study, ai, sync, PDF bytes and OCR text included); the next use
+  // recreates it empty.
+  await deleteDatabase(() => set('blocked'));
+  set('cleaning');
   // Two more full copies of the vault live in databases of their own: the automatic pre-update
   // archive and the staging area of a restore that crashed. "Delete all" must reach both.
   await Promise.all([deletePreMigrationSnapshot(), clearRestoreStaging()]);
@@ -422,8 +460,63 @@ export async function wipeAllData(): Promise<void> {
   await revokeAllSiteAccess().catch((err: unknown) =>
     console.warn('[StudyVault] could not revoke site access', err),
   );
+  // Search indexes that are open still hold the deleted text in memory and would write it into the
+  // new database on their next flush: a fresh generation in the marker they watch (SearchHost,
+  // `searchIndexStale`) makes each drop it. After the storage clear, so the connection gate of the
+  // recreated database sees no settings.
+  await withWritableDb(async (db) => {
+    await db.meta.put({ key: 'searchIndexStale', value: uuidv7(), updatedAt: now() });
+  }).catch((err: unknown) =>
+    console.warn('[StudyVault] could not mark the search index stale', err),
+  );
   // Settings are gone and the database is empty: viewers must drop what they are showing.
   await signalChange();
+}
+
+const STOPPED_WAITING =
+  'Deleting is not finished. It cannot be cancelled once started: it finishes by itself as soon as every other StudyVault window is closed, and StudyVault cannot read or save in this window until then.';
+
+/**
+ * Delete everything StudyVault holds on this device. One wipe runs at a time per context: a second
+ * call joins it. See `WipeState` and `WipeOptions`; `WipePendingError` is what a caller that stopped
+ * waiting gets, and what every other database call gets while the delete is still queued.
+ */
+export function wipeAllData(options: WipeOptions = {}): Promise<void> {
+  const { onState, signal } = options;
+  if (signal?.aborted) return Promise.reject(signal.reason);
+  if (!wipeRun) {
+    const run: WipeRun = { state: 'deleting', done: Promise.resolve(), watchers: new Set() };
+    const set = (state: WipeState) => {
+      run.state = state;
+      for (const watcher of [...run.watchers]) watcher(state);
+    };
+    run.done = runWipe(set).finally(() => {
+      if (wipeRun === run) wipeRun = null;
+    });
+    // Someone may have stopped waiting: the run still ends, and must not be an unhandled rejection.
+    run.done.catch(() => undefined);
+    wipeRun = run;
+  }
+  const run = wipeRun;
+  if (onState) {
+    run.watchers.add(onState);
+    onState(run.state);
+  }
+  const detach = () => {
+    if (onState) run.watchers.delete(onState);
+  };
+  if (!signal) return run.done.finally(detach);
+  return new Promise<void>((resolve, reject) => {
+    const stop = () => {
+      detach();
+      reject(new WipePendingError(STOPPED_WAITING));
+    };
+    signal.addEventListener('abort', stop, { once: true });
+    run.done.then(resolve, reject).finally(() => {
+      detach();
+      signal.removeEventListener('abort', stop);
+    });
+  });
 }
 
 /** Compile-time proof that every RepoApi member is implemented with the exact signature. */
