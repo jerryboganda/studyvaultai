@@ -2,6 +2,7 @@ import { chromium, expect, type BrowserContext, type Page } from '@playwright/te
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { E2E_EXTENSION_PATH } from './fixtures';
 
 /**
  * Helpers for the lifecycle / persistence / resilience specs (lifecycle.spec.ts, resilience.spec.ts,
@@ -10,7 +11,9 @@ import path from 'node:path';
  * a Chrome API.
  */
 
-export const E2E_EXTENSION_PATH = path.resolve('.output/chrome-mv3-e2e');
+// Same constant as the Playwright fixtures: honours SV_OUT_DIR, so a parallel agent's private build
+// folder is the one that gets launched here too.
+export { E2E_EXTENSION_PATH };
 
 /** Whitespace-collapsed, trimmed text: how the extension's text stream sees page text. */
 export const norm = (s: string): string => s.replace(/\s+/g, ' ').trim();
@@ -203,6 +206,9 @@ export interface DbHighlight {
   resolveConfidence: number | null;
   deletedAt: string | null;
   captureMethod: string;
+  /** Address (credentials removed) and title of the page when the quote was saved. */
+  capturedUrl?: string;
+  capturedTitle?: string;
 }
 
 export interface DbSource {
@@ -257,12 +263,21 @@ export async function readDb(ext: Page): Promise<DbSnapshot> {
 export const liveHighlights = (db: DbSnapshot): DbHighlight[] =>
   db.highlights.filter((h) => h.deletedAt === null);
 
-/** Merge `patch` into the stored settings object (missing fields fall back to defaults on read). */
+/**
+ * Merge `patch` into the settings (missing fields fall back to defaults on read), through the
+ * worker's `updateSettings` via the e2e-build-only hook (entrypoints/background/e2e.ts): the
+ * worker enforces its own authoritative copy and ignores direct chrome.storage.local writes.
+ */
 export async function patchSettings(ext: Page, patch: Record<string, unknown>): Promise<void> {
-  await ext.evaluate(async (p) => {
-    const stored = (await chrome.storage.local.get('settings')).settings ?? {};
-    await chrome.storage.local.set({ settings: { schemaVersion: 1, ...stored, ...p } });
-  }, patch);
+  await ext.evaluate(async (json) => {
+    // A JSON string: extension messaging drops null properties of an object argument.
+    const reply = (await chrome.runtime.sendMessage({
+      v: 1,
+      type: 'e2e.settings.patch',
+      payload: { json },
+    })) as { ok?: boolean; error?: unknown } | undefined;
+    if (!reply?.ok) throw new Error(`patchSettings was refused: ${JSON.stringify(reply)}`);
+  }, JSON.stringify(patch));
 }
 
 export async function registeredScripts(
@@ -372,8 +387,13 @@ export async function stopWorker(
     if (!target) throw new Error('no running extension service worker to stop');
     const started = Date.now();
     await cdp.send('ServiceWorker.stopWorker', { versionId: target[0] });
-    for (let i = 0; i < 100; i++) {
+    // A worker with a transaction or an event handler still in flight finishes it before it stops, and
+    // a loaded CI runner can take several seconds; ask again every 5 s rather than give up early.
+    for (let i = 0; i < 600; i++) {
       if (versions.get(target[0])?.runningStatus === 'stopped') return Date.now() - started;
+      if (i > 0 && i % 100 === 0) {
+        await cdp.send('ServiceWorker.stopWorker', { versionId: target[0] }).catch(() => undefined);
+      }
       await new Promise((r) => setTimeout(r, 50));
     }
     throw new Error('the service worker did not stop');
@@ -460,27 +480,33 @@ export async function evalInContentScript<T>(
 export interface Painted {
   text: string;
   color: string;
+  /** Kind part of the registry name (`sv-hl-<color>-<kind>`), null for a kind-less entry. */
+  kind: string | null;
   /** Closest ancestor element id of the painted range ('' when none). */
   hostId: string;
 }
 
-/** Every non-empty range in an sv-hl-* registry, with where it sits. */
+/**
+ * Every non-empty range in an sv-hl-* registry, with where it sits. Registries are named
+ * `sv-hl-<color>` or `sv-hl-<color>-<kind>`; colour ids have no hyphen, so the colour is the first
+ * segment and `kind` is whatever follows (null for a kind-less entry).
+ */
 export async function paintedDetail(page: Page): Promise<Painted[]> {
   return page.evaluate(() => {
-    const out: Array<{ text: string; color: string; hostId: string }> = [];
+    const out: Array<{ text: string; color: string; kind: string | null; hostId: string }> = [];
     for (const [name, hl] of CSS.highlights) {
       if (!name.startsWith('sv-hl-') || name === 'sv-hl-active') continue;
+      const rest = name.slice('sv-hl-'.length);
+      const dash = rest.indexOf('-');
+      const color = dash < 0 ? rest : rest.slice(0, dash);
+      const kind = dash < 0 ? null : rest.slice(dash + 1);
       for (const abstract of hl as unknown as Iterable<AbstractRange>) {
         const range = abstract as Range;
         const text = range.toString();
         if (text === '') continue;
         const container = range.commonAncestorContainer;
         const el = container.nodeType === 1 ? (container as Element) : container.parentElement;
-        out.push({
-          text,
-          color: name.slice('sv-hl-'.length),
-          hostId: el?.closest('[id]')?.id ?? '',
-        });
+        out.push({ text, color, kind, hostId: el?.closest('[id]')?.id ?? '' });
       }
     }
     return out;

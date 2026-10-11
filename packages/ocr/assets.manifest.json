@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "files": [
+    {
+      "name": "worker.min.js",
+      "package": "tesseract.js",
+      "path": "dist/worker.min.js",
+      "version": "7.0.0",
+      "bytes": 111307,
+      "sha256": "576b7df7e3393e137e51849357c9adb53fe7ac1bb69bfa06cf3d61520f182c6d"
+    },
+    {
+      "name": "tesseract-core-simd-lstm.js",
+      "package": "tesseract.js-core",
+      "via": "tesseract.js",
+      "path": "tesseract-core-simd-lstm.js",
+      "version": "7.0.0",
+      "bytes": 89271,
+      "sha256": "e48e2f02ddae3716c8dd24bf41cd290d4efa96892d689cdc4013c2545d63f469"
+    },
+    {
+      "name": "tesseract-core-simd-lstm.wasm",
+      "package": "tesseract.js-core",
+      "via": "tesseract.js",
+      "path": "tesseract-core-simd-lstm.wasm",
+      "version": "7.0.0",
+      "bytes": 2857601,
+      "sha256": "34e8d50cac216427d86bf397d610fdd9f49492539bbcdfbfccc4eda20c810bea"
+    },
+    {
+      "name": "eng.traineddata.gz",
+      "package": "@tesseract.js-data/eng",
+      "path": "4.0.0_best_int/eng.traineddata.gz",
+      "version": "1.0.0",
+      "bytes": 2952873,
+      "sha256": "45b4cb346724ac1774f1c36f42f182b887bcdb28ebe63e6fff90ac41f3fcff91"
+    }
+  ]
+}

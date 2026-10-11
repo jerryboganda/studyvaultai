@@ -25,11 +25,15 @@ import { anchor, cap } from './test-fixtures';
 const epoch = async () =>
   ((await fakeBrowser.storage.local.get('dataEpoch')).dataEpoch as string | undefined) ?? null;
 
+const resolutionEpoch = async () =>
+  ((await fakeBrowser.storage.local.get('resolutionEpoch')).resolutionEpoch as
+    string | undefined) ?? null;
+
 /** Records every token written, so tests can count bumps without assuming a numeric value. */
-function trackEpochs(): unknown[] {
+function trackEpochs(key: 'dataEpoch' | 'resolutionEpoch' = 'dataEpoch'): unknown[] {
   const seen: unknown[] = [];
   fakeBrowser.storage.onChanged.addListener((changes) => {
-    if (changes.dataEpoch) seen.push(changes.dataEpoch.newValue);
+    if (changes[key]) seen.push(changes[key].newValue);
   });
   return seen;
 }
@@ -262,6 +266,85 @@ describe('saveCapture', () => {
   });
 });
 
+describe('credentials in page addresses', () => {
+  const quote = 'Aspirin irreversibly inhibits cyclooxygenase.';
+  const cap1 = (url: string, canonicalUrl: string | null = null, start = 100) =>
+    cap(quote, start, { page: { url, canonicalUrl, title: 'Doc' } });
+
+  it('stores no query token, fragment token or userinfo as the source address or key', async () => {
+    const url =
+      'https://user:SECRETPW@files.example.com/doc.html?page=2&X-Amz-Signature=SECRETSIG&X-Amz-Credential=SECRETKEY&token=SECRETTOK#access_token=SECRETFRAG&token_type=bearer';
+    await saveCapture(cap1(url));
+
+    const [source] = await getDb().sources.toArray();
+    expect(source).toMatchObject({
+      originalUrl: 'https://files.example.com/doc.html?page=2',
+      urlKey: 'https://files.example.com/doc.html?page=2',
+      visitedKey: 'https://files.example.com/doc.html?page=2',
+      canonicalUrl: null,
+    });
+    const stored = JSON.stringify(await getDb().sources.toArray());
+    expect(stored).not.toContain('SECRET');
+    expect(stored).not.toContain('access_token');
+  });
+
+  it('scrubs a credential inside a route fragment but keeps the route', async () => {
+    await saveCapture(cap1('https://app.example.com/#/reset?token=abc&step=2'));
+    const [source] = await getDb().sources.toArray();
+    expect(source).toMatchObject({
+      originalUrl: 'https://app.example.com/#/reset?step=2',
+      visitedKey: 'https://app.example.com/#/reset?step=2',
+    });
+  });
+
+  it('keeps the visited address openable: order and tracking parameters are untouched', async () => {
+    await saveCapture(cap1('https://example.com/p?z=1&utm_source=n&a=2&sig=zzz'));
+    const [source] = await getDb().sources.toArray();
+    expect(source!.originalUrl).toBe('https://example.com/p?z=1&utm_source=n&a=2');
+    expect(source!.visitedKey).toBe('https://example.com/p?a=2&z=1');
+  });
+
+  it('a revisit with a rotated token finds the same source and its highlights', async () => {
+    const first = await saveCapture(cap1('https://reports.example.com/q3?id=9&token=aaa111'));
+    expect(first.status).toBe('created');
+
+    const found = await getPageHighlights('https://reports.example.com/q3?token=bbb222&id=9', null);
+    expect(found.highlights.map((h) => h.id)).toEqual([first.highlight.id]);
+    expect(
+      (await listPageHighlights('https://reports.example.com/q3?id=9&token=ccc333', null)).map(
+        (i) => i.highlight.id,
+      ),
+    ).toEqual([first.highlight.id]);
+
+    // Saving the same quote again from the rotated URL is a duplicate, not a second source.
+    const again = await saveCapture(cap1('https://reports.example.com/q3?id=9&token=ddd444'));
+    expect(again.status).toBe('duplicate');
+    expect((await counts()).sources).toBe(1);
+  });
+
+  it('a presigned URL that changes every visit stays one source', async () => {
+    const presigned = (n: number) =>
+      `https://bucket.s3.example.com/notes.html?X-Amz-Date=2026101${n}&X-Amz-Signature=sig${n}&X-Amz-Expires=300`;
+    await saveCapture(cap1(presigned(1)));
+    await saveCapture(
+      cap(`${quote} Second.`, 500, {
+        page: { url: presigned(2), canonicalUrl: null, title: 'Doc' },
+      }),
+    );
+    expect((await counts()).sources).toBe(1);
+    expect((await getPageHighlights(presigned(3), null)).highlights).toHaveLength(2);
+  });
+
+  it('pages that differ in a real parameter remain different sources', async () => {
+    await saveCapture(cap1('https://example.com/view?id=1&token=a'));
+    await saveCapture(cap1('https://example.com/view?id=2&token=a'));
+    expect((await counts()).sources).toBe(2);
+    expect(
+      (await getPageHighlights('https://example.com/view?id=1&token=z', null)).highlights,
+    ).toHaveLength(1);
+  });
+});
+
 describe('Inbox and concurrency', () => {
   it('creates exactly one Inbox and N distinct highlights under 20 concurrent saves', async () => {
     const results = await Promise.all(
@@ -360,9 +443,18 @@ describe('page lookup by urlKey and visitedKey', () => {
     expect(found.highlights).toHaveLength(1);
   });
 
-  it('finds it from another URL that declares the same canonical', async () => {
-    const found = await getPageHighlights('https://example.com/post?a=1&b=2&ref=home', canonical);
+  it('finds it from another spelling of the page that declares the same canonical', async () => {
+    const found = await getPageHighlights(
+      'https://example.com/post/?utm_source=x&b=2&a=1',
+      canonical,
+    );
     expect(found.highlights).toHaveLength(1);
+  });
+
+  it('does not merge an address that differs by a real parameter, even when it declares the canonical', async () => {
+    // "?page=2" and "?ref=home" look the same to us; keying by the visited URL is the safe side.
+    const other = await getPageHighlights('https://example.com/post?a=1&b=2&ref=home', canonical);
+    expect(other).toEqual({ sourceId: null, highlights: [] });
   });
 
   it('finds it by visiting the canonical URL directly', async () => {
@@ -565,18 +657,24 @@ describe('reportResolutions', () => {
     ).rejects.toMatchObject({ code: 'invalid_request' });
   });
 
-  it('only notifies other contexts when an outcome actually changed', async () => {
+  it('only notifies when an outcome actually changed, and never on the data channel', async () => {
     const saved = await saveCapture(cap());
+    const dataBefore = await epoch();
+    expect(await resolutionEpoch()).toBeNull();
+
     await reportResolutions([{ id: saved.highlight.id, status: 'resolved', confidence: 1 }]);
-    const afterChange = await epoch();
+    const afterChange = await resolutionEpoch();
+    expect(afterChange).not.toBeNull();
 
     expect(
       await reportResolutions([{ id: saved.highlight.id, status: 'resolved', confidence: 1 }]),
     ).toBe(1);
-    expect(await epoch()).toBe(afterChange);
+    expect(await resolutionEpoch()).toBe(afterChange);
 
     await reportResolutions([{ id: saved.highlight.id, status: 'ambiguous', confidence: 0.4 }]);
-    expect(await epoch()).not.toBe(afterChange);
+    expect(await resolutionEpoch()).not.toBe(afterChange);
+    // Content scripts watch only the data channel: a resolver outcome must not wake them.
+    expect(await epoch()).toBe(dataBefore);
   });
 });
 
@@ -603,6 +701,13 @@ describe('visibility of soft-deleted rows', () => {
       visitedKey: 'https://example.com/notes/pharm',
     });
     expect(await getHighlightSource('unknown-id-123')).toBeNull();
+    // A deleted highlight still belongs to its page; Undo is authorised through that.
+    expect(await getHighlightSource(drop.highlight.id, { includeDeleted: true })).toEqual({
+      sourceId: drop.highlight.sourceId,
+      urlKey: 'https://example.com/notes/pharm',
+      visitedKey: 'https://example.com/notes/pharm',
+    });
+    expect(await getHighlightSource('unknown-id-123', { includeDeleted: true })).toBeNull();
     const inbox = (await listBanksWithCounts()).find((b) => b.bank.id === INBOX_BANK_ID)!;
     expect(inbox.count).toBe(1);
   });
@@ -743,6 +848,22 @@ describe('data epoch', () => {
     expect(seen).toHaveLength(5);
     // storage.onChanged does not fire for an unchanged value, so every bump must be unique.
     expect(new Set(seen).size).toBe(5);
+  });
+
+  it('keeps resolver outcomes on their own channel', async () => {
+    const data = trackEpochs('dataEpoch');
+    const resolution = trackEpochs('resolutionEpoch');
+    const saved = await saveCapture(cap());
+    expect([data.length, resolution.length]).toEqual([1, 0]);
+
+    await reportResolutions([{ id: saved.highlight.id, status: 'resolved', confidence: 1 }]);
+    expect([data.length, resolution.length]).toEqual([1, 1]);
+
+    await updateHighlight(saved.highlight.id, { color: 'green' });
+    await softDeleteHighlight(saved.highlight.id);
+    await restoreHighlight(saved.highlight.id);
+    await createBank('Another');
+    expect([data.length, resolution.length]).toEqual([5, 1]);
   });
 
   it('yields distinct values for concurrent mutations', async () => {

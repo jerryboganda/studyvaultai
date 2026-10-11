@@ -1,18 +1,35 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, configure, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { browser } from 'wxt/browser';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
-import { StudyVaultError, defaultSettings, type PageStatus, type Settings } from '@shared';
-import { INBOX, BIOLOGY, makeChromeFakes, makeItem, rpc, store } from '@ui/testing/fakes';
+import {
+  PENDING_FOCUS_KEY,
+  StudyVaultError,
+  defaultSettings,
+  type PageStatus,
+  type Settings,
+} from '@shared';
+import { COMMANDS, INBOX, BIOLOGY, makeChromeFakes, makeItem, rpc, store } from '@ui/testing/fakes';
 import { SidePanel } from './SidePanel';
+import { extras } from './testing';
 
-vi.mock('@storage', async () => (await import('@ui/testing/fakes')).store.module);
+// The real module underneath (review's session port binds to it at import time); the panel's
+// reads and writes are the in-memory fakes, which share one item list and one change signal.
+vi.mock('@storage', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  const { store: fakeStore } = await import('@ui/testing/fakes');
+  const { extras: more } = await import('./testing');
+  return { ...actual, ...fakeStore.module, ...more.module };
+});
 vi.mock('@runtime', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   const { rpc: fake } = await import('@ui/testing/fakes');
   return { ...actual, callBackground: fake.callBackground, callTab: fake.callTab } as never;
 });
+
+// Several agents and CI shards share the CPU: waiting for the panel is not a failure.
+configure({ asyncUtilTimeout: 5_000 });
 
 interface FakeTab {
   id: number;
@@ -51,7 +68,9 @@ const live = () => {
 beforeEach(() => {
   fakeBrowser.reset();
   store.reset();
+  extras.reset();
   rpc.reset();
+  window.history.replaceState(null, '', '/');
   Object.assign(browser, makeChromeFakes());
   Object.assign(browser.runtime, { openOptionsPage: vi.fn(async () => undefined) });
 });
@@ -73,7 +92,7 @@ describe('This page', () => {
     expect(screen.getByText('1 highlight')).toBeTruthy();
     const card = screen.getByRole('article');
     expect(within(card).getByText('Formula')).toBeTruthy();
-    expect(within(card).getByText('Resolved')).toBeTruthy();
+    expect(within(card).getByText('Found on page')).toBeTruthy();
     expect(within(card).getByText('Inbox')).toBeTruthy();
     expect(within(card).getByText('Biology')).toBeTruthy();
     expect(rpc.called('content.pageStatus')[0]?.tabId).toBe(11);
@@ -109,10 +128,40 @@ describe('This page', () => {
     expect(screen.getByText('Source changed')).toBeTruthy();
   });
 
-  it('shows the empty state when the page has no highlights', async () => {
+  it('shows the empty state when the page has no highlights, naming the real keys', async () => {
     live();
+    const fakes = makeChromeFakes();
+    fakes.commands.getAll.mockResolvedValue(
+      COMMANDS.map((c) => (c.name === 'quick-save' ? { ...c, shortcut: 'Ctrl+Shift+8' } : c)),
+    );
+    Object.assign(browser, fakes);
     await open();
     expect(await screen.findByText('No highlights on this page yet')).toBeTruthy();
+    const empty = screen.getByText('No highlights on this page yet').parentElement!;
+    expect(await within(empty).findByText('Ctrl+Shift+8')).toBeTruthy();
+    expect(within(empty).queryByText('Alt+Shift+H')).toBeNull(); // read from Chrome, not hard-coded
+    expect(within(empty).getByText('Alt+Shift+Y')).toBeTruthy();
+  });
+
+  it('lets the browser pick the direction of quotes, notes and titles (Arabic, Hebrew)', async () => {
+    live();
+    const arabicTitle = '\u0645\u0644\u0627\u062d\u0638\u0627\u062a';
+    const arabicQuote =
+      '\u0627\u0644\u0645\u064a\u062a\u0648\u0643\u0648\u0646\u062f\u0631\u064a\u0627';
+    const arabicHeading = '\u0645\u0642\u062f\u0645\u0629';
+    rpc.tab['content.pageStatus'] = () => status({ title: arabicTitle });
+    store.reset([
+      makeItem({
+        highlight: { exactQuote: arabicQuote, headingContext: arabicHeading },
+        source: { title: arabicTitle },
+      }),
+    ]);
+    await open();
+    const quote = await screen.findByText(arabicQuote);
+    expect(quote.getAttribute('dir')).toBe('auto');
+    expect(screen.getByLabelText('Your note').getAttribute('dir')).toBe('auto');
+    expect(screen.getByRole('heading', { name: arabicTitle }).getAttribute('dir')).toBe('auto');
+    expect(screen.getByText(`Under: ${arabicHeading}`).getAttribute('dir')).toBe('auto');
   });
 
   it('collapses long quotes and expands them on request', async () => {
@@ -166,17 +215,36 @@ describe('This page', () => {
   it('shows a failed save with the real error and retries', async () => {
     live();
     store.reset([makeItem()]);
-    store.failNext.updateHighlight = new StudyVaultError('storage_unavailable', 'Disk is full');
+    store.failNext.updateHighlight = new StudyVaultError('internal', 'Disk hiccup');
     await open();
     const note = await screen.findByLabelText('Your note');
 
     await userEvent.type(note, 'Oops');
     await userEvent.tab();
 
-    expect(await screen.findByText(/Not saved: Disk is full/)).toBeTruthy();
+    expect(await screen.findByText(/Not saved: Disk hiccup/)).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(await screen.findByText('Saved')).toBeTruthy();
     expect(store.items[0]!.highlight.userComment).toBe('Oops');
+  });
+
+  it('shows storage_unavailable as a message, without a blind Retry', async () => {
+    live();
+    store.reset([makeItem()]);
+    store.failNext.updateHighlight = new StudyVaultError(
+      'storage_unavailable',
+      'Your data was saved by a newer version of StudyVault.',
+    );
+    await open();
+    const note = await screen.findByLabelText('Your note');
+
+    await userEvent.type(note, 'Stuck');
+    await userEvent.tab();
+
+    expect(
+      await screen.findByText(/Your data was saved by a newer version of StudyVault/),
+    ).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
   });
 
   it('changes kind (and the colour that goes with it) and priority', async () => {
@@ -210,13 +278,52 @@ describe('This page', () => {
     await waitFor(() => expect(screen.queryByText('Delete me.')).toBeNull());
     expect(store.calls.some((c) => c.fn === 'softDeleteHighlight' && c.args[0] === id)).toBe(true);
     expect(rpc.called('content.refresh').length).toBeGreaterThan(0);
-    expect(await screen.findByText('Highlight deleted.')).toBeTruthy();
+    // Honest about soft delete: it is in Trash until deleted forever there, or everything is wiped.
+    expect(
+      await screen.findByText(
+        'Highlight deleted. It stays in Trash until you delete it forever there or delete all data in Settings.',
+      ),
+    ).toBeTruthy();
+    // The card that had focus is gone: Undo takes it instead of <body>.
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Undo' }));
 
     await userEvent.click(screen.getByRole('button', { name: 'Undo' }));
 
     expect(await screen.findByText('Delete me.')).toBeTruthy();
     expect(store.calls.some((c) => c.fn === 'restoreHighlight' && c.args[0] === id)).toBe(true);
     expect(await screen.findByText('Highlight restored.')).toBeTruthy();
+    // The toast closed with focus inside it: focus goes back to the panel content, not <body>.
+    expect(document.activeElement).toBe(screen.getByRole('tabpanel'));
+  });
+
+  it('puts the toast region before the page content in DOM order', async () => {
+    live();
+    store.reset([makeItem()]);
+    const { container } = await open();
+    await screen.findByRole('article');
+    const region = screen.getByRole('status');
+    const main = container.querySelector('main')!;
+    expect(region.compareDocumentPosition(main) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getAllByRole('status')).toHaveLength(1);
+  });
+
+  it('error toasts are persistent alerts with a text prefix and a dismiss button', async () => {
+    live();
+    store.reset([makeItem({ highlight: { exactQuote: 'Restore me.' } })]);
+    await open();
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+    store.failNext.restoreHighlight = new StudyVaultError('storage_unavailable', 'Disk is full');
+    await userEvent.click(await screen.findByRole('button', { name: 'Undo' }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Error:');
+    expect(alert.textContent).toContain('Could not restore the highlight: Disk is full');
+    expect(within(alert).getByRole('button', { name: 'Dismiss notification' })).toBeTruthy();
+    // No timer: still there well after a neutral toast would be gone.
+    await new Promise((r) => setTimeout(r, 300));
+    expect(screen.getByRole('alert')).toBeTruthy();
+    await userEvent.click(within(alert).getByRole('button', { name: 'Dismiss notification' }));
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('shows on page, and says so when the highlight cannot be found', async () => {
@@ -228,12 +335,15 @@ describe('This page', () => {
     await open();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Show on page' }));
-    expect(await screen.findByText(/could not find this highlight on the page/)).toBeTruthy();
+    const card = screen.getByRole('article');
+    expect(await within(card).findByText(/could not find this highlight on the page/)).toBeTruthy();
     expect(rpc.called('content.reveal')[0]?.payload).toEqual({ id });
+    // Also spoken through the surface's one status region.
+    expect(screen.getByRole('status').textContent).toContain('could not find this highlight');
 
     found = true;
     await userEvent.click(screen.getByRole('button', { name: 'Show on page' }));
-    expect(await screen.findByText('Showing this highlight on the page.')).toBeTruthy();
+    expect(await within(card).findByText('Showing this highlight on the page.')).toBeTruthy();
   });
 
   it('without a content script: explains, still lists saved highlights, then activates', async () => {
@@ -308,14 +418,22 @@ describe('This page', () => {
   it('surfaces a storage error with Retry', async () => {
     live();
     store.reset([makeItem({ highlight: { exactQuote: 'Back again.' } })]);
-    store.failNext.listPageHighlights = new StudyVaultError(
-      'storage_unavailable',
-      'IndexedDB is unavailable',
-    );
+    store.failNext.listPageHighlights = new StudyVaultError('internal', 'IndexedDB hiccup');
     await open();
-    expect(await screen.findByText('IndexedDB is unavailable')).toBeTruthy();
+    expect(await screen.findByText('IndexedDB hiccup')).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(await screen.findByText('Back again.')).toBeTruthy();
+  });
+
+  it('storage_unavailable on the list shows its message and no Retry', async () => {
+    live();
+    store.failNext.listPageHighlights = new StudyVaultError(
+      'storage_unavailable',
+      'The Inbox could not be read.',
+    );
+    await open();
+    expect(await screen.findByText('The Inbox could not be read.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
   });
 });
 
@@ -378,6 +496,196 @@ describe('Recent', () => {
   });
 });
 
+const sessionEntry = async (value: unknown) =>
+  browser.storage.session.set({ [PENDING_FOCUS_KEY]: value });
+const storedEntry = async () =>
+  (await browser.storage.session.get(PENDING_FOCUS_KEY))[PENDING_FOCUS_KEY];
+
+describe('Note hand-over from the page overlay', () => {
+  it('opens on the requested highlight: scrolls to it, focuses its note, clears the request', async () => {
+    live();
+    store.reset([makeItem({ start: 5 }), makeItem({ start: 50 })]);
+    const target = store.items[1]!.highlight.id;
+    await sessionEntry({ highlightId: target, at: Date.now() });
+    await open();
+
+    await waitFor(() => {
+      const notes = screen.getAllByLabelText('Your note');
+      expect(notes).toHaveLength(2);
+      expect(document.activeElement).toBe(notes[1]);
+    });
+    await waitFor(async () => expect(await storedEntry()).toBeUndefined());
+    // Focus moved on the page overlay's request: it is announced, with the quote it is about.
+    expect(screen.getByRole('status').textContent).toContain(
+      `Editing note for "${store.items[1]!.highlight.exactQuote}"`,
+    );
+  });
+
+  it('follows a request that arrives while the panel is already open', async () => {
+    live();
+    store.reset([makeItem({ start: 5 }), makeItem({ start: 50 })]);
+    const target = store.items[0]!.highlight.id;
+    await open();
+    await screen.findAllByLabelText('Your note');
+    expect(document.activeElement).toBe(document.body);
+
+    await act(async () => {
+      await sessionEntry({ highlightId: target, at: Date.now() });
+    });
+
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getAllByLabelText('Your note')[0]),
+    );
+    await waitFor(async () => expect(await storedEntry()).toBeUndefined());
+  });
+
+  it('waits for the card to appear before focusing', async () => {
+    live();
+    store.reset([]);
+    await sessionEntry({ highlightId: 'hl-late0001', at: Date.now() });
+    await open();
+    await screen.findByText('No highlights on this page yet');
+    expect(document.activeElement).toBe(document.body);
+    expect(await storedEntry()).toBeDefined(); // still waiting
+
+    const late = makeItem();
+    late.highlight.id = 'hl-late0001';
+    store.items.push(late);
+    store.pageIds.add('hl-late0001');
+    act(() => store.notify());
+
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Your note')));
+  });
+
+  it('switches from another tab to "This page" so the card exists', async () => {
+    live();
+    store.reset([makeItem()]);
+    const target = store.items[0]!.highlight.id;
+    await open();
+    await userEvent.click(await screen.findByRole('tab', { name: 'Banks' }));
+    expect(screen.queryByLabelText('Your note')).toBeNull();
+
+    await act(async () => {
+      await sessionEntry({ highlightId: target, at: Date.now() });
+    });
+
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Your note')));
+    expect(screen.getByRole('tab', { name: /This page/ }).getAttribute('aria-selected')).toBe(
+      'true',
+    );
+  });
+
+  it('ignores and removes a request older than 30 seconds, or a malformed one', async () => {
+    live();
+    store.reset([makeItem()]);
+    const id = store.items[0]!.highlight.id;
+    await sessionEntry({ highlightId: id, at: Date.now() - 60_000 });
+    await open();
+    await screen.findByLabelText('Your note');
+    await waitFor(async () => expect(await storedEntry()).toBeUndefined());
+    expect(document.activeElement).toBe(document.body);
+
+    await act(async () => {
+      await sessionEntry({ highlightId: 42, at: 'now' });
+    });
+    await waitFor(async () => expect(await storedEntry()).toBeUndefined());
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it('does not take the cursor again after the user has moved on', async () => {
+    live();
+    store.reset([makeItem({ start: 5 }), makeItem({ start: 50 })]);
+    const first = store.items[0]!.highlight.id;
+    await sessionEntry({ highlightId: first, at: Date.now() });
+    await open();
+    const notes = await screen.findAllByLabelText('Your note');
+    await waitFor(() => expect(document.activeElement).toBe(notes[0]));
+
+    await userEvent.click(notes[1]!);
+    await userEvent.type(notes[1]!, 'mine');
+    expect(document.activeElement).toBe(notes[1]);
+  });
+});
+
+describe('Banks tab', () => {
+  async function openBanks() {
+    live();
+    await open();
+    await userEvent.click(await screen.findByRole('tab', { name: 'Banks' }));
+  }
+
+  it('lists banks with their highlight counts', async () => {
+    store.reset([makeItem({ banks: [INBOX, BIOLOGY] }), makeItem({ banks: [INBOX] })]);
+    store.banks = [INBOX, BIOLOGY];
+    await openBanks();
+
+    const list = await screen.findByRole('list', { name: 'Your banks' });
+    const rows = within(list).getAllByRole('listitem');
+    expect(rows[0]!.textContent).toContain('Inbox');
+    expect(rows[0]!.textContent).toContain('2 highlights');
+    expect(rows[1]!.textContent).toContain('Biology');
+    expect(rows[1]!.textContent).toContain('1 highlight');
+  });
+
+  it('creates a bank from a labelled field, shows it in the list and clears the field', async () => {
+    await openBanks();
+    const field = await screen.findByLabelText('New bank');
+
+    await userEvent.type(field, '  Cardiology  ');
+    await userEvent.click(screen.getByRole('button', { name: 'Create bank' }));
+
+    expect(await screen.findByText('Bank "Cardiology" created.')).toBeTruthy();
+    expect(store.calls.filter((c) => c.fn === 'createBank').map((c) => c.args)).toEqual([
+      ['Cardiology'],
+    ]);
+    const list = screen.getByRole('list', { name: 'Your banks' });
+    expect(within(list).getByText('Cardiology')).toBeTruthy();
+    expect((field as HTMLInputElement).value).toBe('');
+  });
+
+  it('submits with Enter', async () => {
+    await openBanks();
+    await userEvent.type(await screen.findByLabelText('New bank'), 'Renal{Enter}');
+    await waitFor(() => expect(store.calls.some((c) => c.fn === 'createBank')).toBe(true));
+  });
+
+  it('explains an empty or over-long name and creates nothing', async () => {
+    await openBanks();
+    const field = await screen.findByLabelText('New bank');
+
+    await userEvent.type(field, '   ');
+    await userEvent.click(screen.getByRole('button', { name: 'Create bank' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Enter a name for the bank.');
+    expect(field.getAttribute('aria-invalid')).toBe('true');
+    expect(field.getAttribute('aria-describedby')).toBe(alert.id);
+
+    await userEvent.clear(field);
+    await userEvent.click(field);
+    await userEvent.paste('x'.repeat(81));
+    await userEvent.click(screen.getByRole('button', { name: 'Create bank' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('80 characters or fewer');
+
+    await userEvent.type(field, 'y'); // typing clears the message
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(store.calls.some((c) => c.fn === 'createBank')).toBe(false);
+  });
+
+  it('shows the real storage error, keeps the name and retries', async () => {
+    store.failNext.createBank = new StudyVaultError('internal', 'IndexedDB hiccup');
+    await openBanks();
+    const field = await screen.findByLabelText('New bank');
+    await userEvent.type(field, 'Neurology');
+    await userEvent.click(screen.getByRole('button', { name: 'Create bank' }));
+
+    expect(await screen.findByText('IndexedDB hiccup')).toBeTruthy();
+    expect((field as HTMLInputElement).value).toBe('Neurology');
+
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByText('Bank "Neurology" created.')).toBeTruthy();
+  });
+});
+
 describe('Tabs and safety', () => {
   it('uses roving tabindex and arrow keys', async () => {
     live();
@@ -394,7 +702,9 @@ describe('Tabs and safety', () => {
     await userEvent.keyboard('{Home}');
     expect(pageTab.getAttribute('aria-selected')).toBe('true');
     await userEvent.keyboard('{End}');
-    expect(recentTab.getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tab', { name: 'Review' }).getAttribute('aria-selected')).toBe('true');
+    await userEvent.keyboard('{ArrowLeft}');
+    expect(screen.getByRole('tab', { name: 'Banks' }).getAttribute('aria-selected')).toBe('true');
   });
 
   it('renders every page-derived string as text', async () => {

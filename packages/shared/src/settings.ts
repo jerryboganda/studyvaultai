@@ -15,6 +15,28 @@ export const Settings = z.object({
   denyList: z.array(z.string().trim().toLowerCase().min(1).max(253)).max(500),
   /** Origin match patterns the user enabled persistently (per-site mode). */
   persistentOrigins: z.array(z.string().max(300)).max(500),
+  /**
+   * Paint saved highlights on pages. Off = "quiet mode": captures still save and the side panel still
+   * lists them, but nothing is published to the page's CSS.highlights registry (SECURITY_PRIVACY).
+   */
+  paintHighlights: z.boolean(),
+  /**
+   * 'auto' follows the OS contrast preference (strong under prefers-contrast: more); 'normal' and
+   * 'strong' override it. Strong = thicker underline per kind and a heavier fill.
+   */
+  highlightStyle: z.enum(['auto', 'normal', 'strong']),
+  /** Save from private (incognito) windows. Off by default: the database is shared with normal windows. */
+  allowIncognitoCapture: z.boolean(),
+  /**
+   * Feature flags (ROADMAP: later phases behind accurate flags). ai and sync default OFF and run no
+   * code, fetch nothing and schedule nothing until the user turns them on with an explanation.
+   */
+  features: z.object({
+    review: z.boolean(),
+    pdfReader: z.boolean(),
+    ai: z.boolean(),
+    sync: z.boolean(),
+  }),
 });
 export type Settings = z.infer<typeof Settings>;
 
@@ -29,6 +51,10 @@ export function defaultSettings(): Settings {
     lastBankId: null,
     denyList: [...DEFAULT_DENY_HOSTS],
     persistentOrigins: [],
+    paintHighlights: true,
+    highlightStyle: 'auto',
+    allowIncognitoCapture: false,
+    features: { review: true, pdfReader: true, ai: false, sync: false },
   };
 }
 
@@ -56,5 +82,9 @@ export function parseSettings(raw: unknown): Settings {
     lastBankId: pick('lastBankId'),
     denyList: pick('denyList'),
     persistentOrigins: pick('persistentOrigins'),
+    paintHighlights: pick('paintHighlights'),
+    highlightStyle: pick('highlightStyle'),
+    allowIncognitoCapture: pick('allowIncognitoCapture'),
+    features: pick('features'),
   };
 }

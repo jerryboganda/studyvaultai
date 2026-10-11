@@ -1,11 +1,21 @@
 import type { AnchorSet, HtmlAnchorSet } from '@shared';
 import { TEXT_ALGORITHM } from '@shared/constants';
-import { bestApproxSubstring, similarity, type ApproxMatch } from './fuzzy';
+import { bestApproxSubstring, boundedEditDistance, similarity, type ApproxMatch } from './fuzzy';
 import { streamRangeToDomRange, streamTextOfRange } from './textStream';
 import type { Resolution, ResolutionMethod, ResolutionStatus, TextStream } from './types';
 
 // ADR-004 "Resolution order" constants.
-const MAX_OCCURRENCES = 200;
+/**
+ * Every exact occurrence is scored up to this many (a few ms). A quote with more copies than this
+ * (a one-word quote) is resolved from evidence-chosen candidates, see selectCandidates().
+ */
+const MAX_OCCURRENCES = 5000;
+/** Copies kept on each side of the stored position when the list is truncated (nearest first). */
+const NEAREST_PER_SIDE = 100;
+/** Copies kept at each end of the document (a stored context cut by the document edge). */
+const EDGE_HITS = 8;
+/** Stored context characters glued to the quote to find the copies that still carry the context. */
+const CONTEXT_NEEDLE_CHARS = 16;
 const SHORT_QUOTE_CHARS = 24;
 const CONTEXT_WEIGHT = 0.8;
 /** A document boundary next to the quote counts like this many matched context characters. */
@@ -29,11 +39,46 @@ const ANCHOR_CHARS = 16;
 const MIN_ANCHOR_CHARS = 8;
 const MAX_ANCHOR_HITS = 4;
 
+/**
+ * Figure guard. A fuzzy match that differs from the quote ONLY in numbers or negation words is a
+ * different statement ("Step 3" vs "Step 4", "5 mg" vs "6 mg", "is" vs "is not"), not an edit of this
+ * one. Below this quote length such a match is never bound. Longer quotes are whole sentences where
+ * a corrected figure is far more likely an edit than a sibling.
+ */
+const FIGURE_GUARD_MAX_CHARS = 120;
+/**
+ * Two ranges are "the same text" when their intersection covers at least this share of their union.
+ * High on purpose: a highlight nested in another (a word inside its sentence) must not collide.
+ */
+const CLAIM_OVERLAP = 0.8;
+/** How often one fuzzy search may cut a rejected match out of its window and look again. */
+const MAX_WINDOW_RETRIES = 8;
+
+/** Head/tail anchoring of a long quote that something was inserted into (an ad label, a link block). */
+const SPLIT_MIN_QUOTE_CHARS = 64;
+const SPLIT_ANCHOR_CHARS = 24;
+/** Characters that may sit between the verbatim head and tail beyond the quote's own length. */
+const SPLIT_GAP_CHARS = 300;
+const SPLIT_MAX_HEADS = 16;
+
 interface Occurrences {
   at: number[];
-  /** More than MAX_OCCURRENCES exist; the list is a prefix of them. */
+  /** More than MAX_OCCURRENCES exist; `at` is a selection of them, not all of them. */
   truncated: boolean;
+  /** Truncated and an unseen copy that carries the full stored context cannot be ruled out. */
+  blind?: boolean;
+  /** Truncated: the most context agreement (0..1) a copy that is not in `at` can have. */
+  unseen?: number;
 }
+
+/** Stream ranges and quote texts that other saved highlights own (see resolveMany). */
+interface Claims {
+  ranges: Array<readonly [number, number]>;
+  texts: Set<string>;
+}
+
+/** Stream offsets of a painted-capable resolution, for the cross-entry checks in resolveMany. */
+const spans = new WeakMap<Resolution, readonly [number, number]>();
 
 function orphaned(candidateCount = 0): Resolution {
   return { status: 'orphaned', confidence: 0, range: null, method: 'none', candidateCount };
@@ -43,30 +88,96 @@ function ambiguous(confidence: number, candidateCount: number): Resolution {
   return { status: 'ambiguous', confidence, range: null, method: 'none', candidateCount };
 }
 
-function findOccurrences(text: string, needle: string): Occurrences {
+/** Occurrences of `needle` in document order; overlapping ones count ("aa" in "aaa"). */
+function scanOccurrences(text: string, needle: string): Occurrences {
   const at: number[] = [];
-  let i = text.indexOf(needle);
-  while (i !== -1) {
-    at.push(i); // overlapping occurrences are real candidates ("aa" in "aaa")
-    if (at.length >= MAX_OCCURRENCES) {
-      return { at, truncated: text.indexOf(needle, i + 1) !== -1 };
-    }
-    i = text.indexOf(needle, i + 1);
+  for (let i = text.indexOf(needle); i !== -1; i = text.indexOf(needle, i + 1)) {
+    if (at.length === MAX_OCCURRENCES) return { at, truncated: true };
+    at.push(i);
   }
   return { at, truncated: false };
 }
 
-function commonSuffixLength(a: string, b: string): number {
-  const n = Math.min(a.length, b.length);
+/**
+ * The copies to score. With at most MAX_OCCURRENCES copies that is all of them. Otherwise the list
+ * in document order is only a prefix, so a candidate set is built from evidence instead: copies
+ * next to the stored position (nearest first), copies at both ends of the document, and every copy
+ * that carries a stretch of the stored context (indexOf on the context-extended quote, linear). Any
+ * copy left out agrees on fewer than CONTEXT_NEEDLE_CHARS characters on each side, which bounds
+ * its context agreement (`unseen`); if even that scan overflowed nothing can be promised and the
+ * caller must not rank (`blind`).
+ */
+function selectCandidates(text: string, anchor: HtmlAnchorSet, scanned: Occurrences): Occurrences {
+  if (!scanned.truncated) return scanned;
+  const { exact, prefix, suffix } = anchor.textQuote;
+  const stored = anchor.textPosition.start;
+  const picked = new Set<number>();
+
+  // Copies within reach of a document edge also score the boundary bonus: keep the first and last few.
+  for (let k = 0; k < scanned.at.length && k < NEAREST_PER_SIDE; k++) {
+    const at = scanned.at[k]!;
+    if (k >= EDGE_HITS && at > prefix.length) break;
+    picked.add(at);
+  }
+  let n = 0;
+  for (let i = text.lastIndexOf(exact); i !== -1 && n < NEAREST_PER_SIDE; n++) {
+    if (n >= EDGE_HITS && i + exact.length + suffix.length < text.length - 1) break;
+    picked.add(i);
+    i = i > 0 ? text.lastIndexOf(exact, i - 1) : -1;
+  }
+  // The stored position's neighbourhood: the nearest copies on each side.
+  n = 0;
+  for (let i = text.indexOf(exact, stored); i !== -1 && n < NEAREST_PER_SIDE; n++) {
+    picked.add(i);
+    i = text.indexOf(exact, i + 1);
+  }
+  n = 0;
+  for (
+    let i = stored > 0 ? text.lastIndexOf(exact, stored - 1) : -1;
+    i !== -1 && n < NEAREST_PER_SIDE;
+    n++
+  ) {
+    picked.add(i);
+    i = i > 0 ? text.lastIndexOf(exact, i - 1) : -1;
+  }
+
+  let blind = false;
+  const before = prefix.slice(-CONTEXT_NEEDLE_CHARS);
+  if (before) {
+    const hits = scanOccurrences(text, before + exact);
+    for (const at of hits.at) picked.add(at + before.length);
+    blind ||= hits.truncated;
+  }
+  const after = suffix.slice(0, CONTEXT_NEEDLE_CHARS);
+  if (after) {
+    const hits = scanOccurrences(text, exact + after);
+    for (const at of hits.at) picked.add(at);
+    blind ||= hits.truncated;
+  }
+  // An unlisted copy matches fewer than CONTEXT_NEEDLE_CHARS characters on each side.
+  const sides = prefix.length + suffix.length;
+  const unseen =
+    sides === 0
+      ? 1
+      : (Math.max(0, Math.min(CONTEXT_NEEDLE_CHARS, prefix.length) - 1) +
+          Math.max(0, Math.min(CONTEXT_NEEDLE_CHARS, suffix.length) - 1)) /
+        sides;
+  return { at: [...picked].sort((a, b) => a - b), truncated: true, blind, unseen };
+}
+
+/** Characters of `prefix`, counted from its end, that equal the text right before `at`. */
+function matchedBefore(text: string, at: number, prefix: string): number {
+  const n = Math.min(prefix.length, at);
   let k = 0;
-  while (k < n && a.charCodeAt(a.length - 1 - k) === b.charCodeAt(b.length - 1 - k)) k++;
+  while (k < n && text.charCodeAt(at - 1 - k) === prefix.charCodeAt(prefix.length - 1 - k)) k++;
   return k;
 }
 
-function commonPrefixLength(a: string, b: string): number {
-  const n = Math.min(a.length, b.length);
+/** Characters of `suffix`, counted from its start, that equal the text starting at `end`. */
+function matchedAfter(text: string, end: number, suffix: string): number {
+  const n = Math.min(suffix.length, text.length - end);
   let k = 0;
-  while (k < n && a.charCodeAt(k) === b.charCodeAt(k)) k++;
+  while (k < n && text.charCodeAt(end + k) === suffix.charCodeAt(k)) k++;
   return k;
 }
 
@@ -82,8 +193,8 @@ interface Candidate {
 function scoreCandidate(text: string, anchor: HtmlAnchorSet, at: number): Candidate {
   const { exact, prefix, suffix } = anchor.textQuote;
   const end = at + exact.length;
-  const prefixMatched = commonSuffixLength(prefix, text.slice(Math.max(0, at - prefix.length), at));
-  const suffixMatched = commonPrefixLength(suffix, text.slice(end, end + suffix.length));
+  const prefixMatched = matchedBefore(text, at, prefix);
+  const suffixMatched = matchedAfter(text, end, suffix);
 
   // When the stored window was cut by the document start/end, that boundary is part of the
   // context: a copy elsewhere with the same words next to it is not the same place.
@@ -132,7 +243,9 @@ function finish(
   if (!range || streamTextOfRange(range) !== stream.text.slice(start, end)) {
     return orphaned(candidateCount);
   }
-  return { status, confidence, range, method, candidateCount };
+  const resolution: Resolution = { status, confidence, range, method, candidateCount };
+  spans.set(resolution, [start, end]);
+  return resolution;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -154,19 +267,64 @@ function findAll(text: string, needle: string, limit: number): number[] {
   return hits;
 }
 
+// Figures = numbers (digits of any script, with decimal/thousand separators) and English negation
+// words. Other languages' negations are not recognised (documented limitation, errs towards binding).
+const NUMBER = /\p{Nd}+(?:[.,]\p{Nd}+)*/gu;
+const NEGATION = /\b(?:not|no|never|none|neither|nor|without|cannot)\b|n['\u2019]t\b/gi;
+
+function withoutFigures(s: string): string {
+  return s.replace(NUMBER, '').replace(NEGATION, '').replace(/\s+/g, ' ').trim();
+}
+
+/** True when the two texts are the same apart from numbers and negation words. */
+function differsOnlyByFigures(a: string, b: string): boolean {
+  return a !== b && withoutFigures(a) === withoutFigures(b);
+}
+
+/**
+ * A fuzzy match is "claimed" when it is the text another saved highlight owns: the same text as
+ * that highlight's quote, or substantially the same range (intersection over union). A highlight
+ * nested inside the match, or one that merely overlaps its edge, does not claim it.
+ */
+function isClaimed(claims: Claims, text: string, start: number, end: number): boolean {
+  if (claims.texts.has(text.slice(start, end))) return true;
+  for (const [s, e] of claims.ranges) {
+    const overlap = Math.min(e, end) - Math.max(s, start);
+    if (overlap > 0 && overlap / (Math.max(e, end) - Math.min(s, start)) >= CLAIM_OVERLAP) {
+      return true;
+    }
+  }
+  return false;
+}
+
 interface FuzzyMatch extends ApproxMatch {
   sim: number;
+}
+
+interface FuzzyResult {
+  matches: FuzzyMatch[];
+  /** Best similarity among matches rejected by the figure guard (0 when none). */
+  guardedSim: number;
 }
 
 /**
  * Locations near the old offset or next to the moved context whose text is >= 0.85 similar to the
  * quote, best first. Cost is bounded by a shared DP cell budget (see fuzzy.ts).
+ *
+ * Matches that another highlight owns (`claims`) and, for short quotes, matches that differ only
+ * by figures (`figureGuard`) are never returned. The window they were found in is searched again
+ * with them cut out, so the highlight's own edited text is still found next to a look-alike sibling.
  */
-function fuzzyMatches(anchor: HtmlAnchorSet, text: string): FuzzyMatch[] {
+function fuzzyMatches(
+  anchor: HtmlAnchorSet,
+  text: string,
+  claims?: Claims,
+  figureGuard = false,
+): FuzzyResult {
   const { exact, prefix, suffix } = anchor.textQuote;
   const length = exact.length;
   const maxDist = Math.floor((1 - FUZZY_MIN_SIMILARITY) * length + 1e-9);
-  if (maxDist < 1) return []; // too short to tolerate even one edit at 0.85
+  if (maxDist < 1) return { matches: [], guardedSim: 0 }; // too short to tolerate one edit at 0.85
 
   // Where the quote can be: around its old offset, or next to wherever its context moved.
   const slack = maxDist + 8;
@@ -187,10 +345,15 @@ function fuzzyMatches(anchor: HtmlAnchorSet, text: string): FuzzyMatch[] {
     }
   }
 
+  const guard = figureGuard && length < FIGURE_GUARD_MAX_CHARS;
   const budget = { cells: FUZZY_CELL_BUDGET };
   const found: FuzzyMatch[] = [];
   const seen = new Set<string>();
-  for (const [from, to] of windows) {
+  let guardedSim = 0;
+  let retries = MAX_WINDOW_RETRIES;
+  // `windows` grows while it is walked: a rejected match adds the two pieces around it.
+  for (let w = 0; w < windows.length; w++) {
+    const [from, to] = windows[w]!;
     const key = `${from}:${to}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -209,22 +372,84 @@ function fuzzyMatches(anchor: HtmlAnchorSet, text: string): FuzzyMatch[] {
     // The alignment bound used the pattern length; the final gate uses the real normalised score.
     const sim = similarity(exact, text.slice(start, end), FUZZY_MIN_SIMILARITY);
     if (sim < FUZZY_MIN_SIMILARITY - 1e-12) continue;
+
+    const claimed = claims !== undefined && isClaimed(claims, text, start, end);
+    const figures = !claimed && guard && differsOnlyByFigures(exact, text.slice(start, end));
+    if (claimed || figures) {
+      if (figures) guardedSim = Math.max(guardedSim, sim);
+      if (retries-- > 0) windows.push([from, match.start], [match.end, to]);
+      continue;
+    }
     const distance = Math.round((1 - sim) * Math.max(length, end - start));
     found.push({ start, end, distance, sim });
   }
   const origin = anchor.textPosition.start;
-  return found.sort(
+  found.sort(
     (a, b) => a.distance - b.distance || Math.abs(a.start - origin) - Math.abs(b.start - origin),
   );
+  return { matches: found, guardedSim };
 }
 
-function fuzzyResolve(anchor: HtmlAnchorSet, stream: TextStream): Resolution {
-  const found = fuzzyMatches(anchor, stream.text);
-  const best = found[0];
-  if (!best) return orphaned();
+/**
+ * Head/tail anchoring for a long quote that is not on the page contiguously any more because
+ * something was inserted between its blocks (an ad label, a related-links box) while both halves
+ * stayed verbatim. The first and last SPLIT_ANCHOR_CHARS must each be found verbatim, as exactly one
+ * (head, tail) pair no further apart than the quote's length plus SPLIT_GAP_CHARS; two pairs are
+ * ambiguous and nothing is painted. The spanned text must then be the quote plus its inserted
+ * surplus: the edit distance, after forgiving the extra length, may not exceed 15% of the quote
+ * (the same 0.85 gate as the contiguous case).
+ */
+function headTailResolve(
+  anchor: HtmlAnchorSet,
+  stream: TextStream,
+  claims?: Claims,
+): Resolution | null {
+  const { exact } = anchor.textQuote;
+  const length = exact.length;
+  if (length < SPLIT_MIN_QUOTE_CHARS) return null;
+  const { text } = stream;
+  const head = exact.slice(0, SPLIT_ANCHOR_CHARS);
+  const tail = exact.slice(-SPLIT_ANCHOR_CHARS);
+  const maxDist = Math.floor((1 - FUZZY_MIN_SIMILARITY) * length + 1e-9);
+
+  const heads = findAll(text, head, SPLIT_MAX_HEADS + 1);
+  if (heads.length === 0 || heads.length > SPLIT_MAX_HEADS) return null;
+  let found: readonly [number, number] | null = null;
+  for (const h of heads) {
+    // The tail starts after the head and the whole span is neither much shorter nor much longer
+    // than the quote. Searching a bounded slice keeps the work proportional to the gap.
+    const base = Math.max(h + SPLIT_ANCHOR_CHARS, h + length - maxDist - SPLIT_ANCHOR_CHARS);
+    const win = text.slice(base, h + length + SPLIT_GAP_CHARS);
+    for (let k = win.indexOf(tail); k !== -1; k = win.indexOf(tail, k + 1)) {
+      if (found) return ambiguous(0, 0);
+      found = [h, base + k + SPLIT_ANCHOR_CHARS];
+    }
+  }
+  if (!found) return null;
+
+  const [start, end] = found;
+  const span = text.slice(start, end);
+  const surplus = Math.max(0, span.length - length);
+  const dist = boundedEditDistance(exact, span, surplus + maxDist);
+  if (dist > surplus + maxDist) return null;
+  if (claims && isClaimed(claims, text, start, end)) return null;
+  // Never 1: that is reserved for the quote itself being there.
+  const confidence = Math.min(0.99, 1 - Math.max(0, dist - surplus) / length);
+  return finish(stream, start, end, 'changed', confidence, 'fuzzy', 0);
+}
+
+function fuzzyResolve(anchor: HtmlAnchorSet, stream: TextStream, claims?: Claims): Resolution {
+  const { matches, guardedSim } = fuzzyMatches(anchor, stream.text, claims, true);
+  const best = matches[0];
+  if (!best) {
+    const split = headTailResolve(anchor, stream, claims);
+    if (split) return split;
+    // Only a look-alike that differs by a figure exists: not this statement, but not provably gone.
+    return guardedSim > 0 ? ambiguous(guardedSim, 0) : orphaned();
+  }
   // A different location that fits almost as well means we cannot tell which one the user saw.
   const margin = Math.max(1, Math.floor(0.05 * anchor.textQuote.exact.length));
-  const rival = found.find(
+  const rival = matches.find(
     (m) =>
       m !== best &&
       (m.end <= best.start || m.start >= best.end) &&
@@ -238,11 +463,11 @@ function fuzzyResolve(anchor: HtmlAnchorSet, stream: TextStream): Resolution {
  * True when an exact copy that nothing else supports (both contexts and the position disagree) has
  * a near-identical neighbour at the old place: the original was edited in place while a verbatim copy
  * (an abstract repeating body text, a quoted block) survives elsewhere. Snapping to the copy would
- * be a silent wrong answer.
+ * be a silent wrong answer. (No figure guard here: a corrected number IS an edited original.)
  */
 function editedOriginalSurvives(anchor: HtmlAnchorSet, text: string, start: number): boolean {
   const end = start + anchor.textQuote.exact.length;
-  return fuzzyMatches(anchor, text).some((m) => m.end <= start || m.start >= end);
+  return fuzzyMatches(anchor, text).matches.some((m) => m.end <= start || m.start >= end);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -255,7 +480,16 @@ interface Shared {
   signature?: string;
 }
 
-function resolveWith(anchor: HtmlAnchorSet, stream: TextStream, shared: Shared): Resolution {
+/**
+ * Everything but the fuzzy fallback. Returns null when the quote is not on the page verbatim and
+ * the fuzzy path has to decide (done separately so resolveMany can run it with the other entries'
+ * exact results known).
+ */
+function resolveExact(
+  anchor: HtmlAnchorSet,
+  stream: TextStream,
+  shared: Shared,
+): Resolution | null {
   // 1. A different text algorithm needs a migration, not a guess.
   if ((anchor as { type?: string }).type !== 'html') return orphaned();
   if (anchor.textAlgorithm !== TEXT_ALGORITHM) return orphaned();
@@ -265,16 +499,16 @@ function resolveWith(anchor: HtmlAnchorSet, stream: TextStream, shared: Shared):
   const { text } = stream;
   const stored = anchor.textPosition.start;
 
-  // 2. Exact occurrences (cap 200); shared across anchors with the same quote.
-  let occ = shared.occurrences.get(exact);
-  if (!occ) {
-    occ = findOccurrences(text, exact);
-    shared.occurrences.set(exact, occ);
+  // 2. Exact occurrences; the scan is shared across anchors with the same quote.
+  let scanned = shared.occurrences.get(exact);
+  if (!scanned) {
+    scanned = scanOccurrences(text, exact);
+    shared.occurrences.set(exact, scanned);
   }
-  const count = occ.at.length;
-
   // 5. Nothing exact: fuzzy, or orphaned.
-  if (count === 0) return fuzzyResolve(anchor, stream);
+  if (scanned.at.length === 0) return null;
+  const occ = selectCandidates(text, anchor, scanned);
+  const count = occ.at.length;
 
   // The page text is byte-identical to the capture-time stream: the stored offset is authoritative,
   // even when identical copies of the quote have identical context.
@@ -293,6 +527,8 @@ function resolveWith(anchor: HtmlAnchorSet, stream: TextStream, shared: Shared):
       count,
     );
   }
+  // More copies than can be listed and the ones left out may carry the whole context.
+  if (occ.blind) return ambiguous(0, count);
 
   // 3. One occurrence.
   if (count === 1) {
@@ -315,14 +551,30 @@ function resolveWith(anchor: HtmlAnchorSet, stream: TextStream, shared: Shared):
   }
 
   // 4. Several occurrences: context agreement (0.8) + position proximity (0.2).
-  const ranked = occ.at
-    .map((at) => scoreCandidate(text, anchor, at))
-    .sort((a, b) => b.score - a.score || Math.abs(a.start - stored) - Math.abs(b.start - stored));
-  const winner = ranked[0]!;
-  const runnerUp = ranked[1]!;
+  // One pass keeps the best two (score, then nearer to the stored offset, then document order).
+  const scored = occ.at.map((at) => scoreCandidate(text, anchor, at));
+  const beats = (a: Candidate, b: Candidate): boolean =>
+    a.score > b.score ||
+    (a.score === b.score && Math.abs(a.start - stored) < Math.abs(b.start - stored));
+  let winner = scored[0]!;
+  let runnerUp = scored[1]!;
+  if (beats(runnerUp, winner)) [winner, runnerUp] = [runnerUp, winner];
+  for (let i = 2; i < scored.length; i++) {
+    const c = scored[i]!;
+    if (beats(c, winner)) {
+      runnerUp = winner;
+      winner = c;
+    } else if (beats(c, runnerUp)) {
+      runnerUp = c;
+    }
+  }
   const separated = winner.context - runnerUp.context >= CONTEXT_SEPARATION;
-  const decisive =
-    winner.score - runnerUp.score >= LEAD || (winner.context === 1 && !occ.truncated);
+  // With every copy listed, a perfect context is decisive on its own. With a selection only, an
+  // unlisted copy might outscore a winner who leads on score alone, so only the full stored context
+  // is decisive, and only if every unlisted copy provably falls short of it by the usual margin.
+  const decisive = occ.truncated
+    ? winner.context === 1 && 1 - (occ.unseen ?? 1) >= CONTEXT_SEPARATION
+    : winner.score - runnerUp.score >= LEAD || winner.context === 1;
   // A copy still sits exactly where the quote was captured while the context points elsewhere:
   // two strong signals disagree (e.g. the neighbourhood was rewritten and a duplicate happens to
   // match the old context), so neither may be chosen silently.
@@ -333,7 +585,7 @@ function resolveWith(anchor: HtmlAnchorSet, stream: TextStream, shared: Shared):
   const winnerSides = (winner.prefixDisagrees ? 0 : 1) + (winner.suffixDisagrees ? 0 : 1);
   const halfSupportedRival =
     winnerSides < 2 &&
-    ranked.some((c) => c !== winner && (!c.prefixDisagrees || !c.suffixDisagrees));
+    scored.some((c) => c !== winner && (!c.prefixDisagrees || !c.suffixDisagrees));
   if (separated && decisive && !contested && !halfSupportedRival) {
     if (isUnsupported(winner, stored) && editedOriginalSurvives(anchor, text, winner.start)) {
       return ambiguous(winner.score, count);
@@ -356,19 +608,90 @@ function resolveWith(anchor: HtmlAnchorSet, stream: TextStream, shared: Shared):
  * `ambiguous` and `orphaned` never carry a range, so nothing wrong can be painted.
  */
 export function resolveAnchor(anchor: HtmlAnchorSet, stream: TextStream): Resolution {
-  return resolveWith(anchor, stream, { occurrences: new Map() });
+  return resolveExact(anchor, stream, { occurrences: new Map() }) ?? fuzzyResolve(anchor, stream);
 }
+
+export interface ResolveManyOptions {
+  /**
+   * Anchors of other highlights on this page that are not in `entries` (typically the ones that are
+   * already painted). Their text is owned: a highlight in `entries` that lost its own quote is not
+   * re-bound onto it. Without this, only the entries of the batch protect each other.
+   */
+  siblings?: readonly AnchorSet[];
+}
+
+const quoteOf = (anchor: HtmlAnchorSet): string => anchor.textQuote.exact;
+
+const isHtml = (anchor: AnchorSet): anchor is HtmlAnchorSet => anchor.type === 'html';
+
+/** The text-stream engine resolves HTML anchors only; a PDF anchor belongs to the PDF reader. */
+const NOT_HTML: Resolution = {
+  status: 'orphaned',
+  confidence: 0,
+  range: null,
+  method: 'none',
+  candidateCount: 0,
+};
 
 /**
  * Resolves many anchors against one stream. Shares the stream, its lazily computed signature and
  * the per-quote occurrence scan across entries; nothing is rebuilt per entry.
+ *
+ * Highlights that no longer match verbatim are resolved fuzzily only after every exact match of the
+ * batch is known, so a fuzzy match can never take the text another saved highlight owns (the
+ * same range, or the same text as its quote): "Step 3" is not re-bound onto the highlighted "Step 4".
  */
 export function resolveMany(
   entries: readonly { id: string; anchorSet: AnchorSet }[],
   stream: TextStream,
+  options: ResolveManyOptions = {},
 ): Map<string, Resolution> {
   const shared: Shared = { occurrences: new Map() };
+  const results = entries.map((e) =>
+    isHtml(e.anchorSet) ? resolveExact(e.anchorSet, stream, shared) : NOT_HTML,
+  );
+
+  if (results.includes(null)) {
+    const claims: Claims = { ranges: [], texts: new Set() };
+    const claim = (anchor: AnchorSet, resolution: Resolution | null): void => {
+      if (!isHtml(anchor)) return;
+      const quote = quoteOf(anchor);
+      if (quote) claims.texts.add(quote);
+      const span = resolution?.status === 'resolved' ? spans.get(resolution) : undefined;
+      if (span) claims.ranges.push(span);
+    };
+    entries.forEach((e, i) => claim(e.anchorSet, results[i]!));
+    for (const sibling of options.siblings ?? []) {
+      if (isHtml(sibling)) claim(sibling, resolveExact(sibling, stream, shared));
+    }
+
+    const fuzzy: number[] = [];
+    entries.forEach((e, i) => {
+      if (results[i] !== null || !isHtml(e.anchorSet)) return;
+      results[i] = fuzzyResolve(e.anchorSet, stream, claims);
+      if (results[i]!.status === 'changed') fuzzy.push(i);
+    });
+    // Two different quotes that both landed on the same text cannot both be right.
+    const demoted = new Set<number>();
+    for (let a = 0; a < fuzzy.length; a++) {
+      for (let b = a + 1; b < fuzzy.length; b++) {
+        const i = fuzzy[a]!;
+        const j = fuzzy[b]!;
+        const qi = entries[i]!.anchorSet;
+        const qj = entries[j]!.anchorSet;
+        if (isHtml(qi) && isHtml(qj) && quoteOf(qi) === quoteOf(qj)) continue;
+        const [s1, e1] = spans.get(results[i]!)!;
+        const [s2, e2] = spans.get(results[j]!)!;
+        const overlap = Math.min(e1, e2) - Math.max(s1, s2);
+        if (overlap > 0 && overlap / (Math.max(e1, e2) - Math.min(s1, s2)) >= CLAIM_OVERLAP) {
+          demoted.add(i).add(j);
+        }
+      }
+    }
+    for (const i of demoted) results[i] = ambiguous(results[i]!.confidence, 0);
+  }
+
   const out = new Map<string, Resolution>();
-  for (const entry of entries) out.set(entry.id, resolveWith(entry.anchorSet, stream, shared));
+  entries.forEach((e, i) => out.set(e.id, results[i]!));
   return out;
 }

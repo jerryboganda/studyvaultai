@@ -1,0 +1,19 @@
+id,bank,folder,quote,comment,source_title,source_url,captured_at,location,heading,kind,color,priority,tags,notes,quote_hash,deleted<CR>
+hl-0001,Cardiology,"Pharmacology / Anti/platelets: ""COX""","Aspirin irreversibly inhibits COX-1.
+It also reduces thromboxane A2.",Remember: low dose = antiplatelet.,Aspirin [mechanism] *notes*,https://example.com/a?utm=1,2026-10-01T09:10:00.000Z,text offset 110–178,Mechanism,essential,amber,5,"heart failure, 2026","Study note: Why it matters:
+
+- irreversible acetylation
+- platelets cannot make new COX",hl-0001000000000000000000000000000000000000000000000000000000000,false<CR>
+hl-0002,Inbox,,"[[evil]] and ![[embedded note]] with <script>alert(1)</script>
+](javascript:alert(1)) [click](javascript:alert(2))
+# not a heading
+- not a list
+---
+title: pwned
+%% hidden %% ==marked== $x$",'@SUM(1+1) and <img src=x onerror=alert(1)>,Unsafe link source,,2026-10-01T09:11:00.000Z,text offset 111–299,,question,amber,3,ünï/cöde #x,,hl-0002000000000000000000000000000000000000000000000000000000000,false<CR>
+hl-0003,Exam: Q&A? <2026>/draft*,,"'=HYPERLINK(""http://evil.test"",""click"")","'+1 then -2
+=3",Aspirin [mechanism] *notes*,https://example.com/a(b)?x=1&y=2,2026-10-01T09:12:00.000Z,text offset 112–150,,formula,amber,1,,,hl-0003000000000000000000000000000000000000000000000000000000000,false<CR>
+hl-0004,Cardiology,,Statins reduce LDL by 30–55%.,,Cardiology Paper (2026),https://example.com/paper.pdf,2026-10-01T09:13:00.000Z,page 3,,exception,amber,3,,,hl-0004000000000000000000000000000000000000000000000000000000000,false<CR>
+hl-0005,CON,,Ünïcödé 日本語 🧬 שלום,,Aspirin [mechanism] *notes*,https://example.com/a(b)?x=1&y=2,2026-10-01T09:14:00.000Z,text offset 114–133,,differential,amber,3,,,hl-0005000000000000000000000000000000000000000000000000000000000,false<CR>
+hl-0007,Cardiology,Pharmacology,"Filed in two banks with ""quotes"", commas, and a tab	here.",multi,Aspirin [mechanism] *notes*,https://example.com/a(b)?x=1&y=2,2026-10-01T09:16:00.000Z,text offset 116–173,,essential,amber,3,,,hl-0007000000000000000000000000000000000000000000000000000000000,false<CR>
+hl-0007,Exam: Q&A? <2026>/draft*,,"Filed in two banks with ""quotes"", commas, and a tab	here.",multi,Aspirin [mechanism] *notes*,https://example.com/a(b)?x=1&y=2,2026-10-01T09:16:00.000Z,text offset 116–173,,essential,amber,3,,,hl-0007000000000000000000000000000000000000000000000000000000000,false<CR>

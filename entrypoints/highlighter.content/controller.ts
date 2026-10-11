@@ -1,4 +1,5 @@
 import {
+  KIND_LABELS,
   MAX_QUOTE_CHARS,
   StudyVaultError,
   captureBlock,
@@ -7,15 +8,30 @@ import {
   type CaptureMethod,
   type CaptureResult,
   type CaptureSelectionResult,
+  type HighlightView,
   type PageStatus,
   type Settings,
   type TabRpc,
 } from '@shared';
-import { HOST_ATTRIBUTE, HighlightPainter, buildTextStream, captureAnchor } from '@highlights';
-import type { Handlers, callBackground } from '@runtime';
+import {
+  HOST_ATTRIBUTE,
+  HighlightPainter,
+  buildTextStream,
+  captureAnchor,
+  type TextStream,
+} from '@highlights';
+import { HANDLER_TIMEOUT_MS, type Handlers, type callBackground } from '@runtime';
 import type { ContentScriptContext } from 'wxt/utils/content-script-context';
 import type { CaptureHost, CaptureUi, CreateCaptureUi, SaveRequest } from './contract';
-import { inspectSelection, isInsideHost, rectAt, rectOf, sameRange } from './eligibility';
+import {
+  inspectSelection,
+  isEditingContext,
+  isInsideHost,
+  rectAt,
+  rectOf,
+  sameRange,
+  withoutEditableContext,
+} from './eligibility';
 import { canonicalHref, fitUrl, readPageInfo } from './page';
 import { Rehydrator, type PageRef, type PainterLike } from './rehydrator';
 import { affectsPageText } from './mutations';
@@ -48,15 +64,57 @@ export interface Controller {
 const SELECTION_DEBOUNCE_MS = 60;
 const REFRESH_DEBOUNCE_MS = 250;
 const MUTATION_DEBOUNCE_MS = 400;
-/** A page that never stops mutating must still get a pass now and then. */
-const MUTATION_MAX_WAIT_MS = 2000;
+/**
+ * A page that never stops mutating (a ticker every 100 ms) must still be looked at about once a
+ * second, or text that arrives late would stay unpainted for as long as the page stays busy.
+ */
+const MUTATION_MAX_WAIT_MS = 1000;
+/** A router that pushes several URLs in a row (redirects, canonicalisation) loads once, at the end. */
+const ROUTE_DEBOUNCE_MS = 150;
+const ROUTE_MAX_WAIT_MS = 1000;
 const REVEAL_FLASH_MS = 2000;
 const DEFAULT_PRIORITY = 3;
+const QUOTE_ANNOUNCE_CHARS = 80;
+/**
+ * Calls to the worker give up before the RPC handler that waits on them does (the runtime answers
+ * `content.*` requests with its own error after HANDLER_TIMEOUT_MS, in words about "the background
+ * worker"). The failure that reaches the user then names the call that was slow.
+ */
+const RPC_TIMEOUT_MS = HANDLER_TIMEOUT_MS - 3_000;
+/** What the runtime's call() says when nobody answered in time (packages/runtime messaging.ts). */
+const NO_ANSWER = /^No answer to /;
+
+const LOST_CONTACT =
+  'StudyVault lost contact with the extension. Reload this page, then try again.';
+const TOO_SLOW = 'StudyVault is taking too long to respond. Try again in a moment.';
+const SIDE_PANEL_FAILED = 'Could not open the StudyVault side panel. Try again.';
+
+/**
+ * Keyboard route to the painted highlights: Alt+Shift+] is the next one in document order and
+ * Alt+Shift+[ the previous one (wrapping). Physical keys, like the overlay's Alt+Shift+T, so the
+ * shortcut does not depend on where a layout puts the brackets. Ignored while typing or editing.
+ */
+function highlightStep(e: KeyboardEvent): 1 | -1 | 0 {
+  if (!e.altKey || !e.shiftKey || e.ctrlKey || e.metaKey || e.repeat) return 0;
+  if (e.code === 'BracketRight') return 1;
+  return e.code === 'BracketLeft' ? -1 : 0;
+}
 
 /** A failure whose message is already written for the user. */
 class CaptureProblem extends StudyVaultError {
   constructor(message: string) {
     super('invalid_request', message);
+  }
+}
+
+/**
+ * The worker did not answer within the call budget: it is slow or busy, not gone. (A transport that
+ * really has no receiver reports `no_receiver` too, but at once and with another message; reloading
+ * the page is the wrong advice for a slow worker.)
+ */
+class WorkerSlow extends StudyVaultError {
+  constructor() {
+    super('internal', TOO_SLOW);
   }
 }
 
@@ -98,7 +156,7 @@ function pathHasHost(e: Event): boolean {
 }
 
 function describeError(err: unknown): string {
-  if (err instanceof CaptureProblem) return err.message;
+  if (err instanceof CaptureProblem || err instanceof WorkerSlow) return err.message;
   if (err instanceof StudyVaultError) {
     switch (err.code) {
       case 'forbidden':
@@ -109,7 +167,7 @@ function describeError(err: unknown): string {
         return 'StudyVault storage is unavailable right now. Try again in a moment.';
       case 'unsupported_page':
       case 'no_receiver':
-        return 'StudyVault lost contact with the extension. Reload this page, then try again.';
+        return LOST_CONTACT;
       case 'invalid_request':
         return 'StudyVault could not accept this selection from the page.';
       default:
@@ -144,11 +202,42 @@ export function startController(deps: ControllerDeps): Controller {
   let session: Session | null = null;
 
   let stored: StoredSelection | null = null;
+  /** The selection a toolbar save has just completed for; read by the dismissSelection() after it. */
+  let saved: StoredSelection | null = null;
   let toolbarVisible = false;
   /** A pointer gesture that started outside our UI is still in progress (drag selection). */
   let pointerActive = false;
   /** The last pointer gesture started inside our UI; sticky until the user acts on the page. */
   let uiPointer = false;
+  /** The highlight last reached by keyboard, click or reveal: where next / previous continue from. */
+  let navigated: string | null = null;
+  /** A next / previous step is in progress: its highlight keeps the active style until the reader leaves. */
+  let navigating = false;
+
+  /**
+   * Is this script still the extension's? `ctx.isValid` is what notices an extension that was
+   * reloaded or updated under the page (WXT then runs its invalidation callbacks); where it only
+   * reports, this tears the controller down itself. Polled from every observer and timer, because
+   * an orphaned script otherwise keeps reacting to the page with calls that can no longer succeed.
+   */
+  const alive = (): boolean => {
+    if (!destroyed && ctx.isValid) return true;
+    destroy();
+    return false;
+  };
+
+  /** Every worker call: bounded below the RPC handler budget, and a timeout says it was one. */
+  const rpc: typeof call = async (type, payload, options) => {
+    try {
+      return await call(type, payload, { timeoutMs: RPC_TIMEOUT_MS, ...options });
+    } catch (err) {
+      throw err instanceof StudyVaultError &&
+        err.code === 'no_receiver' &&
+        NO_ANSWER.test(err.message)
+        ? new WorkerSlow()
+        : err;
+    }
+  };
 
   const blockReason = (): 'denied-site' | null =>
     captureBlock(win.location.href, settings.denyList) ? 'denied-site' : null;
@@ -157,6 +246,28 @@ export function startController(deps: ControllerDeps): Controller {
     const url = fitUrl(win.location.href);
     return url ? { url, canonicalUrl: canonicalHref(doc) } : null;
   };
+
+  /**
+   * Hands a stored highlight to the rehydrator. The write has already succeeded when this runs: a
+   * failure to place it on the page must not be reported as a failure to save (the next refresh
+   * paints it).
+   */
+  function place(view: HighlightView, opts?: { stream?: TextStream; generation?: number }): void {
+    try {
+      session?.rehydrator.upsert(view, opts);
+    } catch (err) {
+      console.warn('[StudyVault] could not place a stored highlight on the page', err);
+    }
+  }
+
+  /** The counterpart of `place()` for a delete that has already succeeded. */
+  function unplace(id: string): void {
+    try {
+      session?.rehydrator.drop(id);
+    } catch (err) {
+      console.warn('[StudyVault] could not take a deleted highlight off the page', err);
+    }
+  }
 
   // -------------------------------------------------------------------------------------------
   // Saving
@@ -176,15 +287,15 @@ export function startController(deps: ControllerDeps): Controller {
       throw new CaptureProblem(ANCHOR_FAILURES[gone ? 'outside-root' : anchored.error]);
     }
 
-    const result = await call('capture.save', {
+    const result = await rpc('capture.save', {
       page,
       exactQuote: anchored.exactQuote,
-      anchorSet: anchored.anchorSet,
+      anchorSet: withoutEditableContext(anchored.anchorSet, stream),
       headingContext: anchored.headingContext,
       ...opts,
     });
     // The highlight is stored; paint it from the stream the anchor came from.
-    s.rehydrator.upsert(result.highlight, { stream, generation });
+    place(result.highlight, { stream, generation });
     return result;
   }
 
@@ -240,7 +351,19 @@ export function startController(deps: ControllerDeps): Controller {
   }
 
   function dismissSelection(): void {
+    const done = saved;
+    saved = null;
     const current = stored;
+    if (done && current && !sameRange(done.range, current.range)) {
+      // The save that just finished was for an older selection; the user has selected something
+      // else since. That selection is not being dismissed. The overlay closes its toolbar right
+      // after this call, so the newer selection's toolbar is shown again once that has happened.
+      queueMicrotask(() => {
+        if (stored !== current || !toolbarVisible) return;
+        session?.ui?.showToolbar({ text: current.text, rect: rectOf(current.range) });
+      });
+      return;
+    }
     stored = null;
     toolbarVisible = false;
     // Only the selection we captured is cleared, never a different one the user made since.
@@ -251,8 +374,8 @@ export function startController(deps: ControllerDeps): Controller {
   }
 
   async function removeHighlight(id: string): Promise<void> {
-    await call('highlight.delete', { id });
-    session?.rehydrator.drop(id);
+    await rpc('highlight.delete', { id });
+    unplace(id);
   }
 
   const host: CaptureHost = {
@@ -267,7 +390,7 @@ export function startController(deps: ControllerDeps): Controller {
         session?.ui?.toast({ text: problem.message, tone: 'error' });
         throw problem;
       }
-      return saveReportingFailure(sel, {
+      const result = await saveReportingFailure(sel, {
         kind: req.kind,
         color: req.color,
         bankId: req.bankId,
@@ -275,28 +398,54 @@ export function startController(deps: ControllerDeps): Controller {
         priority: req.priority,
         captureMethod: 'toolbar',
       });
+      // The overlay's continuation runs next and calls dismissSelection(): say which selection it
+      // belongs to, so a newer selection made while this save was in flight is left alone.
+      saved = sel;
+      setTimeout(() => {
+        if (saved === sel) saved = null;
+      }, 0);
+      return result;
     },
 
-    listBanks: () => call('banks.list', {}),
-    createBank: (name) => call('bank.create', { name }),
+    listBanks: () => rpc('banks.list', {}),
+    createBank: (name) => rpc('bank.create', { name }),
     undo: removeHighlight,
     remove: removeHighlight,
 
     async update(id, patch) {
       const generation = session?.rehydrator.generation;
-      const view = await call('highlight.update', { id, patch });
-      session?.rehydrator.upsert(view, { generation });
+      const view = await rpc('highlight.update', { id, patch });
+      place(view, { generation });
       return view;
     },
 
     async restore(id) {
       const generation = session?.rehydrator.generation;
-      const view = await call('highlight.restore', { id });
-      session?.rehydrator.upsert(view, { generation });
+      const view = await rpc('highlight.restore', { id });
+      place(view, { generation });
       return view;
     },
 
     dismissSelection,
+
+    // No await before the message: chrome.sidePanel.open() needs the user gesture, and callBackground
+    // hands the message to the runtime synchronously, so the click handler's activation still holds.
+    openInSidePanel(highlightId) {
+      const fail = (text: string): false => {
+        session?.ui?.toast({ text, tone: 'error' });
+        return false;
+      };
+      return rpc('sidepanel.open', { focusHighlightId: highlightId }).then(
+        ({ opened }) => opened || fail(SIDE_PANEL_FAILED),
+        (err: unknown) =>
+          fail(
+            err instanceof StudyVaultError &&
+              (err.code === 'no_receiver' || err.code === 'unsupported_page')
+              ? LOST_CONTACT
+              : SIDE_PANEL_FAILED,
+          ),
+      );
+    },
   };
 
   // -------------------------------------------------------------------------------------------
@@ -312,14 +461,14 @@ export function startController(deps: ControllerDeps): Controller {
 
   function evaluateSelection(): void {
     const ui = session?.ui;
-    // `isValid` also notices an extension that was reloaded under this page (then cleans up).
-    if (!ui || !ctx.isValid) return;
+    if (!ui || !alive()) return;
     // Mid-drag, or the user is working inside our overlay (focus moves there and the page
     // selection may collapse): keep whatever is stored.
     if (pointerActive || uiPointer || isInsideHost(doc.activeElement)) return;
     if (!settings.toolbarEnabled) return hideSelection();
     const verdict = inspectSelection(doc);
     if (!verdict.ok) return hideSelection();
+    leaveNavigation(); // the reader is selecting text now, not stepping through highlights
     if (stored && toolbarVisible && sameRange(stored.range, verdict.range)) return;
     stored = { range: verdict.range, text: verdict.text };
     toolbarVisible = true;
@@ -332,6 +481,117 @@ export function startController(deps: ControllerDeps): Controller {
     const { range, text } = stored;
     if (!range.startContainer.isConnected || range.collapsed) return hideSelection();
     ui.showToolbar({ text, rect: rectOf(range) });
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Reaching a highlight (side panel "show on page", keyboard next / previous)
+  // -------------------------------------------------------------------------------------------
+
+  /**
+   * Scrolls the highlight to the centre and emphasises it: for two seconds (a reveal from the side
+   * panel) or, with `hold`, until the reader leaves (a step, whose popover stays open as long as
+   * they like). False, with nothing moved, when its text is hidden (closed tab panel or
+   * accordion): there is nowhere to scroll to. Quiet mode scrolls too but publishes nothing, the
+   * emphasis included.
+   */
+  function showHighlight(
+    s: Session,
+    id: string,
+    range: Range,
+    opts: { instant?: boolean; hold?: boolean } = {},
+  ): boolean {
+    if (!scrollRangeToCenter(win, range, { instant: opts.instant })) return false;
+    if (s.revealTimer !== undefined) clearTimeout(s.revealTimer);
+    s.revealTimer = undefined;
+    navigated = id;
+    navigating = false;
+    if (!settings.paintHighlights) return true;
+    s.painter.setActive(id);
+    if (opts.hold) {
+      navigating = true;
+    } else {
+      s.revealTimer = setTimeout(() => {
+        s.revealTimer = undefined;
+        if (alive()) s.painter.setActive(null);
+      }, REVEAL_FLASH_MS);
+    }
+    return true;
+  }
+
+  /**
+   * The reader moved on (pressed on the page, Escape, focus back on the page, selected text, another
+   * route): the emphasis a step held goes. Nothing else ends it, so it outlives its 2 s flash for
+   * as long as the popover is read.
+   */
+  function leaveNavigation(): void {
+    if (!navigating) return;
+    navigating = false;
+    session?.painter.setActive(null);
+  }
+
+  /**
+   * The document selection is the caret that Tab and a screen reader's cursor continue from, so a
+   * step moves it to the highlight (collapsed: nothing is selected, nothing is copied). Not while
+   * the user is in a field: that would take the focus out of it.
+   */
+  function moveCaretTo(range: Range): void {
+    if (isEditingContext(doc)) return;
+    try {
+      doc.getSelection()?.collapse(range.startContainer, range.startOffset);
+    } catch {
+      // the range left the document in the meantime
+    }
+  }
+
+  /** "Highlight 2 of 5, Formula: <quote>. 1 not placed on this page." */
+  function describeStep(s: Session, view: HighlightView, position: number, total: number): string {
+    const quote = [...view.exactQuote.replace(/\s+/g, ' ').trim()];
+    const clipped =
+      quote.length > QUOTE_ANNOUNCE_CHARS
+        ? `${quote.slice(0, QUOTE_ANNOUNCE_CHARS).join('')}…`
+        : quote.join('');
+    const unplaced = Math.max(0, s.rehydrator.counts().total - total);
+    return (
+      `Highlight ${position} of ${total}, ${KIND_LABELS[view.kind].label}: ${clipped}` +
+      `${/[.!?…]$/.test(clipped) ? '' : '.'}` +
+      `${unplaced > 0 ? ` ${unplaced} not placed on this page.` : ''}`
+    );
+  }
+
+  /**
+   * Next / previous painted highlight in document order: scroll to it, hold its emphasis, put the
+   * caret there, announce where the reader is and open its popover (focus moves in). The in-page
+   * shortcut and the manifest commands both come here. False when there is none to show.
+   */
+  function stepHighlight(s: Session, ui: CaptureUi | null, step: 1 | -1): boolean {
+    const list = s.rehydrator.painted();
+    const n = list.length;
+    if (n === 0) {
+      ui?.toast({ text: 'No highlights on this page yet.', tone: 'info' });
+      return false;
+    }
+    let from = navigated === null ? -1 : list.findIndex((h) => h.id === navigated);
+    if (from < 0) {
+      // Not reached by keyboard yet: continue from the reader's position, the top edge of the
+      // viewport (first highlight at or below it). Without layout every top is 0: first / last.
+      const edge = list.findIndex((h) => rectOf(h.range).top >= 0);
+      const below = edge < 0 ? n : edge;
+      from = step === 1 ? below - 1 : below;
+    }
+    for (let k = 1; k <= n; k++) {
+      const at = (((from + step * k) % n) + n) % n;
+      const hit = list[at]!;
+      const view = s.rehydrator.viewOf(hit.id);
+      // Hidden highlights are skipped, so the shortcut never "does nothing" while others exist.
+      if (!view || !showHighlight(s, hit.id, hit.range, { instant: true, hold: true })) continue;
+      moveCaretTo(hit.range);
+      ui?.announce(describeStep(s, view, at + 1, n));
+      // The jump was instant, so the range's rect is final and the popover anchors to it.
+      ui?.showHighlightPopover(view, rectOf(hit.range));
+      return true;
+    }
+    ui?.toast({ text: 'No visible highlights on this page.', tone: 'info' });
+    return false;
   }
 
   // -------------------------------------------------------------------------------------------
@@ -360,6 +620,16 @@ export function startController(deps: ControllerDeps): Controller {
       (e) => {
         uiPointer = pathHasHost(e);
         pointerActive = !uiPointer;
+        if (!uiPointer) leaveNavigation(); // a press on the page ends a step-through
+      },
+      capturing,
+    );
+    // Focus coming back to the page (the popover closed and handed it back) ends it too.
+    listen(
+      doc,
+      'focusin',
+      (e) => {
+        if (!pathHasHost(e)) leaveNavigation();
       },
       capturing,
     );
@@ -378,6 +648,7 @@ export function startController(deps: ControllerDeps): Controller {
       'keydown',
       (e) => {
         if (!pathHasHost(e)) uiPointer = false;
+        if ((e as KeyboardEvent).key === 'Escape') leaveNavigation(); // also closes the popover
       },
       capturing,
     );
@@ -412,34 +683,78 @@ export function startController(deps: ControllerDeps): Controller {
         const view = id === null ? undefined : s.rehydrator.viewOf(id);
         if (!id || !view) return;
         const range = s.rehydrator.rangeOf(id);
+        navigated = id;
         ui.showHighlightPopover(view, range ? rectOf(range) : rectAt(ev.clientX, ev.clientY));
       },
       capturing,
     );
 
-    // Rehydration triggers: data changes elsewhere, route changes, DOM mutations.
-    const refreshSoon = debounce(() => void s.rehydrator.refresh(), REFRESH_DEBOUNCE_MS);
+    // Alt+Shift+] / Alt+Shift+[ (see highlightStep). Not passive: the handled key is not also
+    // delivered to the page's own shortcuts as a default action. Registered through listen(), so
+    // it goes away with the session (unmount, deny list, context invalidation).
+    listen(
+      doc,
+      'keydown',
+      (e) => {
+        const ev = e as KeyboardEvent;
+        const step = highlightStep(ev);
+        const ui = s.ui;
+        if (step === 0 || session !== s || !ui || !ev.isTrusted || !alive()) return;
+        // A key pressed inside the overlay belongs to the overlay (its note field types text).
+        if (pathHasHost(ev) || isEditingContext(doc, ev.composedPath()[0] ?? null)) return;
+        ev.preventDefault();
+        stepHighlight(s, ui, step);
+      },
+      { capture: true },
+    );
+
+    // Rehydration triggers: data changes elsewhere, route changes, DOM mutations, and the page
+    // coming back to the reader (a background tab or a bfcache restore missed what changed).
+    const refreshSoon = debounce(() => {
+      if (alive()) void s.rehydrator.refresh();
+    }, REFRESH_DEBOUNCE_MS);
     s.cleanups.push(
       refreshSoon.cancel,
       deps.watchDataEpoch(() => refreshSoon()),
     );
+    listen(doc, 'visibilitychange', () => {
+      if (doc.visibilityState === 'visible') refreshSoon();
+    });
+    listen(win, 'pageshow', (e) => {
+      if ((e as PageTransitionEvent).persisted) refreshSoon();
+    });
 
     const retrySoon = debounce(
-      () => s.rehydrator.retryPass(),
+      () => {
+        if (alive()) s.rehydrator.retryPass();
+      },
       MUTATION_DEBOUNCE_MS,
       MUTATION_MAX_WAIT_MS,
     );
     s.cleanups.push(retrySoon.cancel);
 
+    // A route change forgets the old page at once (nothing of it may show on the new one); only the
+    // load waits, so a router that pushes several URLs in a row costs one fetch and one resolve.
+    const loadRouteSoon = debounce(
+      () => {
+        if (alive()) void s.rehydrator.refresh();
+      },
+      ROUTE_DEBOUNCE_MS,
+      ROUTE_MAX_WAIT_MS,
+    );
+    s.cleanups.push(loadRouteSoon.cancel);
     const routes = new RouteWatcher(win, () => {
       hideSelection();
+      leaveNavigation();
       retrySoon.cancel();
-      void s.rehydrator.onRouteChange();
+      s.rehydrator.routeChanged();
+      loadRouteSoon();
     });
     routes.start();
     s.cleanups.push(() => routes.stop());
 
     const observer = new win.MutationObserver((records) => {
+      if (!alive()) return; // orphaned by an extension update: stop reacting to the page
       routes.check(); // pushState without Navigation API support fires no event of its own
       if (!records.some(affectsPageText)) return;
       s.rehydrator.invalidate();
@@ -456,11 +771,16 @@ export function startController(deps: ControllerDeps): Controller {
 
   async function mount(): Promise<void> {
     const painter = deps.createPainter?.(doc) ?? new HighlightPainter(doc);
+    painter.setStyle?.(settings.highlightStyle);
     const rehydrator = new Rehydrator({
       painter,
       page: pageRef,
-      fetchHighlights: async (page) => (await call('page.highlights', page)).highlights,
-      report: (items) => call('highlight.reportResolution', { items }),
+      fetchHighlights: async (page) => (await rpc('page.highlights', page)).highlights,
+      report: (items) => rpc('highlight.reportResolution', { items }),
+      paintEnabled: () => settings.paintHighlights,
+      alive,
+      // A note written in the side panel reaches this tab with a load: an open popover follows it.
+      onLoaded: () => session?.ui?.refreshHighlightPopover((id) => rehydrator.viewOf(id)),
     });
     const s: Session = { painter, rehydrator, ui: null, cleanups: [], revealTimer: undefined };
     session = s;
@@ -491,9 +811,12 @@ export function startController(deps: ControllerDeps): Controller {
     const s = session;
     session = null;
     stored = null;
+    saved = null;
     toolbarVisible = false;
     pointerActive = false;
     uiPointer = false;
+    navigated = null;
+    navigating = false;
     if (!s) return;
     for (const cleanup of s.cleanups.splice(0)) {
       try {
@@ -519,10 +842,23 @@ export function startController(deps: ControllerDeps): Controller {
   // -------------------------------------------------------------------------------------------
 
   const stopSettings = deps.watchSettings((next) => {
+    const before = settings;
     settings = next;
     settingsChanged = true;
-    session?.ui?.applySettings(next);
+    const s = session;
+    s?.ui?.applySettings(next);
     if (!next.toolbarEnabled) hideSelection();
+    if (s && next.highlightStyle !== before.highlightStyle) {
+      s.painter.setStyle?.(next.highlightStyle);
+    }
+    if (s && next.paintHighlights !== before.paintHighlights) {
+      // Quiet mode on: take everything back from the page's registry now, the emphasis included.
+      if (s.revealTimer !== undefined) clearTimeout(s.revealTimer);
+      s.revealTimer = undefined;
+      navigating = false;
+      if (!next.paintHighlights) s.painter.setActive(null);
+      s.rehydrator.repaint();
+    }
     void applyPolicy();
   });
 
@@ -611,7 +947,8 @@ export function startController(deps: ControllerDeps): Controller {
       if (live && live.rangeCount === 1 && sameRange(live.getRangeAt(0), verdict.range)) {
         live.removeAllRanges();
       }
-      hideSelection();
+      // The save was awaited: only close the toolbar if it still belongs to the selection saved.
+      if (stored && sameRange(stored.range, verdict.range)) hideSelection();
       return result;
     },
 
@@ -632,30 +969,38 @@ export function startController(deps: ControllerDeps): Controller {
         range = s.rehydrator.rangeOf(id);
       }
       if (!range || session !== s) return { found: false };
-      scrollRangeToCenter(win, range);
-      s.painter.setActive(id);
-      if (s.revealTimer !== undefined) clearTimeout(s.revealTimer);
-      s.revealTimer = setTimeout(() => {
-        s.revealTimer = undefined;
-        s.painter.setActive(null);
-      }, REVEAL_FLASH_MS);
-      return { found: true };
+      // Resolved but hidden (display:none panel, closed <details>) is not "found on the page".
+      return { found: showHighlight(s, id, range) };
+    },
+
+    // Manifest command "focus-toolbar": the in-page Alt+Shift+T is Chrome's own accelerator.
+    'content.focusToolbar': async () => {
+      await ready;
+      return { focused: (alive() && session?.ui?.focusToolbar()) === true };
+    },
+
+    // Manifest commands "next-highlight" / "previous-highlight": the same code path as the in-page
+    // Alt+Shift+] / [ route, which stays as it was.
+    'content.stepHighlight': async ({ direction }) => {
+      await ready;
+      const s = session;
+      if (!s || !alive()) return { found: false };
+      return { found: stepHighlight(s, s.ui, direction === 'next' ? 1 : -1) };
     },
   });
 
-  return {
-    ready,
-    destroy(): void {
-      if (destroyed) return;
-      destroyed = true;
-      unmount();
-      for (const stop of [stopServing, stopSettings]) {
-        try {
-          stop();
-        } catch {
-          // the extension runtime is already gone
-        }
+  function destroy(): void {
+    if (destroyed) return;
+    destroyed = true;
+    unmount();
+    for (const stop of [stopServing, stopSettings]) {
+      try {
+        stop();
+      } catch {
+        // the extension runtime is already gone
       }
-    },
-  };
+    }
+  }
+
+  return { ready, destroy };
 }

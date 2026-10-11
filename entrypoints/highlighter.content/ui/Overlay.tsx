@@ -2,17 +2,16 @@ import { Component, type ReactNode, type SyntheticEvent } from 'react';
 import { useUi } from './context';
 import { HighlightPopover } from './Popover';
 import { useStore } from './store';
-import { Toasts } from './Toasts';
+import { Announcer, Toasts } from './Toasts';
 import { ToolbarUnit } from './Toolbar';
 
-const TEXT_ENTRY = 'input, textarea, select';
-
 /**
- * Pressing a control must not collapse the page selection or pull focus off the page. Text entry
- * is the exception: it needs the caret, and focusing it is a deliberate act.
+ * Pressing a control must not collapse the page selection or pull focus off the page. A native
+ * <select> is the exception: it cannot open without its mousedown. The overlay has no free-text
+ * fields (page scripts can observe keystrokes typed in the page); text is typed in the side panel.
  */
 function keepPageState(e: SyntheticEvent): void {
-  if (e.target instanceof Element && e.target.closest(TEXT_ENTRY)) return;
+  if (e.target instanceof Element && e.target.closest('select')) return;
   e.preventDefault();
 }
 
@@ -48,6 +47,8 @@ export function Overlay() {
     <Boundary resetKey={toolbar?.selection.text ?? popover?.highlight.id ?? null}>
       <div
         className="sv-root"
+        // Theme and density live here, inside the shadow root: the host element is page-visible.
+        data-theme={settings.theme}
         data-density={settings.density}
         onPointerDown={keepPageState}
         onMouseDown={keepPageState}
@@ -63,6 +64,7 @@ export function Overlay() {
           />
         ) : null}
         <Toasts />
+        <Announcer />
       </div>
     </Boundary>
   );

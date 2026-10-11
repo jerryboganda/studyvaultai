@@ -1,0 +1,123 @@
+/* Backup and restore screens. Uses the tokens of tokens.css / components.css only. */
+.bk-indent {
+  margin-inline-start: var(--sv-space-5);
+}
+/* A list of single-line checkboxes: rows 20px apart leave 16px targets too close (WCAG 2.5.8). */
+.bk-choices {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+}
+.bk-rule {
+  width: 100%;
+  border: 0;
+  border-top: 1px solid var(--sv-border);
+  margin: var(--sv-space-3) 0;
+}
+.bk-subhead {
+  margin: 0 0 var(--sv-space-1);
+  font-size: var(--sv-text-sm);
+}
+.bk-mono {
+  font-family: var(--sv-font-mono);
+  font-size: var(--sv-text-xs);
+}
+.bk-error {
+  color: var(--sv-danger);
+}
+.bk-fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.bk-progress {
+  width: 100%;
+  height: 10px;
+  accent-color: var(--sv-accent);
+}
+.bk-drop {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+  padding: var(--sv-space-4);
+  border: 2px dashed var(--sv-border-strong);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface);
+}
+.bk-drop--active {
+  border-color: var(--sv-accent);
+  background: var(--sv-info-bg);
+}
+.bk-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--sv-space-2) var(--sv-space-4);
+  margin: 0;
+}
+.bk-facts dt {
+  font-size: var(--sv-text-xs);
+  font-weight: 600;
+  color: var(--sv-text-muted);
+}
+.bk-facts dd {
+  margin: 0;
+}
+.bk-counts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--sv-space-1) var(--sv-space-4);
+}
+.bk-counts li {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--sv-space-2);
+  border-bottom: 1px solid var(--sv-border);
+  padding: 2px 0;
+}
+.bk-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-1);
+  list-style: disc;
+  padding-inline-start: var(--sv-space-5);
+}
+.bk-files {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  list-style: disc;
+  padding-inline-start: var(--sv-space-5);
+}
+.bk-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--sv-text-xs);
+}
+.bk-table th,
+.bk-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--sv-border);
+  text-align: start;
+}
+.bk-candidates {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+  max-height: 360px;
+  overflow: auto;
+  padding: var(--sv-space-2);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+}
+.bk-quote {
+  display: block;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.bk-meta {
+  display: block;
+}

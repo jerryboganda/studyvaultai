@@ -7,9 +7,9 @@ import {
 } from '@shared/constants';
 import { structuralPath } from './structuralPath';
 import {
-  HOST_ATTRIBUTE,
   buildTextStream,
   collapseWhitespace,
+  isSkippedElement,
   rangeToStreamOffsets,
   streamRangeToDomRange,
 } from './textStream';
@@ -38,10 +38,62 @@ function clip(text: string): string {
   return text.slice(0, splitsPair ? MAX_HEADING_CHARS - 1 : MAX_HEADING_CHARS);
 }
 
+/** Regions the user types into: a heading there is a draft or a field, never the page's section. */
+const EDITABLE = '[contenteditable]:not([contenteditable="false" i]),[role="textbox"]';
+/** Permalink decoration: pilcrow, section sign, hash, link emoji and zero-width characters only. */
+const GLYPH_ONLY = /^[\s#\u00B6\u00A7\u2761\u2693\u{1F517}\u200B-\u200D\u2060\uFEFF]*$/u;
+const ZERO_WIDTH = /[\u200B\u2060\uFEFF]/g;
+
+/** True when a heading cannot be this page's section title (stream skip list or editable region). */
+function isForeignHeading(el: Element): boolean {
+  for (let p: Element | null = el; p; p = p.parentElement) if (isSkippedElement(p)) return true;
+  if (el.closest(EDITABLE) || (el as HTMLElement).isContentEditable === true) return true;
+  try {
+    // Covers `-webkit-user-modify: read-write` applied by CSS rather than by an attribute.
+    const view = el.ownerDocument.defaultView;
+    return (view?.getComputedStyle(el).getPropertyValue('-webkit-user-modify') ?? '').startsWith(
+      'read-write',
+    );
+  } catch {
+    return false;
+  }
+}
+
+/** Skip-list elements, and links or aria-hidden spans that hold nothing but permalink glyphs. */
+function isHeadingDecoration(el: Element): boolean {
+  if (isSkippedElement(el)) return true;
+  const glyphHolder = el.localName === 'a' || el.getAttribute('aria-hidden') === 'true';
+  return glyphHolder && GLYPH_ONLY.test(el.textContent ?? '');
+}
+
+/**
+ * A heading's text by the stream's rules: skipped subtrees contribute nothing (never `textContent`,
+ * which would leak script, style and SVG text), whitespace collapses, permalink glyphs are dropped.
+ */
+function headingText(heading: Element): string {
+  let out = '';
+  let node: Node | null = heading.firstChild;
+  // Bounded like the reverse walk: a pathological heading must not stall the page.
+  for (let steps = 0; node && steps < MAX_HEADING_WALK; steps++) {
+    if (node.nodeType === 3) {
+      out += (node as Text).data;
+    } else if (node.nodeType === 1 && !isHeadingDecoration(node as Element) && node.firstChild) {
+      node = node.firstChild;
+      continue;
+    }
+    while (node && !node.nextSibling) {
+      node = node.parentNode;
+      if (node === heading) node = null;
+    }
+    node = node ? node.nextSibling : null;
+  }
+  return collapseWhitespace(out).replace(ZERO_WIDTH, '').trim();
+}
+
 /**
  * Text of the nearest heading that begins at or before `from` in document order. A heading that
- * contains `from` counts (it is an ancestor, so the reverse walk reaches it). Empty headings and the
- * StudyVault overlay are skipped.
+ * contains `from` counts (it is an ancestor, so the reverse walk reaches it). Empty headings, the
+ * StudyVault overlay and headings inside skipped or editable regions are not candidates.
  */
 function nearestHeadingText(from: Node): string | null {
   let steps = 0;
@@ -52,8 +104,8 @@ function nearestHeadingText(from: Node): string | null {
   ) {
     if (n.nodeType !== 1 || !HEADING_TAGS.has((n as Element).localName)) continue;
     const el = n as Element;
-    if (el.closest(`[${HOST_ATTRIBUTE}]`)) continue;
-    const text = collapseWhitespace(el.textContent ?? '').trim();
+    if (isForeignHeading(el)) continue;
+    const text = headingText(el);
     if (text) return clip(text);
   }
   return null;

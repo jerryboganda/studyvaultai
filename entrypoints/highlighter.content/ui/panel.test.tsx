@@ -6,10 +6,10 @@ import {
   BIOLOGY,
   INBOX,
   cleanupUi,
+  focusToolbar,
+  makeHighlight,
   mountUi,
-  pressFocusShortcut,
   rect,
-  typeInto,
 } from './testHarness';
 
 const SELECTION = { text: 'Mitochondria are the powerhouse', rect: rect(100, 200, 120, 20) };
@@ -30,82 +30,16 @@ async function openAdvanced(m: Mounted) {
 
 afterEach(cleanupUi);
 
-describe('note composer', () => {
-  it('opens a labelled dialog with the note field focused', async () => {
+describe('More options panel', () => {
+  it('opens a labelled dialog and moves focus into it', async () => {
     const m = mountUi();
-    show(m.ui);
-    await userEvent.setup().click(m.q.getByRole('button', { name: 'Add a note' }));
-    const dialog = m.q.getByRole('dialog', { name: 'Add a note' });
-    expect(m.shadow.activeElement).toBe(within(dialog).getByRole('textbox', { name: 'Note' }));
-    expect(m.q.getByRole('button', { name: 'Add a note' }).getAttribute('aria-expanded')).toBe(
+    const { dialog } = await openAdvanced(m);
+    expect(m.shadow.activeElement).toBe(dialog);
+    expect(m.q.getByRole('button', { name: 'More options' }).getAttribute('aria-expanded')).toBe(
       'true',
     );
   });
 
-  it('saves the note with the default kind into the last-used bank', async () => {
-    const m = mountUi();
-    show(m.ui);
-    const user = userEvent.setup();
-    await user.click(m.q.getByRole('button', { name: 'Add a note' }));
-    const dialog = m.q.getByRole('dialog');
-    typeInto(within(dialog).getByRole('textbox'), '  in my own words  ');
-    await user.click(within(dialog).getByRole('button', { name: 'Save' }));
-
-    expect(m.host.save).toHaveBeenCalledWith({
-      kind: 'essential',
-      color: 'amber',
-      bankId: null,
-      comment: 'in my own words',
-      priority: 3,
-    });
-    expect(await m.q.findByText('Saved to Inbox')).toBeTruthy();
-    expect(m.q.queryByRole('dialog')).toBeNull();
-    expect(m.host.dismissSelection).toHaveBeenCalled();
-  });
-
-  it('Ctrl+Enter in the field saves', async () => {
-    const m = mountUi();
-    show(m.ui);
-    await userEvent.setup().click(m.q.getByRole('button', { name: 'Add a note' }));
-    const field = m.q.getByRole('textbox');
-    typeInto(field, 'quick');
-    fireEvent.keyDown(field, { key: 'Enter', ctrlKey: true });
-    expect(m.host.save).toHaveBeenCalledWith(expect.objectContaining({ comment: 'quick' }));
-  });
-
-  it('keeps the dialog and typed text when saving fails, then saves on retry', async () => {
-    const m = mountUi();
-    m.host.save.mockRejectedValueOnce(
-      new StudyVaultError('storage_unavailable', 'Storage is asleep.'),
-    );
-    show(m.ui);
-    const user = userEvent.setup();
-    await user.click(m.q.getByRole('button', { name: 'Add a note' }));
-    const dialog = m.q.getByRole('dialog');
-    typeInto(within(dialog).getByRole('textbox'), 'precious');
-    await user.click(within(dialog).getByRole('button', { name: 'Save' }));
-
-    expect(await m.q.findByText('Storage is asleep.')).toBeTruthy();
-    expect((within(dialog).getByRole('textbox') as HTMLTextAreaElement).value).toBe('precious');
-    expect(m.q.getByRole('toolbar')).toBeTruthy();
-
-    await user.click(within(dialog).getByRole('button', { name: 'Save' }));
-    expect(await m.q.findByText('Saved to Inbox')).toBeTruthy();
-    expect(m.q.queryByRole('dialog')).toBeNull();
-  });
-
-  it('shows the selected text as plain text, never as markup', async () => {
-    const hostile = '<img src=x onerror="window.__svXss = 1"><script>window.__svXss = 2</script>';
-    const m = mountUi();
-    show(m.ui, hostile);
-    await userEvent.setup().click(m.q.getByRole('button', { name: 'Add a note' }));
-    expect(m.q.getByText(hostile)).toBeTruthy();
-    expect(m.container.querySelector('img, script')).toBeNull();
-    expect((window as unknown as { __svXss?: number }).__svXss).toBeUndefined();
-  });
-});
-
-describe('advanced panel', () => {
   it('lists banks, preselects the last-used one and saves every field', async () => {
     const m = mountUi();
     const { bank, d } = await openAdvanced(m);
@@ -119,17 +53,18 @@ describe('advanced panel', () => {
     fireEvent.change(bank, { target: { value: INBOX.id } });
     fireEvent.change(d.getByRole('combobox', { name: 'Type' }), { target: { value: 'formula' } });
     fireEvent.change(d.getByRole('combobox', { name: 'Priority' }), { target: { value: '5' } });
-    typeInto(d.getByRole('textbox', { name: 'Note' }), 'remember this');
     await userEvent.setup().click(d.getByRole('button', { name: 'Save' }));
 
     expect(m.host.save).toHaveBeenCalledWith({
       kind: 'formula',
       color: defaultSettings().palette.formula,
       bankId: INBOX.id,
-      comment: 'remember this',
+      comment: '',
       priority: 5,
     });
     expect(await m.q.findByText('Saved to Inbox')).toBeTruthy();
+    expect(m.q.queryByRole('dialog')).toBeNull();
+    expect(m.host.dismissSelection).toHaveBeenCalled();
   });
 
   it('falls back to the Inbox when the last-used bank no longer exists', async () => {
@@ -175,79 +110,172 @@ describe('advanced panel', () => {
     expect(m.host.listBanks).toHaveBeenCalledTimes(2);
   });
 
-  it('creates a bank inline, selects it and saves into it', async () => {
+  it('keeps the dialog and the choices when saving fails, then saves on retry', async () => {
     const m = mountUi();
-    const { d, bank } = await openAdvanced(m);
+    m.host.save.mockRejectedValueOnce(
+      new StudyVaultError('storage_unavailable', 'Storage is asleep.'),
+    );
+    const { d } = await openAdvanced(m);
+    fireEvent.change(d.getByRole('combobox', { name: 'Priority' }), { target: { value: '4' } });
     const user = userEvent.setup();
-    await user.click(d.getByRole('button', { name: 'New bank' }));
-    const name = d.getByRole('textbox', { name: 'Bank name' });
-    expect(m.shadow.activeElement).toBe(name);
-    typeInto(name, '  Pathology ');
-    await user.click(d.getByRole('button', { name: 'Create' }));
+    await user.click(d.getByRole('button', { name: 'Save' }));
 
-    expect(m.host.createBank).toHaveBeenCalledWith('Pathology');
-    await d.findByRole('option', { name: 'Pathology' });
-    expect(bank.value).toBe('bank-new00001');
-    expect(d.queryByRole('textbox', { name: 'Bank name' })).toBeNull();
+    expect(await m.q.findByText('Storage is asleep.')).toBeTruthy();
+    expect((d.getByRole('combobox', { name: 'Priority' }) as HTMLSelectElement).value).toBe('4');
+    expect(m.q.getByRole('toolbar')).toBeTruthy();
 
     await user.click(d.getByRole('button', { name: 'Save' }));
-    expect(m.host.save).toHaveBeenCalledWith(expect.objectContaining({ bankId: 'bank-new00001' }));
+    expect(await m.q.findByText('Saved to Inbox')).toBeTruthy();
+    expect(m.host.save).toHaveBeenLastCalledWith(expect.objectContaining({ priority: 4 }));
+    expect(m.q.queryByRole('dialog')).toBeNull();
   });
 
-  it('validates bank names before calling the host', async () => {
-    const m = mountUi();
-    const { d } = await openAdvanced(m);
-    const user = userEvent.setup();
-    await user.click(d.getByRole('button', { name: 'New bank' }));
-    const name = d.getByRole('textbox', { name: 'Bank name' });
-
-    await user.click(d.getByRole('button', { name: 'Create' }));
-    expect((await d.findByRole('alert')).textContent).toBe('Enter a name for the bank.');
-    expect(name.getAttribute('aria-invalid')).toBe('true');
-
-    typeInto(name, 'BIOLOGY');
-    expect(d.queryByRole('alert')).toBeNull(); // typing clears the message
-    await user.click(d.getByRole('button', { name: 'Create' }));
-    expect((await d.findByRole('alert')).textContent).toContain('already exists');
-
-    typeInto(name, 'x'.repeat(81));
-    await user.click(d.getByRole('button', { name: 'Create' }));
-    expect((await d.findByRole('alert')).textContent).toContain('80 characters');
-    expect(m.host.createBank).not.toHaveBeenCalled();
-  });
-
-  it('keeps the form and the name when the host rejects the bank', async () => {
-    const m = mountUi({
-      host: {
-        createBank: async () => {
-          throw new StudyVaultError('invalid_request', 'That name is reserved.');
-        },
-      },
-    });
-    const { d } = await openAdvanced(m);
-    const user = userEvent.setup();
-    await user.click(d.getByRole('button', { name: 'New bank' }));
-    typeInto(d.getByRole('textbox', { name: 'Bank name' }), 'Inbox 2');
-    await user.click(d.getByRole('button', { name: 'Create' }));
-    expect((await d.findByRole('alert')).textContent).toBe('That name is reserved.');
-    expect((d.getByRole('textbox', { name: 'Bank name' }) as HTMLInputElement).value).toBe(
-      'Inbox 2',
-    );
-  });
-
-  it('shows bank names as text, never as markup', async () => {
-    const hostile = '<img src=x onerror="window.__svXss = 3">';
+  it('shows bank names and the selected text as text, never as markup', async () => {
+    const hostileBank = '<img src=x onerror="window.__svXss = 3">';
+    const hostileQuote = '<script>window.__svXss = 2</script>';
     const m = mountUi({
       host: {
         listBanks: async () => ({
-          banks: [INBOX, { ...BIOLOGY, name: hostile }],
+          banks: [INBOX, { ...BIOLOGY, name: hostileBank }],
           lastBankId: BIOLOGY.id,
         }),
       },
     });
+    show(m.ui, hostileQuote);
+    await userEvent.setup().click(m.q.getByRole('button', { name: 'More options' }));
+    const bank = (await m.q.findByRole('combobox', { name: 'Bank' })) as HTMLSelectElement;
+    expect(bank.options[1]?.textContent).toBe(hostileBank);
+    expect(m.q.getByText(hostileQuote)).toBeTruthy();
+    expect(m.container.querySelector('img, script')).toBeNull();
+    expect((window as unknown as { __svXss?: number }).__svXss).toBeUndefined();
+  });
+});
+
+describe('New bank...', () => {
+  it('opens the side panel from the click instead of asking for a name in the page', async () => {
+    const m = mountUi();
+    const { d } = await openAdvanced(m);
+    const button = d.getByRole('button', { name: 'New bank...' });
+    expect(button.getAttribute('aria-describedby')).toBeTruthy();
+    expect(d.getByText('A new bank is named in the side panel.')).toBeTruthy();
+
+    act(() => {
+      fireEvent.click(button);
+    });
+    // Synchronously: chrome.sidePanel.open needs this click's user gesture.
+    expect(m.host.openInSidePanel).toHaveBeenCalledTimes(1);
+    expect(m.host.openInSidePanel).toHaveBeenCalledWith(null);
+    expect(d.queryByRole('textbox')).toBeNull();
+    expect(m.host.createBank).not.toHaveBeenCalled();
+    expect(m.q.getByRole('dialog', { name: 'Save with details' })).toBeTruthy();
+  });
+
+  it('reports a side panel that could not be opened', async () => {
+    const m = mountUi();
+    m.host.openInSidePanel.mockResolvedValueOnce(false);
+    const { d } = await openAdvanced(m);
+    await userEvent.setup().click(d.getByRole('button', { name: 'New bank...' }));
+    expect((await m.q.findByRole('alert')).textContent).toContain('Could not open the side panel');
+  });
+
+  it('does not repeat an error the host already reported', async () => {
+    const m = mountUi();
+    m.host.openInSidePanel.mockImplementationOnce(async () => {
+      m.ui.toast({ text: 'The side panel is not available here.', tone: 'error' });
+      return false;
+    });
+    const { d } = await openAdvanced(m);
+    await userEvent.setup().click(d.getByRole('button', { name: 'New bank...' }));
+    expect(await m.q.findByText('The side panel is not available here.')).toBeTruthy();
+    expect(m.q.queryByText(/Could not open the side panel/)).toBeNull();
+  });
+
+  it('shows a bank created in the side panel when the page window regains focus', async () => {
+    const m = mountUi();
+    const { d, bank } = await openAdvanced(m);
+    fireEvent.change(bank, { target: { value: INBOX.id } });
+    const created = { id: 'bank-new00001', name: 'Pathology', color: 'purple', isInbox: false };
+    m.host.listBanks.mockResolvedValueOnce({
+      banks: [INBOX, BIOLOGY, created],
+      lastBankId: created.id,
+    });
+
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    await d.findByRole('option', { name: 'Pathology' });
+    // The user's own choice is kept.
+    expect(bank.value).toBe(INBOX.id);
+  });
+
+  it('keeps the list when a refresh on focus fails', async () => {
+    const m = mountUi();
     const { bank } = await openAdvanced(m);
-    expect(bank.options[1]?.textContent).toBe(hostile);
-    expect(m.container.querySelector('img')).toBeNull();
+    m.host.listBanks.mockRejectedValueOnce(new Error('asleep'));
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(bank.isConnected).toBe(true);
+    expect(m.q.queryByText(/Could not load your banks/)).toBeNull();
+  });
+
+  it('stops listening for focus once the panel is closed', async () => {
+    const m = mountUi();
+    await openAdvanced(m);
+    await userEvent.setup().click(m.q.getByRole('button', { name: 'More options' }));
+    expect(m.q.queryByRole('dialog')).toBeNull();
+    m.host.listBanks.mockClear();
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(m.host.listBanks).not.toHaveBeenCalled();
+  });
+});
+
+describe('the page-side overlay has no free-text input', () => {
+  // Page scripts can observe keystrokes typed inside the page document (capture-phase window
+  // listeners), even through a closed shadow root. Text is typed in the side panel only.
+  const FREE_TEXT = 'input, textarea, [contenteditable], [role="textbox"], [role="searchbox"]';
+
+  const selectNames = (root: HTMLElement): string[] =>
+    Array.from(root.querySelectorAll('select'))
+      .map((el) => el.labels?.[0]?.textContent ?? '(unlabelled)')
+      .sort();
+
+  it('toolbar with the More panel open: only the bank, type and priority selects', async () => {
+    const m = mountUi();
+    await openAdvanced(m);
+    expect(m.container.querySelectorAll(FREE_TEXT)).toHaveLength(0);
+    expect(m.q.queryByRole('textbox')).toBeNull();
+    expect(selectNames(m.container)).toEqual(['Bank', 'Priority', 'Type']);
+  });
+
+  it('toolbar alone and after a Note save', async () => {
+    const m = mountUi();
+    show(m.ui);
+    expect(m.container.querySelectorAll(FREE_TEXT)).toHaveLength(0);
+    expect(m.container.querySelectorAll('select')).toHaveLength(0);
+    await userEvent.setup().click(m.q.getByRole('button', { name: /add a note/i }));
+    await m.q.findByText(/write your note in the side panel/);
+    expect(m.container.querySelectorAll(FREE_TEXT)).toHaveLength(0);
+  });
+
+  it('highlight popover, with and without a note: only the type and priority selects', () => {
+    const m = mountUi();
+    act(() => m.ui.showHighlightPopover(makeHighlight({ userComment: 'my note' }), rect()));
+    expect(m.container.querySelectorAll(FREE_TEXT)).toHaveLength(0);
+    expect(selectNames(m.container)).toEqual(['Priority', 'Type']);
+    act(() => m.ui.showHighlightPopover(makeHighlight({ userComment: '' }), rect()));
+    expect(m.container.querySelectorAll(FREE_TEXT)).toHaveLength(0);
+  });
+
+  it('toasts never hold a field', () => {
+    const m = mountUi();
+    act(() => {
+      m.ui.toast({ text: 'a', tone: 'info' });
+      m.ui.toast({ text: 'b', tone: 'error', action: { label: 'Retry', run: () => undefined } });
+    });
+    expect(m.container.querySelectorAll(FREE_TEXT)).toHaveLength(0);
   });
 });
 
@@ -255,19 +283,19 @@ describe('closing', () => {
   it('Escape closes only the panel and returns focus to the button that opened it', async () => {
     const m = mountUi();
     show(m.ui);
-    pressFocusShortcut();
+    focusToolbar(m.ui);
     const user = userEvent.setup();
-    await user.keyboard('{End}{ArrowLeft}');
-    const noteButton = m.q.getByRole('button', { name: 'Add a note' });
-    expect(m.shadow.activeElement).toBe(noteButton);
+    await user.keyboard('{End}');
+    const more = m.q.getByRole('button', { name: 'More options' });
+    expect(m.shadow.activeElement).toBe(more);
     await user.keyboard('{Enter}');
-    expect(m.q.getByRole('dialog')).toBeTruthy();
-    expect(m.shadow.activeElement?.tagName).toBe('TEXTAREA');
+    const dialog = m.q.getByRole('dialog');
+    expect(m.shadow.activeElement).toBe(dialog);
 
     await user.keyboard('{Escape}');
     expect(m.q.queryByRole('dialog')).toBeNull();
     expect(m.q.getByRole('toolbar')).toBeTruthy();
-    expect(m.shadow.activeElement).toBe(noteButton);
+    expect(m.shadow.activeElement).toBe(more);
     expect(m.host.dismissSelection).not.toHaveBeenCalled();
 
     await user.keyboard('{Escape}');
@@ -281,39 +309,46 @@ describe('closing', () => {
     document.body.append(page);
     page.focus();
     show(m.ui);
-    await userEvent.setup().click(m.q.getByRole('button', { name: 'Add a note' }));
-    expect(m.shadow.activeElement?.tagName).toBe('TEXTAREA');
+    await userEvent.setup().click(m.q.getByRole('button', { name: 'More options' }));
+    const dialog = m.q.getByRole('dialog');
+    expect(m.shadow.activeElement).toBe(dialog);
 
-    fireEvent.keyDown(m.q.getByRole('textbox'), { key: 'Escape' });
+    fireEvent.keyDown(dialog, { key: 'Escape' });
     expect(m.q.queryByRole('dialog')).toBeNull();
     expect(document.activeElement).toBe(page);
     expect(m.q.getByRole('toolbar')).toBeTruthy();
+  });
+
+  it('lists the panel controls in reading order, with no tabindex to reorder them', async () => {
+    const m = mountUi();
+    const { dialog } = await openAdvanced(m);
+    const tabbable = Array.from(dialog.querySelectorAll<HTMLElement>('select, button, [tabindex]'));
+    expect(tabbable.filter((el) => el !== dialog && el.hasAttribute('tabindex'))).toEqual([]);
+    expect(
+      tabbable.map((el) =>
+        el instanceof HTMLSelectElement ? (el.labels?.[0]?.textContent ?? '') : el.textContent,
+      ),
+    ).toEqual(['Bank', 'New bank...', 'Type', 'Priority', 'Save', 'Cancel']);
   });
 
   it('Cancel closes the panel and leaves the toolbar for another choice', async () => {
     const m = mountUi();
     show(m.ui);
     const user = userEvent.setup();
-    await user.click(m.q.getByRole('button', { name: 'Add a note' }));
+    await user.click(m.q.getByRole('button', { name: 'More options' }));
     await user.click(within(m.q.getByRole('dialog')).getByRole('button', { name: 'Cancel' }));
     expect(m.q.queryByRole('dialog')).toBeNull();
     expect(m.q.getByRole('toolbar')).toBeTruthy();
     expect(m.host.save).not.toHaveBeenCalled();
   });
 
-  it('Note and More toggle their own panel and switch between each other', async () => {
+  it('More toggles its own panel', async () => {
     const m = mountUi();
     show(m.ui);
     const user = userEvent.setup();
-    const note = m.q.getByRole('button', { name: 'Add a note' });
     const more = m.q.getByRole('button', { name: 'More options' });
-    await user.click(note);
-    typeInto(m.q.getByRole('textbox'), 'kept');
     await user.click(more);
-    const dialog = await m.q.findByRole('dialog', { name: 'Save with details' });
-    expect(
-      (within(dialog).getByRole('textbox', { name: 'Note' }) as HTMLTextAreaElement).value,
-    ).toBe('kept');
+    expect(m.q.getByRole('dialog', { name: 'Save with details' })).toBeTruthy();
     await user.click(more);
     expect(m.q.queryByRole('dialog')).toBeNull();
   });

@@ -119,6 +119,11 @@ export const SiteStatus = z.object({
   access: z.enum(['persistent', 'none']),
   /** A StudyVault content script is currently answering in this tab. */
   active: z.boolean(),
+  /**
+   * True only when Chrome currently grants all-sites access AND a registered match covers it. The
+   * popup must show this, not a stored setting that Chrome may have revoked behind our back.
+   */
+  allSites: z.boolean().default(false),
 });
 export type SiteStatus = z.infer<typeof SiteStatus>;
 
@@ -161,6 +166,16 @@ export const BackgroundRpc = {
     z.object({ tabId: z.number().int().min(0) }),
     z.object({ ok: z.literal(true) }),
   ),
+  /**
+   * From a content script's user click: open the side panel for the sender's tab. Free text (notes,
+   * bank names) is typed only in extension-origin surfaces, because keystrokes typed inside the page
+   * document are observable by page scripts. `focusHighlightId` asks the panel to scroll to that
+   * highlight and focus its note field (handed over via chrome.storage.session, PENDING_FOCUS_KEY).
+   */
+  'sidepanel.open': def(
+    z.object({ focusHighlightId: Id.nullable() }),
+    z.object({ opened: z.boolean() }),
+  ),
 } as const;
 export type BackgroundRpc = typeof BackgroundRpc;
 
@@ -201,6 +216,17 @@ export const TabRpc = {
   'content.refresh': def(z.object({}), z.object({ ok: z.literal(true) })),
   /** Scroll to and flash a highlight. found=false when it is not currently resolvable on the page. */
   'content.reveal': def(z.object({ id: Id }), z.object({ found: z.boolean() })),
+  /**
+   * Manifest command "focus-toolbar": move keyboard focus into the visible selection toolbar (or the
+   * actionable toast). focused=false when there is nothing to focus. A remappable manifest command
+   * replaces the in-page Alt+Shift+T, which collides with Chrome's own "focus toolbar" accelerator.
+   */
+  'content.focusToolbar': def(z.object({}), z.object({ focused: z.boolean() })),
+  /** Manifest commands "next-highlight" / "previous-highlight". found=false when none is visible. */
+  'content.stepHighlight': def(
+    z.object({ direction: z.enum(['next', 'previous']) }),
+    z.object({ found: z.boolean() }),
+  ),
 } as const;
 export type TabRpc = typeof TabRpc;
 

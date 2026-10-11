@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Shared canonical fixture</title>
+    <!-- Every route of this app declares "/" as its canonical (common in single-page apps). That names
+         the home page, not this route: identity must stay the visited URL. -->
+    <link rel="canonical" href="/" />
+  </head>
+  <body>
+    <main>
+      <h1>Shared canonical fixture</h1>
+      <p id="route"></p>
+      <p id="shared">The renal corpuscle filters plasma into the capsular space at the glomerulus.</p>
+    </main>
+    <script>
+      var n = new URLSearchParams(location.search).get('page') || '1';
+      document.getElementById('route').textContent =
+        'This is route ' + n + ' of the shared canonical fixture.';
+    </script>
+  </body>
+</html>

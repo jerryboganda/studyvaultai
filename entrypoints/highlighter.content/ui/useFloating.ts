@@ -1,5 +1,20 @@
-import { useLayoutEffect, useRef, useState, type RefObject } from 'react';
+import { useLayoutEffect, useRef, useState, type CSSProperties, type RefObject } from 'react';
 import { placeToolbar, type Placement, type Rect } from './placement';
+
+/**
+ * Inline style for a floating surface. Hidden until measured, so it never flashes at the origin
+ * (and, being hidden, cannot take focus yet: wait for a non-null placement before focusing it).
+ * Once placed it is also capped to the layout viewport.
+ */
+export function floatingStyle(placement: Placement | null): CSSProperties {
+  return placement
+    ? {
+        transform: `translate(${placement.x}px, ${placement.y}px)`,
+        maxWidth: placement.maxWidth,
+        maxHeight: placement.maxHeight,
+      }
+    : { visibility: 'hidden' };
+}
 
 /**
  * Measures `ref` and places it next to `anchor` before paint. Returns null until measured, so the
@@ -30,7 +45,12 @@ export function useFloating(
         },
       });
       setPlacement((prev) =>
-        prev && prev.x === next.x && prev.y === next.y && prev.placement === next.placement
+        prev &&
+        prev.x === next.x &&
+        prev.y === next.y &&
+        prev.placement === next.placement &&
+        prev.maxWidth === next.maxWidth &&
+        prev.maxHeight === next.maxHeight
           ? prev
           : next,
       );

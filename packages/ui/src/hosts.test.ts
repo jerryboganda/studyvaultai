@@ -5,9 +5,11 @@ import {
   hostOf,
   isAllSitesPattern,
   isPdfUrl,
+  isPlaceholderSourceUrl,
   normalizeDenyInput,
   patternHost,
   safeHref,
+  visibleSourceUrl,
 } from './hosts';
 
 describe('address helpers', () => {
@@ -29,6 +31,24 @@ describe('address helpers', () => {
     expect(safeHref('')).toBeUndefined();
   });
 
+  it('never treats the stand-in address of a source without one as an address', () => {
+    for (const placeholder of [
+      'https://studyvault.invalid/pdf/doc-00000001',
+      'https://studyvault.invalid/imported/0192f4c0/1',
+      'https://STUDYVAULT.invalid/x',
+    ]) {
+      expect(isPlaceholderSourceUrl(placeholder)).toBe(true);
+      expect(visibleSourceUrl(placeholder)).toBe('');
+      expect(safeHref(placeholder)).toBeUndefined();
+    }
+    for (const real of ['https://example.com/studyvault.invalid/', 'https://invalid/pdf/x']) {
+      expect(isPlaceholderSourceUrl(real)).toBe(false);
+      expect(visibleSourceUrl(real)).toBe(real);
+    }
+    expect(visibleSourceUrl(undefined)).toBe('');
+    expect(visibleSourceUrl(null)).toBe('');
+  });
+
   it('recognises PDF addresses by path, not by query', () => {
     expect(isPdfUrl('https://example.com/a/b.pdf')).toBe(true);
     expect(isPdfUrl('https://example.com/a/b.PDF?x=1')).toBe(true);
@@ -45,6 +65,17 @@ describe('denyEntriesFor', () => {
     expect(denyEntriesFor('notpaypal.com', list)).toEqual([]);
     expect(denyEntriesFor('google.com', list)).toEqual([]);
     expect(denyEntriesFor('MAIL.GOOGLE.COM', list)).toEqual(['mail.google.com']);
+  });
+
+  it('treats a trailing-dot FQDN as the same host', () => {
+    const list = ['paypal.com'];
+    expect(denyEntriesFor('paypal.com.', list)).toEqual(['paypal.com']);
+    expect(denyEntriesFor('www.paypal.com.', list)).toEqual(['paypal.com']);
+    expect(classifyAddress('https://www.paypal.com./pay', list)).toEqual({
+      kind: 'denied',
+      host: 'www.paypal.com.',
+      entries: ['paypal.com'],
+    });
   });
 });
 
@@ -82,6 +113,7 @@ describe('normalizeDenyInput', () => {
     ['*.example.com', 'example.com'],
     ['example.com.', 'example.com'],
     ['localhost', 'localhost'],
+    ['my_host.example.com', 'my_host.example.com'],
   ])('accepts %j', (input, host) => {
     expect(normalizeDenyInput(input)).toEqual({ host });
   });
@@ -97,5 +129,14 @@ describe('normalizeDenyInput', () => {
     'ftp://x.com',
   ])('rejects %j', (input) => {
     expect(normalizeDenyInput(input)).toHaveProperty('error');
+  });
+});
+
+describe('the package barrel', () => {
+  it('exports the source-address helpers next to the other address helpers', async () => {
+    const ui = await import('./index');
+    expect(ui.isPlaceholderSourceUrl('https://studyvault.invalid/pdf/doc-1')).toBe(true);
+    expect(ui.visibleSourceUrl('https://studyvault.invalid/pdf/doc-1')).toBe('');
+    expect(ui.visibleSourceUrl('https://example.org/a')).toBe('https://example.org/a');
   });
 });

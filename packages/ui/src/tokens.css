@@ -1,7 +1,9 @@
 /*
  * StudyVault design tokens (UX_DESIGN.md): precise, dense, editorial; neutral surfaces, one blue accent.
- * Used by extension pages (:root) and the in-page Shadow DOM UI (:host). Tokens only; no resets.
- * Dark mode follows the system unless data-theme="light"|"dark" is set on the root/host element.
+ * Used by extension pages (:root) and the in-page Shadow DOM UI (:host defaults, .sv-root overrides).
+ * Tokens only; no resets. Dark mode follows the system unless data-theme="light"|"dark" is set on
+ * <html> (extension pages) or on .sv-root, the container inside the overlay's shadow root. The
+ * overlay's host element is page-visible, so it never carries the theme.
  */
 :root,
 :host {
@@ -29,6 +31,8 @@
   --sv-surface: #f6f7f9;
   --sv-surface-raised: #ffffff;
   --sv-border: #d9dde3;
+  /* Boundary of a control that must be found by its edge (WCAG 1.4.11, >= 3:1). --sv-border is decorative. */
+  --sv-border-strong: #6b7280;
   --sv-text: #14171c;
   --sv-text-muted: #4b5563;
   --sv-accent: #2563eb;
@@ -36,7 +40,9 @@
   --sv-accent-text: #ffffff;
   --sv-danger: #b91c1c;
   --sv-success: #15803d;
+  /* Two-tone focus indicator: ring colour plus the halo painted between it and the control. */
   --sv-focus: #1d4ed8;
+  --sv-focus-halo: #ffffff;
   --sv-shadow: 0 6px 24px rgba(15, 23, 42, 0.18), 0 1px 3px rgba(15, 23, 42, 0.12);
 
   /* Highlight palette: translucent fills for text, solid for chips (mirrors COLOR_SWATCH in @shared). */
@@ -58,12 +64,13 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']),
-  :host(:not([data-theme='light'])) {
+  .sv-root:not([data-theme='light']) {
     color-scheme: dark;
     --sv-bg: #101318;
     --sv-surface: #181c23;
     --sv-surface-raised: #1f242d;
     --sv-border: #343b47;
+    --sv-border-strong: #7d8696;
     --sv-text: #eceff4;
     --sv-text-muted: #aab2bf;
     --sv-accent: #6ea0ff;
@@ -72,17 +79,19 @@
     --sv-danger: #f87171;
     --sv-success: #4ade80;
     --sv-focus: #8fb4ff;
+    --sv-focus-halo: #101318;
     --sv-shadow: 0 6px 24px rgba(0, 0, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.4);
   }
 }
 
 :root[data-theme='dark'],
-:host([data-theme='dark']) {
+.sv-root[data-theme='dark'] {
   color-scheme: dark;
   --sv-bg: #101318;
   --sv-surface: #181c23;
   --sv-surface-raised: #1f242d;
   --sv-border: #343b47;
+  --sv-border-strong: #7d8696;
   --sv-text: #eceff4;
   --sv-text-muted: #aab2bf;
   --sv-accent: #6ea0ff;
@@ -91,13 +100,24 @@
   --sv-danger: #f87171;
   --sv-success: #4ade80;
   --sv-focus: #8fb4ff;
+  --sv-focus-halo: #101318;
   --sv-shadow: 0 6px 24px rgba(0, 0, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.4);
 }
 
+/*
+ * Must repeat the selectors of the dark blocks above: those have higher specificity than a bare
+ * :root/:host, so a bare rule here would lose in dark mode and leave the muted text and soft
+ * borders unchanged exactly when more contrast was asked for.
+ */
 @media (prefers-contrast: more) {
   :root,
-  :host {
+  :root:not([data-theme='light']),
+  :root[data-theme='dark'],
+  :host,
+  .sv-root:not([data-theme='light']),
+  .sv-root[data-theme='dark'] {
     --sv-border: currentColor;
+    --sv-border-strong: currentColor;
     --sv-text-muted: var(--sv-text);
   }
 }

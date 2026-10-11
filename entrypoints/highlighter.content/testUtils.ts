@@ -67,6 +67,34 @@ export function clearSelection(): void {
   document.getSelection()?.removeAllRanges();
 }
 
+/**
+ * jsdom's style engine drops properties it does not know, so `-webkit-user-modify` (a CSS-only
+ * editing surface) never shows up in getComputedStyle. This makes it answer from a
+ * `data-user-modify="read-write"` attribute on the element or on its nearest ancestor that has one
+ * (the property is inherited), "read-only" otherwise. Returns the function that undoes it.
+ */
+export function emulateUserModify(): () => void {
+  const original = window.getComputedStyle;
+  window.getComputedStyle = ((el: Element, pseudo?: string | null) => {
+    const style = original.call(window, el, pseudo);
+    return new Proxy(style, {
+      get(target, prop) {
+        if (prop === 'getPropertyValue') {
+          return (name: string): string =>
+            name === '-webkit-user-modify'
+              ? (el.closest('[data-user-modify]')?.getAttribute('data-user-modify') ?? 'read-only')
+              : target.getPropertyValue(name);
+        }
+        const value: unknown = Reflect.get(target, prop);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+  }) as typeof window.getComputedStyle;
+  return () => {
+    window.getComputedStyle = original;
+  };
+}
+
 let idCounter = 0;
 export const newId = (prefix = 'hl'): string => `${prefix}-${String(++idCounter).padStart(8, '0')}`;
 
@@ -108,6 +136,9 @@ export class FakePainter implements PainterLike {
   clearCalls = 0;
   destroyed = false;
   active: string | null = null;
+  /** Every id (or null) setActive() was called with, in order. */
+  activeCalls: Array<string | null> = [];
+  style: 'auto' | 'normal' | 'strong' | null = null;
   hit: string | null = null;
 
   paint(entries: readonly PaintEntry[]): void {
@@ -116,6 +147,10 @@ export class FakePainter implements PainterLike {
   }
   setActive(id: string | null): void {
     this.active = id;
+    this.activeCalls.push(id);
+  }
+  setStyle(style: 'auto' | 'normal' | 'strong'): void {
+    this.style = style;
   }
   hitTest(): string | null {
     return this.hit;
@@ -146,8 +181,14 @@ export class FakeUi implements CaptureUi {
   toolbar: SelectionInfo[] = [];
   hidden = 0;
   popovers: Array<{ view: HighlightView; anchor: DOMRect }> = [];
+  /** What the last-shown popover would display after each refreshHighlightPopover(). */
+  refreshed: HighlightView[] = [];
   toasts: Notice[] = [];
+  announcements: string[] = [];
   applied: Settings[] = [];
+  focusRequests = 0;
+  /** What focusToolbar() answers (nothing to focus when false). */
+  canFocus = false;
   destroyed = false;
 
   showToolbar(selection: SelectionInfo): void {
@@ -159,11 +200,23 @@ export class FakeUi implements CaptureUi {
   showHighlightPopover(view: HighlightView, anchor: DOMRect): void {
     this.popovers.push({ view, anchor });
   }
+  refreshHighlightPopover(latest: (id: string) => HighlightView | undefined): void {
+    const open = this.popovers.at(-1);
+    const next = open && latest(open.view.id);
+    if (next) this.refreshed.push(next);
+  }
   toast(notice: Notice): void {
     this.toasts.push(notice);
   }
   applySettings(settings: Settings): void {
     this.applied.push(settings);
+  }
+  focusToolbar(): boolean {
+    this.focusRequests += 1;
+    return this.canFocus;
+  }
+  announce(text: string): void {
+    this.announcements.push(text);
   }
   destroy(): void {
     this.destroyed = true;
@@ -184,6 +237,14 @@ export class FakeBackground {
   /** Requests of a gated type wait here before the worker handles them. */
   gates = new Map<string, Promise<void>>();
   epochListeners = new Set<() => void>();
+  /** What `sidepanel.open` answers (the worker could not open the panel when false). */
+  sidePanelOpens = true;
+  /**
+   * Does a report that only changes resolution rows signal a data change? Not in the current
+   * storage contract (resolution has its own signal; viewers do not re-fetch the page list for it).
+   * True reproduces the older contract, where every viewer re-fetched after every report.
+   */
+  bumpOnResolution = false;
   banks: BankLite[] = [{ id: 'inbox-default', name: 'Inbox', color: 'amber', isInbox: true }];
 
   callsOf(type: string): Call[] {
@@ -286,7 +347,7 @@ export class FakeBackground {
             resolveConfidence: item.confidence,
           });
         }
-        if (changed) this.bump(); // same rule as the real repo: only a real change notifies
+        if (changed && this.bumpOnResolution) this.bump();
         return { updated };
       }
       case 'highlight.delete': {
@@ -316,6 +377,8 @@ export class FakeBackground {
         this.bump();
         return next;
       }
+      case 'sidepanel.open':
+        return { opened: this.sidePanelOpens };
       case 'banks.list':
         return { banks: this.banks, lastBankId: null };
       case 'bank.create': {

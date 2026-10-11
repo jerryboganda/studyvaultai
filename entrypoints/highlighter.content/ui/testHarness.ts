@@ -1,6 +1,6 @@
 /** Test-only helpers for the overlay (never imported by production code). */
 import { vi } from 'vitest';
-import { act, createEvent, fireEvent, within } from '@testing-library/react';
+import { act, within } from '@testing-library/react';
 import {
   defaultSettings,
   type AnchorSet,
@@ -94,6 +94,7 @@ export function makeHost(settings: Settings = defaultSettings(), over: Partial<C
     remove: vi.fn(async () => undefined),
     restore: vi.fn(async () => makeHighlight()),
     dismissSelection: vi.fn(),
+    openInSidePanel: vi.fn(async (_highlightId: string | null) => true),
     ...over,
   };
   return host as unknown as MockHost;
@@ -128,24 +129,13 @@ export function cleanupUi(): void {
 }
 
 /**
- * Sets a text field the way typing would, as far as React can tell. user-event's own typing cannot
- * be used inside a shadow root: it prepares elements from a document-level focus listener, which
- * sees the retargeted shadow host, so React's value tracker misses the change.
+ * What the page logic does on the `focus-toolbar` command: ask the overlay to take keyboard focus.
+ * The overlay listens for no key of its own, so there is no key to press here.
  */
-export function typeInto(field: HTMLElement, value: string): void {
-  fireEvent.change(field, { target: { value } });
-}
-
-/** Alt+Shift+T on the document, as a user would press it. Returns the event for default-prevented checks. */
-export function pressFocusShortcut(): KeyboardEvent {
-  const event = createEvent.keyDown(document.body, {
-    key: 'T',
-    code: 'KeyT',
-    altKey: true,
-    shiftKey: true,
-  });
+export function focusToolbar(ui: CaptureUi): boolean {
+  let focused = false;
   act(() => {
-    document.body.dispatchEvent(event);
+    focused = ui.focusToolbar();
   });
-  return event as KeyboardEvent;
+  return focused;
 }

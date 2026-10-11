@@ -12,11 +12,46 @@ import {
 type RpcMap = Record<string, { payload: z.ZodType; response: z.ZodType }>;
 type Sender = Browser.runtime.MessageSender;
 
+/**
+ * Nothing in this transport may wait forever: an extension page that never gets an answer spins
+ * for ever, and chrome.runtime.sendMessage has no timeout of its own.
+ * A handler that has not answered by HANDLER_TIMEOUT_MS gets an error reply from the worker; a
+ * caller gives up after CALL_TIMEOUT_MS, which is longer so the worker's own verdict wins.
+ */
+export const HANDLER_TIMEOUT_MS = 15_000;
+export const CALL_TIMEOUT_MS = 20_000;
+
+export interface CallOptions {
+  /** Give up waiting after this long (default CALL_TIMEOUT_MS). */
+  timeoutMs?: number;
+}
+
+/**
+ * Run `work`, rejecting with `onTimeout()` when it has not settled within `ms`. A synchronous
+ * throw from `work` is a rejection too. The slow work itself is not cancelled.
+ */
+async function settleWithin<T>(
+  work: () => Promise<T> | T,
+  ms: number,
+  onTimeout: () => Error,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(onTimeout()), ms);
+  });
+  try {
+    return await Promise.race([new Promise<T>((resolve) => resolve(work())), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function call<M extends RpcMap, K extends keyof M & string>(
   map: M,
   type: K,
   payload: z.input<M[K]['payload']>,
   send: (message: unknown) => Promise<unknown>,
+  timeoutMs: number,
 ): Promise<z.output<M[K]['response']>> {
   const def = map[type]!;
   const parsedPayload = def.payload.safeParse(payload);
@@ -28,9 +63,18 @@ async function call<M extends RpcMap, K extends keyof M & string>(
   }
   let raw: unknown;
   try {
-    raw = await send({ v: 1, type, payload: parsedPayload.data });
+    raw = await settleWithin(
+      () => send({ v: 1, type, payload: parsedPayload.data }),
+      timeoutMs,
+      () =>
+        new StudyVaultError(
+          'no_receiver',
+          `No answer to ${type} within ${Math.round(timeoutMs / 1000)} seconds.`,
+        ),
+    );
   } catch (err) {
-    // No receiver (restricted page, content script not injected) or the worker failed to start.
+    // No receiver (restricted page, content script not injected), the worker failed to start, or
+    // nobody answered in time.
     throw new StudyVaultError('no_receiver', err instanceof Error ? err.message : String(err));
   }
   const envelope = Envelope.safeParse(raw);
@@ -47,8 +91,15 @@ async function call<M extends RpcMap, K extends keyof M & string>(
 export function callBackground<K extends keyof BackgroundRpc & string>(
   type: K,
   payload: z.input<BackgroundRpc[K]['payload']>,
+  options: CallOptions = {},
 ): Promise<z.output<BackgroundRpc[K]['response']>> {
-  return call(BackgroundRpc, type, payload, (m) => browser.runtime.sendMessage(m));
+  return call(
+    BackgroundRpc,
+    type,
+    payload,
+    (m) => browser.runtime.sendMessage(m),
+    options.timeoutMs ?? CALL_TIMEOUT_MS,
+  );
 }
 
 /** Service worker / extension page -> content script in `tabId`. */
@@ -56,8 +107,15 @@ export function callTab<K extends keyof TabRpc & string>(
   tabId: number,
   type: K,
   payload: z.input<TabRpc[K]['payload']>,
+  options: CallOptions = {},
 ): Promise<z.output<TabRpc[K]['response']>> {
-  return call(TabRpc, type, payload, (m) => browser.tabs.sendMessage(tabId, m));
+  return call(
+    TabRpc,
+    type,
+    payload,
+    (m) => browser.tabs.sendMessage(tabId, m),
+    options.timeoutMs ?? CALL_TIMEOUT_MS,
+  );
 }
 
 export type Handlers<M extends RpcMap> = {
@@ -74,10 +132,16 @@ function toError(err: unknown): { code: ErrorCode; message: string } {
 
 /**
  * Register handlers for one RPC map. Messages of other maps (or foreign messages) are ignored so
- * several receivers can coexist. Senders from other extensions are rejected.
+ * several receivers can coexist. Senders from other extensions are rejected. Every accepted
+ * request is answered: a handler that throws (even synchronously) or does not settle within
+ * `timeoutMs` produces an error reply instead of leaving the caller waiting.
  * Returns an unsubscribe function.
  */
-export function serveRpc<M extends RpcMap>(map: M, handlers: Handlers<M>): () => void {
+export function serveRpc<M extends RpcMap>(
+  map: M,
+  handlers: Handlers<M>,
+  { timeoutMs = HANDLER_TIMEOUT_MS }: { timeoutMs?: number } = {},
+): () => void {
   const listener = (message: unknown, sender: Sender, sendResponse: (r: unknown) => void) => {
     const wire = WireMessage.safeParse(message);
     if (!wire.success || !Object.hasOwn(map, wire.data.type)) return undefined;
@@ -99,7 +163,15 @@ export function serveRpc<M extends RpcMap>(map: M, handlers: Handlers<M>): () =>
       });
       return undefined;
     }
-    handler(payload.data as never, sender).then(
+    settleWithin(
+      () => handler(payload.data as never, sender),
+      timeoutMs,
+      () =>
+        new StudyVaultError(
+          'internal',
+          `The background worker did not finish ${type} within ${Math.round(timeoutMs / 1000)} seconds. Try again; if it keeps happening, reload the extension.`,
+        ),
+    ).then(
       (data) => sendResponse({ ok: true, data }),
       (err: unknown) => sendResponse({ ok: false, error: toError(err) }),
     );

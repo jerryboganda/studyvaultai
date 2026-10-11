@@ -141,6 +141,27 @@ describe('refresh: what gets painted', () => {
   });
 });
 
+describe('onLoaded', () => {
+  it('runs after each load that replaced the views, not after a failed one', async () => {
+    setBody('<p>Alpha beta gamma delta epsilon zeta eta theta.</p>');
+    const h = storedHighlight('beta gamma delta');
+    const notes: Array<string | undefined> = [];
+    const r = rig([h], {
+      onLoaded: () => notes.push(r.rehydrator.viewOf(h.id)?.userComment),
+    });
+    await r.rehydrator.refresh();
+
+    // A note typed in the side panel: the next load has the view with it, already readable.
+    r.rows = [{ ...h, userComment: 'written in the side panel' }];
+    await r.rehydrator.refresh();
+    expect(notes).toEqual(['', 'written in the side panel']);
+
+    r.fetch.mockRejectedValueOnce(new Error('Extension context invalidated'));
+    await r.rehydrator.refresh();
+    expect(notes).toHaveLength(2);
+  });
+});
+
 describe('resolution reports', () => {
   it('reports resolved at once and unresolved only after the page has settled', async () => {
     setBody(
@@ -256,41 +277,115 @@ describe('dynamic pages', () => {
     expect(r.painter.ids).toEqual([h.id]);
   });
 
-  it('stops re-resolving after 8 attempts until the route changes', async () => {
+  it('spaces passes for unpainted highlights: a burst of calls costs one stream, not one each', async () => {
     setBody('<p>Lazy loaded section about enzymes and catalysis.</p>');
     const h = storedHighlight('section about enzymes and catalysis');
     setBody('<p>Nothing here.</p>');
 
-    const r = rig([h], { retry: new RetryBudget(8, 30_000) });
+    const r = rig([h], { retry: new RetryBudget(1_000, 20) });
     await r.rehydrator.refresh();
     const base = r.streams.built;
 
     for (let i = 0; i < 20; i++) r.rehydrator.retryPass();
-    expect(r.streams.built - base).toBe(8);
-
-    // The content arrives too late for this navigation...
-    setBody('<p>Lazy loaded section about enzymes and catalysis.</p>');
-    r.rehydrator.retryPass();
-    expect(r.painter.ids).toEqual([]);
-
-    // ...but a route change starts a fresh budget (and a fresh fetch).
-    await r.rehydrator.onRouteChange();
-    expect(r.painter.ids).toEqual([h.id]);
+    expect(r.streams.built - base).toBe(1);
   });
 
-  it('stops re-resolving once 30 s have passed', async () => {
+  it('a refused pass is deferred to when it is due, so text that arrives right after a pass is not lost', async () => {
     setBody('<p>Lazy loaded section about enzymes and catalysis.</p>');
     const h = storedHighlight('section about enzymes and catalysis');
     setBody('<p>Nothing here.</p>');
-    const r = rig([h]);
+    const r = rig([h], { retry: new RetryBudget(1_000, 20) });
+    await r.rehydrator.refresh();
+
+    r.rehydrator.retryPass(); // a pass finds nothing and starts the spacing
+    setBody('<p>Lazy loaded section about enzymes and catalysis.</p>');
+    await vi.advanceTimersByTimeAsync(300);
+    r.rehydrator.retryPass(); // the mutation burst's debounce fires: too soon, refused
+    expect(r.painter.ids).toEqual([]);
+
+    // No further mutation ever comes. The deferred pass still runs, once, when it is due.
+    const built = r.streams.built;
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(r.painter.ids).toEqual([h.id]);
+    expect(r.streams.built).toBe(built + 1);
+  });
+
+  it('keeps looking for late text for as long as the page lives, at a bounded rate', async () => {
+    setBody('<p>Lazy loaded section about enzymes and catalysis.</p>');
+    const h = storedHighlight('section about enzymes and catalysis');
+    setBody('<p>Nothing here.</p>');
+    const r = rig([h], { retry: new RetryBudget(1_000, 20) });
     await r.rehydrator.refresh();
     const base = r.streams.built;
 
-    await vi.advanceTimersByTimeAsync(31_000);
+    // 10 minutes of a page that mutates constantly: a pass is attempted on every mutation burst.
+    for (let s = 0; s < 600; s++) {
+      r.rehydrator.retryPass();
+      r.rehydrator.retryPass();
+      await vi.advanceTimersByTimeAsync(1_000);
+    }
+    expect(r.streams.built - base).toBeLessThanOrEqual(601); // <= 1 per second, however often asked
+    expect(r.streams.built - base).toBeGreaterThan(500);
+
     setBody('<p>Lazy loaded section about enzymes and catalysis.</p>');
     r.rehydrator.retryPass();
-    expect(r.streams.built).toBe(base);
-    expect(r.painter.ids).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(r.painter.ids).toEqual([h.id]);
+  });
+
+  it('charges the budget for what a pass really cost (a heavy page is retried less often)', async () => {
+    setBody('<p>Lazy loaded section about enzymes and catalysis.</p>');
+    const h = storedHighlight('section about enzymes and catalysis');
+    setBody('<p>Nothing here.</p>');
+    let clock = 0;
+    const r = rig([h], {
+      retry: new RetryBudget(1_000, 20, () => clock),
+      buildStream: (): TextStream => {
+        clock += 100; // building and searching this page costs 100 ms
+        return buildTextStream();
+      },
+    });
+    await r.rehydrator.refresh();
+    const base = clock;
+    r.rehydrator.retryPass();
+    expect(clock - base).toBe(100);
+
+    clock += 1_999; // 1 s would do for a cheap page; this one asked for 2 s (20 x 100 ms)
+    r.rehydrator.retryPass();
+    expect(clock - base).toBe(100 + 1_999);
+    clock += 1;
+    r.rehydrator.retryPass();
+    expect(clock - base).toBe(100 + 2_000 + 100);
+  });
+
+  it('a route change starts over: the next pass is due at once and a deferred one is dropped', async () => {
+    setBody('<p>Lazy loaded section about enzymes and catalysis.</p>');
+    const h = storedHighlight('section about enzymes and catalysis');
+    setBody('<p>Nothing here.</p>');
+    const r = rig([h], { retry: new RetryBudget(1_000, 20) });
+    await r.rehydrator.refresh();
+    r.rehydrator.retryPass();
+    r.rehydrator.retryPass(); // refused: arms the deferred pass
+
+    r.rows = [];
+    await r.rehydrator.onRouteChange();
+    const built = r.streams.built;
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(r.streams.built).toBe(built);
+  });
+
+  it('destroy cancels a deferred pass', async () => {
+    setBody('<p>Lazy loaded section about enzymes and catalysis.</p>');
+    const h = storedHighlight('section about enzymes and catalysis');
+    setBody('<p>Nothing here.</p>');
+    const r = rig([h], { retry: new RetryBudget(1_000, 20) });
+    await r.rehydrator.refresh();
+    r.rehydrator.retryPass();
+    r.rehydrator.retryPass();
+    r.rehydrator.destroy();
+    const built = r.streams.built;
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(r.streams.built).toBe(built);
   });
 
   it('does no work for a mutation when everything is painted and attached', async () => {
@@ -426,6 +521,7 @@ describe('local edits', () => {
     const r = rig([]);
     await r.rehydrator.refresh();
     const generation = r.rehydrator.generation;
+    r.page.current = { url: 'https://example.com/b', canonicalUrl: null };
     await r.rehydrator.onRouteChange();
 
     r.rehydrator.upsert(storedHighlight('beta gamma delta'), { generation });
@@ -469,5 +565,359 @@ describe('destroy', () => {
     expect(r.report).not.toHaveBeenCalled();
     await r.rehydrator.refresh();
     expect(r.fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a failed load is not the end of the page', () => {
+  const TEXT = '<p>Alpha beta gamma delta epsilon zeta eta theta.</p>';
+
+  it('retries after 1 s, 2 s, 4 s ... and paints as soon as the worker answers', async () => {
+    setBody(TEXT);
+    const h = storedHighlight('beta gamma delta');
+    const r = rig([h]);
+    r.fetch
+      .mockRejectedValueOnce(new Error('worker asleep'))
+      .mockRejectedValueOnce(new Error('worker asleep'));
+
+    await r.rehydrator.refresh(); // returns after the first attempt: the caller is not held up
+    expect(r.fetch).toHaveBeenCalledTimes(1);
+    expect(r.painter.ids).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(999);
+    expect(r.fetch).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1); // 1 s: second attempt, fails again
+    expect(r.fetch).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(r.fetch).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1); // 2 s later: third attempt succeeds
+    await flushPromises();
+    expect(r.fetch).toHaveBeenCalledTimes(3);
+    expect(r.painter.ids).toEqual([h.id]);
+
+    await vi.advanceTimersByTimeAsync(120_000); // success ends it
+    expect(r.fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('gives up after five retries (1 + 2 + 4 + 8 + 16 s) and stays quiet', async () => {
+    setBody(TEXT);
+    const r = rig([storedHighlight('beta gamma delta')]);
+    r.fetch.mockRejectedValue(new Error('worker gone'));
+    await r.rehydrator.refresh();
+
+    await vi.advanceTimersByTimeAsync(1_000 + 2_000 + 4_000 + 8_000 + 16_000);
+    expect(r.fetch).toHaveBeenCalledTimes(6);
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(r.fetch).toHaveBeenCalledTimes(6);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a caller with a reason to look again (data change, tab visible) starts a fresh backoff', async () => {
+    setBody(TEXT);
+    const h = storedHighlight('beta gamma delta');
+    const r = rig([h]);
+    r.fetch.mockRejectedValue(new Error('worker gone'));
+    await r.rehydrator.refresh();
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(r.fetch).toHaveBeenCalledTimes(6);
+
+    r.fetch.mockReset();
+    r.fetch.mockResolvedValue([h]);
+    await r.rehydrator.refresh();
+    expect(r.painter.ids).toEqual([h.id]);
+  });
+
+  it('a route change cancels the pending retry of the old page', async () => {
+    setBody(TEXT);
+    const r = rig([storedHighlight('beta gamma delta')]);
+    r.fetch.mockRejectedValueOnce(new Error('worker asleep'));
+    await r.rehydrator.refresh();
+    r.page.current = { url: 'https://example.com/b', canonicalUrl: null };
+    r.rows = [];
+    r.rehydrator.routeChanged();
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(r.fetch).toHaveBeenCalledTimes(1); // nothing was fetched for the route nobody loaded
+  });
+
+  it('destroy cancels the pending retry', async () => {
+    setBody(TEXT);
+    const r = rig([storedHighlight('beta gamma delta')]);
+    r.fetch.mockRejectedValueOnce(new Error('worker asleep'));
+    await r.rehydrator.refresh();
+    r.rehydrator.destroy();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(r.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps what is painted and does not clear it while retrying', async () => {
+    setBody(TEXT);
+    const h = storedHighlight('beta gamma delta');
+    const r = rig([h]);
+    await r.rehydrator.refresh();
+    r.fetch.mockRejectedValueOnce(new Error('worker asleep'));
+    await r.rehydrator.refresh();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flushPromises();
+    expect(r.painter.ids).toEqual([h.id]);
+    expect(r.painter.clearCalls).toBe(0);
+  });
+});
+
+describe('siblings: text another highlight owns is never taken over', () => {
+  const NEIGHBOUR = 'The daily dose for adults is five tablets taken after food';
+  const LOST = 'The daily dose for adults is five tablets taken before food';
+
+  /** The first paragraph (LOST) is gone and the neighbour has moved up into its place. */
+  function pageWithLostPassage() {
+    setBody(`<p>${LOST}.</p><p>${NEIGHBOUR}.</p>`);
+    const neighbour = storedHighlight(NEIGHBOUR);
+    const lost = storedHighlight(LOST);
+    setBody(`<p>${NEIGHBOUR}.</p>`);
+    return { neighbour, lost };
+  }
+
+  it('a retry pass of the lost passage alone does not bind it onto the painted neighbour', async () => {
+    const { neighbour, lost } = pageWithLostPassage();
+    const r = rig([neighbour, lost]);
+    await r.rehydrator.refresh();
+    expect(r.painter.ids).toEqual([neighbour.id]); // the whole batch protects each other
+    expect(r.rehydrator.counts().orphaned).toBe(1);
+
+    // A mutation burst: the pass resolves the unpainted one only. Without the neighbour among the
+    // siblings its stored text would be a free, 90 % similar place to land.
+    r.rehydrator.retryPass();
+    expect(r.painter.ids).toEqual([neighbour.id]);
+    expect(r.rehydrator.counts()).toMatchObject({ resolved: 1, changed: 0, orphaned: 1 });
+    expect(r.rehydrator.rangeOf(lost.id)).toBeNull();
+  });
+
+  it('a saved or restored highlight whose own text is gone does not land on a neighbour either', async () => {
+    const { neighbour, lost } = pageWithLostPassage();
+    const r = rig([neighbour]);
+    await r.rehydrator.refresh();
+    expect(r.painter.ids).toEqual([neighbour.id]);
+
+    r.rehydrator.upsert(lost); // e.g. restore of a deleted highlight
+    expect(r.painter.ids).toEqual([neighbour.id]);
+    expect(r.rehydrator.counts().orphaned).toBe(1);
+
+    r.rehydrator.upsert({ ...lost, id: 'hl-restored-2' }, { stream: buildTextStream() });
+    expect(r.painter.ids).toEqual([neighbour.id]);
+  });
+
+  it('a load that keeps a locally edited neighbour protects it from the fetched ones', async () => {
+    const { neighbour, lost } = pageWithLostPassage();
+    const r = rig([neighbour, lost]);
+    let release!: (rows: HighlightView[]) => void;
+    r.fetch.mockImplementationOnce(
+      () => new Promise<HighlightView[]>((resolve) => (release = resolve)),
+    );
+    const loading = r.rehydrator.refresh();
+    await flushPromises();
+
+    r.rehydrator.upsert({ ...neighbour, color: 'green' }); // edited while the request is out
+    release([neighbour, lost]);
+    await loading;
+
+    expect(r.painter.ids).toEqual([neighbour.id]);
+    expect(r.rehydrator.counts()).toMatchObject({ resolved: 1, orphaned: 1 });
+  });
+
+  it('still binds an edited passage that no one else owns', async () => {
+    setBody('<p>The daily dose for adults is five tablets taken before food each day.</p>');
+    const edited = storedHighlight('The daily dose for adults is five tablets taken before food');
+    setBody('<p>The daily dose for adults is five tablets taken before meals each day.</p>');
+    const other = storedHighlight('each day');
+    const r = rig([edited, other]);
+    await r.rehydrator.refresh();
+    expect(r.rehydrator.counts().changed).toBe(1);
+    r.rehydrator.retryPass();
+    expect(r.painter.ids).toEqual([edited.id, other.id].sort());
+  });
+});
+
+describe('no highlight, no stream', () => {
+  it('a page without highlights never builds a text stream, however it is looked at', async () => {
+    setBody('<p>Alpha beta gamma delta epsilon zeta eta theta.</p>');
+    const r = rig([]);
+    await r.rehydrator.refresh();
+    r.rehydrator.retryPass();
+    await r.rehydrator.onRouteChange();
+    r.rehydrator.invalidate();
+    r.rehydrator.retryPass();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(r.streams.built).toBe(0);
+    expect(r.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('one highlight builds one stream', async () => {
+    setBody('<p>Alpha beta gamma delta epsilon zeta eta theta.</p>');
+    const r = rig([storedHighlight('beta gamma delta')]);
+    r.streams.built = 0;
+    await r.rehydrator.refresh();
+    expect(r.streams.built).toBe(1);
+  });
+});
+
+describe('a resolution that fails is an orphan, not a pending highlight', () => {
+  it('a page text that cannot be built orphans the batch, and the next pass tries again', async () => {
+    setBody('<p>Alpha beta gamma delta epsilon zeta eta theta.</p>');
+    const h = storedHighlight('beta gamma delta');
+    let broken = true;
+    const r = rig([h], {
+      buildStream: () => {
+        if (broken) throw new Error('walker failed');
+        return buildTextStream();
+      },
+    });
+    await r.rehydrator.refresh();
+    expect(r.rehydrator.counts()).toMatchObject({ pending: 0, orphaned: 1 });
+
+    broken = false;
+    r.rehydrator.retryPass();
+    expect(r.painter.ids).toEqual([h.id]);
+    expect(r.rehydrator.counts()).toMatchObject({ pending: 0, resolved: 1 });
+  });
+
+  it('one anchor the engine cannot handle does not take the rest of the batch down', async () => {
+    setBody('<p>Alpha beta gamma delta epsilon zeta eta theta.</p><p>Second paragraph words.</p>');
+    const good = storedHighlight('beta gamma delta');
+    const bad = storedHighlight('Second paragraph words');
+    (bad.anchorSet as { textQuote: unknown }).textQuote = null; // a stored row the engine chokes on
+    const r = rig([bad, good]);
+    await r.rehydrator.refresh();
+
+    expect(r.painter.ids).toEqual([good.id]);
+    expect(r.rehydrator.counts()).toMatchObject({ pending: 0, resolved: 1, orphaned: 1 });
+  });
+
+  it('an upsert that cannot be resolved leaves an orphan, never a pending entry', async () => {
+    setBody('<p>Alpha beta gamma delta epsilon zeta eta theta.</p>');
+    const r = rig([]);
+    await r.rehydrator.refresh();
+    const bad = storedHighlight('beta gamma delta');
+    (bad.anchorSet as { textQuote: unknown }).textQuote = null;
+    expect(() => r.rehydrator.upsert(bad)).not.toThrow();
+    expect(r.rehydrator.counts()).toMatchObject({ pending: 0, orphaned: 1 });
+  });
+});
+
+describe('route change', () => {
+  it('forgets the old page at once, and loads on request', async () => {
+    setBody('<p>Alpha beta gamma delta epsilon zeta eta theta.</p>');
+    const h = storedHighlight('beta gamma delta');
+    const r = rig([h]);
+    await r.rehydrator.refresh();
+    const before = r.rehydrator.generation;
+
+    r.page.current = { url: 'https://example.com/b', canonicalUrl: null };
+    r.rehydrator.routeChanged();
+    expect(r.painter.clearCalls).toBe(1);
+    expect(r.rehydrator.has(h.id)).toBe(false);
+    expect(r.rehydrator.generation).toBe(before + 1);
+    expect(r.fetch).toHaveBeenCalledTimes(1); // nothing loaded yet: that is the caller's debounce
+  });
+
+  it('onto the same source keys it forgets nothing (no clear, same generation), still re-resolving on load', async () => {
+    setBody('<p>Alpha beta gamma delta epsilon zeta eta theta.</p>');
+    const h = storedHighlight('beta gamma delta');
+    const r = rig([h]);
+    await r.rehydrator.refresh();
+    const before = r.rehydrator.generation;
+
+    r.page.current = { ...PAGE_A }; // another object, the same page
+    r.rehydrator.routeChanged();
+    expect(r.painter.clearCalls).toBe(0);
+    expect(r.rehydrator.has(h.id)).toBe(true);
+    expect(r.rehydrator.generation).toBe(before);
+    expect(r.painter.ids).toEqual([h.id]);
+
+    const built = r.streams.built;
+    await r.rehydrator.refresh();
+    expect(r.streams.built).toBe(built + 1); // the page text is new: the cached stream went
+    expect(r.painter.ids).toEqual([h.id]);
+  });
+
+  it('a canonical the worker trusts changes the source key, an untrusted one does not', async () => {
+    setBody('<p>Alpha beta gamma delta epsilon zeta eta theta.</p>');
+    const r = rig([storedHighlight('beta gamma delta')]);
+    await r.rehydrator.refresh();
+
+    // A canonical that names another page is not trusted: the keys are the visited URL's.
+    r.page.current = { url: PAGE_A.url, canonicalUrl: 'https://example.com/another-page' };
+    r.rehydrator.routeChanged();
+    expect(r.painter.clearCalls).toBe(0);
+
+    // The www. spelling of the same page is trusted and becomes the source key.
+    r.page.current = { url: PAGE_A.url, canonicalUrl: 'https://www.example.com/a' };
+    r.rehydrator.routeChanged();
+    expect(r.painter.clearCalls).toBe(1);
+  });
+});
+
+describe('quiet mode and kinds', () => {
+  const TEXT = '<p>Alpha beta gamma delta epsilon zeta eta theta.</p>';
+
+  it('paints the highlight kind with every entry', async () => {
+    setBody(TEXT);
+    const r = rig([storedHighlight('beta gamma delta', { kind: 'formula' })]);
+    await r.rehydrator.refresh();
+    expect(r.painter.painted.map((p) => p.kind)).toEqual(['formula']);
+  });
+
+  it('publishes nothing while paintEnabled says no, but still resolves and reports', async () => {
+    setBody(TEXT);
+    const h = storedHighlight('beta gamma delta');
+    const state = { paint: false };
+    const r = rig([h], { paintEnabled: () => state.paint });
+    await r.rehydrator.refresh();
+
+    expect(r.painter.painted).toEqual([]);
+    expect(r.rehydrator.counts().resolved).toBe(1);
+    expect(r.rehydrator.rangeOf(h.id)?.toString()).toBe('beta gamma delta');
+    expect(r.report).toHaveBeenCalledWith([{ id: h.id, status: 'resolved', confidence: 1 }]);
+
+    state.paint = true;
+    r.rehydrator.repaint();
+    expect(r.painter.ids).toEqual([h.id]);
+    state.paint = false;
+    r.rehydrator.repaint();
+    expect(r.painter.painted).toEqual([]);
+  });
+});
+
+describe('an orphaned script winds down', () => {
+  it('no timer does any work once alive() says the context is gone', async () => {
+    setBody('<p>Alpha beta gamma delta epsilon zeta eta theta.</p>');
+    const lost = storedHighlight('beta gamma delta');
+    lost.anchorSet.textQuote.exact = 'text that is nowhere on this page at all';
+    const state = { alive: true };
+    const r = rig([lost], { alive: () => state.alive, retry: new RetryBudget(1_000, 20) });
+    r.fetch.mockRejectedValueOnce(new Error('asleep'));
+    await r.rehydrator.refresh(); // arms the load retry
+    state.alive = false;
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(r.fetch).toHaveBeenCalledTimes(1);
+    expect(r.report).not.toHaveBeenCalled();
+    r.rehydrator.retryPass();
+    expect(r.streams.built).toBe(0);
+  });
+
+  it('the settle and deferred-pass timers stop too', async () => {
+    setBody('<p>Alpha beta gamma delta epsilon zeta eta theta.</p>');
+    const lost = storedHighlight('beta gamma delta');
+    lost.anchorSet.textQuote.exact = 'text that is nowhere on this page at all';
+    const state = { alive: true };
+    const r = rig([lost], { alive: () => state.alive, retry: new RetryBudget(1_000, 20) });
+    await r.rehydrator.refresh(); // orphaned: its report waits for the page to settle
+    r.rehydrator.retryPass();
+    r.rehydrator.retryPass(); // refused: arms the deferred pass
+    const built = r.streams.built;
+    state.alive = false;
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(r.streams.built).toBe(built);
+    expect(r.report).not.toHaveBeenCalled();
   });
 });

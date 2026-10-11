@@ -1,0 +1,126 @@
+/* Welcome tour: one readable column in a tab; reflows to a 320 px viewport and 200% zoom. */
+.ob {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: var(--sv-space-5) var(--sv-space-4) var(--sv-space-6);
+  font-size: var(--sv-text-md);
+}
+.ob__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--sv-space-2);
+}
+.ob__head h1 {
+  font-size: 1.375rem;
+}
+.ob__bar {
+  height: 4px;
+  margin: var(--sv-space-3) 0 var(--sv-space-5);
+  border-radius: 999px;
+  background: var(--sv-border);
+  overflow: hidden;
+}
+.ob__bar span {
+  display: block;
+  height: 100%;
+  background: var(--sv-accent);
+}
+.ob__main {
+  gap: var(--sv-space-4);
+}
+.ob__step {
+  gap: var(--sv-space-4);
+}
+.ob__heading {
+  font-size: 1.125rem;
+}
+/* The heading takes focus when the step changes: a quiet ring, never a stray outline on mouse use. */
+.ob__heading:focus {
+  outline: none;
+}
+.ob__heading:focus-visible {
+  outline: 2px solid var(--sv-focus);
+  outline-offset: 2px;
+}
+.ob__nav {
+  margin-top: var(--sv-space-2);
+}
+.ob a.sv-btn {
+  text-decoration: none;
+}
+.ob-card {
+  padding: var(--sv-space-4);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface-raised);
+}
+.ob-card__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sv-space-2);
+  font-size: var(--sv-text-md);
+}
+.ob-fieldset {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.ob-fieldset legend {
+  padding: 0;
+  margin-bottom: var(--sv-space-2);
+  font-weight: 700;
+}
+.ob-modes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-3);
+  margin: 0;
+}
+.ob-modes dt {
+  font-weight: 700;
+}
+.ob-modes dd {
+  margin: 0;
+  color: var(--sv-text-muted);
+}
+.ob-tree {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-1);
+  margin: var(--sv-space-2) 0;
+}
+.ob-tree__row {
+  display: flex;
+  align-items: center;
+  gap: var(--sv-space-2);
+  min-height: 28px;
+}
+.ob-tree__row input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex: none;
+  accent-color: var(--sv-accent);
+}
+.ob-keys {
+  display: flex;
+  flex-direction: column;
+}
+.ob-keys__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sv-space-2);
+  padding: var(--sv-space-2) 0;
+  border-bottom: 1px solid var(--sv-border);
+}
+.ob-steps {
+  padding-left: var(--sv-space-5);
+  list-style: decimal;
+}
+.ob-steps li + li {
+  margin-top: var(--sv-space-2);
+}

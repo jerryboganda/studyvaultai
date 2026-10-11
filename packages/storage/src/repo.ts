@@ -1,313 +1,74 @@
-import type { z } from 'zod';
 import { uuidv7 } from 'uuidv7';
-import { bumpDataEpoch } from '@runtime';
+import { revokeAllSiteAccess } from '@runtime';
+import { browser } from 'wxt/browser';
 import {
   Bank,
   CaptureInput,
   COLOR_IDS,
   Highlight,
-  HighlightBank,
   HighlightPatch,
-  Id,
-  INBOX_BANK_ID,
-  INBOX_BANK_NAME,
   MAX_QUOTE_CHARS,
   MAX_URL_CHARS,
   ResolutionReport,
   SCHEMA_VERSION,
   Source,
   StudyVaultError,
+  redactUrl,
   sourceKeys,
   trustedCanonical,
-  type AnchorSet,
   type BankLite,
+  type BankRecord,
   type CaptureResult,
   type HighlightView,
 } from '@shared';
-import { withDb, type StudyVaultDb } from './db';
+import {
+  addMembership,
+  allTables,
+  cmp,
+  ensureInbox,
+  isDeleted,
+  isPrimary,
+  liveHighlight,
+  liveHighlightsOf,
+  matchSources,
+  now,
+  parseInput,
+  parseRow,
+  readBanks,
+  requireId,
+  keysWhereIn,
+  resolveTargetBank,
+  samePlace,
+  signalChange,
+  signalResolution,
+  toItems,
+  toLite,
+  toViews,
+} from './core';
+import { clearRestoreStaging, deletePreMigrationSnapshot } from './backupTarget';
+import { WipePendingError, deleteDatabase, withDb, withWritableDb } from './db';
 import { normalizeQuote, quoteHash } from './normalize';
 import type { BankWithCount, HighlightListItem, RepoApi } from './types';
 
 // ---------------------------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------------------------
-
-const now = () => new Date().toISOString();
-const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
-const notNull = <T>(v: T | null): v is T => v !== null;
-const isDeleted = (row: { deletedAt?: unknown }) => typeof row.deletedAt === 'string';
-const allTables = (db: StudyVaultDb) => [db.banks, db.sources, db.highlights, db.highlightBanks];
-
-function parseInput<T>(schema: z.ZodType<T>, value: unknown, what: string): T {
-  const result = schema.safeParse(value);
-  if (!result.success) {
-    throw new StudyVaultError('invalid_request', `Invalid ${what}: ${result.error.message}`);
-  }
-  return result.data;
-}
-
-const requireId = (id: string) => parseInput(Id, id, 'id');
-
-/** Rows are validated on the way out; a corrupt row is skipped (and logged), never fatal. */
-function parseRow<T>(schema: z.ZodType<T>, row: unknown, table: string): T | null {
-  const result = schema.safeParse(row);
-  if (result.success) return result.data;
-  const id = (row as { id?: unknown } | null | undefined)?.id;
-  console.warn(`[studyvault] skipping invalid ${table} row`, id, result.error.message);
-  return null;
-}
-
-/**
- * Tell other contexts the data changed. Serialised so two quick writes cannot read the same
- * counter value and collapse into one notification. Never throws: liveness must not fail a write.
- */
-let epochChain: Promise<void> = Promise.resolve();
-function signalChange(): Promise<void> {
-  epochChain = epochChain
-    .then(() => bumpDataEpoch())
-    .catch((err: unknown) => console.warn('[studyvault] bumpDataEpoch failed', err));
-  return epochChain;
-}
-
-// ---------------------------------------------------------------------------------------------
-// banks
-// ---------------------------------------------------------------------------------------------
-
-const defaultInbox = (ts: string): Bank => ({
-  id: INBOX_BANK_ID,
-  schemaVersion: SCHEMA_VERSION,
-  createdAt: ts,
-  updatedAt: ts,
-  deletedAt: null,
-  name: INBOX_BANK_NAME,
-  color: 'blue',
-  position: 0,
-  isInbox: true,
-});
-
-const toLite = (b: Bank): BankLite => ({
-  id: b.id,
-  name: b.name,
-  color: b.color,
-  isInbox: b.isInbox,
-});
-
-/**
- * Live banks in display order. Reads never write (Dexie forbids writes inside liveQuery), so an
- * Inbox that has not been persisted yet is reported virtually; saveCapture/createBank persist it.
- */
-async function readBanks(db: StudyVaultDb): Promise<Bank[]> {
-  const rows = await db.banks.toArray();
-  const banks = rows
-    .map((r) => parseRow(Bank, r, 'bank'))
-    .filter(notNull)
-    .filter((b) => b.deletedAt === null);
-  if (!banks.some((b) => b.id === INBOX_BANK_ID))
-    banks.push(defaultInbox(new Date(0).toISOString()));
-  return banks.sort(
-    (a, b) => a.position - b.position || cmp(a.createdAt, b.createdAt) || cmp(a.id, b.id),
-  );
-}
-
-/** Idempotent. Call only inside a readwrite transaction that includes `banks`. */
-async function ensureInbox(db: StudyVaultDb, ts: string): Promise<Bank> {
-  const stored = await db.banks.get(INBOX_BANK_ID);
-  const parsed = stored ? parseRow(Bank, stored, 'bank') : null;
-  if (parsed && parsed.deletedAt === null && parsed.isInbox) return parsed;
-  const row: Bank = parsed
-    ? { ...parsed, isInbox: true, deletedAt: null, updatedAt: ts }
-    : defaultInbox(ts);
-  await db.banks.put(row);
-  return row;
-}
-
-async function resolveTargetBank(
-  db: StudyVaultDb,
-  bankId: string | null,
-  ts: string,
-): Promise<Bank> {
-  if (bankId && bankId !== INBOX_BANK_ID) {
-    const stored = await db.banks.get(bankId);
-    const parsed = stored ? parseRow(Bank, stored, 'bank') : null;
-    if (parsed && parsed.deletedAt === null) return parsed;
-  }
-  return ensureInbox(db, ts);
-}
-
-// ---------------------------------------------------------------------------------------------
-// joins
-// ---------------------------------------------------------------------------------------------
-
-const toView = (h: Highlight, bankIds: string[]): HighlightView => ({
-  id: h.id,
-  sourceId: h.sourceId,
-  exactQuote: h.exactQuote,
-  anchorSet: h.anchorSet,
-  kind: h.kind,
-  color: h.color,
-  priority: h.priority,
-  userComment: h.userComment,
-  headingContext: h.headingContext,
-  bankIds,
-  capturedAt: h.capturedAt,
-  resolveStatus: h.resolveStatus,
-  resolveConfidence: h.resolveConfidence,
-});
-
-/** highlightId -> ids of the live banks it is filed in, oldest membership first. */
-async function bankIdsByHighlight(
-  db: StudyVaultDb,
-  highlightIds: string[],
-  liveBankIds: ReadonlySet<string>,
-): Promise<Map<string, string[]>> {
-  const out = new Map<string, string[]>();
-  if (highlightIds.length === 0) return out;
-  const rows = await db.highlightBanks.where('highlightId').anyOf(highlightIds).toArray();
-  const members = rows
-    .map((r) => parseRow(HighlightBank, r, 'highlightBank'))
-    .filter(notNull)
-    .filter((m) => liveBankIds.has(m.bankId))
-    .sort((a, b) => cmp(a.addedAt, b.addedAt) || cmp(a.bankId, b.bankId));
-  for (const m of members) {
-    const list = out.get(m.highlightId) ?? [];
-    list.push(m.bankId);
-    out.set(m.highlightId, list);
-  }
-  return out;
-}
-
-async function toViews(db: StudyVaultDb, rows: Highlight[]): Promise<HighlightView[]> {
-  const banks = await readBanks(db);
-  const memberships = await bankIdsByHighlight(
-    db,
-    rows.map((r) => r.id),
-    new Set(banks.map((b) => b.id)),
-  );
-  return rows.map((r) => toView(r, memberships.get(r.id) ?? []));
-}
-
-async function toItems(db: StudyVaultDb, rows: Highlight[]): Promise<HighlightListItem[]> {
-  const banks = new Map((await readBanks(db)).map((b) => [b.id, b]));
-  const memberships = await bankIdsByHighlight(
-    db,
-    rows.map((r) => r.id),
-    new Set(banks.keys()),
-  );
-  const sourceRows = await db.sources.bulkGet([...new Set(rows.map((r) => r.sourceId))]);
-  const sources = new Map<string, Source>();
-  for (const row of sourceRows) {
-    const source = row ? parseRow(Source, row, 'source') : null;
-    if (source) sources.set(source.id, source);
-  }
-  const items: HighlightListItem[] = [];
-  for (const row of rows) {
-    const source = sources.get(row.sourceId);
-    if (!source) {
-      console.warn('[studyvault] skipping highlight without a source', row.id);
-      continue;
-    }
-    const bankIds = memberships.get(row.id) ?? [];
-    items.push({
-      highlight: toView(row, bankIds),
-      source: {
-        id: source.id,
-        title: source.title,
-        host: source.host,
-        originalUrl: source.originalUrl,
-        canonicalUrl: source.canonicalUrl,
-        urlKey: source.urlKey,
-      },
-      banks: bankIds.flatMap((id) => {
-        const bank = banks.get(id);
-        return bank ? [toLite(bank)] : [];
-      }),
-    });
-  }
-  return items;
-}
-
-// ---------------------------------------------------------------------------------------------
-// sources & duplicate detection
-// ---------------------------------------------------------------------------------------------
-
-interface PageKeys {
-  urlKey: string;
-  visitedKey: string;
-}
-
-/**
- * Every live source that may be this page: its urlKey or visitedKey equals either key of the
- * page. Ordered best-first (urlKey match, then visitedKey match, then cross matches), so the
- * first "primary" entry is the one a capture is filed under.
- */
-async function matchSources(db: StudyVaultDb, keys: PageKeys): Promise<Source[]> {
-  const probe = [...new Set([keys.urlKey, keys.visitedKey])];
-  const found = new Map<string, Source>();
-  for (const index of ['urlKey', 'visitedKey'] as const) {
-    for (const row of await db.sources.where(index).anyOf(probe).toArray()) found.set(row.id, row);
-  }
-  const rank = (s: Source) =>
-    s.urlKey === keys.urlKey ? 0 : s.visitedKey === keys.visitedKey ? 1 : 2;
-  return [...found.values()]
-    .map((r) => parseRow(Source, r, 'source'))
-    .filter(notNull)
-    .filter((s) => s.deletedAt === null)
-    .sort((a, b) => rank(a) - rank(b) || cmp(a.createdAt, b.createdAt) || cmp(a.id, b.id));
-}
-
-const isPrimary = (s: Source, keys: PageKeys) =>
-  s.urlKey === keys.urlKey || s.visitedKey === keys.visitedKey;
-
-/** Live highlights of the given sources in document order. */
-async function liveHighlightsOf(db: StudyVaultDb, sourceIds: string[]): Promise<Highlight[]> {
-  const out: Highlight[] = [];
-  for (const sourceId of sourceIds) {
-    for (const row of await db.highlights.where('sourceId').equals(sourceId).toArray()) {
-      if (isDeleted(row)) continue;
-      const parsed = parseRow(Highlight, row, 'highlight');
-      if (parsed) out.push(parsed);
-    }
-  }
-  return out.sort(
-    (a, b) =>
-      a.anchorSet.textPosition.start - b.anchorSet.textPosition.start ||
-      cmp(a.capturedAt, b.capturedAt) ||
-      cmp(a.id, b.id),
-  );
-}
-
-/** Same quote at "the same place": overlapping stream ranges, or identical surrounding context. */
-function samePlace(a: AnchorSet, b: AnchorSet): boolean {
-  if (a.type !== 'html' || b.type !== 'html') return false;
-  const overlap =
-    a.textPosition.start < b.textPosition.end && b.textPosition.start < a.textPosition.end;
-  return (
-    overlap ||
-    (a.textQuote.prefix === b.textQuote.prefix && a.textQuote.suffix === b.textQuote.suffix)
-  );
-}
-
-async function addMembership(
-  db: StudyVaultDb,
-  highlightId: string,
-  bankId: string,
-  ts: string,
-): Promise<boolean> {
-  if (await db.highlightBanks.get([highlightId, bankId])) return false;
-  await db.highlightBanks.put({ highlightId, bankId, folderId: null, addedAt: ts });
-  return true;
-}
-
-// ---------------------------------------------------------------------------------------------
-// RepoApi
+// RepoApi (Phase 1 contract). Shared helpers live in ./core.
 // ---------------------------------------------------------------------------------------------
 
 export async function saveCapture(input: CaptureInput): Promise<CaptureResult> {
   const capture = parseInput(CaptureInput, input, 'capture');
   const keys = sourceKeys(capture.page.url, capture.page.canonicalUrl);
+  // The stored address has no credentials: presigned-URL signatures, OAuth tokens and fragments are
+  // not provenance, and a rotating token must not fork one page into many sources.
+  const originalUrl = redactUrl(capture.page.url);
   // Normalisation can lengthen a URL (percent-encoding); a record we could not read back is worse
   // than a refused capture.
-  if (!keys || keys.urlKey.length > MAX_URL_CHARS || keys.visitedKey.length > MAX_URL_CHARS) {
+  if (
+    !keys ||
+    originalUrl === null ||
+    keys.urlKey.length > MAX_URL_CHARS ||
+    keys.visitedKey.length > MAX_URL_CHARS ||
+    originalUrl.length > MAX_URL_CHARS
+  ) {
     throw new StudyVaultError('invalid_request', 'Page URL cannot be stored as a source');
   }
   const canonicalUrl = trustedCanonical(capture.page.url, capture.page.canonicalUrl);
@@ -315,10 +76,14 @@ export async function saveCapture(input: CaptureInput): Promise<CaptureResult> {
   if (normalized === '') throw new StudyVaultError('invalid_request', 'Quote is empty');
   // Hash before the transaction: awaiting crypto.subtle inside would let IndexedDB auto-commit it.
   const hash = await quoteHash(normalized);
-  const ts = now();
 
-  const { result, changed } = await withDb((db) =>
+  const { result, changed } = await withWritableDb((db) =>
     db.transaction('rw', allTables(db), async () => {
+      // Stamp once this transaction holds its lock (a request resolves only then): a capture that
+      // waited behind a restore must not carry a time from before the wait, or the search catch-up,
+      // which looks for rows changed since a moment it has already passed, would never see it.
+      await db.banks.count();
+      const ts = now();
       const bank = await resolveTargetBank(db, capture.bankId, ts);
       const sources = await matchSources(db, keys);
 
@@ -369,7 +134,7 @@ export async function saveCapture(input: CaptureInput): Promise<CaptureResult> {
             type: 'web',
             urlKey: keys.urlKey,
             visitedKey: keys.visitedKey,
-            originalUrl: capture.page.url,
+            originalUrl,
             canonicalUrl,
             host: new URL(capture.page.url).hostname,
             title: capture.page.title,
@@ -398,6 +163,8 @@ export async function saveCapture(input: CaptureInput): Promise<CaptureResult> {
           resolveStatus: 'unchecked',
           resolveConfidence: null,
           lastResolvedAt: null,
+          capturedUrl: originalUrl,
+          capturedTitle: capture.page.title,
         };
         await db.highlights.put(highlight);
         await db.highlightBanks.put({
@@ -439,20 +206,13 @@ export async function getPageHighlights(
   );
 }
 
-async function liveHighlight(db: StudyVaultDb, id: string): Promise<Highlight> {
-  const row = await db.highlights.get(id);
-  const parsed = row && !isDeleted(row) ? parseRow(Highlight, row, 'highlight') : null;
-  if (!parsed) throw new StudyVaultError('not_found', 'Highlight not found');
-  return parsed;
-}
-
 export async function updateHighlight(id: string, patch: HighlightPatch): Promise<HighlightView> {
   requireId(id);
   const parsed = parseInput(HighlightPatch, patch, 'highlight patch');
   const changes = Object.fromEntries(
     Object.entries(parsed).filter(([, value]) => value !== undefined),
   ) as HighlightPatch;
-  const { view, changed } = await withDb((db) =>
+  const { view, changed } = await withWritableDb((db) =>
     db.transaction('rw', allTables(db), async () => {
       const row = await liveHighlight(db, id);
       const differs = (Object.keys(changes) as Array<keyof HighlightPatch>).some(
@@ -470,7 +230,7 @@ export async function updateHighlight(id: string, patch: HighlightPatch): Promis
 
 export async function softDeleteHighlight(id: string): Promise<void> {
   requireId(id);
-  const changed = await withDb((db) =>
+  const changed = await withWritableDb((db) =>
     db.transaction('rw', db.highlights, async () => {
       const row = await db.highlights.get(id);
       if (!row) throw new StudyVaultError('not_found', 'Highlight not found');
@@ -485,7 +245,7 @@ export async function softDeleteHighlight(id: string): Promise<void> {
 
 export async function restoreHighlight(id: string): Promise<HighlightView> {
   requireId(id);
-  const { view, changed } = await withDb((db) =>
+  const { view, changed } = await withWritableDb((db) =>
     db.transaction('rw', allTables(db), async () => {
       const stored = await db.highlights.get(id);
       const row = stored ? parseRow(Highlight, stored, 'highlight') : null;
@@ -508,7 +268,7 @@ export async function reportResolutions(
     reports.set(item.id, parseInput(ResolutionReport, item, 'resolution report'));
   }
   if (reports.size === 0) return 0;
-  const { updated, changed } = await withDb((db) =>
+  const { updated, changed } = await withWritableDb((db) =>
     db.transaction('rw', db.highlights, async () => {
       const ts = now();
       let updated = 0;
@@ -529,19 +289,21 @@ export async function reportResolutions(
       return { updated, changed };
     }),
   );
-  // Only a real outcome change notifies: viewers repaint and re-report on notification, so
-  // announcing unchanged reports would loop.
-  if (changed) await signalChange();
+  // Only a real outcome change notifies, and only on the resolution channel: the page that
+  // produced these outcomes already knows them, so content scripts are not woken to refetch and
+  // repaint (and re-report). Panels watch this channel to refresh their badges.
+  if (changed) await signalResolution();
   return updated;
 }
 
 export async function getHighlightSource(
   id: string,
+  options: { includeDeleted?: boolean } = {},
 ): Promise<{ sourceId: string; urlKey: string; visitedKey: string } | null> {
   requireId(id);
   return withDb(async (db) => {
     const row = await db.highlights.get(id);
-    if (!row || isDeleted(row)) return null;
+    if (!row || (isDeleted(row) && options.includeDeleted !== true)) return null;
     const stored = await db.sources.get(row.sourceId);
     const source = stored ? parseRow(Source, stored, 'source') : null;
     return source
@@ -556,14 +318,15 @@ export async function listBanks(): Promise<BankLite[]> {
 
 export async function createBank(name: string): Promise<BankLite> {
   const bankName = parseInput(Bank.shape.name, name, 'bank name');
-  const bank = await withDb((db) =>
+  const bank = await withWritableDb((db) =>
     db.transaction('rw', db.banks, async () => {
       const ts = now();
       await ensureInbox(db, ts);
-      // After the Inbox exists the highest position is at least 0, so user banks start at 1.
-      const last = await db.banks.orderBy('position').last();
-      const position = Math.floor((last?.position ?? 0) + 1);
-      const row: Bank = {
+      // Highest position among rows that can be read, so a corrupt row (a position that is not a
+      // number sorts last in IndexedDB) cannot make us write a bank that fails validation.
+      const top = Math.max(0, ...(await readBanks(db)).map((b) => b.position));
+      const position = Math.floor(top) + 1;
+      const row: BankRecord = {
         id: uuidv7(),
         schemaVersion: SCHEMA_VERSION,
         createdAt: ts,
@@ -629,19 +392,133 @@ export async function listBanksWithCounts(): Promise<BankWithCount[]> {
   return withDb((db) =>
     db.transaction('r', [db.banks, db.highlights, db.highlightBanks], async () => {
       const banks = await readBanks(db);
-      // Keys only: counting must not deserialise every highlight body. A corrupt row that a list
-      // would skip still counts here.
-      const live = new Set<unknown>(await db.highlights.toCollection().primaryKeys());
-      for (const key of await db.highlights.where('deletedAt').above('').primaryKeys()) {
-        live.delete(key);
+      // Index counts (no row is deserialised: a corrupt row that a list would skip still counts),
+      // minus the memberships of the few highlights that are in the trash.
+      const trashed = (await db.highlights.where('deletedAt').above('').primaryKeys()) as string[];
+      // Keys only: a membership's primary key is [highlightId, bankId].
+      const gone = (await keysWhereIn(db.highlightBanks, 'highlightId', trashed)) as Array<
+        [string, string]
+      >;
+      // Counted once per bank, not by filtering every trashed membership for every bank.
+      const trashedIn = new Map<string, number>();
+      for (const [, bankId] of gone) trashedIn.set(bankId, (trashedIn.get(bankId) ?? 0) + 1);
+      const out: BankWithCount[] = [];
+      for (const bank of banks) {
+        const all = await db.highlightBanks.where('bankId').equals(bank.id).count();
+        out.push({ bank: toLite(bank), count: Math.max(0, all - (trashedIn.get(bank.id) ?? 0)) });
       }
-      const counts = new Map<string, number>();
-      await db.highlightBanks.each((m) => {
-        if (live.has(m.highlightId)) counts.set(m.bankId, (counts.get(m.bankId) ?? 0) + 1);
-      });
-      return banks.map((b) => ({ bank: toLite(b), count: counts.get(b.id) ?? 0 }));
+      return out;
     }),
   );
+}
+
+/**
+ * Where "Delete all data" is:
+ *  - `deleting`: the database delete was requested (normally over within a moment);
+ *  - `blocked`: another StudyVault window still holds the database. The request stays queued and the
+ *    wipe continues by itself the moment that window is closed;
+ *  - `cleaning`: the database is gone; the pre-update copy, restore staging, settings and site
+ *    access are being removed.
+ */
+export type WipeState = 'deleting' | 'blocked' | 'cleaning';
+
+export interface WipeOptions {
+  /** Called at once with the current state and again at every change. */
+  onState?: (state: WipeState) => void;
+  /**
+   * Stop waiting. The wipe itself cannot be taken back: the delete is already queued in IndexedDB.
+   * This call rejects with `WipePendingError`; the wipe goes on and finishes by itself.
+   */
+  signal?: AbortSignal;
+}
+
+interface WipeRun {
+  state: WipeState;
+  done: Promise<void>;
+  watchers: Set<(state: WipeState) => void>;
+}
+let wipeRun: WipeRun | null = null;
+
+/** The wipe that is running in this context, if any (for a view that mounts while it runs). */
+export const getWipeState = (): WipeState | null => wipeRun?.state ?? null;
+
+async function runWipe(set: (state: WipeState) => void): Promise<void> {
+  // The database first, and without a deadline. An IndexedDB delete cannot be withdrawn once it is
+  // requested: giving up on it would leave it queued, and it would still run later, after the
+  // pre-update copy, the settings and the site access had been left in place. So the other stores
+  // come last, after the delete has really completed. Deleting the database drops every table of
+  // every schema version (vault, study, ai, sync, PDF bytes and OCR text included); the next use
+  // recreates it empty.
+  await deleteDatabase(() => set('blocked'));
+  set('cleaning');
+  // Two more full copies of the vault live in databases of their own: the automatic pre-update
+  // archive and the staging area of a restore that crashed. "Delete all" must reach both.
+  await Promise.all([deletePreMigrationSnapshot(), clearRestoreStaging()]);
+  await browser.storage.local.clear();
+  await browser.storage.session?.clear();
+  // Optional host permissions are part of what StudyVault holds: left granted, the worker would
+  // register the persistent script again from Chrome's grants. Best effort (no permissions API in
+  // some test and embedded contexts).
+  await revokeAllSiteAccess().catch((err: unknown) =>
+    console.warn('[StudyVault] could not revoke site access', err),
+  );
+  // Search indexes that are open still hold the deleted text in memory and would write it into the
+  // new database on their next flush: a fresh generation in the marker they watch (SearchHost,
+  // `searchIndexStale`) makes each drop it. After the storage clear, so the connection gate of the
+  // recreated database sees no settings.
+  await withWritableDb(async (db) => {
+    await db.meta.put({ key: 'searchIndexStale', value: uuidv7(), updatedAt: now() });
+  }).catch((err: unknown) =>
+    console.warn('[StudyVault] could not mark the search index stale', err),
+  );
+  // Settings are gone and the database is empty: viewers must drop what they are showing.
+  await signalChange();
+}
+
+const STOPPED_WAITING =
+  'Deleting is not finished. It cannot be cancelled once started: it finishes by itself as soon as every other StudyVault window is closed, and StudyVault cannot read or save in this window until then.';
+
+/**
+ * Delete everything StudyVault holds on this device. One wipe runs at a time per context: a second
+ * call joins it. See `WipeState` and `WipeOptions`; `WipePendingError` is what a caller that stopped
+ * waiting gets, and what every other database call gets while the delete is still queued.
+ */
+export function wipeAllData(options: WipeOptions = {}): Promise<void> {
+  const { onState, signal } = options;
+  if (signal?.aborted) return Promise.reject(signal.reason);
+  if (!wipeRun) {
+    const run: WipeRun = { state: 'deleting', done: Promise.resolve(), watchers: new Set() };
+    const set = (state: WipeState) => {
+      run.state = state;
+      for (const watcher of [...run.watchers]) watcher(state);
+    };
+    run.done = runWipe(set).finally(() => {
+      if (wipeRun === run) wipeRun = null;
+    });
+    // Someone may have stopped waiting: the run still ends, and must not be an unhandled rejection.
+    run.done.catch(() => undefined);
+    wipeRun = run;
+  }
+  const run = wipeRun;
+  if (onState) {
+    run.watchers.add(onState);
+    onState(run.state);
+  }
+  const detach = () => {
+    if (onState) run.watchers.delete(onState);
+  };
+  if (!signal) return run.done.finally(detach);
+  return new Promise<void>((resolve, reject) => {
+    const stop = () => {
+      detach();
+      reject(new WipePendingError(STOPPED_WAITING));
+    };
+    signal.addEventListener('abort', stop, { once: true });
+    run.done.then(resolve, reject).finally(() => {
+      detach();
+      signal.removeEventListener('abort', stop);
+    });
+  });
 }
 
 /** Compile-time proof that every RepoApi member is implemented with the exact signature. */
@@ -658,4 +535,5 @@ export const repo = {
   listRecentHighlights,
   listPageHighlights,
   listBanksWithCounts,
+  wipeAllData,
 } satisfies RepoApi;

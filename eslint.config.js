@@ -17,11 +17,12 @@ const pureDomain = {
 export default tseslint.config(
   {
     ignores: [
-      '.output/**',
+      '.output*/**',
       '.wxt/**',
       'node_modules/**',
       'playwright-report/**',
       'test-results/**',
+      'public/ocr/**', // generated at build time by modules/ocr-assets.ts
     ],
   },
   js.configs.recommended,
@@ -47,12 +48,27 @@ export default tseslint.config(
     },
   },
   {
+    // Plain Node build/CI scripts.
+    files: ['scripts/**/*.mjs'],
+    languageOptions: { globals: { process: 'readonly', URL: 'readonly', console: 'readonly' } },
+  },
+  {
     // Playwright fixtures name their callback `use`, which the hooks rule mistakes for a React hook.
     files: ['tests/**'],
     rules: { 'react-hooks/rules-of-hooks': 'off' },
   },
   {
-    files: ['packages/shared/**', 'packages/highlights/**'],
+    files: [
+      'packages/shared/**',
+      'packages/highlights/**',
+      'packages/search/**',
+      'packages/study/**',
+      'packages/ai/**',
+      'packages/pdf/**',
+      'packages/ocr/**',
+      'packages/sync/**',
+      'packages/backup/**',
+    ],
     rules: { 'no-restricted-imports': ['error', pureDomain] },
   },
   {

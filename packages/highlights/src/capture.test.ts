@@ -156,6 +156,46 @@ describe('captureAnchor', () => {
       setBody('<h1>Real</h1><div data-studyvault><h2>Overlay</h2></div><p>the quote</p>');
       expect(capture('the quote').headingContext).toBe('Real');
     });
+
+    it('falls back to the previous public heading when the nearest one is in an editor', () => {
+      setBody(
+        '<h1>Public chapter</h1><div role="textbox"><h2>Typed draft heading</h2></div><p>the quote</p>',
+      );
+      expect(capture('the quote').headingContext).toBe('Public chapter');
+    });
+
+    it('treats contenteditable="" as editable but contenteditable="false" as plain content', () => {
+      setBody('<div contenteditable=""><h2>Editable</h2></div><p>first quote</p>');
+      expect(capture('first quote').headingContext).toBeNull();
+      setBody('<div contenteditable="false"><h2>Static</h2></div><p>second quote</p>');
+      expect(capture('second quote').headingContext).toBe('Static');
+    });
+
+    it('ignores headings inside template, noscript and svg subtrees', () => {
+      setBody(
+        '<h1>Visible</h1><noscript><h2>Fallback</h2></noscript><svg><foreignObject><h3>In svg</h3></foreignObject></svg><p>the quote</p>',
+      );
+      expect(capture('the quote').headingContext).toBe('Visible');
+    });
+
+    it('drops aria-hidden permalink glyphs and zero-width characters, keeps real text', () => {
+      setBody(
+        '<h2>Dosing<span aria-hidden="true"> # </span><a href="#d">\u00A7</a>\u200B guide</h2><p>the quote</p>',
+      );
+      expect(capture('the quote').headingContext).toBe('Dosing guide');
+    });
+
+    it('keeps aria-hidden text that is real content and a literal "C#"', () => {
+      setBody('<h2><span aria-hidden="true">Chapter 2</span> and C#</h2><p>the quote</p>');
+      expect(capture('the quote').headingContext).toBe('Chapter 2 and C#');
+    });
+
+    it('keeps heading text split across inline elements and ignores style/script inside', () => {
+      setBody(
+        '<h2>The <em>Krebs</em><style>.x{color:red}</style> <script>1</script>cycle</h2><p>the quote</p>',
+      );
+      expect(capture('the quote').headingContext).toBe('The Krebs cycle');
+    });
   });
 
   describe('structuralPath', () => {

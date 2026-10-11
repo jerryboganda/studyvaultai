@@ -1,0 +1,73 @@
+name: Reproducible build
+
+# Builds the extension twice from the same commit - once in the workspace, once from a clean
+# `git archive` export at a different path - and compares every output file by hash. A difference in
+# the extension's own files fails the job: a release must be rebuildable by anyone from the tag.
+# The packaged zip is compared entry by entry (its container carries timestamps, the entries do not).
+#
+# Called by release.yml; also runs weekly and on demand.
+
+on:
+  workflow_call:
+  workflow_dispatch:
+  schedule:
+    - cron: '41 4 * * 1'
+
+permissions:
+  contents: read
+
+# Runs are never cancelled: a manual run on a tag must not abort the one inside release.yml.
+concurrency:
+  group: reproducible-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: 24
+
+jobs:
+  reproducible:
+    name: reproducible (two builds, one commit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build A (workspace)
+        run: |
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          pnpm build
+          pnpm zip
+          mkdir -p "$RUNNER_TEMP/repro/a"
+          cp -a .output/chrome-mv3 "$RUNNER_TEMP/repro/a/chrome-mv3"
+          cp .output/studyvault-ai-*-chrome.zip "$RUNNER_TEMP/repro/a/extension.zip"
+
+      - name: Build B (clean export of the same commit, different path)
+        id: build-b
+        run: |
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          src="$RUNNER_TEMP/repro-src"
+          mkdir -p "$src"
+          git archive HEAD | tar -x -C "$src"
+          cd "$src"
+          pnpm install --frozen-lockfile
+          pnpm build
+          pnpm zip
+          mkdir -p "$RUNNER_TEMP/repro/b"
+          cp -a .output/chrome-mv3 "$RUNNER_TEMP/repro/b/chrome-mv3"
+          cp .output/studyvault-ai-*-chrome.zip "$RUNNER_TEMP/repro/b/extension.zip"
+
+      - name: Compare the extension files
+        run: node scripts/repro-compare.mjs "$RUNNER_TEMP/repro/a/chrome-mv3" "$RUNNER_TEMP/repro/b/chrome-mv3" --label "chrome-mv3 directory"
+
+      # Runs even when the directory comparison found a difference, but not when a build never finished.
+      - name: Compare the packaged zip entries
+        if: ${{ !cancelled() && steps.build-b.outcome == 'success' }}
+        run: node scripts/repro-compare.mjs "$RUNNER_TEMP/repro/a/extension.zip" "$RUNNER_TEMP/repro/b/extension.zip" --label "zip entries"

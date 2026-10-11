@@ -46,6 +46,12 @@ export interface CaptureHost {
   restore(id: string): Promise<HighlightView>;
   /** The selection was consumed or dismissed; controller may clear its stored range. */
   dismissSelection(): void;
+  /**
+   * Open the side panel (extension origin) for this tab, optionally focusing a highlight's note.
+   * The overlay never contains free-text inputs: page scripts can observe keystrokes typed inside
+   * the page document. Must be called synchronously from a user gesture handler.
+   */
+  openInSidePanel(highlightId: string | null): Promise<boolean>;
 }
 
 export interface CaptureUi {
@@ -54,6 +60,12 @@ export interface CaptureUi {
   hideToolbar(): void;
   /** Popover for an existing highlight (opened by clicking it on the page). */
   showHighlightPopover(highlight: HighlightView, anchor: DOMRect): void;
+  /**
+   * The stored highlights were just reloaded (an edit made in the side panel or another tab has
+   * arrived). If a popover is open, it shows `latest(id)` for its highlight instead of what it was
+   * opened with; an undefined answer leaves it as it is. Never opens, moves or focuses anything.
+   */
+  refreshHighlightPopover(latest: (id: string) => HighlightView | undefined): void;
   /** Transient, accessible notice. `action` renders an Undo-style button. */
   toast(notice: {
     text: string;
@@ -62,6 +74,18 @@ export interface CaptureUi {
   }): void;
   /** Re-apply theme / palette when settings change. */
   applySettings(settings: Settings): void;
+  /**
+   * Move keyboard focus into the visible toolbar or, when there is none, the newest actionable
+   * toast (Undo). Returns false when nothing could take focus; the caller then leaves the key to
+   * the page. Reached through the remappable `focus-toolbar` command: the overlay itself listens
+   * for no keys, so it cannot shadow a browser accelerator.
+   */
+  focusToolbar(): boolean;
+  /**
+   * Polite screen-reader announcement with no visible toast (e.g. "Highlight 2 of 5: ...").
+   * Repeating the same text is announced again. Empty text is ignored.
+   */
+  announce(text: string): void;
   /** Remove listeners and DOM. Called on context invalidation. */
   destroy(): void;
 }

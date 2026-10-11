@@ -87,6 +87,7 @@ export function siteStatus(over: Partial<SiteStatus> = {}): SiteStatus {
     pattern: 'https://example.com/*',
     access: 'none',
     active: false,
+    allSites: false,
     ...over,
   };
 }
@@ -167,6 +168,23 @@ export class FakeStore {
         .slice(0, limit);
     },
     listBanks: async () => [...this.banks],
+    listBanksWithCounts: async () =>
+      this.banks.map((bank) => ({
+        bank,
+        count: this.items.filter((i) => i.banks.some((b) => b.id === bank.id)).length,
+      })),
+    createBank: async (name: string) => {
+      this.record('createBank', [name]);
+      const bank: BankLite = {
+        id: `bank-new${String(this.banks.length).padStart(4, '0')}`,
+        name: name.trim(),
+        color: 'teal',
+        isInbox: false,
+      };
+      this.banks = [...this.banks, bank];
+      this.notify();
+      return bank;
+    },
     updateHighlight: async (id: string, patch: HighlightPatch) => {
       this.record('updateHighlight', [id, patch]);
       const item = this.find(id);
@@ -179,6 +197,13 @@ export class FakeStore {
       const item = this.find(id);
       this.items = this.items.filter((i) => i !== item);
       this.trash.set(id, item);
+      this.notify();
+    },
+    wipeAllData: async () => {
+      this.record('wipeAllData', []);
+      this.items = [];
+      this.banks = [INBOX];
+      this.trash.clear();
       this.notify();
     },
     restoreHighlight: async (id: string) => {
@@ -246,12 +271,42 @@ function event() {
   };
 }
 
+/** What `commands.getAll` answers with the manifest's suggested keys (wxt.config.ts). */
+export const COMMANDS = [
+  {
+    name: 'open-side-panel',
+    description: 'Open the StudyVault side panel',
+    shortcut: 'Alt+Shift+S',
+  },
+  { name: 'quick-save', description: 'Quick-save the current selection', shortcut: 'Alt+Shift+H' },
+  {
+    name: 'focus-toolbar',
+    description: 'Move keyboard focus into the selection toolbar',
+    shortcut: 'Alt+Shift+Y',
+  },
+  {
+    name: 'next-highlight',
+    description: 'Go to the next highlight on the page',
+    shortcut: 'Alt+Shift+Period',
+  },
+  {
+    name: 'previous-highlight',
+    description: 'Go to the previous highlight on the page',
+    shortcut: '',
+  },
+];
+
 export function makeChromeFakes() {
   return {
+    commands: {
+      getAll: vi.fn(async () => COMMANDS.map((c) => ({ ...c }))),
+      onCommand: event(),
+    },
     permissions: {
       request: vi.fn(async (_p: { origins?: string[] }) => true),
-      remove: vi.fn(async (_p: { origins?: string[] }) => true),
+      remove: vi.fn(async (_p: { origins?: string[]; permissions?: string[] }) => true),
       contains: vi.fn(async (_p: { origins?: string[] }) => false),
+      getAll: vi.fn(async () => ({ origins: [] as string[], permissions: [] as string[] })),
       onAdded: event(),
       onRemoved: event(),
     },

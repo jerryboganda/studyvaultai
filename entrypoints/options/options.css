@@ -1,34 +1,148 @@
-/* Options page: one readable column, opened in a tab. */
+/* Options page: a section list and one readable column, opened in a tab. */
 .opt {
-  max-width: 720px;
+  max-width: 960px;
   margin: 0 auto;
   padding: var(--sv-space-5) var(--sv-space-4) var(--sv-space-6);
 }
 .opt__head {
   display: flex;
   flex-direction: column;
-  gap: var(--sv-space-2);
+  gap: var(--sv-space-3);
   padding-bottom: var(--sv-space-3);
   border-bottom: 1px solid var(--sv-border);
 }
 .opt__head h1 {
   font-size: 1.375rem;
 }
-.opt__nav {
+/* One column by default (a 320 px page, 200% zoom); the list moves to the side when there is room. */
+.opt__layout {
+  display: flex;
+  flex-direction: column;
   gap: var(--sv-space-4);
+  padding-top: var(--sv-space-4);
+}
+.opt__navlist {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sv-space-1) var(--sv-space-2);
+}
+.opt__navlink {
+  display: block;
+  min-height: 32px;
+  padding: 5px 10px;
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+  color: var(--sv-text);
+  text-decoration: none;
+  line-height: 1.4;
+}
+.opt__navlink:hover {
+  background: var(--sv-surface);
+}
+.opt__navlink[aria-current='location'] {
+  border-color: var(--sv-accent);
+  font-weight: 700;
+}
+@media (min-width: 720px) {
+  .opt__layout {
+    flex-direction: row;
+    align-items: flex-start;
+    gap: var(--sv-space-5);
+  }
+  .opt__layout > nav {
+    position: sticky;
+    top: var(--sv-space-4);
+    flex: 0 0 188px;
+  }
+  .opt__navlist {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    gap: 2px;
+  }
+  .opt__navlink {
+    border-color: transparent;
+  }
+  .opt__main {
+    flex: 1 1 0;
+    min-width: 0;
+  }
 }
 .opt__main {
   display: flex;
   flex-direction: column;
   gap: var(--sv-space-6);
-  padding-top: var(--sv-space-5);
   font-size: var(--sv-text-md);
 }
 .opt__main h2 {
   font-size: 1.125rem;
 }
+.opt__main h4 {
+  margin: 0;
+  font-size: var(--sv-text-md);
+}
+/* Headings that take focus after an action: a quiet ring, never a stray outline on mouse use. */
+.opt__main:focus,
+.opt__main h3:focus {
+  outline: none;
+}
+.opt__main h3:focus-visible {
+  outline: 2px solid var(--sv-focus);
+  outline-offset: 2px;
+}
 .opt__main > div {
   scroll-margin-top: var(--sv-space-4);
+  /* A section is its own block: a long one (backup, sync) must not be squeezed by its neighbours. */
+  min-width: 0;
+}
+.opt-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(160px, 100%), 1fr));
+  gap: var(--sv-space-3);
+  margin: 0;
+}
+.opt-stats > div {
+  padding: var(--sv-space-3);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface-raised);
+}
+.opt-stats dt {
+  font-size: var(--sv-text-xs);
+  font-weight: 600;
+  color: var(--sv-text-muted);
+}
+.opt-stats dd {
+  margin: 0;
+  font-size: 1.125rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.opt-stats dd.sv-small {
+  font-size: var(--sv-text-xs);
+  font-weight: 400;
+}
+.opt-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.opt-table caption {
+  text-align: left;
+  padding-bottom: var(--sv-space-1);
+}
+.opt-table th,
+.opt-table td {
+  padding: var(--sv-space-1) var(--sv-space-2);
+  border-bottom: 1px solid var(--sv-border);
+  text-align: left;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+.opt-table thead th {
+  font-weight: 600;
+}
+.opt-table .opt-table__num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 .opt-card {
   padding: var(--sv-space-4);
@@ -65,6 +179,7 @@
 .opt-input {
   flex: 1 1 200px;
   width: auto;
+  min-width: 0;
 }
 .opt-error {
   color: var(--sv-danger);
@@ -108,7 +223,49 @@
   padding: 1px 6px;
   border-radius: 4px;
 }
+.opt-legend {
+  gap: var(--sv-space-3);
+}
+.opt-legend__kind {
+  flex: 1 1 180px;
+}
+.opt-underline {
+  padding: 1px 6px;
+  border-radius: 4px;
+  text-underline-offset: 3px;
+}
 code {
   font-family: var(--sv-font-mono);
   font-size: 0.9em;
+}
+
+/*
+ * A long unbroken value (the sync redirect address, chrome://extensions/shortcuts, a long host name)
+ * must wrap, not widen the page at 320 px or at 200% zoom.
+ */
+.opt__main code,
+.opt__main p,
+.opt__main li,
+.opt__main dd,
+.opt__main dt {
+  overflow-wrap: anywhere;
+}
+
+/*
+ * Grids of the shared sections whose columns have a fixed minimum would be wider than a 160 CSS px
+ * page (a 320 px window at 200% zoom). The minimum becomes "this, or the whole row if that is less".
+ */
+.opt__main .rv-grid,
+.opt__main .rv-preview-pair {
+  grid-template-columns: repeat(auto-fit, minmax(min(14rem, 100%), 1fr));
+}
+.opt__main .rv-grid--rows {
+  grid-template-columns: repeat(auto-fit, minmax(min(9rem, 100%), 1fr));
+}
+.opt__main .bk-facts {
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
+}
+.opt__main .bk-counts,
+.opt__main .sv-sync-versions {
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
 }

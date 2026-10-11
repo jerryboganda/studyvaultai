@@ -1,9 +1,16 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
 import type { Settings } from '@shared';
-import { getSettings, updateSettings, watchDataEpoch, watchSettings } from '@runtime';
+import {
+  getSettings,
+  updateSettings,
+  watchDataEpoch,
+  watchResolutionEpoch,
+  watchSettings,
+} from '@runtime';
 import { observe } from '@storage';
-import { errorMessage } from './text';
+import { describeCommand, type ShortcutInfo } from './shortcuts';
+import { errorMessage, isRetryable } from './text';
 
 /** Query dependencies must be primitives: they are compared through JSON, not identity. */
 export type Dep = string | number | boolean | null | undefined;
@@ -27,6 +34,7 @@ export function useLatest<T>(value: T) {
 export function useSettings() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let live = true;
@@ -39,11 +47,17 @@ export function useSettings() {
         if (live) setError(errorMessage(err, 'Could not read your settings.'));
       },
     );
-    const stop = watchSettings((s) => setSettings(s));
     return () => {
       live = false;
-      stop();
     };
+  }, [attempt]);
+
+  useEffect(() => watchSettings((s) => setSettings(s)), []);
+
+  /** Read the settings again after a failure (the error clears immediately). */
+  const retry = useCallback(() => {
+    setError(null);
+    setAttempt((n) => n + 1);
   }, []);
 
   /** Serialised read-modify-write through @runtime; the returned settings are shown immediately. */
@@ -53,7 +67,7 @@ export function useSettings() {
     return next;
   }, []);
 
-  return { settings, error, update };
+  return { settings, error, retry, update };
 }
 
 /** Mirror the theme setting onto <html data-theme>; "system" removes it so the media query decides. */
@@ -69,36 +83,61 @@ export function useApplyTheme(theme: Settings['theme'] | undefined) {
 // Data
 // ---------------------------------------------------------------------------------------------
 
-/** Counter that changes whenever any context mutated the database (cross-context liveness). */
+/**
+ * Counter that changes whenever any context mutated the database (cross-context liveness): both
+ * the data channel (edits, deletes, new highlights) and the resolution channel (a page re-checked
+ * where its highlights are), so status badges stay current.
+ */
 export function useDataEpoch(): number {
   const [epoch, setEpoch] = useState(0);
-  useEffect(() => watchDataEpoch(() => setEpoch((n) => n + 1)), []);
+  useEffect(() => {
+    const bump = () => setEpoch((n) => n + 1);
+    const stopData = watchDataEpoch(bump);
+    const stopResolution = watchResolutionEpoch(bump);
+    return () => {
+      stopData();
+      stopResolution();
+    };
+  }, []);
   return epoch;
 }
 
 export interface Loadable<T> {
   data: T | undefined;
   error: string | null;
+  /** False when repeating the call cannot help (see `isRetryable`): show the message, no Retry. */
+  retryable: boolean;
   /** True until the first result for the current dependencies has arrived. */
   loading: boolean;
-  /** Clears the result and runs again (Retry buttons). */
+  /** True after `refresh()` until its result arrives; the old data and error stay visible meanwhile. */
+  refreshing: boolean;
+  /** Clears the result and runs again. Blanks the view: use `refresh` for retries. */
   reload(): void;
   /** Runs again but keeps the current data and error visible until the new result arrives. */
   refresh(): void;
 }
 
-type Result<T> = { key: string; data?: T; error?: string } | null;
+type Result<T> = {
+  key: string;
+  run: number;
+  data?: T;
+  error?: string;
+  retryable?: boolean;
+} | null;
 
 function toLoadable<T>(
   result: Result<T>,
   key: string,
+  runs: number,
   actions: Pick<Loadable<T>, 'reload' | 'refresh'>,
 ): Loadable<T> {
   const current = result?.key === key ? result : null;
   return {
     data: current?.data,
     error: current?.error ?? null,
+    retryable: current?.retryable ?? true,
     loading: current === null,
+    refreshing: current !== null && current.run !== runs,
     ...actions,
   };
 }
@@ -123,10 +162,11 @@ export function useAsync<T>(
     let live = true;
     latest.current().then(
       (data) => {
-        if (live) setResult({ key, data });
+        if (live) setResult({ key, run: runs, data });
       },
       (err: unknown) => {
-        if (live) setResult({ key, error: errorMessage(err) });
+        if (live)
+          setResult({ key, run: runs, error: errorMessage(err), retryable: isRetryable(err) });
       },
     );
     return () => {
@@ -139,28 +179,42 @@ export function useAsync<T>(
     setRuns((n) => n + 1);
   }, []);
   const refresh = useCallback(() => setRuns((n) => n + 1), []);
-  return toLoadable(result, key, { reload, refresh });
+  return toLoadable(result, key, runs, { reload, refresh });
 }
 
 /**
  * Live database query: re-emits when Dexie reports a change (via @storage `observe`) and is
  * re-subscribed when another context bumps the data epoch. `query` must only call read functions.
  */
+const isTransientTransactionError = (err: unknown): boolean =>
+  err instanceof Error &&
+  /PrematureCommit|TransactionInactive|committed too early/i.test(`${err.name} ${err.message}`);
+
 export function useObserved<T>(query: () => Promise<T>, deps: readonly Dep[]): Loadable<T> {
   const latest = useLatest(query);
   const epoch = useDataEpoch();
   const key = JSON.stringify(deps);
   const [runs, setRuns] = useState(0);
   const [result, setResult] = useState<Result<T>>(null);
+  const autoRetries = useRef(0);
 
   useEffect(() => {
     let live = true;
     const stop = observe(() => latest.current()).subscribe(
       (data) => {
-        if (live) setResult({ key, data });
+        autoRetries.current = 0;
+        if (live) setResult({ key, run: runs, data });
       },
       (err: unknown) => {
-        if (live) setResult({ key, error: errorMessage(err) });
+        // A read transaction that auto-committed under us is transient: ask again once before
+        // showing an error the user could only answer with the same retry.
+        if (live && autoRetries.current < 1 && isTransientTransactionError(err)) {
+          autoRetries.current += 1;
+          setRuns((n) => n + 1);
+          return;
+        }
+        if (live)
+          setResult({ key, run: runs, error: errorMessage(err), retryable: isRetryable(err) });
       },
     );
     return () => {
@@ -174,7 +228,7 @@ export function useObserved<T>(query: () => Promise<T>, deps: readonly Dep[]): L
     setRuns((n) => n + 1);
   }, []);
   const refresh = useCallback(() => setRuns((n) => n + 1), []);
-  return toLoadable(result, key, { reload, refresh });
+  return toLoadable(result, key, runs, { reload, refresh });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -208,13 +262,18 @@ export function useActiveTab() {
     tab: ActiveTab | null;
     error: string | null;
   }>({ loading: true, tab: null, error: null });
+  const readAgain = useRef<(() => Promise<void>) | null>(null);
 
   useEffect(() => {
     let live = true;
+    // Only the most recently started read may publish: tab events fire in bursts and an older
+    // query must never overwrite the answer to a newer one.
+    let latestRead = 0;
     const read = async () => {
+      const mine = ++latestRead;
       try {
         const [found] = await browser.tabs.query({ active: true, currentWindow: true });
-        if (!live) return;
+        if (!live || mine !== latestRead) return;
         const tab: ActiveTab | null =
           found?.id === undefined
             ? null
@@ -231,12 +290,12 @@ export function useActiveTab() {
             : { loading: false, tab, error: null },
         );
       } catch (err) {
-        if (live) {
+        if (live && mine === latestRead) {
           setState({ loading: false, tab: null, error: errorMessage(err, 'Could not read tabs.') });
         }
       }
     };
-    void read();
+    readAgain.current = read;
     const onActivated = () => void read();
     const onUpdated = (
       _tabId: number,
@@ -245,16 +304,78 @@ export function useActiveTab() {
     ) => {
       if (tab.active && (change.url || change.title || change.status)) void read();
     };
+    // Listeners first, read second: a tab switch landing between the query and the subscription
+    // would otherwise leave this page showing a stale tab.
     browser.tabs.onActivated.addListener(onActivated);
     browser.tabs.onUpdated.addListener(onUpdated);
+    void read();
     return () => {
       live = false;
+      readAgain.current = null;
       browser.tabs.onActivated.removeListener(onActivated);
       browser.tabs.onUpdated.removeListener(onUpdated);
     };
   }, []);
 
-  return state;
+  /** Query the tab again after a failure. */
+  const retry = useCallback(() => {
+    setState((prev) => ({ ...prev, loading: true, error: null }));
+    void readAgain.current?.();
+  }, []);
+
+  return { ...state, retry };
+}
+
+/**
+ * The extension's keyboard commands as Chrome has them right now (`commands.getAll`), never a
+ * hard-coded list: the user can change or clear every key. Re-read when the page regains focus,
+ * because shortcuts are edited on chrome://extensions/shortcuts in another tab.
+ */
+export function useShortcuts() {
+  const [state, setState] = useState<{ commands: ShortcutInfo[] | null; error: string | null }>({
+    commands: null,
+    error: null,
+  });
+  const [attempt, setAttempt] = useState(0);
+
+  useEffect(() => {
+    let live = true;
+    const read = async () => {
+      try {
+        const all = await browser.commands.getAll();
+        if (!live) return;
+        const commands = all.flatMap((c) =>
+          c.name
+            ? [
+                {
+                  name: c.name,
+                  description: describeCommand(c.name, c.description),
+                  shortcut: c.shortcut ?? '',
+                },
+              ]
+            : [],
+        );
+        setState({ commands, error: null });
+      } catch (err) {
+        if (live) {
+          setState({
+            commands: null,
+            error: errorMessage(err, 'Chrome did not report the keyboard shortcuts.'),
+          });
+        }
+      }
+    };
+    void read();
+    const onFocus = () => void read();
+    window.addEventListener('focus', onFocus);
+    return () => {
+      live = false;
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [attempt]);
+
+  const retry = useCallback(() => setAttempt((n) => n + 1), []);
+  return { ...state, retry };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -269,18 +390,20 @@ export function useActiveTab() {
 export function useAction<A extends unknown[]>(fn: (...args: A) => Promise<void>) {
   const latest = useLatest(fn);
   const lastArgs = useRef<A | null>(null);
-  const [state, setState] = useState<{ busy: boolean; error: string | null }>({
+  const [state, setState] = useState<{ busy: boolean; error: string | null; retryable: boolean }>({
     busy: false,
     error: null,
+    retryable: true,
   });
 
   const run = useCallback(
     (...args: A) => {
       lastArgs.current = args;
-      setState({ busy: true, error: null });
+      setState({ busy: true, error: null, retryable: true });
       return latest.current(...args).then(
-        () => setState({ busy: false, error: null }),
-        (err: unknown) => setState({ busy: false, error: errorMessage(err) }),
+        () => setState({ busy: false, error: null, retryable: true }),
+        (err: unknown) =>
+          setState({ busy: false, error: errorMessage(err), retryable: isRetryable(err) }),
       );
     },
     [latest],
@@ -288,7 +411,15 @@ export function useAction<A extends unknown[]>(fn: (...args: A) => Promise<void>
   const retry = useCallback(() => {
     if (lastArgs.current) void run(...lastArgs.current);
   }, [run]);
-  const clear = useCallback(() => setState({ busy: false, error: null }), []);
+  const clear = useCallback(() => setState({ busy: false, error: null, retryable: true }), []);
 
-  return { run, retry, clear, busy: state.busy, error: state.error };
+  return {
+    run,
+    retry,
+    clear,
+    busy: state.busy,
+    error: state.error,
+    /** False when the failure is not transient: show the message without a Retry button. */
+    retryable: state.retryable,
+  };
 }

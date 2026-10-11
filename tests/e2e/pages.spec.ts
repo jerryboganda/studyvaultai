@@ -1,11 +1,17 @@
 import type { Page } from '@playwright/test';
+import { KIND_DECORATION } from '@highlights';
+import { DEFAULT_DENY_HOSTS, HIGHLIGHT_KINDS, KIND_LABELS } from '@shared';
+import { describeResolveState } from '@ui/resolveState';
+import { IN_PAGE_KEYS, describeCommand } from '@ui/shortcuts';
 import {
   activate,
   activeTexts,
   bgData,
+  captureSelectionVia,
   closedPort,
   errorsOf,
   expect,
+  highlightRuleFor,
   highlightsOf,
   layoutReport,
   luminanceOf,
@@ -13,16 +19,21 @@ import {
   openFixture,
   openRealPopup,
   pageLuminance,
+  pageListState,
   paintedByColor,
   patchSettings,
+  publishedRangeCount,
   saveBlock,
   saveBlockToBank,
+  selectBlockProgrammatically,
   storedSettings,
   tabIdOf,
   targetIds,
   test,
   toolbarOf,
+  tripleClickBlock,
   viewing,
+  waitForPageList,
   RawTarget,
   OVERLAY_HOST,
 } from './helpers.pages';
@@ -43,9 +54,11 @@ test.describe('popup: state matrix', () => {
     const popup = await openExt(env, 'popup'); // opened as a tab: active tab == the popup
     await expect(popup.getByText('StudyVault cannot run on this page')).toBeVisible();
     await expect(popup.getByText(/"chrome-extension:" address type/)).toBeVisible();
+    // Nothing to activate here, but the side panel (saved highlights from every page) is always offered.
     await expect(
-      popup.getByRole('button', { name: /Activate on this tab|Open side panel|Always enable/ }),
+      popup.getByRole('button', { name: /Activate on this tab|Always enable/ }),
     ).toHaveCount(0);
+    await expect(popup.getByRole('button', { name: 'Open side panel' })).toBeVisible();
     expect(errorsOf(popup)).toEqual([]);
   });
 
@@ -64,9 +77,10 @@ test.describe('popup: state matrix', () => {
       await expect(popup.getByText('StudyVault cannot run on this page')).toBeVisible();
       await expect(popup.getByText('Open a regular website to capture highlights.')).toBeVisible();
       await expect(
-        popup.getByRole('button', { name: /Activate on this tab|Open side panel|Always enable/ }),
+        popup.getByRole('button', { name: /Activate on this tab|Always enable/ }),
       ).toHaveCount(0);
-      // The only control left is the way out to settings.
+      // What is left: the side panel (it works without the page) and the way out to settings.
+      await expect(popup.getByRole('button', { name: 'Open side panel' })).toBeVisible();
       await expect(popup.getByRole('button', { name: 'Settings and privacy' })).toBeVisible();
       expect(errorsOf(popup)).toEqual([]);
     });
@@ -97,7 +111,7 @@ test.describe('popup: state matrix', () => {
     await popup.getByRole('button', { name: 'Activate on this tab' }).click();
     await expect(popup.getByText('0 highlights')).toBeVisible();
     await expect(page.locator(OVERLAY_HOST)).toHaveCount(1);
-    await page.locator('#p-intro').click({ clickCount: 3 });
+    await tripleClickBlock(page, '#p-intro');
     await expect(toolbarOf(page)).toBeVisible();
   });
 
@@ -134,7 +148,7 @@ test.describe('popup: state matrix', () => {
     const page = await openFixture(env, '/article.html', { activate: false });
 
     // Before: nothing of StudyVault is in the page and a selection produces no toolbar.
-    await page.locator('#p-intro').click({ clickCount: 3 });
+    await tripleClickBlock(page, '#p-intro');
     await page.waitForTimeout(400); // 6x the controller's documented 60 ms selection debounce
     await expect(page.locator(OVERLAY_HOST)).toHaveCount(0);
     await expect(toolbarOf(page)).toHaveCount(0);
@@ -190,8 +204,13 @@ test.describe('popup: Open side panel', () => {
   }) => {
     const ext = await openExt(env, 'options');
     const page = await openFixture(env, '/article.html', { activate: false });
-    await tabIdOf(ext, page); // bring the fixture page to the front
+    const tabId = await tabIdOf(ext, page); // the fixture page is the window's active tab
 
+    // From here on NOTHING may activate another window or tab: Chrome closes an action popup as
+    // soon as it loses activation (observed on the Linux runner, where the old flow brought the
+    // page to the front and clicked in it, and the popup was gone before "Open side panel"). So
+    // the page work below uses the DOM Selection API plus the shortcut/context-menu RPC instead
+    // of pointer input; the toolbar's own save path is covered by every saveBlock() test.
     const popup = await openRealPopup(env);
     await popup.waitForText(/StudyVault is not running on this tab/);
     expect(await popup.text()).toContain('127.0.0.1');
@@ -199,7 +218,14 @@ test.describe('popup: Open side panel', () => {
     await popup.waitForText(/0 highlights on this page/);
     await expect(page.locator(OVERLAY_HOST)).toHaveCount(1);
 
-    await saveBlock(ext, page, '#p-intro');
+    await selectBlockProgrammatically(page, '#p-intro');
+    const saved = await captureSelectionVia(ext, tabId);
+    expect(saved).toMatchObject({ ok: true, data: { status: 'created' } });
+    await expect.poll(async () => (await highlightsOf(ext, page.url())).length).toBe(1);
+    expect(popup.closed, 'the popup must still be open after the page saved a highlight').toBe(
+      false,
+    );
+
     await popup.clickButton('Open side panel');
     await expect.poll(() => targetIdsAsync(env, '/popup.html')).toHaveLength(0);
     let panelId = '';
@@ -251,7 +277,9 @@ test.describe('side panel: page list and editing', () => {
     await expect(cards.nth(0)).toHaveAccessibleName(/^Essential fact: The sinoatrial node/);
     await expect(cards.nth(1)).toHaveAccessibleName(/^Formula: Depolarisation spreads/);
     await expect(cards.nth(0).getByText('Inbox')).toBeVisible();
-    await expect(cards.nth(0).getByText('Resolved', { exact: true })).toBeVisible();
+    await expect(
+      cards.nth(0).getByText(describeResolveState('resolved').label, { exact: true }),
+    ).toBeVisible();
     expect(errorsOf(side)).toEqual([]);
   });
 
@@ -261,6 +289,12 @@ test.describe('side panel: page list and editing', () => {
     await expect(
       side.getByRole('heading', { level: 2, name: 'Renal Physiology Notes' }),
     ).toBeVisible();
+    // The heading comes from the tab; the list comes from the database. Wait for the panel's own
+    // settled state (not for a text that may or may not show up) and then assert WHICH state it is:
+    // a failed load must surface as its own message, not as a 10 s "text not found".
+    await expect(side.getByRole('tab', { name: /^This page/ })).toBeVisible();
+    await waitForPageList(side);
+    expect(await pageListState(side), 'the panel loaded the list of an empty page').toBe('empty');
     await expect(side.getByText('No highlights on this page yet')).toBeVisible();
     await expect(side.getByRole('tab', { name: /This page \(0\)/ })).toBeVisible();
   });
@@ -322,7 +356,10 @@ test.describe('side panel: page list and editing', () => {
 
     const side = await viewing(env, 'sidepanel', page);
     await side.getByRole('button', { name: 'Show on page' }).click();
-    await expect(side.getByText('Showing this highlight on the page.')).toBeVisible();
+    // Shown in the card and also spoken through the panel's status region: look at the card's.
+    await expect(
+      side.getByRole('article').getByText('Showing this highlight on the page.'),
+    ).toBeVisible();
     await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(100);
     await expect
       .poll(() => activeTexts(page))
@@ -547,6 +584,26 @@ test.describe('side panel: narrow widths', () => {
     ).toBeLessThanOrEqual(report.innerWidth);
     expect(report.offenders, report.offenders.join('\n')).toEqual([]);
     await expect(side.getByRole('button', { name: 'Delete' }).first()).toBeVisible();
+
+    // All five tabs stay reachable at 160 CSS px (they wrap), and no tab's content overflows.
+    await expect(side.getByRole('tab')).toHaveCount(5);
+    for (const name of ['Recent', 'Search', 'Banks', 'Review']) {
+      await side.getByRole('tab', { name, exact: true }).click();
+      await expect(side.getByRole('tab', { name, exact: true })).toHaveAttribute(
+        'aria-selected',
+        'true',
+      );
+      if (name === 'Search') {
+        await side.getByRole('searchbox').fill('A'.repeat(300));
+        await side.getByRole('button', { name: 'Search syntax' }).click();
+      }
+      report = await layoutReport(side);
+      expect(
+        report.scrollWidth,
+        `the ${name} tab must not scroll horizontally at 200% zoom`,
+      ).toBeLessThanOrEqual(report.innerWidth);
+      expect(report.offenders, `${name}: ${report.offenders.join('\n')}`).toEqual([]);
+    }
   });
 
   test('the popup stays within its 360 px column with long unbroken text', async ({ env }) => {
@@ -559,6 +616,241 @@ test.describe('side panel: narrow widths', () => {
     const report = await layoutReport(popup);
     expect(report.scrollWidth).toBeLessThanOrEqual(report.innerWidth);
     expect(report.offenders, report.offenders.join('\n')).toEqual([]);
+  });
+});
+
+test.describe('side panel: tabs, address hash and Search', () => {
+  test('five tabs in order; the address hash picks the tab and tab changes update it', async ({
+    env,
+  }) => {
+    const page = await openFixture(env, '/pages-b.html');
+    const side = await viewing(env, 'sidepanel', page);
+    await expect(side.getByRole('tab')).toHaveText([
+      /^This page/,
+      /^Recent$/,
+      /^Search$/,
+      /^Banks$/,
+      /^Review/,
+    ]);
+
+    await side.getByRole('tab', { name: 'Search' }).click();
+    await expect.poll(() => side.evaluate(() => location.hash)).toBe('#search');
+    await side.reload();
+    await expect(side.getByRole('tab', { name: 'Search' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    await expect(
+      side.getByRole('searchbox', { name: 'Search highlights and notes' }),
+    ).toBeVisible();
+  });
+
+  test('Search finds a saved quote with the words marked, works offline and says when nothing matches', async ({
+    env,
+  }) => {
+    const ext = await openExt(env, 'options');
+    const page = await openFixture(env, '/article.html');
+    await saveBlock(ext, page, '#p-intro');
+    await saveBlock(ext, page, '#p-refs');
+    const side = await viewing(env, 'sidepanel', page);
+    await side.getByRole('tab', { name: 'Search' }).click();
+    const box = side.getByRole('searchbox', { name: 'Search highlights and notes' });
+
+    await env.context.setOffline(true);
+    try {
+      await box.fill('sinoatrial');
+      const cards = side.getByTestId('search-results').getByRole('article');
+      await expect(cards).toHaveCount(1);
+      await expect(cards.locator('mark')).toHaveText('sinoatrial');
+      await expect(side.getByTestId('search-status')).toContainText('1 match');
+
+      await box.fill('guyton');
+      await expect(cards).toHaveCount(1);
+      await expect(cards).toContainText('Guyton and Hall');
+
+      await box.fill('zyzzyva');
+      await expect(side.getByText('No results')).toBeVisible();
+      await expect(side.getByTestId('search-status')).toHaveText('No matches.');
+    } finally {
+      await env.context.setOffline(false);
+    }
+    expect(errorsOf(side)).toEqual([]);
+  });
+
+  test('a hit can be shown on the page, opened in the dashboard and turned into a flashcard', async ({
+    env,
+  }) => {
+    const ext = await openExt(env, 'options');
+    const page = await openFixture(env, '/article.html');
+    await saveBlock(ext, page, '#p-intro');
+    const [row] = await highlightsOf(ext, page.url());
+    const side = await viewing(env, 'sidepanel', page);
+    await side.getByRole('tab', { name: 'Search' }).click();
+    await side.getByRole('searchbox').fill('sinoatrial');
+    const card = side.getByTestId('search-results').getByRole('article');
+    await expect(card).toHaveCount(1);
+
+    await card.getByRole('button', { name: 'Show on page' }).click();
+    await expect(card.getByText('Showing this highlight on the page.')).toBeVisible();
+    await expect
+      .poll(() => activeTexts(page))
+      .toEqual([expect.stringContaining('sinoatrial node')]);
+
+    const [author] = await Promise.all([
+      env.context.waitForEvent('page'),
+      card.getByRole('button', { name: 'Make flashcard' }).click(),
+    ]);
+    await author.waitForURL(/review\.html\?/);
+    const authorUrl = new URL(author.url());
+    expect(authorUrl.searchParams.get('view')).toBe('create');
+    expect(authorUrl.searchParams.get('highlight')).toBe(row!.id);
+    await author.close();
+
+    await page.bringToFront();
+    await expect(card).toHaveCount(1);
+    const [dashboard] = await Promise.all([
+      env.context.waitForEvent('page'),
+      card.getByRole('button', { name: 'Open in dashboard' }).click(),
+    ]);
+    await dashboard.waitForURL(/dashboard\.html\?/);
+    expect(new URL(dashboard.url()).searchParams.get('highlight')).toBe(row!.id);
+    await dashboard.close();
+  });
+
+  test('a hit from another page cannot be shown here, and says why', async ({ env }) => {
+    const ext = await openExt(env, 'options');
+    const a = await openFixture(env, '/article.html');
+    await saveBlock(ext, a, '#p-intro');
+    const b = await openFixture(env, '/pages-b.html');
+    await saveBlock(ext, b, '#p-gfr');
+    const side = await viewing(env, 'sidepanel', a);
+    await side.getByRole('tab', { name: 'Search' }).click();
+    await side.getByRole('searchbox').fill('glomerular');
+    const card = side.getByTestId('search-results').getByRole('article');
+    await expect(card).toHaveCount(1);
+    const show = card.getByRole('button', { name: 'Show on page' });
+    await expect(show).toHaveAttribute('aria-disabled', 'true');
+    await expect(show).toHaveAccessibleDescription(/from another page/);
+  });
+});
+
+test.describe('side panel: tags and notes on a card', () => {
+  test('a tag and a Markdown note are added on the card, survive a reload, and are searchable', async ({
+    env,
+  }) => {
+    const ext = await openExt(env, 'options');
+    const page = await openFixture(env, '/article.html');
+    await saveBlock(ext, page, '#p-intro');
+    const side = await viewing(env, 'sidepanel', page);
+    const card = side.getByRole('article');
+
+    await card.getByLabel('Add a tag').fill('exam pearl');
+    await card.getByRole('button', { name: 'Add tag' }).click();
+    await expect(card.getByRole('list', { name: 'Tags' }).getByText('exam pearl')).toBeVisible();
+
+    await card.getByRole('button', { name: 'Add a note' }).click();
+    await card.getByLabel('New study note (Markdown)').fill('Resting rate **60-100** bpm');
+    await card.getByRole('button', { name: 'Save note' }).click();
+    await expect(card.getByTestId('card-note').locator('strong')).toHaveText('60-100');
+
+    await side.reload();
+    const again = side.getByRole('article');
+    await expect(again.getByRole('list', { name: 'Tags' }).getByText('exam pearl')).toBeVisible();
+    await expect(again.getByTestId('card-note').locator('strong')).toHaveText('60-100');
+    // The quick note keeps its place as the first text field of the card (the hand-over target).
+    await expect(again.locator('textarea').first()).toHaveAttribute('id', /-note$/);
+
+    await side.getByRole('tab', { name: 'Search' }).click();
+    const box = side.getByRole('searchbox');
+    await box.fill('tag:"exam pearl"');
+    await expect(side.getByTestId('search-results').getByRole('article')).toHaveCount(1);
+    await box.fill('bpm');
+    const hit = side.getByTestId('search-results').getByRole('article');
+    await expect(hit).toHaveCount(1);
+    await expect(hit.getByText('Matched a note')).toBeVisible();
+    expect(errorsOf(side)).toEqual([]);
+  });
+
+  test('removing a tag detaches it from this highlight only', async ({ env }) => {
+    const ext = await openExt(env, 'options');
+    const page = await openFixture(env, '/article.html');
+    await saveBlock(ext, page, '#p-intro');
+    const side = await viewing(env, 'sidepanel', page);
+    const card = side.getByRole('article');
+    await card.getByLabel('Add a tag').fill('rhythm');
+    await card.getByLabel('Add a tag').press('Enter');
+    await expect(card.getByRole('list', { name: 'Tags' })).toContainText('rhythm');
+
+    await card.getByRole('button', { name: 'Remove tag rhythm' }).click();
+    await expect(card.getByText('No tags yet.')).toBeVisible();
+    // The vocabulary keeps the tag: the field offers it again.
+    const listId = await card.getByLabel('Add a tag').getAttribute('list');
+    await expect(side.locator(`datalist[id="${listId}"] option[value="rhythm"]`)).toHaveCount(1);
+  });
+});
+
+test.describe('side panel: banks, folders and the bank filter', () => {
+  test('a bank chosen in Banks narrows Recent and Search to it, and opens in the dashboard', async ({
+    env,
+  }) => {
+    const ext = await openExt(env, 'options');
+    const page = await openFixture(env, '/article.html');
+    await saveBlock(ext, page, '#p-refs'); // Inbox (the default bank)
+    const side = await viewing(env, 'sidepanel', page);
+    await side.getByRole('tab', { name: 'Banks' }).click();
+    await side.getByLabel('New bank').fill('Cardiology');
+    await side.getByRole('button', { name: 'Create bank' }).click();
+    await expect(side.getByRole('list', { name: 'Your banks' })).toContainText('Cardiology');
+    await saveBlockToBank(ext, page, '#p-intro', 'Cardiology');
+
+    const bank = side.getByRole('listitem').filter({ hasText: 'Cardiology' });
+    await expect(bank).toContainText('1 highlight');
+    await bank.getByRole('button', { name: 'Show folders of Cardiology' }).click();
+    await expect(bank.getByText('No folders in this bank yet.')).toBeVisible();
+    await bank.getByRole('button', { name: 'Show Cardiology in Recent and Search' }).click();
+    await expect(side.getByTestId('bank-scope')).toContainText('only Cardiology');
+
+    await side.getByRole('tab', { name: 'Recent' }).click();
+    await expect(side.getByRole('article')).toHaveCount(1);
+    await expect(side.getByRole('article')).toContainText('sinoatrial node');
+    await expect(side.getByTestId('recent-scope')).toContainText('Only Cardiology');
+
+    await side.getByRole('tab', { name: 'Search' }).click();
+    await expect(side.getByTestId('search-scope')).toContainText('Only in Cardiology');
+    // No words typed: the bank itself is the query.
+    const hit = side.getByTestId('search-results').getByRole('article');
+    await expect(hit).toHaveCount(1);
+    await expect(hit).toContainText('sinoatrial node');
+    await side.getByRole('searchbox').fill('guyton');
+    await expect(side.getByText('No results')).toBeVisible();
+    await side.getByTestId('search-everywhere').click();
+    await expect(side.getByTestId('search-results').getByRole('article')).toHaveCount(1);
+
+    await side.getByRole('tab', { name: 'Banks' }).click();
+    const [dashboard] = await Promise.all([
+      env.context.waitForEvent('page'),
+      side.getByRole('button', { name: 'Open Cardiology in the dashboard' }).click(),
+    ]);
+    await dashboard.waitForURL(/dashboard\.html\?/);
+    expect(new URL(dashboard.url()).searchParams.get('bank')).toBeTruthy();
+    await dashboard.close();
+  });
+});
+
+test.describe('side panel: Review tab', () => {
+  test('explains that there are no cards yet and opens the card author', async ({ env }) => {
+    const page = await openFixture(env, '/pages-b.html');
+    const side = await viewing(env, 'sidepanel', page);
+    await side.getByRole('tab', { name: 'Review' }).click();
+    await expect(side.getByText('No cards to review yet')).toBeVisible();
+
+    const [author] = await Promise.all([
+      env.context.waitForEvent('page'),
+      side.getByRole('button', { name: 'Create cards' }).click(),
+    ]);
+    await author.waitForURL(/review\.html\?/);
+    expect(new URL(author.url()).searchParams.get('view')).toBe('create');
+    await author.close();
   });
 });
 
@@ -592,8 +884,11 @@ test.describe('options: theme', () => {
 
     // The in-page overlay: attribute on the shadow host and the toolbar's computed background.
     await page.bringToFront();
-    await expect(page.locator(OVERLAY_HOST)).toHaveAttribute('data-theme', 'dark');
-    await page.locator('#p-intro').click({ clickCount: 3 });
+    // The host carries only its marker attribute (a page script can read it); the theme is applied
+    // on the root element inside the shadow root.
+    await expect(page.locator(OVERLAY_HOST)).not.toHaveAttribute('data-theme', /.*/);
+    await expect(page.locator(`${OVERLAY_HOST} .sv-root`)).toHaveAttribute('data-theme', 'dark');
+    await tripleClickBlock(page, '#p-intro');
     const bar = toolbarOf(page);
     await expect(bar).toBeVisible();
     const toolbarSurface = page.locator(`${OVERLAY_HOST} .sv-toolbar`);
@@ -627,8 +922,13 @@ test.describe('options: deny list', () => {
   }) => {
     const options = await openExt(env, 'options');
     const rows = options.getByRole('group', { name: 'Deny list' }).getByRole('listitem');
-    const count = await rows.count();
-    expect(count).toBe(11); // the shipped defaults
+    // The list renders after settings load: wait for it, then compare with the shipped starter list
+    // (imported, never a literal count).
+    await expect(rows).not.toHaveCount(0);
+    const count = DEFAULT_DENY_HOSTS.length;
+    await expect(rows).toHaveCount(count);
+    // The worker may write settings on its own (the install-time site sync); a rejected entry may not.
+    const before = await storedSettings(options);
 
     const CASES: Array<[string, RegExp]> = [
       ['', /Enter a site such as example\.com\./],
@@ -651,7 +951,7 @@ test.describe('options: deny list', () => {
     await field(options).fill('example.com');
     await expect(options.getByRole('alert')).toHaveCount(0);
     await expect(field(options)).not.toHaveAttribute('aria-invalid', 'true');
-    expect(await storedSettings(options)).toBeUndefined(); // nothing was written by any rejection
+    expect(await storedSettings(options)).toEqual(before); // nothing was written by any rejection
   });
 
   test('valid entries are normalised, listed, persisted and removable; defaults can be restored', async ({
@@ -704,13 +1004,15 @@ test.describe('options: deny list', () => {
     const options = await openExt(env, 'options');
 
     await page.bringToFront();
-    await page.locator('#p-intro').click({ clickCount: 3 });
+    await tripleClickBlock(page, '#p-intro');
     await expect(toolbarOf(page)).toBeVisible(); // positive control: it works before the entry
 
     await options.bringToFront();
     await field(options).fill('localhost');
     await add(options).click();
-    await expect(options.getByText('localhost', { exact: true })).toBeVisible();
+    await expect(
+      options.getByRole('group', { name: 'Deny list' }).getByText('localhost', { exact: true }),
+    ).toBeVisible();
 
     await expect(page.locator(OVERLAY_HOST)).toHaveCount(0);
     await expect(toolbarOf(page)).toHaveCount(0);
@@ -721,7 +1023,7 @@ test.describe('options: deny list', () => {
     await options.getByRole('button', { name: 'Remove localhost from the deny list' }).click();
     await expect(page.locator(OVERLAY_HOST)).toHaveCount(1);
     await page.bringToFront();
-    await page.locator('#p-intro').click({ clickCount: 3 });
+    await tripleClickBlock(page, '#p-intro');
     await expect(toolbarOf(page)).toBeVisible();
   });
 
@@ -733,7 +1035,10 @@ test.describe('options: deny list', () => {
       'a-very-long-subdomain-name-for-layout-testing.example-institution-of-higher-learning.org',
     );
     await add(options).click();
-    await expect(options.getByText(/a-very-long-subdomain-name/)).toBeVisible();
+    // The entry is also spoken through the page's status region: look at the list.
+    await expect(
+      options.getByRole('group', { name: 'Deny list' }).getByText(/a-very-long-subdomain-name/),
+    ).toBeVisible();
     await options.setViewportSize({ width: 320, height: 700 });
     await expect.poll(() => options.evaluate(() => window.innerWidth)).toBe(320);
     const report = await layoutReport(options);
@@ -750,7 +1055,7 @@ test.describe('options: floating toolbar toggle', () => {
     const page = await openFixture(env, '/article.html');
 
     // Positive control with the toggle on.
-    await page.locator('#p-intro').click({ clickCount: 3 });
+    await tripleClickBlock(page, '#p-intro');
     await expect(toolbarOf(page)).toBeVisible();
 
     const checkbox = ext.getByRole('checkbox', { name: /Show the floating toolbar/ });
@@ -765,7 +1070,7 @@ test.describe('options: floating toolbar toggle', () => {
     // The toolbar goes away and a new selection does not bring it back.
     await page.bringToFront();
     await expect(toolbarOf(page)).toHaveCount(0);
-    await page.locator('#p-multiline').click({ clickCount: 3 });
+    await tripleClickBlock(page, '#p-multiline');
     await page.waitForTimeout(400); // 6x the documented 60 ms selection debounce
     await expect(toolbarOf(page)).toHaveCount(0);
     expect(await page.evaluate(() => getSelection()?.toString().length ?? 0)).toBeGreaterThan(20);
@@ -796,7 +1101,298 @@ test.describe('options: floating toolbar toggle', () => {
     await checkbox.click();
     await expect(checkbox).toBeChecked();
     await page.bringToFront();
-    await page.locator('#p-intro').click({ clickCount: 3 });
+    await tripleClickBlock(page, '#p-intro');
     await expect(toolbarOf(page)).toBeVisible();
+  });
+});
+
+// =============================================================================================
+// OPTIONS: highlights on pages, capture, shortcuts, delete all data
+// =============================================================================================
+
+test.describe('options: highlights on pages', () => {
+  test('"Show highlights on pages" off stops painting (saving continues), disables the style choice, and on restores it', async ({
+    env,
+  }) => {
+    const ext = await openExt(env, 'options');
+    const page = await openFixture(env, '/article.html');
+    await saveBlock(ext, page, '#p-intro');
+    await expect.poll(() => paintedByColor(page)).toEqual({ amber: [expect.any(String)] });
+
+    const toggle = ext.getByRole('checkbox', { name: 'Show highlights on pages' });
+    await ext.bringToFront();
+    await expect(toggle).toBeChecked();
+    await expect(toggle).toHaveAccessibleDescription(/scripts that a site itself runs can read/);
+    await toggle.click();
+    await expect.poll(async () => (await storedSettings(ext))?.paintHighlights).toBe(false);
+    await expect(ext.getByRole('radio', { name: /^Strong/ })).toBeDisabled();
+    await expect(
+      ext.getByText('Highlight style has no effect while highlights are not shown'),
+    ).toBeVisible();
+
+    await expect
+      .poll(() => publishedRangeCount(page), { message: 'the page registry is left alone' })
+      .toBe(0);
+    // Quiet mode still saves; the side panel (not the page) is where the highlight is seen.
+    await saveBlock(ext, page, '#quote');
+    expect(await highlightsOf(ext, page.url())).toHaveLength(2);
+    expect(await publishedRangeCount(page)).toBe(0);
+
+    await ext.bringToFront();
+    await toggle.click();
+    await expect(toggle).toBeChecked();
+    await expect.poll(() => publishedRangeCount(page)).toBe(2);
+  });
+
+  test("highlight style: Automatic by default; Strong thickens every underline; the legend names each kind's underline", async ({
+    env,
+  }) => {
+    const ext = await openExt(env, 'options');
+    const page = await openFixture(env, '/article.html');
+    await saveBlock(ext, page, '#p-intro');
+    await expect
+      .poll(async () => (await highlightRuleFor(page, 'sv-hl-amber-essential'))?.thickness)
+      .toBe(`${KIND_DECORATION.essential.thickness}px`);
+
+    await ext.bringToFront();
+    await expect(ext.getByRole('radio', { name: /^Automatic/ })).toBeChecked();
+    const legend = ext.getByRole('list', { name: 'Underline for each highlight kind' });
+    await expect(legend.getByRole('listitem')).toHaveCount(HIGHLIGHT_KINDS.length);
+    for (const kind of HIGHLIGHT_KINDS) {
+      const row = legend.getByRole('listitem').filter({ hasText: KIND_LABELS[kind].label });
+      await expect(row).toContainText(KIND_DECORATION[kind].label);
+    }
+
+    // A controlled radio: its state changes when the saved setting comes back, so click, then wait.
+    await ext.getByRole('radio', { name: /^Strong/ }).click();
+    await expect(ext.getByRole('radio', { name: /^Strong/ })).toBeChecked();
+    await expect.poll(async () => (await storedSettings(ext))?.highlightStyle).toBe('strong');
+    await expect
+      .poll(async () => (await highlightRuleFor(page, 'sv-hl-amber-essential'))?.thickness)
+      .toBe(`${KIND_DECORATION.essential.thickness + 1}px`);
+
+    await ext.getByRole('radio', { name: /^Normal/ }).click();
+    await expect(ext.getByRole('radio', { name: /^Normal/ })).toBeChecked();
+    await expect
+      .poll(async () => (await highlightRuleFor(page, 'sv-hl-amber-essential'))?.thickness)
+      .toBe(`${KIND_DECORATION.essential.thickness}px`);
+  });
+});
+
+test.describe('options: capture and private windows', () => {
+  test('"Save from private windows" is off by default, explains the trade-off, and persists', async ({
+    env,
+  }) => {
+    const ext = await openExt(env, 'options');
+    const box = ext.getByRole('checkbox', { name: 'Save from private windows' });
+    await expect(box).not.toBeChecked();
+    await expect(box).toHaveAccessibleDescription(/private \(incognito\) windows/);
+    await expect(box).toHaveAccessibleDescription(/stay after you close the window/);
+
+    await box.click();
+    await expect.poll(async () => (await storedSettings(ext))?.allowIncognitoCapture).toBe(true);
+    await ext.reload();
+    await expect(box).toBeChecked();
+    await box.click();
+    await expect.poll(async () => (await storedSettings(ext))?.allowIncognitoCapture).toBe(false);
+  });
+});
+
+test.describe('options: keyboard shortcuts', () => {
+  test("lists every command exactly as Chrome reports it, the fixed in-page keys, and opens Chrome's shortcut page", async ({
+    env,
+  }) => {
+    const ext = await openExt(env, 'options');
+    const commands = await ext.evaluate(() => chrome.commands.getAll());
+    expect(commands.map((c) => c.name)).toEqual(
+      expect.arrayContaining(['quick-save', 'open-side-panel', 'focus-toolbar', 'next-highlight']),
+    );
+
+    const section = ext.locator('#shortcuts');
+    await expect(
+      section.getByRole('heading', { name: 'Keyboard shortcuts', level: 2 }),
+    ).toBeVisible();
+    const list = section.getByRole('list', { name: 'Browser shortcuts' });
+    await expect(list.getByRole('listitem')).toHaveCount(commands.length);
+    for (const c of commands) {
+      const name = c.name ?? '';
+      const row = list.getByRole('listitem').filter({
+        has: ext.getByText(describeCommand(name, c.description), { exact: true }),
+      });
+      await expect(row, `${name} is listed`).toHaveCount(1);
+      // An unset command says so instead of being hidden.
+      if (!c.shortcut) await expect(row).toContainText(/Not set/i);
+    }
+
+    const inPage = section.getByRole('list', { name: 'In-page shortcuts' });
+    await expect(inPage.getByRole('listitem')).toHaveCount(IN_PAGE_KEYS.length);
+    for (const k of IN_PAGE_KEYS) await expect(inPage).toContainText(k.action);
+
+    const opened = env.context.waitForEvent('page');
+    await section.getByRole('button', { name: 'Change shortcuts in Chrome' }).click();
+    const shortcuts = await opened;
+    await expect.poll(() => shortcuts.url()).toMatch(/^(chrome|edge):\/\/extensions\/shortcuts/);
+  });
+});
+
+test.describe('options: delete all data', () => {
+  test('asks first (focus starts on Cancel), then removes highlights, banks and settings, and the page repaints without them', async ({
+    env,
+  }) => {
+    const ext = await openExt(env, 'options');
+    const page = await openFixture(env, '/article.html');
+    await bgData(ext, 'bank.create', { name: 'Cardiology' });
+    await saveBlock(ext, page, '#p-intro');
+    await patchSettings(ext, { theme: 'dark' });
+    await expect.poll(() => paintedByColor(page)).toEqual({ amber: [expect.any(String)] });
+
+    await ext.bringToFront();
+    const open = ext.getByRole('button', { name: /^Delete all StudyVault data/ });
+    await open.click();
+    const dialog = ext.getByRole('dialog', { name: 'Delete all StudyVault data?' });
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
+    await expect(dialog).toContainText('This cannot be undone.');
+    await dialog.getByRole('button', { name: 'Cancel' }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(await highlightsOf(ext, page.url()), 'Cancel deletes nothing').toHaveLength(1);
+
+    await open.click();
+    await dialog.getByRole('button', { name: 'Delete everything' }).click();
+    await expect(ext.getByText(/All StudyVault data was deleted from this device/)).toBeVisible();
+
+    await expect.poll(async () => (await highlightsOf(ext, page.url())).length).toBe(0);
+    const { banks } = await bgData<{ banks: Array<{ name: string }> }>(ext, 'banks.list');
+    expect(banks.map((b) => b.name)).toEqual(['Inbox']);
+    expect((await storedSettings(ext))?.theme ?? 'system', 'settings are back to defaults').toBe(
+      'system',
+    );
+    await expect
+      .poll(() => paintedByColor(page), { message: 'the open page drops the paint' })
+      .toEqual({});
+  });
+});
+
+// =============================================================================================
+// CONTENT SECURITY POLICY (docs/adr/008, docs/adr/009)
+// =============================================================================================
+
+test.describe('extension pages: content security policy', () => {
+  /**
+   * Every violation the page reports, as the directive that refused it. The `securitypolicyviolation`
+   * event is used (not the console) because eval, workers and inline styles do not all reach it, and
+   * it is installed before the page's own scripts run.
+   */
+  async function watchViolations(page: Page): Promise<() => Promise<string[]>> {
+    type Seen = { __svCsp: string[] };
+    await page.addInitScript(() => {
+      const seen: string[] = [];
+      (window as unknown as Seen).__svCsp = seen;
+      window.addEventListener(
+        'securitypolicyviolation',
+        (e) => seen.push(`${e.effectiveDirective} blocked ${e.blockedURI || 'inline'}`),
+        true,
+      );
+    });
+    return () => page.evaluate(() => (window as unknown as Seen).__svCsp.slice());
+  }
+
+  test('every extension page loads and settles with no violation', async ({ env }) => {
+    const names = [
+      'popup',
+      'sidepanel',
+      'options',
+      'dashboard',
+      'review',
+      'onboarding',
+      'pdf-reader',
+    ];
+    for (const name of names) {
+      const page = await env.context.newPage();
+      const violations = await watchViolations(page);
+      await page.goto(`chrome-extension://${env.extensionId}/${name}.html`);
+      // `#root > *` would match the empty toast host, so wait for real content.
+      await expect(
+        page.locator('#root :is(h1, h2, button):visible').first(),
+        `${name}.html`,
+      ).toBeVisible();
+      await page.waitForLoadState('networkidle');
+      expect(await violations(), `${name}.html`).toEqual([]);
+      await page.close();
+    }
+  });
+
+  // The manifest string is asserted in permissions.spec.ts; this proves Chrome ENFORCES it (a CSP that
+  // fails validation is silently replaced by the default one, which has no style/img/connect rules).
+  test('the policy is enforced: inline or remote content, plain http, eval and blob scripts are refused; CSSOM styles, data images and wasm still work', async ({
+    env,
+  }) => {
+    const page = await env.context.newPage();
+    const violations = await watchViolations(page);
+    await page.goto(`chrome-extension://${env.extensionId}/options.html`);
+    await expect(page.locator('#root :is(h1, h2, button):visible').first()).toBeVisible();
+
+    const allowed = await page.evaluate(async () => {
+      const el = document.createElement('div');
+      document.body.append(el);
+      el.style.color = 'rgb(1, 2, 3)'; // CSSOM: how React and pdf.js style elements
+      const dataImage = await new Promise<boolean>((resolve) => {
+        const img = new Image();
+        img.onload = () => resolve(true);
+        img.onerror = () => resolve(false);
+        img.src = 'data:image/gif;base64,R0lGODlhAQABAAAAACwAAAAAAQABAAA=';
+      });
+      const wasm = await WebAssembly.compile(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])).then(
+        () => true,
+        () => false,
+      );
+      return { color: getComputedStyle(el).color, dataImage, wasm };
+    });
+    expect(allowed).toEqual({ color: 'rgb(1, 2, 3)', dataImage: true, wasm: true });
+    expect(await violations(), 'the allowed operations raise nothing').toEqual([]);
+
+    await page.evaluate(async () => {
+      const style = document.createElement('style');
+      style.textContent = 'body { outline: 1px solid red; }';
+      document.head.append(style); // style-src-elem
+      document.body.setAttribute('style', 'outline: 1px solid red'); // style-src-attr
+      new Image().src = 'https://example.invalid/pixel.png'; // img-src
+      new Audio('https://example.invalid/clip.mp3'); // media-src
+      const frame = document.createElement('iframe');
+      frame.src = 'https://example.invalid/'; // frame-src
+      document.body.append(frame);
+      await fetch('http://example.invalid/').catch(() => undefined); // connect-src: http only on loopback
+      // Outside this evaluate call: DevTools-initiated evaluation is itself exempt from the eval ban.
+      await new Promise<void>((resolve) =>
+        setTimeout(() => {
+          try {
+            // eslint-disable-next-line no-restricted-syntax -- refusing this is what is under test
+            new Function('return 1')(); // script-src: no unsafe-eval
+          } catch {
+            /* EvalError is the point */
+          }
+          resolve();
+        }, 0),
+      );
+      // script-src-elem: no code from blob: (a blob Worker is NOT blocked by worker-src 'self' in
+      // Chromium; see docs/adr/009 amendment, so it is deliberately not asserted here).
+      await import(/* @vite-ignore */ URL.createObjectURL(new Blob(['export {}']))).catch(
+        () => undefined,
+      );
+    });
+    await expect
+      .poll(async () => [...new Set((await violations()).map((v) => v.split(' ')[0]))].sort())
+      .toEqual(
+        [
+          'connect-src',
+          'frame-src',
+          'img-src',
+          'media-src',
+          'script-src',
+          'script-src-elem',
+          'style-src-attr',
+          'style-src-elem',
+        ].sort(),
+      );
   });
 });

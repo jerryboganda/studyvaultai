@@ -3,6 +3,13 @@ html,
 body {
   height: 100%;
 }
+/*
+ * The toast stack is fixed to the bottom edge. A focused control that scrolls into view must come to
+ * rest above it (WCAG 2.4.11 Focus Not Obscured), and the last card must be able to scroll clear of it.
+ */
+html {
+  scroll-padding-bottom: 9rem;
+}
 .panel {
   display: flex;
   flex-direction: column;
@@ -22,7 +29,8 @@ body {
   min-width: 0;
 }
 .panel__body {
-  padding: var(--sv-space-3);
+  /* Bottom room so the last card can scroll clear of the fixed toast stack. */
+  padding: var(--sv-space-3) var(--sv-space-3) 6rem;
   min-width: 0;
 }
 .panel__title {
@@ -49,4 +57,194 @@ body {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: var(--sv-space-2);
+}
+.panel__error {
+  color: var(--sv-danger);
+  font-weight: 600;
+}
+.bank-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+}
+.bank-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sv-space-2);
+  padding: var(--sv-space-2) var(--sv-space-3);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface-raised);
+  min-width: 0;
+}
+
+/* Header: title and actions on one wrapping row, then the page context. ------------------------ */
+.panel__head {
+  flex-direction: column;
+  align-items: stretch;
+}
+.panel__bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sv-space-1) var(--sv-space-2);
+  min-width: 0;
+}
+.panel__context {
+  min-width: 0;
+}
+
+/* Tabs: five labels cannot share one row at 160 CSS px (320 px at 200% zoom), so they wrap. ----- */
+.panel .sv-tablist {
+  flex-wrap: wrap;
+}
+.panel .sv-tab {
+  flex: 1 1 auto;
+  min-width: 3.5rem;
+}
+
+/* Highlight card additions -------------------------------------------------------------------- */
+.sp-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sv-space-1);
+}
+.sp-tag {
+  align-items: center;
+  padding-inline-end: 0;
+}
+.sp-tag__x {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--sv-text);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.sp-tag__x:hover {
+  background: var(--sv-surface);
+}
+.sp-tag__x[aria-disabled='true'] {
+  cursor: progress;
+  opacity: 0.65;
+}
+.sp-grow {
+  flex: 1 1 8rem;
+  min-width: 0;
+  width: auto;
+}
+.sp-note {
+  padding: var(--sv-space-2);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface);
+  min-width: 0;
+}
+.sp-note .sv-md table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.sp-note .sv-md pre {
+  max-width: 100%;
+}
+
+/* Bank and folder map -------------------------------------------------------------------------- */
+.bank-name {
+  justify-content: flex-start;
+  text-align: start;
+  min-width: 0;
+}
+.folder-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-1);
+  margin-block-start: var(--sv-space-1);
+  padding-inline-start: var(--sv-space-3);
+  border-inline-start: 2px solid var(--sv-border);
+  min-width: 0;
+}
+.folder-twist {
+  padding-inline: var(--sv-space-1);
+}
+
+/* Search ---------------------------------------------------------------------------------------- */
+.sp-results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-3);
+}
+.sp-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+  padding: var(--sv-space-3);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface-raised);
+  min-width: 0;
+}
+.sp-quote {
+  font-family: var(--sv-serif);
+}
+.sp-mark {
+  padding: 0 1px;
+  border-radius: 2px;
+  background: var(--sv-warning-bg);
+  color: var(--sv-text);
+  font-weight: 700;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+}
+.sp-help .sv-kbd {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.sp-help {
+  padding: var(--sv-space-2);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface);
+}
+.sp-chip {
+  max-width: 100%;
+  min-height: 24px;
+  padding: 2px var(--sv-space-2);
+  border: 1px solid var(--sv-border-strong);
+  border-radius: 999px;
+  background: var(--sv-surface-raised);
+  color: var(--sv-text);
+  font: inherit;
+  font-size: var(--sv-text-xs);
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.sp-chip[aria-pressed='true'] {
+  border-color: var(--sv-accent);
+  background: var(--sv-info-bg);
+  font-weight: 700;
+}
+.sp-progress {
+  width: 100%;
+}
+.sp-warnings {
+  padding-inline-start: var(--sv-space-4);
+  list-style: disc;
+}
+@media (forced-colors: active) {
+  .sp-mark {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+  }
+  .sp-chip[aria-pressed='true'] {
+    outline: 2px solid Highlight;
+  }
 }

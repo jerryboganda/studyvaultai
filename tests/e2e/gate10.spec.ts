@@ -336,8 +336,8 @@ test.describe('GATE: >= 10 passages over >= 6 pages survive reload and revisit',
       await page.close();
     }
 
-    // ---- Phase 3: identity: canonical + tracking parameters map to the same source ------------
-    for (const query of ['?utm_source=newsletter', '?ref=somewhere']) {
+    // ---- Phase 3: identity: tracking parameters (utm_*, fbclid, ...) fold into the same source -----
+    for (const query of ['?utm_source=newsletter', '?utm_campaign=somewhere']) {
       const page = await context.newPage();
       await page.goto(`${fixtureServer.origin}/canonical.html${query}`);
       await activate(ext, page);

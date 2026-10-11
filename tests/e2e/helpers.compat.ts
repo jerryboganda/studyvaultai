@@ -38,11 +38,17 @@ export function pageErrors(page: Page): string[] {
   return ERRORS.get(page) ?? [];
 }
 
-/** Open a fixture page in a new tab and (by default) activate the content script through the real RPC. */
+/**
+ * Open a fixture page in a new tab and (by default) activate the content script through the real RPC.
+ *
+ * `style` is CSS appended to the document on every load of this tab, including reloads. Use it to
+ * pin geometry that would otherwise depend on the OS font fallback (the fixtures name Georgia, which
+ * Linux runners do not have), e.g. a column narrow enough that a quote wraps on every platform.
+ */
 export async function openFixture(
   env: Env,
   pathAndQuery: string,
-  opts: { activate?: boolean } = {},
+  opts: { activate?: boolean; style?: string } = {},
 ): Promise<Page> {
   const page = await env.context.newPage();
   const errors: string[] = [];
@@ -54,6 +60,15 @@ export async function openFixture(
     if (msg.location().url.endsWith('/favicon.ico')) return;
     errors.push(`console.error: ${msg.text()}`);
   });
+  if (opts.style) {
+    await page.addInitScript((css) => {
+      document.addEventListener('DOMContentLoaded', () => {
+        const el = document.createElement('style');
+        el.textContent = css;
+        document.head.append(el);
+      });
+    }, opts.style);
+  }
   await page.goto(`${env.origin}${pathAndQuery}`);
   if (opts.activate !== false) await activate(env, page);
   return page;
@@ -393,6 +408,69 @@ export async function tabRpc(
       },
       { pageUrl: url, type, payload },
     ),
+  );
+}
+
+/**
+ * Manifest command "focus-toolbar" as the service worker sends it (TabRpc content.focusToolbar), sent
+ * from an extension page: Playwright cannot press manifest shortcuts. True when focus moved into the
+ * selection toolbar or the newest actionable toast.
+ */
+export async function focusToolbar(env: Env, page: Page): Promise<boolean> {
+  const res = await tabRpc(env, page, 'content.focusToolbar');
+  expect(res.ok, `content.focusToolbar: ${JSON.stringify(res)}`).toBe(true);
+  return (res.data as { focused: boolean }).focused;
+}
+
+/** Manifest commands "next-highlight" / "previous-highlight" (TabRpc content.stepHighlight). */
+export async function stepHighlight(
+  env: Env,
+  page: Page,
+  direction: 'next' | 'previous',
+): Promise<boolean> {
+  const res = await tabRpc(env, page, 'content.stepHighlight', { direction });
+  expect(res.ok, `content.stepHighlight: ${JSON.stringify(res)}`).toBe(true);
+  return (res.data as { found: boolean }).found;
+}
+
+/** BackgroundRpc request (the transport the popup and side panel use) from a throwaway extension page. */
+export async function backgroundRpc(
+  env: Env,
+  type: string,
+  payload: unknown,
+): Promise<{ ok: boolean; data?: unknown; error?: { code: string; message: string } }> {
+  return withExtensionPage(env, (ext) =>
+    ext.evaluate(
+      async ({ type: t, payload: p }) => chrome.runtime.sendMessage({ v: 1, type: t, payload: p }),
+      { type, payload },
+    ),
+  );
+}
+
+/**
+ * Remove a highlight row from IndexedDB for good, from an extension page (same origin as the worker's
+ * database): what a "delete all data" or a restore from an older backup would do behind the overlay's
+ * back. The worker then answers "not found" for that id, which is how a toast error is provoked.
+ */
+export async function removeHighlightRow(env: Env, id: string): Promise<void> {
+  await withExtensionPage(env, (ext) =>
+    ext.evaluate(async (rowId) => {
+      const db = await new Promise<IDBDatabase>((resolve, reject) => {
+        const req = indexedDB.open('studyvault');
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const tx = db.transaction('highlights', 'readwrite');
+          tx.objectStore('highlights').delete(rowId);
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        });
+      } finally {
+        db.close();
+      }
+    }, id),
   );
 }
 

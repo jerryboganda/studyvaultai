@@ -180,15 +180,21 @@ a {
 }
 
 /* Form controls ---------------------------------------------------------------------------- */
+/* A field is found by its edge: the boundary must reach 3:1 (WCAG 1.4.11), unlike the soft --sv-border. */
 .sv-control {
   width: 100%;
   min-height: 28px;
   padding: 4px 8px;
-  border: 1px solid var(--sv-border);
+  border: 1px solid var(--sv-border-strong);
   border-radius: var(--sv-radius-sm);
   background: var(--sv-surface-raised);
   color: var(--sv-text);
   font: inherit;
+}
+/* Browsers dim placeholders to ~50%; keep them at the muted text colour (>= 4.5:1 on the field). */
+.sv-control::placeholder {
+  color: var(--sv-text-muted);
+  opacity: 1;
 }
 textarea.sv-control {
   resize: vertical;
@@ -349,6 +355,9 @@ textarea.sv-control {
 }
 .sv-tab {
   flex: 1 1 0;
+  /* Three tabs must still fit a 160 CSS px panel (320 px at 200% zoom): let labels wrap, not overflow. */
+  min-width: 0;
+  overflow-wrap: anywhere;
   min-height: 32px;
   padding: 4px var(--sv-space-2);
   border: 0;
@@ -372,6 +381,13 @@ textarea.sv-control {
 }
 
 /* Toasts ----------------------------------------------------------------------------------- */
+/*
+ * The stack is fixed to the bottom edge. A control that scrolls into view for keyboard focus must come
+ * to rest above it (WCAG 2.4.11 Focus Not Obscured); panes that scroll on their own repeat this.
+ */
+html {
+  scroll-padding-bottom: 6rem;
+}
 .sv-toasts {
   position: fixed;
   inset: auto var(--sv-space-2) var(--sv-space-2) var(--sv-space-2);
@@ -380,6 +396,11 @@ textarea.sv-control {
   flex-direction: column;
   gap: var(--sv-space-2);
   pointer-events: none;
+}
+.sv-toasts__polite {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
 }
 .sv-toast {
   display: flex;
@@ -414,11 +435,82 @@ textarea.sv-control {
 .sv-toast__close {
   border-color: transparent;
 }
+/*
+ * The toast is the inverse of the page, so the blue focus ring (2.7:1 on it in light, 1.8:1 in dark)
+ * is too faint against it. The page colour is what reads on that surface (WCAG 1.4.11). The error
+ * toast keeps the blue: it sits on a tinted surface where blue has 5:1 or more.
+ */
+.sv-toast :focus-visible {
+  outline-color: var(--sv-bg);
+}
+.sv-toast--error :focus-visible {
+  outline-color: var(--sv-focus);
+}
+/* Errors do not use the inverse "snackbar" look: tinted surface, danger edge, glyph, text prefix. */
+.sv-toast--error {
+  border: 2px solid var(--sv-danger);
+  background: var(--sv-danger-bg);
+  color: var(--sv-text);
+}
+.sv-toast__glyph {
+  flex: none;
+  color: var(--sv-danger);
+  font-weight: 700;
+}
+
+/* Dialogs ---------------------------------------------------------------------------------- */
+.sv-dialog {
+  width: min(34rem, calc(100vw - 2 * var(--sv-space-4)));
+  max-height: calc(100vh - 2 * var(--sv-space-4));
+  padding: 0;
+  border: 1px solid var(--sv-border-strong);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface-raised);
+  color: var(--sv-text);
+  box-shadow: var(--sv-shadow);
+  overflow: auto;
+}
+.sv-dialog::backdrop {
+  background: rgba(15, 23, 42, 0.6);
+}
+.sv-dialog__body {
+  padding: var(--sv-space-4);
+}
+.sv-dialog__scroll {
+  max-height: 11rem;
+  padding: var(--sv-space-2);
+  border: 1px solid var(--sv-border-strong);
+  border-radius: var(--sv-radius-sm);
+  overflow: auto;
+}
+.sv-crash {
+  padding: var(--sv-space-4);
+}
+
+/* Keys ------------------------------------------------------------------------------------- */
+.sv-kbd {
+  display: inline-block;
+  padding: 0 6px;
+  border: 1px solid var(--sv-border-strong);
+  border-radius: 6px;
+  background: var(--sv-surface);
+  color: var(--sv-text); /* its own surface: never inherit a button's light-on-accent text */
+  font-family: var(--sv-font-mono);
+  font-size: 0.9em;
+  white-space: nowrap;
+}
+.sv-hint {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sv-space-1) var(--sv-space-2);
+}
 
 /* Quotations ------------------------------------------------------------------------------- */
 .sv-quote {
-  padding-left: var(--sv-space-2);
-  border-left: 3px solid var(--sv-border);
+  /* Logical sides: the bar follows the text direction of Arabic or Hebrew study material. */
+  padding-inline-start: var(--sv-space-2);
+  border-inline-start: 3px solid var(--sv-border);
   font-family: var(--sv-serif);
   font-size: var(--sv-text-md);
   white-space: pre-wrap;
@@ -436,6 +528,8 @@ textarea.sv-control {
   .sv-badge,
   .sv-notice,
   .sv-toast,
+  .sv-dialog,
+  .sv-kbd,
   .sv-control {
     border: 1px solid ButtonText;
   }

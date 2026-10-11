@@ -1,9 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { StudyVaultError, type CaptureResult } from '@shared';
+import { HANDLER_TIMEOUT_MS, callBackground } from '@runtime';
 import { bootOnce } from './boot';
 import {
   FakeBackground,
   clearSelection,
+  emulateUserModify,
   flushPromises,
   newId,
   select,
@@ -93,6 +96,16 @@ function clickDriver(listenerSpy: { mock: { calls: unknown[][] } }) {
   return { click, options, spies };
 }
 
+/** Same boundary points: the page selection is still the range the test made. */
+function sameRangeText(a: Range, b: Range): boolean {
+  return (
+    a.startContainer === b.startContainer &&
+    a.startOffset === b.startOffset &&
+    a.endContainer === b.endContainer &&
+    a.endOffset === b.endOffset
+  );
+}
+
 const saveRequest = {
   kind: 'essential',
   color: 'amber',
@@ -114,7 +127,14 @@ afterEach(() => {
   history.replaceState({}, '', '/');
   document.head.innerHTML = '';
   delete (window as { navigation?: unknown }).navigation;
+  delete (document as { visibilityState?: unknown }).visibilityState;
 });
+
+/** The tab goes to the background / comes back (jsdom reports a fixed state otherwise). */
+function setVisibility(state: 'visible' | 'hidden'): void {
+  Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
+  document.dispatchEvent(new Event('visibilitychange'));
+}
 
 describe('boot and page policy', () => {
   it('mounts the overlay, rehydrates stored highlights and answers ping', async () => {
@@ -302,6 +322,29 @@ describe('selection watcher', () => {
     expect(h.ui.toolbar).toHaveLength(0);
   });
 
+  it('never shows the toolbar for a selection that passes through an editor', async () => {
+    const h = await boot();
+    setBody(
+      '<p id="a">Public text before the editor.</p>' +
+        '<div contenteditable="true">PRIVATE-DRAFT: text the user is still typing.</div>' +
+        '<p id="b">Public text after the editor.</p>',
+    );
+    const range = document.createRange();
+    range.setStart(document.getElementById('a')!.firstChild!, 0);
+    range.setEnd(document.getElementById('b')!.firstChild!, 11);
+    document.getSelection()!.addRange(range);
+    document.dispatchEvent(new Event('selectionchange'));
+    await vi.advanceTimersByTimeAsync(80);
+    expect(h.ui.toolbar).toHaveLength(0);
+
+    document.getSelection()!.selectAllChildren(document.body); // Select All
+    document.dispatchEvent(new Event('selectionchange'));
+    await vi.advanceTimersByTimeAsync(80);
+    expect(h.ui.toolbar).toHaveLength(0);
+    await expect(h.host.save(saveRequest)).rejects.toThrow(); // nothing stored to save
+    expect(h.background.callsOf('capture.save')).toHaveLength(0);
+  });
+
   it('ignores a selection that is inside the StudyVault overlay', async () => {
     const h = await boot();
     setBody(ARTICLE + '<div data-studyvault><p>Overlay words are never captured</p></div>');
@@ -385,6 +428,102 @@ describe('save pipeline', () => {
     expect(h.painter.painted[0]!.color).toBe('blue');
     // Reported as resolved so the side panel shows it as anchored.
     expect(h.background.callsOf('highlight.reportResolution')).toHaveLength(1);
+  });
+
+  it('does not store the start of a draft editor that sits right after the quote', async () => {
+    const h = await boot();
+    setBody(
+      '<h2>Comments</h2><p>Public text before the draft editor.</p>' +
+        '<div contenteditable="true">PRIVATE-DRAFT: text the user is still typing.</div>',
+    );
+    await selectText('Public text before the draft editor.');
+    const result = await h.host.save(saveRequest);
+    expect(result.status).toBe('created');
+    const payload = h.background.callsOf('capture.save')[0]!.payload as {
+      exactQuote: string;
+      anchorSet: { textQuote: { prefix: string; suffix: string } };
+    };
+    expect(payload.exactQuote).toBe('Public text before the draft editor.');
+    expect(JSON.stringify(payload)).not.toContain('PRIVATE-DRAFT');
+    expect(payload.anchorSet.textQuote.suffix).toBe('');
+    expect(h.painter.texts).toEqual(['Public text before the draft editor.']); // still resolves
+  });
+
+  it('saves a triple-clicked paragraph that sits right above an editor, without any of the draft', async () => {
+    const h = await boot();
+    setBody(
+      '<h2>Comments</h2><p id="para">Public text before the draft editor.</p>' +
+        '<div id="ed" contenteditable="true">PRIVATE-DRAFT: text the user is still typing.</div>',
+    );
+    // Chromium: a triple-click ends at offset 0 of the next block, here the editor itself.
+    const range = document.createRange();
+    range.setStart(document.getElementById('para')!.firstChild!, 0);
+    range.setEnd(document.getElementById('ed')!, 0);
+    document.getSelection()!.removeAllRanges();
+    document.getSelection()!.addRange(range);
+    document.dispatchEvent(new Event('selectionchange'));
+    await vi.advanceTimersByTimeAsync(80);
+    expect(h.ui.toolbar.at(-1)?.text).toBe('Public text before the draft editor.');
+
+    await h.host.save(saveRequest);
+    const payload = h.background.callsOf('capture.save')[0]!.payload as {
+      exactQuote: string;
+      anchorSet: { textQuote: { exact: string; suffix: string } };
+    };
+    expect(payload.exactQuote).toBe('Public text before the draft editor.');
+    expect(payload.anchorSet.textQuote.suffix).toBe('');
+    expect(JSON.stringify(payload)).not.toContain('PRIVATE-DRAFT');
+    expect(h.painter.texts).toEqual(['Public text before the draft editor.']);
+  });
+
+  describe('a CSS-only editor (-webkit-user-modify: read-write)', () => {
+    let restore: () => void;
+    beforeEach(() => {
+      restore = emulateUserModify();
+    });
+    afterEach(() => restore());
+
+    it('is never offered the toolbar, and never stores the start of its draft as context', async () => {
+      const h = await boot();
+      setBody(
+        '<p id="a">Public text before the editor.</p>' +
+          '<div id="ed" data-user-modify="read-write">PRIVATE-DRAFT: still typing</div>' +
+          '<p id="b">Public text after the editor.</p>',
+      );
+      // Drag across the editor: refused whole.
+      const across = document.createRange();
+      across.setStart(document.getElementById('a')!.firstChild!, 0);
+      across.setEnd(document.getElementById('b')!.firstChild!, 11);
+      document.getSelection()!.addRange(across);
+      document.dispatchEvent(new Event('selectionchange'));
+      await vi.advanceTimersByTimeAsync(80);
+      expect(h.ui.toolbar).toHaveLength(0);
+
+      // A selection beside it is fine, but its stored context stops where the draft begins.
+      await selectText('Public text before the editor.');
+      expect(h.ui.toolbar).toHaveLength(1);
+      await h.host.save(saveRequest);
+      const payload = h.background.callsOf('capture.save')[0]!.payload;
+      expect(JSON.stringify(payload)).not.toContain('PRIVATE-DRAFT');
+      expect(
+        (payload as { anchorSet: { textQuote: { suffix: string } } }).anchorSet.textQuote.suffix,
+      ).toBe('');
+    });
+
+    it('is refused by quick-save too', async () => {
+      const h = await boot();
+      setBody(
+        '<p id="a">Public text before the editor.</p>' +
+          '<div id="ed" data-user-modify="read-write">PRIVATE-DRAFT: still typing</div>',
+      );
+      select('PRIVATE-DRAFT: still');
+      const out = await h.handlers['content.captureSelection']!(
+        { method: 'shortcut', bankId: null },
+        {} as never,
+      );
+      expect(out).toMatchObject({ status: 'blocked' });
+      expect(h.background.callsOf('capture.save')).toHaveLength(0);
+    });
   });
 
   it('the selection survives interaction with the overlay (range cloned before focus moves)', async () => {
@@ -511,6 +650,80 @@ describe('save pipeline', () => {
     expect(h.painter.ids).toEqual([]);
   });
 
+  describe('a selection made while an earlier save is still in flight', () => {
+    async function inFlight(h: Harness) {
+      await toolbarShown(h, MITO);
+      const release = h.background.hold('capture.save');
+      const saving = h.host.save(saveRequest);
+      await flushPromises();
+      const second = await selectText(RIBO); // the reader moves on (toolbar for the new text)
+      expect(h.ui.toolbar.at(-1)?.text).toBe(RIBO);
+      return { release, saving, second };
+    }
+
+    it('is neither cleared nor un-toolbarred when the earlier save completes', async () => {
+      const h = await boot();
+      const { release, saving, second } = await inFlight(h);
+      const shown = h.ui.toolbar.length;
+
+      release();
+      await saving;
+      h.host.dismissSelection(); // what the overlay does once the save has resolved
+      await flushPromises();
+
+      expect(document.getSelection()!.toString()).toBe(RIBO);
+      expect(sameRangeText(document.getSelection()!.getRangeAt(0), second)).toBe(true);
+      // The overlay closes its toolbar right after dismissSelection(): the newer one is shown again.
+      expect(h.ui.toolbar.length).toBeGreaterThan(shown);
+      expect(h.ui.toolbar.at(-1)?.text).toBe(RIBO);
+      expect(h.ui.hidden).toBe(0);
+
+      // ...and it is still saveable, as itself.
+      const again = await h.host.save(saveRequest);
+      expect(again.highlight.exactQuote).toBe(RIBO);
+      expect(h.painter.texts.sort()).toEqual([MITO, RIBO].sort());
+    });
+
+    it('a dismissSelection after the save has settled dismisses whatever is selected then', async () => {
+      const h = await boot();
+      const { release, saving } = await inFlight(h);
+      release();
+      await saving;
+      await vi.advanceTimersByTimeAsync(10); // the completion window is over
+      h.host.dismissSelection(); // e.g. Escape on the new toolbar
+      expect(document.getSelection()!.rangeCount).toBe(0);
+      await expect(h.host.save(saveRequest)).rejects.toThrow();
+    });
+
+    it('the selection that WAS saved is still cleared and dismissed', async () => {
+      const h = await boot();
+      await toolbarShown(h, MITO);
+      await h.host.save(saveRequest);
+      h.host.dismissSelection();
+      expect(document.getSelection()!.rangeCount).toBe(0);
+      expect(h.ui.toolbar).toHaveLength(1); // nothing re-shown
+    });
+
+    it('quick-save completing does not close the toolbar of a newer selection', async () => {
+      const h = await boot();
+      select(MITO);
+      const release = h.background.hold('capture.save');
+      const quick = h.handlers['content.captureSelection']!(
+        { method: 'shortcut', bankId: null },
+        {} as never,
+      );
+      await flushPromises();
+      await selectText(RIBO);
+      expect(h.ui.toolbar.at(-1)?.text).toBe(RIBO);
+
+      release();
+      await quick;
+      expect(document.getSelection()!.toString()).toBe(RIBO);
+      expect(h.ui.hidden).toBe(0);
+      expect((await h.host.save(saveRequest)).highlight.exactQuote).toBe(RIBO);
+    });
+  });
+
   it('dismissSelection clears our stored selection and the page selection', async () => {
     const h = await boot();
     await toolbarShown(h);
@@ -591,7 +804,7 @@ describe('rehydration', () => {
     expect(status.counts).toMatchObject({ total: 2, resolved: 1, orphaned: 1 });
   });
 
-  it('report-storm guard: our own report does not cause another report', async () => {
+  it('report-storm guard: our own report does not cause another report, or a re-fetch', async () => {
     const background = new FakeBackground();
     const rows = [storedHighlight(MITO), storedHighlight(RIBO)];
     for (const r of rows) background.rows.set(r.id, r);
@@ -599,14 +812,52 @@ describe('rehydration', () => {
     expect(background.callsOf('highlight.reportResolution')).toHaveLength(1);
     const fetchesAfterBoot = background.callsOf('page.highlights').length;
 
-    // FakeBackground bumped the data epoch when it stored the report, exactly like production.
+    // A resolution-only write does not signal a data change (it has its own signal that content
+    // scripts do not watch): nobody re-fetches the page for it.
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(background.callsOf('highlight.reportResolution')).toHaveLength(1);
+    expect(background.callsOf('page.highlights').length).toBe(fetchesAfterBoot);
+    expect(h.painter.ids).toHaveLength(2);
+  });
+
+  it('report-storm guard under the older contract: the echo re-fetch finds nothing new to say', async () => {
+    const background = new FakeBackground();
+    background.bumpOnResolution = true;
+    const rows = [storedHighlight(MITO), storedHighlight(RIBO)];
+    for (const r of rows) background.rows.set(r.id, r);
+    const h = await boot({ background });
+    expect(background.callsOf('highlight.reportResolution')).toHaveLength(1);
+    const fetchesAfterBoot = background.callsOf('page.highlights').length;
+
     await vi.advanceTimersByTimeAsync(300);
     expect(background.callsOf('page.highlights').length).toBe(fetchesAfterBoot + 1);
-    // ...and the re-fetch found nothing new to say, now or later.
     await vi.advanceTimersByTimeAsync(10_000);
     expect(background.callsOf('highlight.reportResolution')).toHaveLength(1);
     expect(background.callsOf('page.highlights').length).toBe(fetchesAfterBoot + 1);
     expect(h.painter.ids).toHaveLength(2);
+  });
+
+  it('a lost data-change signal never stalls painting: saves paint at once, the rest on the next look', async () => {
+    const background = new FakeBackground();
+    background.bump = () => undefined; // every epoch event is dropped on the way
+    const h = await boot({ background });
+
+    // A save paints from its own result, with no echo needed, and settles after one report.
+    await selectText(MITO);
+    const saved = await h.host.save(saveRequest);
+    expect(h.painter.ids).toEqual([saved.highlight.id]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(background.callsOf('highlight.reportResolution')).toHaveLength(1);
+
+    // A highlight added by another tab, whose signal never arrived, is picked up when the reader
+    // comes back to this tab.
+    const elsewhere = storedHighlight(RIBO);
+    background.rows.set(elsewhere.id, elsewhere);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(h.painter.ids).toEqual([saved.highlight.id]);
+    setVisibility('visible');
+    await vi.advanceTimersByTimeAsync(300);
+    expect(h.painter.ids).toEqual([saved.highlight.id, elsewhere.id].sort());
   });
 
   it('a save notifies once and settles (no refresh/report loop)', async () => {
@@ -658,9 +909,12 @@ describe('rehydration', () => {
     history.pushState({}, '', '/route-two');
     document.body.appendChild(document.createElement('span')); // a mutation reaches the observer
     await vi.advanceTimersByTimeAsync(50);
+    // The old page is forgotten at once; only the load of the new one waits for the debounce.
+    expect(h.painter.clearCalls).toBe(1);
+    expect(h.painter.ids).toEqual([]);
+    await vi.advanceTimersByTimeAsync(200);
     await flushPromises();
 
-    expect(h.painter.clearCalls).toBeGreaterThanOrEqual(1);
     const lastFetch = background.callsOf('page.highlights').at(-1)!.payload as { url: string };
     expect(lastFetch.url).toBe(`${window.location.origin}/route-two`);
     expect(h.painter.ids).toEqual([second.id]);
@@ -675,9 +929,51 @@ describe('rehydration', () => {
 
     history.pushState({}, '', '/via-navigation-api');
     nav.dispatchEvent(new Event('navigatesuccess'));
-    await flushPromises();
+    await vi.advanceTimersByTimeAsync(200);
     expect(background.callsOf('page.highlights').length).toBe(fetches + 1);
     expect(h.painter.clearCalls).toBe(1);
+  });
+
+  it('a burst of route changes costs one fetch, for the route it ended on', async () => {
+    const background = new FakeBackground();
+    const first = storedHighlight(MITO);
+    background.rows.set(first.id, first);
+    await boot({ background });
+    const fetches = background.callsOf('page.highlights').length;
+
+    // A router that redirects: /a -> /b -> /c within a few milliseconds, one mutation each.
+    for (const path of ['/a', '/b', '/c']) {
+      history.pushState({}, '', path);
+      document.body.appendChild(document.createElement('span'));
+      await vi.advanceTimersByTimeAsync(10);
+    }
+    expect(background.callsOf('page.highlights').length).toBe(fetches); // nothing loaded yet
+    await vi.advanceTimersByTimeAsync(300);
+    const loads = background.callsOf('page.highlights').slice(fetches);
+    expect(loads).toHaveLength(1);
+    expect((loads[0]!.payload as { url: string }).url).toBe(`${window.location.origin}/c`);
+  });
+
+  it('a route change that leaves the source keys as they were keeps the paint (no clear, no flicker)', async () => {
+    // Two addresses too long to store: the stored page address is cut to the same path, so the
+    // worker would answer with the same highlights for both.
+    const long = (tail: string) => `/long-page?q=${'x'.repeat(2100)}${tail}`;
+    history.replaceState({}, '', long('a'));
+    const background = new FakeBackground();
+    const first = storedHighlight(MITO);
+    background.rows.set(first.id, first);
+    const h = await boot({ background });
+    const fetches = background.callsOf('page.highlights').length;
+    expect(h.painter.ids).toEqual([first.id]);
+
+    history.pushState({}, '', long('b'));
+    document.body.appendChild(document.createElement('span'));
+    await vi.advanceTimersByTimeAsync(300);
+    await flushPromises();
+
+    expect(h.painter.clearCalls).toBe(0); // nothing was forgotten...
+    expect(h.painter.ids).toEqual([first.id]); // ...and it is still painted
+    expect(background.callsOf('page.highlights').length).toBe(fetches + 1); // re-resolved on the new DOM
   });
 
   it('an anchor jump on the same page is not a route change', async () => {
@@ -734,25 +1030,53 @@ describe('mutations', () => {
     expect(h.painter.paintCalls - before).toBe(1);
   });
 
-  it('retries at most 8 times per navigation, then stops until the route changes', async () => {
-    const { h, lazy, background } = await withLazyHighlight();
+  it('retries at a bounded rate however often the page mutates', async () => {
+    const { h } = await withLazyHighlight();
     const base = h.painter.paintCalls;
 
-    for (let i = 0; i < 14; i++) {
-      document.body.appendChild(document.createElement('b'));
-      await vi.advanceTimersByTimeAsync(450);
+    // A text node is rewritten every 100 ms for 30 s while the highlight stays unresolved.
+    const ticker = document.body.appendChild(document.createElement('b'));
+    for (let i = 0; i < 300; i++) {
+      ticker.textContent = `tick ${i}`;
+      await vi.advanceTimersByTimeAsync(100);
     }
-    expect(h.painter.paintCalls - base).toBe(8);
+    const passes = h.painter.paintCalls - base;
+    // About once a second (never starved by the 100 ms mutations), never once per mutation.
+    expect(passes).toBeGreaterThanOrEqual(20);
+    expect(passes).toBeLessThanOrEqual(31);
+  });
 
-    addLazy(); // too late for this navigation
-    await vi.advanceTimersByTimeAsync(450);
+  it('paints text that arrives 20 s into a page that mutates every 100 ms, within about 2 s', async () => {
+    const { h, lazy } = await withLazyHighlight();
+    const ticker = document.body.appendChild(document.createElement('b'));
+    const base = h.painter.paintCalls;
+
+    let arrivedAt = -1;
+    let paintedAt = -1;
+    for (let ms = 0; ms < 25_000; ms += 100) {
+      ticker.textContent = `tick ${ms / 100}`;
+      if (ms === 20_000) {
+        addLazy();
+        arrivedAt = ms;
+      }
+      await vi.advanceTimersByTimeAsync(100);
+      if (paintedAt < 0 && h.painter.ids.includes(lazy.id)) paintedAt = ms + 100;
+    }
+    expect(arrivedAt).toBe(20_000);
+    expect(paintedAt).toBeGreaterThan(20_000);
+    expect(paintedAt - arrivedAt).toBeLessThanOrEqual(2_000);
+    // CPU stays bounded: roughly one pass per second over the 25 s, not one per mutation (250).
+    expect(h.painter.paintCalls - base).toBeLessThanOrEqual(27);
+  });
+
+  it('a pass refused for spacing still runs later when no further mutation comes', async () => {
+    const { h, lazy } = await withLazyHighlight();
+    document.body.appendChild(document.createElement('b')).textContent = 'first';
+    await vi.advanceTimersByTimeAsync(450); // a pass finds nothing and starts the spacing
+    addLazy(); // the text arrives right after it, and the page then goes quiet
+    await vi.advanceTimersByTimeAsync(450); // debounce fires: refused as too soon
     expect(h.painter.ids).toEqual([]);
-
-    history.pushState({}, '', '/next-route');
-    document.body.appendChild(document.createElement('b'));
-    await vi.advanceTimersByTimeAsync(100);
-    await flushPromises();
-    expect(background.callsOf('page.highlights').at(-1)).toBeDefined();
+    await vi.advanceTimersByTimeAsync(1_000);
     expect(h.painter.ids).toEqual([lazy.id]);
   });
 
@@ -771,7 +1095,7 @@ describe('mutations', () => {
     expect(h.painter.paintCalls).toBe(base);
   });
 
-  it('script, style and head mutations do not spend the retry budget', async () => {
+  it('script, style and head mutations never cause a pass', async () => {
     const { h } = await withLazyHighlight();
     const base = h.painter.paintCalls;
     for (let i = 0; i < 20; i++) {
@@ -781,7 +1105,7 @@ describe('mutations', () => {
     }
     expect(h.painter.paintCalls).toBe(base);
 
-    addLazy(); // all 8 attempts are still available
+    addLazy(); // the first real pass is still due at once
     await vi.advanceTimersByTimeAsync(500);
     expect(h.painter.ids).toHaveLength(1);
   });
@@ -876,11 +1200,512 @@ describe('click on a highlight', () => {
     expect(h.ui.popovers).toHaveLength(0);
   });
 
+  it('an open popover follows a note written elsewhere when the data-change refresh lands', async () => {
+    const { h, stored, driver } = await withHighlight();
+    driver.click(document.getElementById('lnk')!);
+    expect(h.ui.popovers[0]!.view.userComment).toBe('');
+    expect(h.ui.refreshed).toHaveLength(0);
+
+    // Typed in the side panel after the popover was opened (inside the 250 ms refresh debounce).
+    h.background.rows.set(stored.id, { ...stored, userComment: 'typed in the side panel' });
+    h.background.bump();
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(h.ui.refreshed.at(-1)).toMatchObject({
+      id: stored.id,
+      userComment: 'typed in the side panel',
+    });
+  });
+
   it('anchors the popover to the highlight, or to the click point when it has no geometry', async () => {
     const { h, driver } = await withHighlight();
     driver.click(document.getElementById('lnk')!, { clientX: 33, clientY: 44 });
     // jsdom has no layout: the range reports a zero rect, which is still a defined anchor.
     expect(h.ui.popovers[0]!.anchor).toBeDefined();
+  });
+});
+
+describe('openInSidePanel', () => {
+  it('sends the request in the same task as the call, then resolves to opened', async () => {
+    const h = await boot();
+    const id = newId();
+    const pending = h.host.openInSidePanel(id);
+    // No await in between: the user gesture of the click that got us here must still be live.
+    expect(h.background.callsOf('sidepanel.open')).toEqual([
+      { type: 'sidepanel.open', payload: { focusHighlightId: id } },
+    ]);
+    expect(await pending).toBe(true);
+    expect(h.ui.toasts).toHaveLength(0);
+  });
+
+  it('opens without focusing a highlight', async () => {
+    const h = await boot();
+    expect(await h.host.openInSidePanel(null)).toBe(true);
+    expect(h.background.callsOf('sidepanel.open')[0]!.payload).toEqual({ focusHighlightId: null });
+  });
+
+  it('resolves to false and tells the user when the worker could not open it', async () => {
+    const h = await boot();
+    h.background.sidePanelOpens = false;
+    expect(await h.host.openInSidePanel(null)).toBe(false);
+    expect(h.ui.toasts.at(-1)).toMatchObject({
+      tone: 'error',
+      text: expect.stringContaining('side panel'),
+    });
+  });
+
+  it('never rejects: a lost extension connection becomes false and a reload hint', async () => {
+    const h = await boot();
+    h.background.failNext('sidepanel.open', new StudyVaultError('no_receiver', 'gone'));
+    await expect(h.host.openInSidePanel(newId())).resolves.toBe(false);
+    expect(h.ui.toasts.at(-1)).toMatchObject({
+      tone: 'error',
+      text: expect.stringContaining('Reload this page'),
+    });
+
+    h.background.failNext('sidepanel.open', new StudyVaultError('internal', 'boom'));
+    await expect(h.host.openInSidePanel(null)).resolves.toBe(false);
+    expect(h.ui.toasts.at(-1)).toMatchObject({ tone: 'error' });
+  });
+});
+
+describe('keyboard route to highlights (Alt+Shift+] next, Alt+Shift+[ previous)', () => {
+  const LINK = 'link text inside the page';
+
+  type KeyLike = {
+    isTrusted: boolean;
+    altKey: boolean;
+    shiftKey: boolean;
+    ctrlKey: boolean;
+    metaKey: boolean;
+    repeat: boolean;
+    code: string;
+    composedPath: () => EventTarget[];
+    preventDefault: () => void;
+  };
+
+  /** Like clickDriver: jsdom cannot make a trusted keydown, so call the controller's listener. */
+  async function withHighlights(opts: HarnessOptions = {}) {
+    const add = vi.spyOn(document, 'addEventListener');
+    const background = opts.background ?? new FakeBackground();
+    const rows = [storedHighlight(MITO), storedHighlight(RIBO), storedHighlight(LINK)];
+    for (const r of rows) background.rows.set(r.id, r);
+    const h = await boot({ ...opts, background });
+    const call = add.mock.calls
+      .filter((c) => c[0] === 'keydown' && !(c[2] as { passive?: boolean } | undefined)?.passive)
+      .at(-1);
+    const listener = call?.[1] as (e: unknown) => void;
+    const scrollBy = vi.fn();
+    window.scrollBy = scrollBy as never;
+    const press = (init: Partial<KeyLike> = {}, target: Node = document.body) => {
+      const preventDefault = vi.fn();
+      const event: KeyLike = {
+        isTrusted: true,
+        altKey: true,
+        shiftKey: true,
+        ctrlKey: false,
+        metaKey: false,
+        repeat: false,
+        code: 'BracketRight',
+        composedPath: () => {
+          const path: EventTarget[] = [];
+          for (let n: Node | null = target; n; n = n.parentNode) path.push(n);
+          return path;
+        },
+        preventDefault,
+        ...init,
+      };
+      listener(event);
+      return { preventDefault, options: call?.[2] as AddEventListenerOptions | undefined };
+    };
+    const ids = rows.map((r) => r.id) as [string, string, string];
+    return { h, background, rows, ids, press, scrollBy, listener };
+  }
+
+  const shown = (h: Harness): string[] => h.ui.popovers.map((p) => p.view.id);
+
+  afterEach(() => {
+    delete (Range.prototype as { getBoundingClientRect?: unknown }).getBoundingClientRect;
+    delete (Range.prototype as { getClientRects?: unknown }).getClientRects;
+  });
+
+  it('steps through the painted highlights in document order, wrapping at both ends', async () => {
+    const { h, ids, press, scrollBy } = await withHighlights();
+    expect(h.painter.ids).toHaveLength(3);
+
+    const first = press();
+    expect(first.preventDefault).toHaveBeenCalledTimes(1);
+    expect(first.options).toMatchObject({ capture: true });
+    expect(first.options?.passive).not.toBe(true); // it must be able to preventDefault
+    press();
+    press();
+    press(); // wraps
+    expect(shown(h)).toEqual([ids[0], ids[1], ids[2], ids[0]]);
+
+    press({ code: 'BracketLeft' }); // back from the first: wraps to the last
+    press({ code: 'BracketLeft' });
+    expect(shown(h).slice(-2)).toEqual([ids[2], ids[1]]);
+
+    // Scrolls instantly (the popover is anchored to the final position) and holds the emphasis:
+    // the 2 s flash of a reveal would take it away while the popover is still being read.
+    expect(scrollBy.mock.calls.at(-1)![0]).toMatchObject({ behavior: 'instant' });
+    expect(h.painter.active).toBe(ids[1]);
+    await vi.advanceTimersByTimeAsync(2100);
+    expect(h.painter.active).toBe(ids[1]);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.painter.active).toBe(ids[1]);
+  });
+
+  it('follows document order, not the order they were stored in', async () => {
+    const background = new FakeBackground();
+    setBody(ARTICLE);
+    const late = storedHighlight(LINK);
+    const early = storedHighlight(MITO);
+    background.rows.set(late.id, late); // inserted first
+    background.rows.set(early.id, early);
+    const add = vi.spyOn(document, 'addEventListener');
+    const h = await boot({ background });
+    const listener = add.mock.calls
+      .filter((c) => c[0] === 'keydown' && !(c[2] as { passive?: boolean } | undefined)?.passive)
+      .at(-1)![1] as (e: unknown) => void;
+    window.scrollBy = vi.fn() as never;
+    const key = { isTrusted: true, altKey: true, shiftKey: true, ctrlKey: false, metaKey: false };
+    listener({
+      ...key,
+      repeat: false,
+      code: 'BracketRight',
+      composedPath: () => [],
+      preventDefault() {},
+    });
+    expect(shown(h)).toEqual([early.id]);
+  });
+
+  it('starts from the reader position: the first highlight at or below the top of the viewport', async () => {
+    const { h, ids, press } = await withHighlights();
+    // MITO is above the fold, RIBO just below its top edge, the link further down.
+    Object.defineProperty(Range.prototype, 'getBoundingClientRect', {
+      configurable: true,
+      value(this: Range) {
+        const text = this.toString();
+        const top = text.includes('mitochondria') ? -500 : text.includes('Ribosomes') ? 100 : 900;
+        return { top, height: 20, left: 0, width: 50, right: 50, bottom: top + 20 };
+      },
+    });
+    press();
+    expect(shown(h)).toEqual([ids[1]]);
+  });
+
+  it('previous with nothing reached yet goes to the last highlight above the viewport', async () => {
+    const { h, ids, press } = await withHighlights();
+    Object.defineProperty(Range.prototype, 'getBoundingClientRect', {
+      configurable: true,
+      value(this: Range) {
+        const text = this.toString();
+        const top = text.includes('link text') ? 900 : text.includes('Ribosomes') ? -100 : -500;
+        return { top, height: 20, left: 0, width: 50, right: 50, bottom: top + 20 };
+      },
+    });
+    press({ code: 'BracketLeft' });
+    expect(shown(h)).toEqual([ids[1]]);
+  });
+
+  it('continues from the highlight the reader clicked', async () => {
+    const add = vi.spyOn(document, 'addEventListener');
+    const background = new FakeBackground();
+    const rows = [storedHighlight(MITO), storedHighlight(RIBO), storedHighlight(LINK)];
+    for (const r of rows) background.rows.set(r.id, r);
+    const h = await boot({ background });
+    window.scrollBy = vi.fn() as never;
+    const click = clickDriver(add);
+    h.painter.hit = rows[1]!.id;
+    click.click(document.getElementById('lnk')!);
+    expect(shown(h)).toEqual([rows[1]!.id]);
+
+    const keydown = add.mock.calls
+      .filter((c) => c[0] === 'keydown' && !(c[2] as { passive?: boolean } | undefined)?.passive)
+      .at(-1)![1] as (e: unknown) => void;
+    keydown({
+      isTrusted: true,
+      altKey: true,
+      shiftKey: true,
+      ctrlKey: false,
+      metaKey: false,
+      repeat: false,
+      code: 'BracketRight',
+      composedPath: () => [],
+      preventDefault() {},
+    });
+    expect(shown(h)).toEqual([rows[1]!.id, rows[2]!.id]);
+  });
+
+  it('skips a highlight whose text is hidden, and says so when none can be shown', async () => {
+    const { h, ids, press, scrollBy } = await withHighlights();
+    let hiddenWords: string[] = ['mitochondria'];
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value(this: Range) {
+        return hiddenWords.some((w) => this.toString().includes(w))
+          ? []
+          : [{ width: 80, height: 18 }];
+      },
+    });
+    press(); // MITO is in a closed panel: the next one is shown
+    expect(shown(h)).toEqual([ids[1]]);
+
+    hiddenWords = ['mitochondria', 'Ribosomes', 'link text'];
+    const before = scrollBy.mock.calls.length;
+    const out = press();
+    expect(out.preventDefault).toHaveBeenCalledTimes(1);
+    expect(shown(h)).toEqual([ids[1]]); // nothing new
+    expect(scrollBy.mock.calls.length).toBe(before); // and nothing scrolled
+    expect(h.ui.toasts.at(-1)).toMatchObject({ text: 'No visible highlights on this page.' });
+  });
+
+  it('announces when the page has no highlights', async () => {
+    const add = vi.spyOn(document, 'addEventListener');
+    const h = await boot();
+    const keydown = add.mock.calls
+      .filter((c) => c[0] === 'keydown' && !(c[2] as { passive?: boolean } | undefined)?.passive)
+      .at(-1)![1] as (e: unknown) => void;
+    keydown({
+      isTrusted: true,
+      altKey: true,
+      shiftKey: true,
+      ctrlKey: false,
+      metaKey: false,
+      repeat: false,
+      code: 'BracketLeft',
+      composedPath: () => [],
+      preventDefault() {},
+    });
+    expect(h.ui.popovers).toHaveLength(0);
+    expect(h.ui.toasts.at(-1)).toMatchObject({
+      tone: 'info',
+      text: 'No highlights on this page yet.',
+    });
+  });
+
+  it('ignores other keys, other modifiers, key repeat and scripted events', async () => {
+    const { h, press } = await withHighlights();
+    for (const init of [
+      { code: 'KeyT' },
+      { shiftKey: false },
+      { altKey: false },
+      { ctrlKey: true }, // AltGr on Windows reports Ctrl+Alt
+      { metaKey: true },
+      { repeat: true },
+      { isTrusted: false },
+    ] as Array<Partial<KeyLike>>) {
+      expect(press(init).preventDefault).not.toHaveBeenCalled();
+    }
+    expect(h.ui.popovers).toHaveLength(0);
+    expect(h.ui.toasts).toHaveLength(0);
+  });
+
+  afterEach(() => {
+    document.designMode = 'off';
+  });
+
+  it('stays out of the way while the user is editing', async () => {
+    const { h, press } = await withHighlights();
+    document.body.insertAdjacentHTML(
+      'beforeend',
+      '<input id="f" type="text"><div id="ce" contenteditable="true" tabindex="0">draft</div>',
+    );
+    const field = document.getElementById('f') as HTMLInputElement;
+    field.focus();
+    expect(press({}, field).preventDefault).not.toHaveBeenCalled();
+    field.blur();
+    const editor = document.getElementById('ce')!;
+    editor.focus();
+    expect(press({}, editor).preventDefault).not.toHaveBeenCalled();
+    editor.blur();
+    // The target alone is enough (focus may already have moved on when a handler runs).
+    expect(press({}, editor).preventDefault).not.toHaveBeenCalled();
+    document.designMode = 'on';
+    expect(press().preventDefault).not.toHaveBeenCalled();
+    document.designMode = 'off';
+    expect(h.ui.popovers).toHaveLength(0);
+    expect(press().preventDefault).toHaveBeenCalledTimes(1); // and works again afterwards
+    expect(h.ui.popovers).toHaveLength(1);
+  });
+
+  it('ignores keys pressed inside the overlay (its note field types text)', async () => {
+    const { h, press } = await withHighlights();
+    document.body.insertAdjacentHTML(
+      'beforeend',
+      '<div data-studyvault><button id="ob">x</button></div>',
+    );
+    expect(press({}, document.getElementById('ob')!).preventDefault).not.toHaveBeenCalled();
+    expect(h.ui.popovers).toHaveLength(0);
+  });
+
+  it('does nothing when the overlay did not start, or the extension context is gone', async () => {
+    const noUi = await withHighlights({ uiFails: true });
+    expect(noUi.press().preventDefault).not.toHaveBeenCalled();
+    noUi.h.controller.destroy();
+
+    const gone = await withHighlights();
+    gone.h.ctx.isValid = false;
+    expect(gone.press().preventDefault).not.toHaveBeenCalled();
+    expect(gone.h.ui.popovers).toHaveLength(0);
+  });
+
+  it('causes no refresh, no report and arms no timers at all', async () => {
+    const { h, background, press, ids } = await withHighlights();
+    await vi.advanceTimersByTimeAsync(10_000); // the boot report has settled
+    const timers = vi.getTimerCount();
+    const fetches = background.callsOf('page.highlights').length;
+    const reports = background.callsOf('highlight.reportResolution').length;
+    for (let i = 0; i < 6; i++) press();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(background.callsOf('page.highlights')).toHaveLength(fetches);
+    expect(background.callsOf('highlight.reportResolution')).toHaveLength(reports);
+    expect(h.painter.active).toBe(ids[2]); // six steps from the top: the last one reached
+    expect(vi.getTimerCount()).toBe(timers); // the held emphasis is no timer: nothing lingers
+  });
+
+  describe('holding the emphasis until the reader leaves', () => {
+    it.each([
+      [
+        'a press on the page',
+        () => document.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true })),
+      ],
+      [
+        'Escape',
+        () =>
+          document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })),
+      ],
+      [
+        'focus returning to the page',
+        () => document.dispatchEvent(new FocusEvent('focusin', { bubbles: true })),
+      ],
+    ])('is dropped by %s', async (_name, leave) => {
+      const { h, press, ids } = await withHighlights();
+      press();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(h.painter.active).toBe(ids[0]);
+      leave();
+      expect(h.painter.active).toBeNull();
+    });
+
+    it('is not dropped by a press inside the overlay, or by the overlay taking focus', async () => {
+      const { h, press, ids } = await withHighlights();
+      document.body.insertAdjacentHTML(
+        'beforeend',
+        '<div data-studyvault><button id="ob">Close</button></div>',
+      );
+      press();
+      const button = document.getElementById('ob')!;
+      button.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, composed: true }));
+      button.dispatchEvent(new FocusEvent('focusin', { bubbles: true, composed: true }));
+      expect(h.painter.active).toBe(ids[0]);
+    });
+
+    it('is dropped when the reader selects text, and by a route change', async () => {
+      const { h, press, ids } = await withHighlights();
+      press();
+      await selectText(RIBO); // a real selection: the toolbar is offered
+      expect(h.ui.toolbar.at(-1)?.text).toBe(RIBO);
+      expect(h.painter.active).toBeNull();
+
+      press();
+      expect(h.painter.active).toBe(ids[1]);
+      history.pushState({}, '', '/elsewhere');
+      document.body.appendChild(document.createElement('span'));
+      await vi.advanceTimersByTimeAsync(50);
+      expect(h.painter.active).toBeNull();
+    });
+
+    it('a reveal after a step is a plain 2 s flash again', async () => {
+      const { h, ids, press } = await withHighlights();
+      press();
+      expect(await h.handlers['content.reveal']!({ id: ids[2] }, {} as never)).toEqual({
+        found: true,
+      });
+      expect(h.painter.active).toBe(ids[2]);
+      await vi.advanceTimersByTimeAsync(2_100);
+      expect(h.painter.active).toBeNull();
+    });
+  });
+
+  it('puts the caret at the highlight, collapsed, so Tab and a screen reader continue from there', async () => {
+    const { press, ids, h } = await withHighlights();
+    select(LINK); // something is selected elsewhere
+    press();
+    const sel = document.getSelection()!;
+    expect(sel.isCollapsed).toBe(true);
+    const start = h.painter.painted.find((p) => p.id === ids[0])!.range;
+    expect(sel.anchorNode).toBe(start.startContainer);
+    expect(sel.anchorOffset).toBe(start.startOffset);
+  });
+
+  it('a command leaves the caret and the focus alone while the user is typing in a field', async () => {
+    const { h } = await withHighlights();
+    document.body.insertAdjacentHTML('beforeend', '<input id="f" type="text" value="draft">');
+    const field = document.getElementById('f') as HTMLInputElement;
+    field.focus();
+    field.setSelectionRange(1, 3);
+    const collapse = vi.spyOn(Selection.prototype, 'collapse');
+
+    const out = await h.handlers['content.stepHighlight']!({ direction: 'next' }, {} as never);
+    expect(out).toEqual({ found: true }); // the command still goes to the highlight...
+    expect(collapse).not.toHaveBeenCalled(); // ...but never moves the selection out of the field
+    expect(document.activeElement).toBe(field);
+    expect([field.selectionStart, field.selectionEnd]).toEqual([1, 3]);
+  });
+
+  describe('announcement', () => {
+    it('says where the reader is: position, kind, the start of the quote, and what is not placed', async () => {
+      const background = new FakeBackground();
+      const mito = storedHighlight(MITO, { kind: 'formula' });
+      const ribo = storedHighlight(RIBO);
+      const lost = storedHighlight(LINK);
+      lost.anchorSet.textQuote.exact = 'a quotation that does not occur anywhere on this page';
+      for (const r of [mito, ribo, lost]) background.rows.set(r.id, r);
+      const h = await boot({ background });
+      window.scrollBy = vi.fn() as never;
+
+      await h.handlers['content.stepHighlight']!({ direction: 'next' }, {} as never);
+      await h.handlers['content.stepHighlight']!({ direction: 'next' }, {} as never);
+      expect(h.ui.announcements).toEqual([
+        'Highlight 1 of 2, Formula: mitochondria is the powerhouse of the cell. 1 not placed on this page.',
+        'Highlight 2 of 2, Essential fact: Ribosomes build proteins from amino acids. 1 not placed on this page.',
+      ]);
+    });
+
+    it('cuts a long quote at 80 characters and is silent about placement when all are placed', async () => {
+      const sentence =
+        'The mitochondria is the powerhouse of the cell and makes ATP for energy, and then goes on for a good while longer so that the quote is cut short';
+      setBody(`<article><p>${sentence}.</p></article>`);
+      const background = new FakeBackground();
+      const stored = storedHighlight(sentence);
+      background.rows.set(stored.id, stored);
+      const h = await boot({ background });
+      window.scrollBy = vi.fn() as never;
+
+      await h.handlers['content.stepHighlight']!({ direction: 'next' }, {} as never);
+      expect(h.ui.announcements).toEqual([
+        `Highlight 1 of 1, Essential fact: ${sentence.slice(0, 80)}…`,
+      ]);
+    });
+  });
+
+  it('is detached with the session: nothing is left on the document after destroy', async () => {
+    const add = vi.spyOn(document, 'addEventListener');
+    const remove = vi.spyOn(document, 'removeEventListener');
+    const { h, press, listener } = await withHighlights();
+    const added = add.mock.calls.filter((c) => c[1] === listener);
+    expect(added).toHaveLength(1);
+    h.controller.destroy();
+    expect(remove.mock.calls.filter((c) => c[0] === 'keydown' && c[1] === listener)).toHaveLength(
+      1,
+    );
+    expect(h.ui.destroyed).toBe(true);
+    // A late event through a retained reference still changes nothing.
+    expect(press().preventDefault).not.toHaveBeenCalled();
+    expect(h.ui.popovers).toHaveLength(0);
+    expect(h.ui.toasts).toHaveLength(0);
   });
 });
 
@@ -971,6 +1796,82 @@ describe('tab RPC', () => {
     expect(h.background.callsOf('capture.save')).toHaveLength(0);
   });
 
+  describe('text selected inside a form field (Chromium reports the document selection as collapsed)', () => {
+    it.each([
+      ['text input', '<input id="f" type="text" value="selectable value inside an input">'],
+      ['password input', '<input id="f" type="password" value="hunter2-secret">'],
+      ['textarea', '<textarea id="f">text inside a textarea that must not be captured</textarea>'],
+    ])(
+      'captureSelection from a %s is blocked with an explanation, never "no selection"',
+      async (_n, field) => {
+        const h = await boot();
+        setBody(ARTICLE + field);
+        const f = document.getElementById('f') as HTMLInputElement;
+        f.focus();
+        clearSelection();
+        f.setSelectionRange(0, 6);
+        const valueRead = vi.spyOn(HTMLInputElement.prototype, 'value', 'get');
+        const textRead = vi.spyOn(HTMLTextAreaElement.prototype, 'value', 'get');
+
+        const res = await h.handlers['content.captureSelection']!(
+          { method: 'shortcut', bankId: null },
+          sender,
+        );
+        expect(res).toMatchObject({
+          status: 'blocked',
+          reason: expect.stringMatching(/form fields or editors/),
+        });
+        expect(h.background.callsOf('capture.save')).toHaveLength(0);
+        expect(valueRead).not.toHaveBeenCalled(); // a field value is never read
+        expect(textRead).not.toHaveBeenCalled();
+        expect(JSON.stringify([h.background.calls, h.ui.toasts])).not.toMatch(
+          /hunter2|selectable value|text inside a textarea/,
+        );
+      },
+    );
+
+    it('a caret in a field with nothing selected is still "no-selection"', async () => {
+      const h = await boot();
+      setBody(ARTICLE + '<input id="f" type="text" value="abc def">');
+      const f = document.getElementById('f') as HTMLInputElement;
+      f.focus();
+      f.setSelectionRange(3, 3);
+      expect(
+        await h.handlers['content.captureSelection']!({ method: 'shortcut', bankId: null }, sender),
+      ).toEqual({ status: 'no-selection' });
+    });
+  });
+
+  it('captureSelection refuses a selection that spans an editor, whole, and stores nothing', async () => {
+    const h = await boot();
+    setBody(
+      '<h1 id="h">Mixed page</h1><p id="a">Public text before the draft editor.</p>' +
+        '<div id="draft" contenteditable="true">PRIVATE-DRAFT: text the user is still typing in an editor.</div>' +
+        '<p id="b">Public text after the draft editor.</p>',
+    );
+    const drag = document.createRange();
+    drag.setStart(document.getElementById('a')!.firstChild!, 0);
+    drag.setEnd(document.getElementById('b')!.firstChild!, 11);
+    for (const make of [
+      () => document.getSelection()!.addRange(drag),
+      () => document.getSelection()!.selectAllChildren(document.body),
+    ]) {
+      clearSelection();
+      make();
+      expect(document.getSelection()!.toString()).toContain('PRIVATE-DRAFT'); // engine includes it
+      const res = await h.handlers['content.captureSelection']!(
+        { method: 'context-menu', bankId: null },
+        sender,
+      );
+      expect(res).toMatchObject({
+        status: 'blocked',
+        reason: expect.stringMatching(/form fields or editors/),
+      });
+    }
+    expect(h.background.callsOf('capture.save')).toHaveLength(0);
+    expect(h.painter.painted).toEqual([]);
+  });
+
   it('captureSelection explains text it cannot read instead of reporting an empty selection', async () => {
     const h = await boot();
     setBody(ARTICLE + '<svg><text id="t">chart label words here</text></svg>');
@@ -1057,6 +1958,32 @@ describe('tab RPC', () => {
       expect(h.painter.active).toBeNull();
     });
 
+    it('reports found=false, and moves nothing, for a highlight whose text is hidden', async () => {
+      const background = new FakeBackground();
+      const stored = storedHighlight(MITO);
+      background.rows.set(stored.id, stored);
+      const h = await boot({ background });
+      const scrollBy = vi.fn();
+      window.scrollBy = scrollBy as never;
+      const timers = vi.getTimerCount();
+      // A display:none panel: the range resolves (hidden text is in the stream) but has no box.
+      Object.defineProperty(Range.prototype, 'getClientRects', {
+        configurable: true,
+        value: () => [],
+      });
+      try {
+        expect(h.painter.ids).toEqual([stored.id]); // resolved, so the old code said found:true
+        expect(await h.handlers['content.reveal']!({ id: stored.id }, sender)).toEqual({
+          found: false,
+        });
+        expect(scrollBy).not.toHaveBeenCalled();
+        expect(h.painter.active).toBeNull();
+        expect(vi.getTimerCount()).toBe(timers); // no flash timer armed
+      } finally {
+        delete (Range.prototype as { getClientRects?: unknown }).getClientRects;
+      }
+    });
+
     it('finds a highlight created elsewhere before the data-change refresh arrived', async () => {
       const h = await boot();
       window.scrollBy = vi.fn() as never;
@@ -1078,6 +2005,464 @@ describe('settings', () => {
     expect(h.ui.hidden).toBe(1);
     await selectText(RIBO);
     expect(h.ui.toolbar).toHaveLength(1);
+  });
+
+  describe('highlight style', () => {
+    it('is handed to the painter at boot, on every change, and to a painter made later', async () => {
+      const h = await boot({ settings: { highlightStyle: 'strong' } });
+      expect(h.painter.style).toBe('strong');
+
+      h.setSettings({ highlightStyle: 'normal' });
+      expect(h.painter.style).toBe('normal');
+      h.setSettings({ highlightStyle: 'auto' });
+      expect(h.painter.style).toBe('auto');
+
+      h.setSettings({ denyList: ['localhost'] }); // unmount...
+      await flushPromises();
+      h.setSettings({ denyList: [] }); // ...and mount a new painter
+      await flushPromises();
+      expect(h.painters).toHaveLength(2);
+      expect(h.painter.style).toBe('auto');
+    });
+
+    it('works with a painter that has no setStyle', async () => {
+      const background = new FakeBackground();
+      const stored = storedHighlight(MITO);
+      background.rows.set(stored.id, stored);
+      const h = startHarness({ background });
+      harnesses.push(h);
+      await h.controller.ready;
+      const painter = h.painter as { setStyle?: unknown };
+      painter.setStyle = undefined;
+      expect(() => h.setSettings({ highlightStyle: 'strong' })).not.toThrow();
+      expect(h.painter.ids).toEqual([stored.id]);
+    });
+
+    it('the highlight kind goes to the painter with every entry', async () => {
+      const background = new FakeBackground();
+      const formula = storedHighlight(MITO, { kind: 'formula', color: 'blue' });
+      background.rows.set(formula.id, formula);
+      const h = await boot({ background });
+      expect(h.painter.painted.map((p) => [p.color, p.kind])).toEqual([['blue', 'formula']]);
+    });
+  });
+
+  describe('quiet mode (paintHighlights: false)', () => {
+    async function quiet() {
+      const background = new FakeBackground();
+      const stored = storedHighlight(MITO);
+      background.rows.set(stored.id, stored);
+      const h = await boot({ background, settings: { paintHighlights: false } });
+      return { h, background, stored };
+    }
+
+    it('resolves and reports, but publishes no range to the page', async () => {
+      const { h, background, stored } = await quiet();
+      expect(h.painter.painted).toEqual([]);
+      expect(h.painter.paintCalls).toBeGreaterThan(0); // told to paint nothing, not left alone
+      const status = await h.handlers['content.pageStatus']!({}, {} as never);
+      expect(status.counts).toMatchObject({ total: 1, resolved: 1 });
+      expect(background.callsOf('highlight.reportResolution')).toHaveLength(1);
+      expect(background.rows.get(stored.id)!.resolveStatus).toBe('resolved');
+    });
+
+    it('capture and undo keep working, and paint nothing', async () => {
+      const { h } = await quiet();
+      await selectText(RIBO);
+      const saved = await h.host.save(saveRequest);
+      expect(saved.status).toBe('created');
+      expect(h.painter.painted).toEqual([]);
+      expect((await h.handlers['content.pageStatus']!({}, {} as never)).counts.total).toBe(2);
+      await h.host.undo(saved.highlight.id);
+      expect(h.painter.painted).toEqual([]);
+    });
+
+    it('show-on-page scrolls but emphasises nothing; stepping holds nothing', async () => {
+      const { h, stored } = await quiet();
+      const scrollBy = vi.fn();
+      window.scrollBy = scrollBy as never;
+      expect(await h.handlers['content.reveal']!({ id: stored.id }, {} as never)).toEqual({
+        found: true,
+      });
+      expect(scrollBy).toHaveBeenCalled();
+      const out = await h.handlers['content.stepHighlight']!({ direction: 'next' }, {} as never);
+      expect(out).toEqual({ found: true });
+      expect(h.ui.popovers).toHaveLength(1); // the popover and announcement are the overlay's own
+      expect(h.painter.activeCalls).toEqual([]); // no registry entry, not even a short-lived one
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(h.painter.painted).toEqual([]);
+    });
+
+    it('switches live, both ways, and takes the emphasis back with the paint', async () => {
+      const { h, stored } = await quiet();
+      h.setSettings({ paintHighlights: true });
+      expect(h.painter.ids).toEqual([stored.id]);
+
+      window.scrollBy = vi.fn() as never;
+      await h.handlers['content.stepHighlight']!({ direction: 'next' }, {} as never);
+      expect(h.painter.active).toBe(stored.id);
+
+      h.setSettings({ paintHighlights: false });
+      expect(h.painter.painted).toEqual([]);
+      expect(h.painter.active).toBeNull();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(h.painter.painted).toEqual([]); // no later repaint brings it back
+
+      h.setSettings({ paintHighlights: true });
+      expect(h.painter.ids).toEqual([stored.id]);
+    });
+
+    it('a data change while quiet is resolved but still not painted', async () => {
+      const { h, background } = await quiet();
+      const added = storedHighlight(RIBO);
+      background.rows.set(added.id, added);
+      background.bump();
+      await vi.advanceTimersByTimeAsync(400);
+      expect(h.painter.painted).toEqual([]);
+      expect((await h.handlers['content.pageStatus']!({}, {} as never)).counts.resolved).toBe(2);
+    });
+  });
+});
+
+describe('the first look at the page', () => {
+  it('retries a failed fetch with a growing pause until the worker answers', async () => {
+    const background = new FakeBackground();
+    const stored = storedHighlight(MITO);
+    background.rows.set(stored.id, stored);
+    background.failNext('page.highlights', new StudyVaultError('no_receiver', 'worker asleep'), 2);
+    const h = await boot({ background });
+    expect(h.painter.ids).toEqual([]);
+    expect(background.callsOf('page.highlights')).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(background.callsOf('page.highlights')).toHaveLength(2);
+    expect(h.painter.ids).toEqual([]);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(background.callsOf('page.highlights')).toHaveLength(3);
+    expect(h.painter.ids).toEqual([stored.id]);
+  });
+
+  it('the overlay is not held up by the retries', async () => {
+    const background = new FakeBackground();
+    background.failNext('page.highlights', new StudyVaultError('no_receiver', 'worker asleep'), 99);
+    const h = await boot({ background });
+    expect(h.uiCreated).toBe(1);
+    await selectText(MITO);
+    expect(h.ui.toolbar).toHaveLength(1);
+    expect(await h.handlers['content.ping']!({}, {} as never)).toMatchObject({ ready: true });
+  });
+
+  it('coming back to the tab (and a bfcache restore) looks again, even after the retries ran out', async () => {
+    const background = new FakeBackground();
+    const stored = storedHighlight(MITO);
+    background.rows.set(stored.id, stored);
+    background.failNext('page.highlights', new StudyVaultError('no_receiver', 'gone'), 6);
+    const h = await boot({ background });
+    await vi.advanceTimersByTimeAsync(40_000);
+    expect(background.callsOf('page.highlights')).toHaveLength(6);
+    expect(h.painter.ids).toEqual([]);
+
+    setVisibility('hidden');
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(background.callsOf('page.highlights')).toHaveLength(6); // hidden: nothing to do
+    setVisibility('visible');
+    await vi.advanceTimersByTimeAsync(300);
+    expect(background.callsOf('page.highlights')).toHaveLength(7);
+    expect(h.painter.ids).toEqual([stored.id]);
+
+    // A page restored from the back/forward cache missed whatever changed while it was frozen.
+    const added = storedHighlight(RIBO);
+    background.rows.set(added.id, added);
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: false }));
+    await vi.advanceTimersByTimeAsync(300);
+    expect(h.painter.ids).toEqual([stored.id]);
+    window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+    await vi.advanceTimersByTimeAsync(300);
+    expect(h.painter.ids).toEqual([stored.id, added.id].sort());
+  });
+
+  it('stops retrying when the page is unmounted', async () => {
+    const background = new FakeBackground();
+    background.failNext('page.highlights', new StudyVaultError('no_receiver', 'gone'), 99);
+    const h = await boot({ background });
+    h.setSettings({ denyList: ['localhost'] });
+    await flushPromises();
+    const fetches = background.callsOf('page.highlights').length;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(background.callsOf('page.highlights')).toHaveLength(fetches);
+  });
+});
+
+describe('manifest commands', () => {
+  const sender = {} as never;
+
+  it('focus-toolbar asks the overlay and reports what it did', async () => {
+    const h = await boot();
+    h.ui.canFocus = true;
+    expect(await h.handlers['content.focusToolbar']!({}, sender)).toEqual({ focused: true });
+    h.ui.canFocus = false;
+    expect(await h.handlers['content.focusToolbar']!({}, sender)).toEqual({ focused: false });
+    expect(h.ui.focusRequests).toBe(2);
+  });
+
+  it('focus-toolbar says false where there is nothing to focus: no overlay, denied site', async () => {
+    const noUi = await boot({ uiFails: true });
+    expect(await noUi.handlers['content.focusToolbar']!({}, sender)).toEqual({ focused: false });
+
+    const denied = await boot({ settings: { denyList: ['localhost'] } });
+    expect(await denied.handlers['content.focusToolbar']!({}, sender)).toEqual({ focused: false });
+  });
+
+  describe('next-highlight / previous-highlight', () => {
+    const LINK = 'link text inside the page';
+
+    async function withThree(opts: HarnessOptions = {}) {
+      const background = opts.background ?? new FakeBackground();
+      const rows = [storedHighlight(MITO), storedHighlight(RIBO), storedHighlight(LINK)];
+      for (const r of rows) background.rows.set(r.id, r);
+      window.scrollBy = vi.fn() as never;
+      const h = await boot({ ...opts, background });
+      const ids = rows.map((r) => r.id) as [string, string, string];
+      const step = (direction: 'next' | 'previous') =>
+        h.handlers['content.stepHighlight']!({ direction }, sender);
+      return { h, ids, step };
+    }
+    const shown = (h: Harness): string[] => h.ui.popovers.map((p) => p.view.id);
+
+    it('walks the highlights in document order and wraps, opening the popover and holding the emphasis', async () => {
+      const { h, ids, step } = await withThree();
+      expect(await step('next')).toEqual({ found: true });
+      await step('next');
+      await step('next');
+      await step('next');
+      expect(shown(h)).toEqual([ids[0], ids[1], ids[2], ids[0]]);
+      await step('previous');
+      expect(shown(h).at(-1)).toBe(ids[2]);
+      expect(h.painter.active).toBe(ids[2]);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(h.painter.active).toBe(ids[2]);
+      expect(h.ui.announcements).toHaveLength(5);
+    });
+
+    it('continues from where the in-page key route left off: one position, two routes', async () => {
+      const add = vi.spyOn(document, 'addEventListener');
+      const { h, ids, step } = await withThree();
+      const keydown = add.mock.calls
+        .filter((c) => c[0] === 'keydown' && !(c[2] as { passive?: boolean } | undefined)?.passive)
+        .at(-1)![1] as (e: unknown) => void;
+      const key = (code: string) =>
+        keydown({
+          isTrusted: true,
+          altKey: true,
+          shiftKey: true,
+          ctrlKey: false,
+          metaKey: false,
+          repeat: false,
+          code,
+          composedPath: () => [],
+          preventDefault() {},
+        });
+      key('BracketRight');
+      await step('next');
+      key('BracketRight');
+      await step('previous');
+      expect(shown(h)).toEqual([ids[0], ids[1], ids[2], ids[1]]);
+    });
+
+    it('found is false, with a toast, when the page has no highlight or none is visible', async () => {
+      const h = await boot();
+      expect(await h.handlers['content.stepHighlight']!({ direction: 'next' }, sender)).toEqual({
+        found: false,
+      });
+      expect(h.ui.toasts.at(-1)).toMatchObject({ text: 'No highlights on this page yet.' });
+
+      const { h: hidden, step } = await withThree();
+      Object.defineProperty(Range.prototype, 'getClientRects', {
+        configurable: true,
+        value: () => [],
+      });
+      try {
+        expect(await step('next')).toEqual({ found: false });
+        expect(hidden.ui.toasts.at(-1)).toMatchObject({
+          text: 'No visible highlights on this page.',
+        });
+        expect(hidden.ui.popovers).toHaveLength(0);
+        expect(hidden.painter.active).toBeNull();
+      } finally {
+        delete (Range.prototype as { getClientRects?: unknown }).getClientRects;
+      }
+    });
+
+    it('found is false where nothing is mounted (denied site)', async () => {
+      const h = await boot({ settings: { denyList: ['localhost'] } });
+      expect(await h.handlers['content.stepHighlight']!({ direction: 'previous' }, sender)).toEqual(
+        { found: false },
+      );
+    });
+
+    it('still scrolls to the highlight when the overlay did not start', async () => {
+      const { h, step } = await withThree({ uiFails: true });
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      expect(await step('next')).toEqual({ found: true });
+      expect(h.painter.active).not.toBeNull();
+    });
+  });
+});
+
+describe('an orphaned script (extension reloaded or updated under the page)', () => {
+  it('stops at the first page mutation: nothing painted, no listeners, no more calls', async () => {
+    const background = new FakeBackground();
+    const stored = storedHighlight(MITO);
+    background.rows.set(stored.id, stored);
+    const h = await boot({ background });
+    const calls = background.calls.length;
+
+    h.ctx.isValid = false; // WXT reports an invalid context from now on
+    document.body.appendChild(document.createElement('div')).textContent = 'a late widget';
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(h.painter.destroyed).toBe(true);
+    expect(h.ui.destroyed).toBe(true);
+    expect(h.served.active).toBe(false);
+    expect(background.epochListeners.size).toBe(0);
+    expect(background.calls.length).toBe(calls);
+  });
+
+  it('a data-change signal that arrives after the extension is gone does not call it', async () => {
+    const background = new FakeBackground();
+    const h = await boot({ background });
+    const calls = background.calls.length;
+    h.ctx.isValid = false;
+    background.bump();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(background.calls.length).toBe(calls);
+    expect(h.painter.destroyed).toBe(true);
+  });
+
+  it('a route change after the extension is gone loads nothing', async () => {
+    const background = new FakeBackground();
+    const h = await boot({ background });
+    const calls = background.calls.length;
+    h.ctx.isValid = false;
+    history.pushState({}, '', '/after-update');
+    document.body.appendChild(document.createElement('span'));
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(background.calls.length).toBe(calls);
+    expect(h.painter.destroyed).toBe(true);
+  });
+});
+
+describe('failures are reported to the right party', () => {
+  it('a highlight that was stored but could not be placed on the page is not a failed save', async () => {
+    const h = await boot();
+    await selectText(MITO);
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    h.painter.paint = () => {
+      throw new Error('painter exploded');
+    };
+
+    const result = await h.host.save(saveRequest);
+    expect(result.status).toBe('created');
+    expect(h.background.rows.has(result.highlight.id)).toBe(true);
+    expect(h.ui.toasts.filter((t) => t.tone === 'error')).toEqual([]);
+    expect(h.background.callsOf('capture.save')).toHaveLength(1); // and nothing retried it
+  });
+
+  it('the same holds for quick-save, update and restore', async () => {
+    const background = new FakeBackground();
+    const stored = storedHighlight(MITO);
+    background.rows.set(stored.id, stored);
+    const h = await boot({ background });
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    h.painter.paint = () => {
+      throw new Error('painter exploded');
+    };
+
+    select(RIBO);
+    const quick = await h.handlers['content.captureSelection']!(
+      { method: 'shortcut', bankId: null },
+      {} as never,
+    );
+    expect(quick).toMatchObject({ status: 'created' });
+    await expect(h.host.update(stored.id, { color: 'green' })).resolves.toMatchObject({
+      color: 'green',
+    });
+    await h.host.remove(stored.id);
+    await expect(h.host.restore(stored.id)).resolves.toMatchObject({ id: stored.id });
+    expect(h.ui.toasts.filter((t) => t.tone === 'error')).toEqual([]);
+  });
+
+  describe('a worker that does not answer in time (real runtime transport)', () => {
+    function realTransport(h: { background: FakeBackground }) {
+      Object.assign(h.background, { call: callBackground });
+    }
+
+    it('is called slow, not lost, and the save is offered again', async () => {
+      const background = new FakeBackground();
+      vi.spyOn(fakeBrowser.runtime, 'sendMessage').mockImplementation((async (message: {
+        type: string;
+      }) => {
+        if (message.type === 'page.highlights') {
+          return { ok: true, data: { sourceId: null, highlights: [] } };
+        }
+        return new Promise(() => undefined); // capture.save is never answered
+      }) as never);
+      realTransport({ background });
+      const h = await boot({ background });
+      await selectText(MITO);
+
+      const saving = h.host.save(saveRequest).catch((e: unknown) => e);
+      await vi.advanceTimersByTimeAsync(HANDLER_TIMEOUT_MS);
+      const err = await saving;
+      expect(err).toBeInstanceOf(StudyVaultError);
+      const toast = h.ui.toasts.at(-1)!;
+      expect(toast.tone).toBe('error');
+      expect(toast.text).toBe('StudyVault is taking too long to respond. Try again in a moment.');
+      expect(toast.text).not.toMatch(/lost contact|reload/i);
+      expect(toast.action?.label).toBe('Retry');
+    });
+
+    it('answers before the RPC handler budget runs out, so the user is told which step was slow', async () => {
+      const background = new FakeBackground();
+      vi.spyOn(fakeBrowser.runtime, 'sendMessage').mockImplementation((async (message: {
+        type: string;
+      }) => {
+        if (message.type === 'page.highlights') {
+          return { ok: true, data: { sourceId: null, highlights: [] } };
+        }
+        return new Promise(() => undefined);
+      }) as never);
+      realTransport({ background });
+      const h = await boot({ background });
+      select(RIBO);
+
+      const quick = h.handlers['content.captureSelection']!(
+        { method: 'shortcut', bankId: null },
+        {} as never,
+      ).catch((e: unknown) => e);
+      let settled = false;
+      void quick.then(() => (settled = true));
+      await vi.advanceTimersByTimeAsync(HANDLER_TIMEOUT_MS - 1);
+      expect(settled).toBe(true); // our own error beat the runtime's "background worker" one
+      expect(await quick).toMatchObject({ message: expect.stringMatching(/taking too long/) });
+    });
+
+    it('a transport with no receiver still says the connection is lost', async () => {
+      const background = new FakeBackground();
+      vi.spyOn(fakeBrowser.runtime, 'sendMessage').mockImplementation((async (message: {
+        type: string;
+      }) => {
+        if (message.type === 'page.highlights') {
+          return { ok: true, data: { sourceId: null, highlights: [] } };
+        }
+        throw new Error('Could not establish connection. Receiving end does not exist.');
+      }) as never);
+      realTransport({ background });
+      const h = await boot({ background });
+      await selectText(MITO);
+      await expect(h.host.save(saveRequest)).rejects.toThrow();
+      expect(h.ui.toasts.at(-1)!.text).toMatch(/lost contact/);
+    });
   });
 });
 
@@ -1118,7 +2503,14 @@ describe('context invalidation', () => {
     );
     const leakedWin = balance(winAdd.mock.calls, winRemove.mock.calls);
     expect(docAdd.mock.calls.map((c) => c[0])).toEqual(
-      expect.arrayContaining(['selectionchange', 'pointerdown', 'pointerup', 'click', 'keyup']),
+      expect.arrayContaining([
+        'selectionchange',
+        'pointerdown',
+        'pointerup',
+        'click',
+        'keyup',
+        'keydown',
+      ]),
     );
     expect(winAdd.mock.calls.map((c) => c[0])).toEqual(
       expect.arrayContaining(['scroll', 'resize', 'popstate', 'hashchange']),

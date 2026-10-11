@@ -1,4 +1,4 @@
-import type { ColorId, HtmlAnchorSet } from '@shared';
+import type { ColorId, HighlightKind, HtmlAnchorSet } from '@shared';
 
 /**
  * Public contract of @highlights (ADR-004). Implementations live next to this file.
@@ -44,13 +44,21 @@ export interface Resolution {
   /** Non-null only for `resolved` and `changed`. `ambiguous`/`orphaned` are never given a range. */
   range: Range | null;
   method: ResolutionMethod;
-  /** Number of exact occurrences of the quote that were found (0 for fuzzy/orphaned). */
+  /**
+   * Number of exact occurrences of the quote that were scored: all of them up to 5,000, a
+   * selection beyond that (0 for fuzzy/orphaned).
+   */
   candidateCount: number;
 }
 
 export interface PaintEntry {
   id: string;
   color: ColorId;
+  /**
+   * Semantic kind. When set, the highlight also gets that kind's non-colour cue (KIND_DECORATION) and is
+   * registered as `sv-hl-<color>-<kind>`; without it the highlight is a plain `sv-hl-<color>` fill.
+   */
+  kind?: HighlightKind;
   range: Range;
 }
 

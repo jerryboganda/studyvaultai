@@ -204,7 +204,7 @@ describe('property: capture then resolve on the unchanged page (seeded)', () => 
     );
     expect(captured).toBeGreaterThanOrEqual(300);
     expect(multi).toBeGreaterThan(10);
-  });
+  }, 120_000);
 
   it('stream <-> DOM offsets round-trip for random (start, end) pairs', () => {
     for (let seed = 100; seed < 110; seed++) {

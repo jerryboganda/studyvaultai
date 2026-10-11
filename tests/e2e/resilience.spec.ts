@@ -104,30 +104,44 @@ test.describe('persistence across restart and extension reload', () => {
       await activate(ext1, page);
       await page.bringToFront();
       expect(await selectAndSave(page, { triple: '#quote' }, QUOTE)).toBe('Saved to Inbox');
-      // Second passage through "More options": new bank, kind, priority and a note.
+      // The page has no text field (ADR-005): the bank is named in the side panel, then picked in
+      // the page's "More options" together with kind and priority.
+      const panel1 = await openExtensionPage(first.context, first.extensionId, 'sidepanel.html');
+      await panel1.getByRole('tab', { name: 'Banks' }).click();
+      await panel1.getByLabel('New bank').fill('Cardiology');
+      await panel1.getByRole('button', { name: 'Create bank' }).click();
+      await expect(panel1.getByText('Bank "Cardiology" created.')).toBeVisible();
+
+      await page.bringToFront();
       await tripleClick(page, '#p-multiline');
       await expect(toolbarOf(page)).toBeVisible();
       await page.getByRole('button', { name: 'More options', exact: true }).click();
       const composer = page.getByRole('dialog', { name: 'Save with details' });
       await expect(composer).toBeVisible();
-      await composer.getByRole('button', { name: 'New bank' }).click();
-      await composer.getByLabel('Bank name').fill('Cardiology');
-      await composer.getByRole('button', { name: 'Create' }).click();
-      await expect(composer.getByLabel('Bank', { exact: true })).toHaveValue(/.+/);
+      await expect(composer.getByRole('textbox')).toHaveCount(0);
+      await composer.getByLabel('Bank', { exact: true }).selectOption({ label: 'Cardiology' });
       await composer.getByLabel('Type').selectOption({ label: 'ƒ Formula' });
       await composer.getByLabel('Priority').selectOption('5');
-      await composer.getByLabel('Note').fill('composer note');
       await composer.getByRole('button', { name: 'Save', exact: true }).click();
       await expect(savedToast(page)).toHaveText('Saved to Cardiology');
       await expectPaintedExactly(page, [QUOTE, MULTILINE]);
 
-      // A note typed in the highlight popover (real keyboard input), and a settings change.
-      await page.evaluate(() => window.getSelection()?.removeAllRanges());
-      await page.locator('#quote').click({ position: { x: 24, y: 8 } });
-      const dialog = page.getByRole('dialog', { name: 'Highlight details' });
-      await expect(dialog).toBeVisible();
-      await dialog.getByLabel('Note').fill('remember: CO = HR x SV');
-      await expect(dialog.getByText('Saved', { exact: true })).toBeVisible();
+      // Notes are typed in the side panel too. "Recent" lists every highlight whatever the active
+      // tab is, so both notes are written there (real keyboard input into the card's note field).
+      await panel1.getByRole('tab', { name: /Recent/ }).click();
+      const noteOf = (text: string) =>
+        panel1.locator('article.hl-card', { hasText: text }).getByLabel('Your note');
+      await noteOf('Depolarisation spreads').fill('composer note');
+      await noteOf('Cardiac output equals').fill('remember: CO = HR x SV');
+      await expect
+        .poll(
+          async () =>
+            liveHighlights(await readDb(ext1))
+              .map((h) => h.userComment)
+              .sort(),
+          { message: 'both notes were autosaved by the panel' },
+        )
+        .toEqual(['composer note', 'remember: CO = HR x SV']);
       await patchSettings(ext1, { theme: 'dark', density: 'compact' });
       // ...and persistent access for this origin (a registered content script).
       await patchSettings(ext1, { persistentOrigins: [originPattern(fixtureServer.origin)] });
@@ -382,9 +396,11 @@ test.describe('service worker suspension (CDP ServiceWorker.stopWorker)', () => 
 
     // Cold page load: registered script + stopped worker (what a browser restart looks like).
     await patchSettings(ext, { persistentOrigins: [originPattern(origin)] });
+    // (The e2e build is also granted its loopback hosts at install, so the registration holds those
+    // too: this test is about the cold load, not about the exact set.)
     expect(await rpc(ext, 'site.sync')).toMatchObject({
       ok: true,
-      data: { registeredMatches: [originPattern(origin)] },
+      data: { registeredMatches: expect.arrayContaining([originPattern(origin)]) },
     });
     await page.waitForTimeout(700);
     marker = await markWorker(context, extensionId, 'spa-3');
@@ -522,7 +538,7 @@ test.describe('offline', () => {
 // -----------------------------------------------------------------------------------------------
 
 test.describe('persistent registration (registered content script) and deny list', () => {
-  test('a registered origin injects new tabs without activation; removing it stops that', async ({
+  test('a registered origin injects new tabs without activation; the registration follows the stored sites', async ({
     context,
     extensionId,
     fixtureServer,
@@ -532,18 +548,25 @@ test.describe('persistent registration (registered content script) and deny list
     const alt = fixtureServer.altOrigin;
     const ext = await openExtensionPage(context, extensionId);
 
-    // Nothing registered at first, and a fresh tab is not injected.
+    // Nothing registered at first (the harness drops the install-time registration, fixtures.ts).
     expect(await registeredScripts(ext)).toEqual([]);
+
+    // What is registered is what Chrome grants plus the stored sites Chrome still covers. The e2e
+    // build holds loopback grants from install, so "contains" and "no longer contains" are the
+    // invariants; the literal per-port patterns below are the user's own entries.
+    const matchesOf = (reply: unknown) =>
+      (reply as { data: { registeredMatches: string[] } }).data.registeredMatches;
 
     await patchSettings(ext, { persistentOrigins: [originPattern(origin), originPattern(alt)] });
     const sync = await rpc(ext, 'site.sync');
     expect(sync).toMatchObject({ ok: true });
-    expect(
-      (sync as { data: { registeredMatches: string[] } }).data.registeredMatches.sort(),
-    ).toEqual([originPattern(origin), originPattern(alt)].sort());
+    expect(matchesOf(sync)).toEqual(
+      expect.arrayContaining([originPattern(origin), originPattern(alt)]),
+    );
     const scripts = await registeredScripts(ext);
     expect(scripts).toHaveLength(1);
     expect(scripts[0]).toMatchObject({ id: 'sv-persistent' });
+    expect(scripts[0]?.matches).toEqual(expect.arrayContaining(matchesOf(sync)));
     expect(scripts[0]?.excludeMatches ?? []).toContain('*://*.accounts.google.com/*');
 
     // A NEW tab, no tab.activate: the registered script runs, the toolbar works, data persists.
@@ -563,33 +586,76 @@ test.describe('persistent registration (registered content script) and deny list
     await first.close();
     await second.close();
 
-    // Remove only the 127.0.0.1 origin; keep localhost as a positive control.
+    // Remove only the 127.0.0.1 entry; keep localhost: the registration follows.
     await patchSettings(ext, { persistentOrigins: [originPattern(alt)] });
     const resync = await rpc(ext, 'site.sync');
-    expect(resync).toMatchObject({ ok: true, data: { registeredMatches: [originPattern(alt)] } });
+    expect(resync).toMatchObject({ ok: true });
+    expect(matchesOf(resync)).toContain(originPattern(alt));
+    expect(matchesOf(resync)).not.toContain(originPattern(origin));
+    expect([...((await registeredScripts(ext))[0]?.matches ?? [])].sort()).toEqual(
+      [...matchesOf(resync)].sort(),
+    );
+
+    // Clearing every stored site leaves no per-site pattern behind; the script exists exactly when
+    // something (a Chrome grant) is still registered.
+    await patchSettings(ext, { persistentOrigins: [] });
+    const cleared = await rpc(ext, 'site.sync');
+    expect(cleared).toMatchObject({ ok: true });
+    expect(matchesOf(cleared)).not.toContain(originPattern(alt));
+    expect(matchesOf(cleared)).not.toContain(originPattern(origin));
+    expect((await registeredScripts(ext)).length).toBe(matchesOf(cleared).length > 0 ? 1 : 0);
+  });
+
+  test('removing a stored site stops injection on it, and clearing all unregisters the script', async ({
+    context,
+    extensionId,
+    fixtureServer,
+  }) => {
+    test.setTimeout(180_000);
+    const origin = fixtureServer.origin;
+    const alt = fixtureServer.altOrigin;
+    const ext = await openExtensionPage(context, extensionId);
+
+    const matchesOf = (reply: unknown) =>
+      (reply as { data: { registeredMatches: string[] } }).data.registeredMatches;
+
+    // Both stored sites are covered: a new tab on either is injected without activation.
+    await patchSettings(ext, { persistentOrigins: [originPattern(origin), originPattern(alt)] });
+    const both = await rpc(ext, 'site.sync');
+    expect(both).toMatchObject({ ok: true });
+    expect(matchesOf(both)).toEqual(
+      expect.arrayContaining([originPattern(origin), originPattern(alt)]),
+    );
+    const injected = await context.newPage();
+    await injected.goto(`${origin}/article.html`);
+    await expect(injected.locator('studyvault-overlay')).toHaveCount(1, { timeout: 15_000 });
+    await injected.close();
+
+    // Remove 127.0.0.1 and keep localhost. The e2e build's install-time loopback host permissions
+    // are NOT the user's always-on sites, so the registration must follow the stored list exactly.
+    await patchSettings(ext, { persistentOrigins: [originPattern(alt)] });
+    const onlyAlt = await rpc(ext, 'site.sync');
+    expect(onlyAlt).toMatchObject({ ok: true });
+    expect(matchesOf(onlyAlt)).toEqual([originPattern(alt)]);
     expect((await registeredScripts(ext))[0]?.matches).toEqual([originPattern(alt)]);
 
     const removed = await context.newPage();
     await removed.goto(`${origin}/article.html`);
-    await expect(removed.locator('#p-refs')).toBeVisible();
-    const control = await context.newPage();
-    await control.goto(`${alt}/article.html`);
-    await expect(control.locator('studyvault-overlay')).toHaveCount(1, { timeout: 15_000 });
-    // The control proves injection timing has passed; the removed origin got nothing.
-    expect(await overlayHostCount(removed)).toBe(0);
-    const removedTab = await tabIdOf(ext, removed);
-    expect(await tabRpc(ext, removedTab, 'content.ping')).toMatchObject({
-      ok: false,
-      error: { code: 'no_receiver' },
-    });
-    expect(await paintedDetail(removed)).toEqual([]);
+    await expect(removed.locator('article')).toBeVisible();
+    await removed.waitForTimeout(1_500); // a late injection would show up well inside this window
+    await expect(removed.locator('studyvault-overlay')).toHaveCount(0);
+    await removed.close();
 
-    // Clearing every origin unregisters the script altogether.
+    const kept = await context.newPage();
+    await kept.goto(`${alt}/article.html`);
+    await expect(kept.locator('studyvault-overlay')).toHaveCount(1, { timeout: 15_000 });
+    await kept.close();
+
+    // Clearing everything leaves no script behind.
     await patchSettings(ext, { persistentOrigins: [] });
-    expect(await rpc(ext, 'site.sync')).toMatchObject({
-      ok: true,
-      data: { registeredMatches: [] },
-    });
+    const cleared = await rpc(ext, 'site.sync');
+    expect(cleared).toMatchObject({ ok: true });
+    expect(matchesOf(cleared)).toEqual([]);
     expect(await registeredScripts(ext)).toEqual([]);
   });
 
@@ -746,11 +812,12 @@ test.describe('crash safety and races', () => {
       await selectAndSave(page, { triple: '#quote' }, QUOTE);
       await selectAndSave(page, { triple: '#p-multiline' }, 'maximises stroke');
       await selectAndSave(page, { triple: '#p-intro' }, 'primary pacemaker');
-      await page.evaluate(() => window.getSelection()?.removeAllRanges());
-      await page.locator('#quote').click({ position: { x: 24, y: 8 } });
-      const dialog = page.getByRole('dialog', { name: 'Highlight details' });
-      await dialog.getByLabel('Note').fill('written just before the crash');
-      await expect(dialog.getByText('Saved', { exact: true })).toBeVisible();
+      // A note typed in the side panel (the page has no text field) and confirmed with "Saved".
+      const panel = await openExtensionPage(session.context, session.extensionId, 'sidepanel.html');
+      await panel.getByRole('tab', { name: /Recent/ }).click();
+      const card = panel.locator('article.hl-card', { hasText: 'Cardiac output equals' });
+      await card.getByLabel('Your note').fill('written just before the crash');
+      await expect(card.getByText('Saved', { exact: true })).toBeVisible();
 
       // Kill the browser process itself (not a graceful close): no flush, no shutdown hooks.
       await hardKill(session);

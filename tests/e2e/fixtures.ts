@@ -5,9 +5,10 @@ import path from 'node:path';
 import { startFixtureServer, type FixtureServer } from './server';
 
 /** Production build: asserted for least-privilege manifest shape. */
-export const PROD_EXTENSION_PATH = path.resolve('.output/chrome-mv3');
-/** `wxt build --mode e2e`: identical code, plus loopback host permissions (see wxt.config.ts). */
-export const E2E_EXTENSION_PATH = path.resolve('.output/chrome-mv3-e2e');
+const OUT_DIR = process.env.SV_OUT_DIR ?? '.output';
+export const PROD_EXTENSION_PATH = path.resolve(OUT_DIR, 'chrome-mv3');
+/** `pnpm build:e2e` (SV_E2E=1): identical code, plus loopback host permissions (see wxt.config.ts). */
+export const E2E_EXTENSION_PATH = path.resolve(OUT_DIR, 'chrome-mv3-e2e');
 
 type Fixtures = {
   context: BrowserContext;
@@ -50,12 +51,15 @@ function makeTest(extensionPath: string) {
         args: [`--disable-extensions-except=${extensionPath}`, `--load-extension=${extensionPath}`],
       });
       await use(context);
-      await context.close();
-      fs.rmSync(userDataDir, { recursive: true, force: true });
+      // A browser that already went away (a test closed it, or Windows tore the profile down first)
+      // is not a product failure: the test body has already passed or failed on its own assertions.
+      await context.close().catch(() => undefined);
+      fs.rmSync(userDataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     },
     serviceWorker: async ({ context }, use) => {
       const existing = context.serviceWorkers()[0];
-      await use(existing ?? (await context.waitForEvent('serviceworker')));
+      const worker = existing ?? (await context.waitForEvent('serviceworker'));
+      await use(worker);
     },
     extensionId: async ({ serviceWorker }, use) => {
       await use(new URL(serviceWorker.url()).host);

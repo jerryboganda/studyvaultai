@@ -1,3 +1,14 @@
+import { StudyVaultError } from '@shared';
+
+/**
+ * Whether doing the same thing again can help. `storage_unavailable` is not a passing glitch: it
+ * also means "data saved by a newer version" or "the Inbox cannot be read", which a blind retry
+ * only repeats. Such errors show their message and no Retry button.
+ */
+export function isRetryable(err: unknown): boolean {
+  return !(err instanceof StudyVaultError && err.code === 'storage_unavailable');
+}
+
 export function errorMessage(err: unknown, fallback = 'Something went wrong.'): string {
   return err instanceof Error && err.message.trim() ? err.message : fallback;
 }

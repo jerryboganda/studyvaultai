@@ -45,13 +45,44 @@ exist in content scripts on `http:` pages.
 `ambiguous` and `orphaned` are **not painted**; they surface in the side panel for the user.
 
 ## Rendering
-CSS Custom Highlight API (`CSS.highlights`) with one `Highlight` per colour (`sv-hl-<color>`), styled by a
+CSS Custom Highlight API (`CSS.highlights`) with one `Highlight` per colour and kind (`sv-hl-<color>-<kind>`; kind-less entries use `sv-hl-<color>`), styled by a
 constructed stylesheet in `document.adoptedStyleSheets` (no DOM nodes are added to the page). Ranges are
 not hit-testable, so clicks use `caretRangeFromPoint` + `Range.isPointInRange` against the resolved set.
 Without `CSS.highlights` the product degrades visibly: capture still works, painting is off, and the UI
 says so.
 
+**Known exposure (accepted):** the registry is document-level and shared with the page's main world, so
+page scripts can enumerate painted ranges (text, position, colour). See SECURITY_PRIVACY.md "Exposures to
+page scripts". Painting through closed-shadow-root overlay rects would avoid it at a high cost in
+scrolling/reflow/selection correctness; revisit if per-site "do not paint" is requested.
+
+## Amendments after implementation and review (2026-10-11)
+The engine is deliberately stricter than the order above; every tightening can only turn a result into
+`ambiguous`, never into a wrong paint:
+- A byte-identical document (same length and signature) with the quote at the stored offset resolves
+  there (`position`, confidence 1).
+- A multi-candidate winner must also lead the runner-up's context agreement by >= 0.1.
+- A copy still sitting at the exact stored offset while another candidate wins on context is `ambiguous`.
+- An unsupported unique/winning exact copy with a >= 0.85-similar location near the old position or
+  context is `ambiguous` (edited original + verbatim copy elsewhere).
+- A document boundary counts as full context when the stored window was cut by it.
+- Occurrence search must not truncate by document order (review finding): candidates nearest the stored
+  position are always scored, and context-extended needles are tried first.
+- Fuzzy `changed` results may not bind to text another saved highlight resolves to exactly.
+
 ## Dynamic pages
 Navigation API (`navigate`/`navigatesuccess`) with a URL-compare fallback in the observer handles SPA
 route changes. A single debounced `MutationObserver` marks the stream dirty; only unresolved or
 disconnected highlights are re-resolved, with bounded retries for lazy-loaded content.
+
+## Non-colour cues (2026-10-11)
+Each kind has a distinct underline (style, thickness) via `::highlight()` text-decoration, derived from the page's text colour so it stays >= 3:1 on light and dark pages; the fill alone is 1.3-1.5:1 on white and is not relied on. `setStyle('auto'|'normal'|'strong')`; `prefers-contrast: more` upgrades `auto` to strong; `forced-colors: active` drops fills and draws CanvasText underlines. Single source of truth: `KIND_DECORATION` in `@highlights`.
+
+## Dynamic pages: load and retry behaviour (2026-10-11)
+- A failed first `page.highlights` fetch (cold worker on session restore) retries with capped backoff
+  (1, 2, 4, 8, 16 s; six attempts); a `visibilitychange` to visible or a bfcache `pageshow` revives it.
+- Route changes forget the old page immediately but debounce the fetch+resolve (150 ms, 1 s max wait).
+- Every resolve path (initial, retry pass, upsert) passes the other entries' anchors as `siblings`, so a
+  deleted passage can never fuzzy-bind onto a neighbour's painted text.
+- A page with zero highlights builds zero text streams.
+- Worker calls time out at 12 s (below the runtime's 15 s handler budget) so the slow party is named.
