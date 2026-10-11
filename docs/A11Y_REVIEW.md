@@ -1,5 +1,22 @@
 # Accessibility review: surfaces built since the last audit (2026-10-11)
 
+> **Status, 2026-10-11 (CI evidence added; the findings below are unchanged).** The automated axe
+> suites named under "What automated axe already covers" ran and passed in Actions run 38139836238
+> (<https://github.com/jerryboganda/studyvaultai/actions/runs/38139836238>, commit `d641515b1154aa46597e7ebb069d2341014c125c`) on Ubuntu and Windows (443 e2e tests per OS
+> passed, none failed or retried; 6 `test.fixme` tests skipped, none of them an accessibility test):
+> `a11y.spec.ts` (47 tests), `dashboard.spec.ts` "axe WCAG 2.2 AA" in light and dark, `review.spec.ts`
+> "accessibility" (axe, keyboard-only, reduced motion), `pdf.spec.ts` "accessibility" (3), `surfaces.spec.ts` (the Settings page in
+> light and dark, the popup, the welcome tour in light and dark, reflow at 320 px and 200% zoom),
+> `ai.spec.ts` "accessibility", `backup.spec.ts` (the section, every restore step and the delete
+> confirmation) and the checks inside `sync.spec.ts`, all with the `wcag2a`, `wcag2aa`, `wcag21aa`
+> and `wcag22aa` tags against the e2e build in Playwright's bundled Chromium. This review said the `e2e`
+> job was the only place the new markup meets axe; that job has now run. Passing axe is not a
+> conformance claim and cannot judge what the section above lists. Nothing under "Needs a real browser or assistive technology" was done: no screen
+> reader, forced-colours, 400% zoom, OS reduced-motion, caret-browsing or touch pass has been made;
+> those remain `docs/MANUAL_TEST_CHECKLIST.md` MT-17, MT-18 and MT-42 to MT-44, MT-53. The sections
+> "Verification actually run" and "Where the e2e suites may need a look (not run)" below describe the
+> original code-and-jsdom pass and are not rewritten; the specs they name did run in that CI run.
+
 Target: WCAG 2.2 AA (UX_DESIGN.md, "Accessibility contract"). Method: reading the code and CSS of
 the surfaces below, computing contrast from the real token files, and unit tests (jsdom) for every
 behaviour that can be tested there. **No Playwright, axe, screen reader or real-browser run was

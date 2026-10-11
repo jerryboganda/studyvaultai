@@ -75,7 +75,7 @@ Behaviour that clients rely on:
 | Fail-closed configuration | No auth configured, public bind without a TLS proxy, wildcard CORS, dev tokens under `NODE_ENV=production`: the process exits with a reason | `config.test.ts`, `process.test.ts` |
 | Durable and corruption-safe file store | fsync per append, torn tail discarded, real corruption makes that user's requests fail instead of serving a partial log, directories named by digest | `store.test.ts` |
 | No secrets or content in logs | Logs carry route, status, latency and a truncated digest of the user id; never tokens, bodies or ids | `app.test.ts` "never logs" |
-| Works end to end | The real client engine and HTTP transport against this server over a socket, including E2EE and rotation | `integration.test.ts`; and, in a loaded extension with a stand-in OIDC provider (agent-run local e2e, CI pending), `tests/e2e/sync.spec.ts` |
+| Works end to end | The real client engine and HTTP transport against this server over a socket, including E2EE and rotation | `integration.test.ts`; and, in a loaded extension with a stand-in OIDC provider (passed in Actions run 38139836238), `tests/e2e/sync.spec.ts` |
 
 ### Why CSRF does not apply
 
@@ -182,8 +182,7 @@ decisions and resources that are not in it. Each box is something a person has t
       chooses a passphrase or "Upload without end-to-end encryption", and what the server and the
       sign-in provider learn. It is also driven end to end by `tests/e2e/sync.spec.ts` against this
       server, with a stand-in OpenID Connect provider and the real `chrome.identity` flow (agent-run
-      local e2e on Windows; **CI pending**: the last Actions run failed eight of that spec's tests
-      in an earlier version, and no completed run has executed the current one). It is not a run against a
+      local e2e on Windows, and passed on Ubuntu and Windows in Actions run 38139836238). It is not a run against a
       hosted provider, an https origin or a native permission prompt (the four `test.fixme` entries
       there; `docs/MANUAL_TEST_CHECKLIST.md` MT-46, MT-47).
 

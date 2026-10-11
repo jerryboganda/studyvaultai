@@ -5,9 +5,10 @@
 > Revised 2026-10-11 (second pass, after the backup and import, PDF reader, deletion, search index,
 > database lifecycle and sync hardening changes). Nothing below may be pasted into the dashboard
 > while a row it depends on is `in progress`, `unit-only`, `open` or `fix in progress` in
-> `docs/PRIVACY_CLAIMS.md`. On that date every completed `ci.yml` run had concluded `failure`,
-> `release.yml` had never run, no CI run had executed the hardening changes, and the manual
-> checklist (`docs/MANUAL_TEST_CHECKLIST.md`) had not been run.
+> `docs/PRIVACY_CLAIMS.md`. When this was first written every completed `ci.yml` run had concluded
+> `failure`; run 38139836238 (https://github.com/jerryboganda/studyvaultai/actions/runs/38139836238, commit `d641515b1154aa46597e7ebb069d2341014c125c`) is the first in which every
+> job succeeded (`docs/PRIVACY_CLAIMS.md` says what it does and does not back). `release.yml` has
+> never run and the manual checklist (`docs/MANUAL_TEST_CHECKLIST.md`) has not been run.
 
 Working copy of everything the Chrome Web Store dashboard asks for. Text here is written to be pasted
 into the dashboard. Fields only the account owner can supply carry a bracketed USER-REQUIRED marker;
@@ -114,8 +115,8 @@ patterns and two optional API permissions (`identity`, `alarms`, requested when 
 What guards this on every build: `scripts/check-build.mjs` asserts the install-time permissions, the
 two optional host patterns, the commands, the extension-pages CSP and the absence of the entries
 above. As of 2026-10-11 the committed script did not assert `optional_permissions`; the working tree
-adds a pin to exactly `alarms,identity` (and a directive-by-directive CSP table), which has not yet
-run in CI. Independently, `scripts/check-release-docs.mjs` fails when any declared permission,
+adds a pin to exactly `alarms,identity` (and a directive-by-directive CSP table), which passed in the
+`build` job of run 38139836238. Independently, `scripts/check-release-docs.mjs` fails when any declared permission,
 optional ones included, is missing from this file or from `PRIVACY_POLICY.md`.
 
 | Permission | Justification to paste |
@@ -143,10 +144,10 @@ checked in a loaded build. If the build you submit changes the manifest, update 
 
 | Change | Why it matters | Status |
 | --- | --- | --- |
-| Reader fetches a web PDF from the extension page (a third user-initiated network path beside AI and sync) | Needs the PDF's origin granted (optional host permission requested from a click, or already granted) and a `connect-src` that allows it. The host sees the user's IP address and the PDF address; the request omits credentials and the referrer (`packages/pdf/src/source.ts`, `entrypoints/pdf-reader/Reader.tsx`). The access is handed back when the download ends unless the user already had it (`packages/pdf/src/grant.ts`); a redirect to another site is read only if the user allows that site (`source.ts`, failure kind `redirect-needs-access`); in a private window, or one that cannot be identified, the reader stores nothing unless "Save from private windows" is on (`entrypoints/pdf-reader/privacy.ts`, `packages/storage/src/pdf.ts`). | confirmed in code and `docs/adr/006`, `docs/adr/009`; hand-back, redirect rule and private-window rule are unit-tested (`docs/PRIVACY_CLAIMS.md` P1a, P1c, P1d, P10a); e2e specs exist but are unproven in CI; [USER-REQUIRED: re-confirm against the built manifest and the submitted build] |
+| Reader fetches a web PDF from the extension page (a third user-initiated network path beside AI and sync) | Needs the PDF's origin granted (optional host permission requested from a click, or already granted) and a `connect-src` that allows it. The host sees the user's IP address and the PDF address; the request omits credentials and the referrer (`packages/pdf/src/source.ts`, `entrypoints/pdf-reader/Reader.tsx`). The access is handed back when the download ends unless the user already had it (`packages/pdf/src/grant.ts`); a redirect to another site is read only if the user allows that site (`source.ts`, failure kind `redirect-needs-access`); in a private window, or one that cannot be identified, the reader stores nothing unless "Save from private windows" is on (`entrypoints/pdf-reader/privacy.ts`, `packages/storage/src/pdf.ts`). | confirmed in code and `docs/adr/006`, `docs/adr/009`; hand-back, redirect rule and private-window rule are unit-tested (`docs/PRIVACY_CLAIMS.md` P1a, P1c, P1d, P10a); loaded-extension e2e specs for the fetch, the redirect and the private-tab reader passed in run 38139836238 (a real incognito window and Chrome's permission prompt are not driven); [USER-REQUIRED: re-confirm against the built manifest and the submitted build] |
 | AI provider endpoint | Extension-page CSP is `connect-src 'self' https: http://localhost:* http://127.0.0.1:*` (ADR-009) because the endpoint is user-chosen; this CSP does not itself stop a request, the feature switch, the consent token and the per-origin grant do. Requires the feature flag, a consent token for the exact previewed payload, and a per-origin host permission requested from a click. | confirmed in `docs/adr/009`; [USER-REQUIRED: re-confirm against the submitted build] |
-| Sync server, sign-in provider and its token and revocation endpoints | Same CSP; stays off until the user enables sync and signs in, and uploads nothing until the user chooses a passphrase or explicitly chooses to upload without encryption; needs `identity` and `alarms` (optional, requested at "Turn on sync") and a per-origin host permission for each origin. | confirmed in `docs/adr/009`, `docs/adr/010`; first-upload gate and key custody are unit and integration tested (`docs/PRIVACY_CLAIMS.md` P25a, P25b), unproven in CI; [USER-REQUIRED: re-confirm against the submitted build] |
-| Optional API permissions pinned by the build gate | `scripts/check-build.mjs` pins `optional_permissions` to `alarms,identity` in the working tree; the committed script did not. | in the working tree; unproven until a CI run passes it |
+| Sync server, sign-in provider and its token and revocation endpoints | Same CSP; stays off until the user enables sync and signs in, and uploads nothing until the user chooses a passphrase or explicitly chooses to upload without encryption; needs `identity` and `alarms` (optional, requested at "Turn on sync") and a per-origin host permission for each origin. | confirmed in `docs/adr/009`, `docs/adr/010`; first-upload gate and key custody are unit and integration tested and passed loaded-extension e2e specs against the reference server and a stand-in provider in run 38139836238 (`docs/PRIVACY_CLAIMS.md` P25a, P25b); [USER-REQUIRED: re-confirm against the submitted build] |
+| Optional API permissions pinned by the build gate | `scripts/check-build.mjs` pins `optional_permissions` to `alarms,identity` in the working tree; the committed script did not. | pinned by `scripts/check-build.mjs`, which passed in the `build` job of run 38139836238, and asserted against the production build in `permissions.spec.ts` |
 | `downloads`, `notifications` | Listed in SECURITY_PRIVACY.md as optional when a feature needs them (file export, review reminders). Request only with the feature, never "just in case". | none requested today |
 
 ## Remote code
@@ -204,7 +205,7 @@ changes. If you ship a hosted AI or sync service, the answers for "Authenticatio
 
 The store takes 1 to 5 screenshots at 1280 x 800 or 640 x 400, JPEG or 24-bit PNG without alpha.
 `tests/e2e/screenshots.spec.ts` produces real pictures of the loaded extension on every CI run
-(`gh run download <run-id> -n screenshots-ubuntu-latest`); page shots are already 1280 x 800. Panel
+(`gh run download <run-id> -n screenshots-ubuntu-latest-4`); page shots are already 1280 x 800. Panel
 and popup shots are narrower and need composing onto a 1280 x 800 canvas, and PNGs may carry an alpha
 channel that the store rejects: flatten them.
 

@@ -5,11 +5,14 @@
 > Revised 2026-10-11 (second pass, after the backup and import, PDF reader, deletion, search index,
 > database lifecycle and sync hardening changes) against the repository working tree. Each statement
 > below is meant to be backed by code; `docs/PRIVACY_CLAIMS.md` lists the code, the test and an
-> honest status for each one, and several are not verified end to end. On that date every completed
-> `ci.yml` run of the repository had concluded `failure`, the release workflows had never run, and
-> no CI run had executed the hardening changes, so no statement here has the evidence of a green
-> pipeline. The hardening changes are covered by unit and integration tests written with them; none
-> has been exercised in a loaded Chrome by a CI run or by the manual checklist. Where the product's
+> honest status for each one, and several are not verified end to end. When this was first written
+> every completed `ci.yml` run of the repository had concluded `failure`. Run 38139836238 (https://github.com/jerryboganda/studyvaultai/actions/runs/38139836238,
+> commit `d641515b1154aa46597e7ebb069d2341014c125c`) is the first in which every job succeeded, including
+> loaded-extension specs for many of these statements in Playwright's bundled Chromium; the claims
+> ledger records, row by row, which statements that run backs and which it does not. It did not
+> exercise branded Chrome or Edge, a real incognito window, Chrome's permission prompt, a hosted
+> sign-in provider or a screen reader, the release workflows have never run and the manual checklist
+> has not been run, so this document is still a draft. Where the product's
 > own screens still say something different from this document, `docs/PRIVACY_CLAIMS.md` ("Open
 > items for the UI and code agents") names the file and the string. This is a plain-language policy,
 > not legal advice.

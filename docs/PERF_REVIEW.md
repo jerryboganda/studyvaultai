@@ -1,5 +1,29 @@
 # Performance and bundle review (agent P1)
 
+> **Status, 2026-10-11 (CI evidence added; the findings and numbers below are unchanged).** The seeded
+> stress suites ran and passed in the `stress (perf suites, SV_PERF=1)` job of Actions run 38139836238
+> (<https://github.com/jerryboganda/studyvaultai/actions/runs/38139836238>, commit `d641515b1154aa46597e7ebb069d2341014c125c`) on a GitHub-hosted ubuntu-latest
+> runner: `node scripts/run-perf.mjs` found six suites (`packages/storage/src/perf.test.ts` 4 tests,
+> `packages/search/src/perf.test.ts` 5, `packages/highlights/src/perf.test.ts` 2 in jsdom,
+> `packages/study/src/perf.test.ts` 3, `packages/backup/src/roundtrip.test.ts` 17 and
+> `stress.test.ts` 7) and reported "perf run ok: 38 tests". What that run asserts: each suite's own
+> p95 budgets (for example `listHighlights` under 300 ms and `listBanksWithCounts` under 100 ms on
+> 10,000 seeded highlights; search under 300 ms p95 and an index build under 3,000 ms on 10,000
+> documents; the study queue under 400 ms and the log analytics under 1,500 ms p95 on 10,000 cards and
+> 100,000 logs), a lossless 10,000-highlight export and replace restore, bounded-chunk streaming with
+> monotonic progress, and the content-script restore and orphan budgets on a 1.18 M-character jsdom
+> document; that no expected suite was skipped or missing (the runner fails a suite in which no test
+> ran, and an expected area with no suite); and its coarse ceilings of 120 s per test and 300 s per
+> file. The job is advisory (`continue-on-error`) and no step failed. It reported, for one run on one
+> shared runner, a search-index `serialize` of 15.7 MB in 394 ms and a restore in 362 ms, against
+> the 1.2 to 3.2 s measured below on the shared Windows box; both are regression guards, not benchmarks,
+> and neither is a Chrome number. The e2e `dashboard.spec.ts` "perf: 10,000 highlights" and
+> `lifecycle.spec.ts` "performance evidence" also passed on Ubuntu and Windows in the `e2e` jobs of the
+> same run, and the bundle budgets were asserted by `scripts/check-build.mjs` in the `build` job. The
+> ranked findings and the recommended items below (the seconds-long search-index serialise and
+> restore, the eager dashboard index, the parsing of due cards, the bundle total at 99.4% of its
+> budget) are not changed by this paragraph.
+
 Review date: 2026-10-11. Scope: content script cost on arbitrary pages, service-worker cold start,
 IndexedDB access patterns, search index build / persistence, UI list and re-render behaviour, PDF
 reader and OCR memory, per-entrypoint bundle composition. Budgets under review are

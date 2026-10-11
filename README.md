@@ -5,12 +5,18 @@
 **Pre-release, version 0.1.0, not published.** The repository (<https://github.com/jerryboganda/studyvaultai>)
 holds a Manifest V3 extension. Code exists for each phase of `ROADMAP.md` (Phase 6 covers optional
 sync against a server you operate only: there is no account system and no hosted service), but
-verification lags: on 2026-10-11 every completed GitHub Actions run of `ci.yml` had concluded `failure`
-(in the last, lint, typecheck, format, unit, build and the stress job succeeded and seven of eight
-`e2e` shards failed), the release workflows had never run, and the manual checklist had not been
-run. The loaded-extension e2e specs were reported passing in agent-run local runs only; no completed Actions run
-has executed their current versions. Read `docs/PRIVACY_CLAIMS.md` for what each privacy and store
-statement is actually backed by, and treat `PRIVACY_POLICY.md` and `STORE_LISTING.md` as drafts.
+verification is partial. On 2026-10-11 the first fully green GitHub Actions run of `ci.yml` completed
+(https://github.com/jerryboganda/studyvaultai/actions/runs/38139836238, branch `ci/wave-c`, commit `d641515b1154aa46597e7ebb069d2341014c125c`): lint, typecheck,
+format, the unit suite, the production and e2e builds with the release gate, the advisory audit and
+the seeded stress suites all concluded `success`, and the Playwright suite passed on Ubuntu and Windows
+(443 tests per OS; 6 `test.fixme` tests were skipped and are not evidence; none failed or needed its
+retry). That run drove Playwright's bundled Chromium against the e2e build of the extension. It does
+not prove behaviour in branded Chrome or Edge, in a real incognito window, with Chrome's native
+permission prompt, with a hosted OpenID Connect provider, with a screen reader or in the Chrome Web
+Store review. The release workflows (`release.yml`, `reproducible-build.yml`, `stress.yml`) have never
+run and the manual checklist has not been run. Read `docs/PRIVACY_CLAIMS.md` for what each privacy
+and store statement is actually backed by, and treat `PRIVACY_POLICY.md` and `STORE_LISTING.md` as
+drafts.
 
 **Stack in use** (exact pins in `package.json`, rationale in ADR-002): WXT 0.21.4, Vite 8.3.4, React
 19.3.0, TypeScript 6.0.3, Dexie 4.4.6 on IndexedDB, Zod 4.6.5, `pdfjs-dist` 6.4.299 (legacy build,

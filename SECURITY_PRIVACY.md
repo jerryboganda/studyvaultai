@@ -69,8 +69,9 @@ and E2E (see docs/adr/004 and 005). What a page script on a site where StudyVaul
 
 ## Reviewed findings and accepted limitations (2026-10-11, second pass)
 Detail, tests and residual risks: THREAT_MODEL.md section 7 (ids SR-1 and on) and the risks R14 to R23.
-Every status below is "mitigated in the working tree, unit or integration tested, no CI run, not
-exercised in a loaded Chrome"; none is a claim of verification.
+Every status below is "mitigated, unit or integration tested". Where an e2e spec in Actions run
+38139836238 also asserts it, docs/PRIVACY_CLAIMS.md says `verified` for that row; nothing here is
+exercised in branded Chrome, Edge or a real private window.
 
 | Finding | Mitigation | Residual risk, accepted |
 | --- | --- | --- |

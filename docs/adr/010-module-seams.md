@@ -416,8 +416,8 @@ observed).
 
 **Status:** accepted · Records seams that changed after amendment 2 and one platform limit. It
 revises no earlier decision. Evidence is the e2e wave (`tests/e2e/sync.spec.ts`, `backup.spec.ts`,
-`ai.spec.ts`, `settings-trust.spec.ts`, `review.spec.ts`; passing in agent-run local runs, no
-Actions run of the current versions) and `docs/A11Y_REVIEW.md`, `docs/PERF_REVIEW.md`.
+`ai.spec.ts`, `settings-trust.spec.ts`, `review.spec.ts`; all passed in Actions run 38139836238
+on Ubuntu and Windows, except the `test.fixme` entries named in each spec) and `docs/A11Y_REVIEW.md`, `docs/PERF_REVIEW.md`.
 
 ### Decisions
 **1. `identity` is read per call, like `alarms`.** `browserSyncDeps()` in
@@ -444,7 +444,7 @@ run until a StudyVault page is opened or the browser is restarted. Manual row MT
 (`entrypoints/background/e2e.ts`, behind `__SV_E2E__`, answers extension pages only) is the only
 message the e2e build adds; see the addendum to amendment 1. `scripts/check-build.mjs` (`E2E_HOOKS`)
 fails the build when the name appears in any production `.js` or `.html` file and when it is missing
-from the e2e build; the `build` job's release gate passed in Actions run 38130710828. The same build
+from the e2e build; the `build` job's release gate passed in Actions run 38139836238. The same build
 constant also skips the install-time welcome tab, so no e2e covers that open (ledger U-10).
 
 **4. A restore checks each table's checksum with the fields the archive says it left out.**

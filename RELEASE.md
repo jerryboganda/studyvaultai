@@ -3,14 +3,17 @@
 > **DRAFT: describes intended behaviour; not for publication until every docs/PRIVACY_CLAIMS.md row it depends on is `verified`.**
 >
 > This file describes the release process as designed. Status on 2026-10-11, checked with
-> `gh run list`: every completed `ci.yml` run on the repository concluded `failure` (the newest was
-> still in progress), the independent audit found that no CI run has covered the working tree
-> beyond static checks and unit tests (finding F-01), and `release.yml`, `reproducible-build.yml` and `stress.yml` have never executed (the GitHub API
-> answers HTTP 404, "not found on the default branch", for each). Nothing below has been exercised.
-> The hardening changes of the second pass (CHANGELOG.md, Unreleased: backup and import guards,
-> private-window PDF reader, purge scope, deletion lifecycle, search generation, sync gate and key
-> custody) have unit and integration tests and have had no CI run at all.
-> Do not read "the pipeline proves X" as "X has been proven".
+> `gh run list` and `gh run view`: the first `ci.yml` run in which every job concluded `success` is
+> https://github.com/jerryboganda/studyvaultai/actions/runs/38139836238 (branch `ci/wave-c`,
+> commit `d641515b1154aa46597e7ebb069d2341014c125c`); the 13 completed runs before it all concluded `failure`.
+> That run exercised the static checks, the unit suite, both builds and the release gate, the audit
+> and stress jobs, and the Playwright suite in Playwright's bundled Chromium on Ubuntu and Windows
+> (443 tests per OS passed, 6 `test.fixme` skipped, none failed or flaky). `release.yml`,
+> `reproducible-build.yml` and `stress.yml` have never executed (they are not on the default branch;
+> `gh workflow list` shows only `CI`), so nothing those three do has been exercised, and the manual
+> checklist has not been run. The hardening changes of the second pass (CHANGELOG.md, Unreleased) have
+> unit and integration tests and e2e specs that passed in that run, and have not been seen in branded
+> Chrome or Edge. Do not read "the pipeline proves X" as "X has been proven".
 
 How a version gets from `main` to the Chrome Web Store, what the pipeline proves on the way, and
 what only the account owner can do. The pipeline never publishes to the store: that needs the
@@ -20,7 +23,7 @@ owner's developer account and stays a manual step by design.
 
 | Workflow | Trigger | What it does |
 | --- | --- | --- |
-| `ci.yml` | every push, PR to `main`, manual | Required gate: lint, typecheck, format, unit tests, production and e2e builds, zip, `scripts/check-build.mjs`, `scripts/check-release-docs.mjs`, Playwright on Linux and Windows, and (on `main` only) the `stress` job. Uploads traces, the screenshot set and the perf timings; writes a bundle-size table to the job summary. Advisory: `pnpm audit`, licence allow-list, `stress` off `main`. Job-by-job detail: "CI map" at the end of this file |
+| `ci.yml` | every push, PR to `main`, manual | Required gate: lint, typecheck, format, unit tests, production and e2e builds, zip, `scripts/check-build.mjs`, `scripts/check-release-docs.mjs`, Playwright on Linux and Windows, and the seeded `stress` suites. Uploads traces, the screenshot set and the perf timings; writes a bundle-size table to the job summary. Advisory: `pnpm audit`, licence allow-list, `stress`. Job-by-job detail: "CI map" at the end of this file |
 | `release.yml` | tag `v*`, manual (dry run) | Requires a green `ci.yml` run for the same commit, checks the tag against `package.json`, builds, runs the build gate and the licence audit, checks the store documents, zips, writes `SHA256SUMS` and a CycloneDX SBOM, runs the reproducible-build check, uploads everything as the `release` artifact and, for a tag, creates a **draft** GitHub release |
 | `reproducible-build.yml` | called by `release.yml`, weekly, manual | Builds twice (workspace, and a clean `git archive` export at another path) and compares every file by hash |
 | `stress.yml` | nightly, manual | The same steps as the `stress` job of `ci.yml`, for runs no push triggered: seeded 10k-row suites with `SV_PERF=1`; timings JSON and a summary table; fails on a broken budget, a skipped or missing suite |
@@ -121,7 +124,7 @@ The pipeline cannot do these; none of them should be skipped or delegated to an 
 | 1 | Create the Chrome Web Store developer account (one-time registration fee, 2-step verification on the Google account, verified contact email) | Upload and publish |
 | 2 | Decide and enter the **trader or non-trader** status the dashboard asks for (EU consumer-law declaration) and any address it requires | Distribution tab |
 | 3 | Host `PRIVACY_POLICY.md` at a public HTTPS URL and put that URL in the dashboard and in the extension's Settings. GitHub Pages on this repository is enough; enabling it is a repository setting only the owner can change | Privacy practices, listing |
-| 4 | Provide a monitored **support email or issue-tracker URL**, and a vulnerability-reporting address (fill the marker in `SECURITY.md`; `check-release-docs.mjs` scans only the policy and the listing, so that marker is not enforced by the gate) | Listing, policy, security |
+| 4 | Provide a monitored **support email or issue-tracker URL**, and a vulnerability-reporting address (fill the marker in `SECURITY.md`; `check-release-docs.mjs` also scans `SECURITY.md` and `README.md` for markers, and `--strict` fails while one remains) | Listing, policy, security |
 | 5 | Resolve every `[USER-REQUIRED: ...]` marker in `PRIVACY_POLICY.md` and `STORE_LISTING.md` (legal name, effective date, operator of any hosted AI or sync service, deletion process, minimum age) and have the policy reviewed by someone qualified | `check-release-docs.mjs --strict` |
 | 6 | Choose and compose the store screenshots (1280 x 800, flattened PNG or JPEG) from the CI `screenshots-*` artifact, and decide whether to make promo tiles | Listing |
 | 7 | Choose a `LICENSE` for the repository (none exists today, so the code is "all rights reserved" regardless of being public) | Repository |
@@ -189,10 +192,12 @@ Written 2026-10-11 for 0.1.x. Modules still being integrated are listed separate
 - **Delete all data** removes the databases (including the pre-update copy and every restore
   staging database), `storage.local`, `storage.session` and every optional site grant. The database
   delete is requested first and cannot be withdrawn: another StudyVault window that holds it makes
-  the deletion wait (reads fail meanwhile) until that window closes. It does not remove the optional
-  `identity` and `alarms` permissions, the dashboard's two display preferences in the extension
-  page's `localStorage`, any copy on a sync server, or files the user exported (P15, P15b; nothing
-  in the tree removes the first two).
+  the deletion wait (reads fail meanwhile) until that window closes. Once it is over the Settings
+  page also gives back the optional `identity` and `alarms` permissions and removes the extension
+  page's `localStorage` display preferences (best effort; a refusal is named). It does not remove any
+  copy on a sync server, files the user exported or anything on other devices (P15, P15b). The
+  permission removal is asserted in the e2e suite (run 38139836238), the preferences by unit tests
+  only.
 - **Backups hold study data only and are not signed.** Settings (theme, deny list, enabled sites,
   study-day settings, welcome-tour progress, AI and sync configuration), the AI key and sync sign-in
   are not in a backup, and `savedSearches` and a review session in progress are not either
@@ -218,8 +223,10 @@ Written 2026-10-11 for 0.1.x. Modules still being integrated are listed separate
   encryption"; encryption is optional. The unlocked key is held in memory-only session storage for
   at most 15 minutes and is dropped by lock, sign-out, disable, a restore that replaced the sync
   identity and "Delete all data". A server that stops presenting the key profile is refused.
-  Exercised against the in-process reference server only; Chrome's session-storage behaviour and a
-  real sign-in provider are unverified (docs/PRIVACY_CLAIMS.md P25a to P25e).
+  Exercised in unit and integration tests against the in-process reference server and, in run
+  38139836238, in a loaded Playwright Chromium against the reference server over a socket and a
+  stand-in sign-in provider. A real provider over https, the native permission prompt and branded
+  Chrome's session-storage behaviour are unverified (docs/PRIVACY_CLAIMS.md P25a to P25e).
 
 ### Build and verification
 
@@ -241,25 +248,32 @@ Written 2026-10-11 for 0.1.x. Modules still being integrated are listed separate
 ### Modules still being integrated (2026-10-11)
 
 The PDF reader and OCR, review (spaced repetition), the dashboard, the welcome tour, AI help, sync
-and the backup/restore UI now have screens in the loaded extension and unit tests. None of them has
-been exercised end to end by a green CI run or by the manual checklist, so the corresponding
-statements in the store documents stay marked in `docs/PRIVACY_CLAIMS.md`. Do not describe any of
-them in a store listing until its row there says `verified`.
+and the backup/restore UI have screens in the loaded extension, unit tests and loaded-extension e2e
+specs that passed on Ubuntu and Windows in run 38139836238. None of them has been exercised in
+branded Chrome or Edge or by the manual checklist, and the e2e specs cannot see Chrome's native
+permission prompt, a real incognito window or a hosted sign-in provider. The statements in the store
+documents therefore stay marked in `docs/PRIVACY_CLAIMS.md`, row by row. Do not describe any of them
+in a store listing until its row there says `verified` for every part the statement relies on.
 
 The second-pass hardening changes are in the same position: unit and integration tests (the `unit`
-job of run 38130710828 ran them), e2e specs that passed only in agent-run local runs, and no green
-`e2e` job or branded-Chrome run. docs/PRIVACY_CLAIMS.md lists each as `unit-only`, `e2e-local` or
-`open`, and THREAT_MODEL.md section 7 lists the findings and the accepted limitations.
+job of run 38139836238 ran them) and e2e specs that passed there, but no branded-Chrome run and no
+manual checklist. docs/PRIVACY_CLAIMS.md lists each as `verified`, `unit-only` or `open` per part, and
+THREAT_MODEL.md section 7 lists the findings and the accepted limitations.
 
 ## CI map
 
 Every job, what a green result proves, and how to run it again. Rule 1 of `AGENTS.md` applies: the
-heavy ones run on Actions, not on the developer machine. Status on 2026-10-11: the last `ci.yml` run
-(<https://github.com/jerryboganda/studyvaultai/actions/runs/38130710828>, branch `ci/wave-c`, commit
-`ff0377f`) executed this map: `static` (three jobs), `unit`, `build`, `audit` and the `stress` job
-concluded `success`, seven of the eight `e2e` shards failed, and `ci-ok` therefore failed, as
-designed. `stress.yml`, `release.yml` and `reproducible-build.yml` have never executed. The earlier
-runs failed in `unit`, `static (format)` and `e2e` test steps, not in the workflow wiring.
+heavy ones run on Actions, not on the developer machine. Status on 2026-10-11: the first `ci.yml`
+run in which every job concluded `success` is <https://github.com/jerryboganda/studyvaultai/actions/runs/38139836238> (branch `ci/wave-c`, commit
+`d641515b1154aa46597e7ebb069d2341014c125c`): `static` (three jobs), `unit` (201 files, 3,693 tests passed, 12 skipped), `build`
+(including `scripts/check-build.mjs` and `scripts/check-release-docs.mjs`), `audit`, `stress` (38 tests
+in six suites), all eight `e2e` shards (per OS 449 tests scheduled, 443 passed, 6 `test.fixme`
+skipped, 0 failed, 0 flaky) and `ci-ok`. The 13 earlier completed runs all concluded `failure`;
+the earlier status note recorded their failures in `unit`, `static (format)` and `e2e` test steps, not
+in the workflow wiring. `stress.yml`, `release.yml` and `reproducible-build.yml` have never executed. A green `e2e` job proves the specs passed against the
+e2e build in Playwright's bundled Chromium; it does not prove the production zip (that is the release
+gate and the two production-build specs), branded Chrome or Edge, a real incognito window, a permission
+prompt, a hosted provider or a screen reader.
 
 ### `ci.yml`
 
@@ -269,9 +283,9 @@ runs failed in `unit`, `static (format)` and `e2e` test steps, not in the workfl
 | `unit (vitest)` | push, PR, manual | required | every `*.test.ts(x)` under `packages/`, `entrypoints/`, `server/` passes in jsdom/node with `SV_PERF` unset (the 10k-row suite in `packages/storage` skips itself) | a loaded extension, a real browser, IndexedDB outside `fake-indexeddb` |
 | `build (prod + e2e + zip)` | push, PR, manual | required | production and e2e builds succeed, the zip is produced, `scripts/check-build.mjs` (manifest, permissions, CSP, remote code, size budgets, test hooks) and `scripts/check-release-docs.mjs` pass. Uploads `extension-builds`; the size table is in the job summary | that the build is reproducible (`reproducible-build.yml`) |
 | `e2e (<os>, shard <n>/4)` | push, PR, manual, after `build` | required, 2 OSes x 4 shards | the Playwright suite passes against the built MV3 extension in Playwright's bundled Chromium (headless) on Ubuntu and Windows; a test that needed its retry fails the run. Uploads `e2e-report-<os>-<n>` and `screenshots-<os>-<n>` | branded Chrome or Edge, macOS, permission prompts, screen readers (manual checklist) |
-| `stress (perf suites, SV_PERF=1)` | push, PR, manual | required on `main`; advisory elsewhere | the seeded 10k-row and round-trip suites (`scripts/run-perf.mjs`: storage, search, highlights, backup, study: 10k-card queue and 100k review-log analytics) ran, none was skipped, and their budgets held on a CI runner. Uploads `perf-results` (`timings.json`, `summary.md`) | the study suite is pure functions (no IndexedDB), so the Zod parse of due cards in `getDueSummary` is not in it; numbers on a shared runner are regression guards, not user hardware. The 10k dashboard spec is not here: it is `perf: 10,000 highlights` in `tests/e2e/dashboard.spec.ts` and runs in `e2e` |
+| `stress (perf suites, SV_PERF=1)` | push, PR, manual | advisory (`continue-on-error`; `ci-ok` prints it and does not require it until it has a few green runs; it has one, run 38139836238) | the seeded 10k-row and round-trip suites (`scripts/run-perf.mjs`: storage, search, highlights, backup, study: 10k-card queue and 100k review-log analytics) ran, none was skipped, and their budgets held on a CI runner. Uploads `perf-results` (`timings.json`, `summary.md`) | the study suite is pure functions (no IndexedDB), so the Zod parse of due cards in `getDueSummary` is not in it; numbers on a shared runner are regression guards, not user hardware. The 10k dashboard spec is not here: it is `perf: 10,000 highlights` in `tests/e2e/dashboard.spec.ts` and runs in `e2e` |
 | `audit (advisory)` | push, PR, manual | advisory | nothing is promised: `pnpm audit --prod --audit-level=high` and the licence allow-list report | `release.yml` enforces the licence allow-list |
-| `ci-ok (required checks)` | always | the only check to require in branch protection | `static`, `unit`, `build`, `e2e` (and `stress` on `main`) all concluded `success`; failed, cancelled and skipped all count as failure | |
+| `ci-ok (required checks)` | always | the only check to require in branch protection | `static`, `unit`, `build`, `e2e` all concluded `success`; failed, cancelled and skipped all count as failure (`stress` is printed, not required) | |
 
 Concurrency: a newer run for the same branch or pull request cancels the older one; `main` is never
 cancelled and every `main` run has its own group, so every commit on `main` gets a full run. A pull

@@ -9,11 +9,14 @@ copy it when a version is tagged.
 ## [Unreleased]
 
 Nothing has been released or submitted to a store. `package.json` is at 0.1.0. The entries below say
-what exists in the repository, not what has been proven: on 2026-10-11 every completed `ci.yml` run
-had concluded `failure` and the manual checklist had not been run. In the last run
-(<https://github.com/jerryboganda/studyvaultai/actions/runs/38130710828>, commit `ff0377f`) lint,
-typecheck, format, unit, build, audit and stress succeeded and seven of eight `e2e` shards failed.
-The evidence for each privacy and store statement is tracked in `docs/PRIVACY_CLAIMS.md`.
+what exists in the repository, not what has been proven. The first fully green `ci.yml` run is
+<https://github.com/jerryboganda/studyvaultai/actions/runs/38139836238> (2026-10-11, commit
+`d641515b1154aa46597e7ebb069d2341014c125c`): lint, typecheck, format, unit, build with the release gate,
+audit, stress and the e2e suite on Ubuntu and Windows (443 passed, 6 `test.fixme` skipped, 0 failed and
+0 flaky per OS) all succeeded; the 13 completed runs before it failed. It did not exercise branded
+Chrome or Edge, a real incognito window, Chrome's permission prompt, a hosted sign-in provider or a
+screen reader, and the manual checklist has not been run. The evidence for each privacy and store
+statement is tracked in `docs/PRIVACY_CLAIMS.md`.
 
 ### Added
 
@@ -44,15 +47,15 @@ The evidence for each privacy and store statement is tracked in `docs/PRIVACY_CL
 - Documents: privacy policy and store listing drafts, claims ledger, threat model, security
   policy, manual checklist and ADRs 001 to 010.
 - Loaded-extension e2e coverage in `tests/e2e` (real Chromium, the built e2e extension, no mocked
-  Chrome API): optional AI against a fake provider (14 tests), backup, restore and import (11),
+  Chrome API): optional AI against a fake provider (15 tests), backup, restore and import (11),
   sync against the reference server and a stand-in OpenID Connect provider with a second profile and
   worker suspension (13, plus 4 `test.fixme` for the native permission prompt, an ungranted origin,
   a hosted https provider and the first-lifetime alarm wake), trusted settings (3), the settings,
   popup and welcome-tour surfaces, the dashboard, the review session and the PDF reader (OCR resume,
-  web open, private windows through `?incognito=1`), and the extension-pages CSP. Each file was
-  reported passing in an agent-run local run on Windows; **no completed GitHub Actions run has executed
-  the current versions**, and an earlier version of several of them failed there (`docs/PRIVACY_CLAIMS.md`
-  evidence caveat). Not driven: Chrome's native permission prompt, a real incognito window, a hosted
+  web open, private windows through `?incognito=1`), and the extension-pages CSP. All of them
+  passed on Ubuntu and Windows in Actions run 38139836238 (the 6 `test.fixme` tests were skipped); an
+  earlier version of several had failed in run 38130710828 (`docs/PRIVACY_CLAIMS.md` "Evidence
+  (F-01)"). Not driven: Chrome's native permission prompt, a real incognito window, a hosted
   provider, screen readers; those are `docs/MANUAL_TEST_CHECKLIST.md` section 12 (MT-41a, MT-42 to
   MT-53).
 - `docs/A11Y_REVIEW.md` (27 findings, 18 fixed in code and CSS) and `docs/PERF_REVIEW.md` (23
@@ -64,7 +67,9 @@ The evidence for each privacy and store statement is tracked in `docs/PRIVACY_CL
 - The URL redaction rule for stored addresses was widened from a fixed list of parameter names to a
   name heuristic; it now also strips `;name=value` path parameters, credential parameters inside a
   `#/route` fragment and credential blobs in route clothing (`packages/shared/src/urls.ts`). It is
-  applied when an address is saved and is not retroactive. Unit-tested; not yet run in CI.
+  applied when an address is saved and is not retroactive. Unit-tested (the `unit` job of run
+  38139836238 passed); one capture is also asserted in a loaded extension
+  (`tests/e2e/lifecycle.spec.ts`, same run).
 - A backup holds study data only: settings, the AI provider settings, key and usage, the sync
   configuration, account and queue, saved searches and a review session in progress are not in it,
   and the screens say so from one place (`packages/ui/src/backup/scope.ts`).
@@ -105,7 +110,8 @@ The evidence for each privacy and store statement is tracked in `docs/PRIVACY_CL
   this the guard it relied on was always false for this extension (`entrypoints/pdf-reader/privacy.ts`).
 - The PDF reader's save bar is evaluated when the mouse button is released, so a drag no longer runs
   on into the bar and saves a quote the person did not choose (`entrypoints/pdf-reader/selectionGate.ts`,
-  commit `c9334b1`; its Actions run had not completed when this was written).
+  commit `c9334b1`; "the save bar waits for the button to be released, so a drag never runs on into it"
+  passed on Ubuntu and Windows in run 38139836238).
 - Sync sign-in no longer depends on the worker having restarted after the `identity` permission was
   granted (ADR-010 amendment 3). Known limit: the first worker lifetime after `alarms` is granted
   does not register the sync alarm listener, so a stopped worker is not woken by it until something
@@ -121,6 +127,13 @@ The evidence for each privacy and store statement is tracked in `docs/PRIVACY_CL
 - Integrity: `undoLastReview` undoes the answer the card is in when two logs share a review time;
   `moveCards` never leaves live cards in a deleted deck; `mergeBanks` re-points the merged bank's
   decks; the sync reconcile sweep decides from rows read inside its transaction.
+- "Delete all data" now also gives back the optional `identity` and `alarms` permissions and removes
+  the per-viewer `localStorage` display preferences once the database delete is over, and its dialog
+  says what stays (U-16). The permission removal is asserted in `tests/e2e/sync.spec.ts` (run
+  38139836238); the preferences are unit-tested only.
+- The Backup section's introduction follows the sync setting (U-2); the reader's redirect advice says
+  the other site may already have received the request (U-14); Settings lists the origins granted to
+  AI, sync and other features under "Other access" and can revoke each one (U-9, list and revoke).
 
 ### Security
 
@@ -128,8 +141,9 @@ The evidence for each privacy and store statement is tracked in `docs/PRIVACY_CL
   list); a forged ZIP64 or entry-count archive is refused from its central directory before anything
   is decompressed; restored JSON member names such as `__proto__` are refused; restored AI results
   are re-grounded and only demoted; imports create Sources of their own; one restore runs at a time
-  in its own staging database. Unit and integration tests; no CI run (`THREAT_MODEL.md` section 7,
-  SR-1, SR-2, SR-L1 to SR-L5).
+  in its own staging database. Unit and integration tests passed in the `unit` job of run 38139836238,
+  and the loaded-extension specs for the merge, damaged-file and ZIP64 cases and for imports passed in
+  the same run (`THREAT_MODEL.md` section 7, SR-1, SR-2, SR-L1 to SR-L5).
 - Privileged sync configuration and the deny list, private-window flag and feature flags the worker
   enforces are no longer read from content-script-writable storage; setting up or rotating E2EE no
   longer re-encrypts server-supplied plaintext as authentic; a server that stops presenting the key
@@ -139,24 +153,16 @@ The evidence for each privacy and store statement is tracked in `docs/PRIVACY_CL
 ### Known issues
 
 - The hardening changes listed under Changed, Fixed and Security were made after the 2026-10-11
-  reviews. Their unit and integration tests passed in the `unit` job of the last run; their e2e
-  specs passed in agent-run local runs only. None has been exercised in branded Chrome or Edge, and
-  four things no automated spec can drive remain manual: a real incognito window, a second window
-  blocking "Delete all data", a restore started twice, and a real sign-in provider
-  (`docs/MANUAL_TEST_CHECKLIST.md` MT-45, MT-46, MT-50, MT-51).
-- "Delete all data" does not remove the optional `identity` and `alarms` permissions or the four
-  per-viewer `localStorage` preferences (`sv.dashboard.contrast`, `sv.dashboard.collapsed`,
-  `sv.dashboard.singleKeys`, `sv.review.keys`), and its dialog does not say so (no fix yet;
-  `docs/PRIVACY_CLAIMS.md` P15, U-16).
+  reviews. Their unit and integration tests and their e2e specs passed in run 38139836238. None has
+  been exercised in branded Chrome or Edge, and four things no automated spec can drive remain
+  manual: a real incognito window, a second window blocking "Delete all data", a restore started
+  twice, and a real sign-in provider (`docs/MANUAL_TEST_CHECKLIST.md` MT-45, MT-46, MT-50, MT-51).
 - A purge cannot reach the sync server's copy, an unsent edit of an already-delivered item, an upload
   attempted but not acknowledged, sync merge bookkeeping (up to 90 days), the cached search index
   until a search page rebuilds it, or backups (R14, R15).
-- The Backup section's introduction still says "Your highlights live only on this device", which is
-  not true once sync is used; Settings lists no control for the sync server, issuer and token
-  origins, and turning sync off or signing out leaves their access in place; the PDF reader's
-  redirect advice no longer promises that it never contacts a site you have not allowed but does not
-  say the other site may already have received the request (`docs/PRIVACY_CLAIMS.md` "Open items",
-  U-2, U-9, U-14).
+- Turning sync off or signing out leaves the sync server, issuer and token origins granted: Settings,
+  Site access, "Other access" lists them and can revoke each one, but nothing removes them for the
+  person (`docs/PRIVACY_CLAIMS.md` "Open items", U-9 remainder).
 - The sync alarm is not registered in the worker lifetime in which `alarms` was granted (ADR-010
   amendment 3, MT-49); no Settings control exports the single-file JSON backup (the engine and its
   unit tests exist; `tests/e2e/backup.spec.ts` header).
