@@ -413,3 +413,282 @@ describe('createOcrPort', () => {
     ).toBe(3);
   });
 });
+
+describe('runOcrJob: scans stored sideways or upside down', () => {
+  const words = (list: Array<[string, number]>): OcrPage['words'] =>
+    list.map(([text, confidence], i) => ({
+      text,
+      confidence,
+      bbox: { x: 10, y: 10 + i * 20, w: 100, h: 15 },
+      line: 0,
+    }));
+  const GOOD: Array<[string, number]> = [
+    ['Technology', 92],
+    ['Goals', 90],
+    ['and', 88],
+    ['Objectives', 91],
+  ];
+  const JUNK: Array<[string, number]> = [
+    ['s', 41],
+    ['(c)', 38],
+    ['NS', 44],
+  ];
+
+  /** An engine whose reading depends on the turn it was asked for (what the real one does). */
+  function turnedEngine(read: Partial<Record<number, Array<[string, number]> | Error>>) {
+    const asked: Array<{ page: number; orientation: number; rotation: number }> = [];
+    const engine: Engine = {
+      async recognize(_source, options = {}) {
+        const orientation = options.orientation ?? 0;
+        asked.push({
+          page: options.pageNumber ?? 0,
+          orientation,
+          rotation: options.rotation ?? 0,
+        });
+        options.onProgress?.({
+          pageNumber: options.pageNumber ?? 0,
+          phase: 'recognizing',
+          progress: 0.5,
+        });
+        const out = read[orientation] ?? JUNK;
+        if (out instanceof Error) throw out;
+        const list = words(out);
+        const mean = list.reduce((n, w) => n + w.confidence, 0) / list.length;
+        const base = pageFor(options.pageNumber ?? 1);
+        return {
+          ...base,
+          rotation: (((options.rotation ?? 0) + orientation) % 360) as 0 | 90 | 180 | 270,
+          ...(orientation ? { orientation: orientation as 90 | 180 | 270 } : {}),
+          confidence: mean,
+          words: list,
+          text: out.map(([t]) => t).join(' '),
+        };
+      },
+    };
+    return { engine, asked };
+  }
+
+  const run = (
+    engine: Engine,
+    direction: 'horizontal' | 'vertical' | 'unclear' | null,
+    extra: Partial<Parameters<typeof runOcrJob>[0]> = {},
+  ) => {
+    const mem = memoryStore();
+    const events: OcrJobProgress[] = [];
+    const lineDirection = vi.fn(() => direction);
+    const summary = runOcrJob({
+      pages: [1],
+      renderPage: async (n) => ({
+        image: new Uint8Array([n]),
+        width: 100,
+        height: 50,
+        rotation: 270,
+      }),
+      engine,
+      store: mem.store,
+      lineDirection,
+      onProgress: (e) => events.push(e),
+      ...extra,
+    });
+    return { summary, events, lineDirection, ...mem };
+  };
+
+  it('reads a page whose lines run vertically after turning it, and records the turn', async () => {
+    const t = turnedEngine({ 90: GOOD });
+    const r = run(t.engine, 'vertical');
+    const summary = await r.summary;
+    expect(summary).toMatchObject({
+      status: 'completed',
+      saved: [1],
+      reoriented: [{ pageNumber: 1, orientation: 90 }],
+    });
+    // one reading, at the first turn, with the page's own /Rotate passed along
+    expect(t.asked).toEqual([{ page: 1, orientation: 90, rotation: 270 }]);
+    expect(r.saved).toHaveLength(1);
+    expect(r.saved[0]).toMatchObject({
+      orientation: 90,
+      rotation: 0,
+      text: 'Technology Goals and Objectives',
+    });
+    expect(r.events.some((e) => e.phase === 'orienting' && e.pageNumber === 1)).toBe(true);
+    const progress = r.events.map((e) => e.progress);
+    expect(progress).toEqual([...progress].sort((a, b) => a - b));
+    expect(progress.at(-1)).toBe(1);
+  });
+
+  it('tries the other sideways turn when the first is junk', async () => {
+    const t = turnedEngine({ 270: GOOD });
+    const r = run(t.engine, 'vertical');
+    const summary = await r.summary;
+    expect(t.asked.map((a) => a.orientation)).toEqual([90, 270]);
+    expect(summary.reoriented).toEqual([{ pageNumber: 1, orientation: 270 }]);
+    expect(r.saved[0]).toMatchObject({ orientation: 270 });
+  });
+
+  it('reads an upside-down page as shown first, then turned 180', async () => {
+    const t = turnedEngine({ 180: GOOD });
+    const r = run(t.engine, 'horizontal');
+    const summary = await r.summary;
+    expect(t.asked.map((a) => a.orientation)).toEqual([0, 180]);
+    expect(summary.reoriented).toEqual([{ pageNumber: 1, orientation: 180 }]);
+    expect(r.events.filter((e) => e.phase === 'orienting')).toHaveLength(1);
+  });
+
+  it('does nothing extra for a page that reads well: one reading, no orienting phase', async () => {
+    const t = turnedEngine({ 0: GOOD });
+    const r = run(t.engine, 'horizontal');
+    const summary = await r.summary;
+    expect(t.asked).toHaveLength(1);
+    expect(summary.reoriented).toEqual([]);
+    expect(r.events.some((e) => e.phase === 'orienting')).toBe(false);
+    expect('orientation' in r.saved[0]!).toBe(false); // read as shown: a page stored before this change looks the same
+  });
+
+  it('never makes more than four readings of a page, and keeps the one as shown when none is better', async () => {
+    const t = turnedEngine({});
+    const r = run(t.engine, 'unclear');
+    const summary = await r.summary;
+    expect(t.asked.map((a) => a.orientation)).toEqual([0, 90, 270, 180]);
+    expect(summary).toMatchObject({ status: 'completed', reoriented: [] });
+    expect(r.saved[0]).toMatchObject({ rotation: 270 });
+    expect('orientation' in r.saved[0]!).toBe(false);
+  });
+
+  it('can be switched off, and is not attempted when the image cannot be judged', async () => {
+    const t = turnedEngine({ 90: GOOD });
+    const off = run(t.engine, 'vertical', { checkOrientation: false });
+    await off.summary;
+    expect(off.lineDirection).not.toHaveBeenCalled();
+    expect(t.asked.map((a) => a.orientation)).toEqual([0]);
+
+    const t2 = turnedEngine({ 90: GOOD });
+    const unknown = run(t2.engine, null);
+    await unknown.summary;
+    expect(t2.asked.map((a) => a.orientation)).toEqual([0]);
+  });
+
+  it('keeps the page and the job when a turned reading fails', async () => {
+    const poor: Array<[string, number]> = [
+      ['faint', 50],
+      ['copy', 45],
+    ];
+    const t = turnedEngine({ 0: poor, 180: new OcrError('failed', 'worker died') });
+    const r = run(t.engine, 'horizontal');
+    const summary = await r.summary;
+    expect(summary).toMatchObject({ status: 'completed', saved: [1], failed: [], reoriented: [] });
+    expect(r.saved[0]!.text).toBe('faint copy');
+  });
+
+  it('cancels in the middle of an orientation check: nothing is saved and a re-run reads the page', async () => {
+    const controller = new AbortController();
+    const asked: number[] = [];
+    const engine: Engine = {
+      async recognize(_s, options = {}) {
+        asked.push(options.orientation ?? 0);
+        if ((options.orientation ?? 0) === 90) {
+          controller.abort();
+          throw new OcrError('cancelled');
+        }
+        return {
+          ...pageFor(1),
+          confidence: 40,
+          words: words(JUNK),
+          text: 's (c) NS',
+        };
+      },
+    };
+    const r = run(engine, 'unclear', { signal: controller.signal });
+    const summary = await r.summary;
+    expect(summary.status).toBe('cancelled');
+    expect(asked).toEqual([0, 90]);
+    expect(r.saved).toEqual([]);
+
+    // resume: the page is still to do and is read now
+    const t = turnedEngine({ 0: GOOD });
+    const again = await runOcrJob({
+      pages: [1],
+      renderPage: async () => ({ image: new Uint8Array([1]), width: 100, height: 50 }),
+      engine: t.engine,
+      store: r.store,
+      lineDirection: () => 'horizontal',
+    });
+    expect(again).toMatchObject({ status: 'completed', saved: [1] });
+  });
+
+  it('is exposed as part of the engine path: real engine, fake canvases, boxes land on the page', async () => {
+    // A 400 x 200 canvas (the page as shown, /Rotate 270). Its text runs bottom to top once shown,
+    // so turned 90 clockwise it reads. The fake recogniser reads junk for any other image.
+    class Canvas {
+      transform: number[] | null = null;
+      constructor(
+        public width: number,
+        public height: number,
+      ) {}
+      getContext() {
+        return {
+          imageSmoothingQuality: 'low',
+          setTransform: (...t: number[]) => {
+            this.transform = t;
+          },
+          drawImage: () => undefined,
+        };
+      }
+      convertToBlob() {
+        // a clockwise quarter has (a, b, c, d) = (0, 1, -1, 0)
+        const quarter = this.transform?.[1] === 1 && this.transform?.[2] === -1;
+        return Promise.resolve(new Blob([new Uint8Array([137, 80, 78, 71, quarter ? 90 : 0])]));
+      }
+    }
+    vi.stubGlobal('OffscreenCanvas', Canvas);
+    try {
+      const fake = new FakeTesseract();
+      fake.onRecognize = (job) =>
+        job.resolve(
+          job.image[4] === 90
+            ? tesseractData(
+                [[{ text: 'Technology', x0: 20, y0: 10, x1: 120, y1: 30, confidence: 93 }]],
+                93,
+              )
+            : tesseractData([[{ text: 'x', x0: 5, y0: 5, x1: 9, y1: 9, confidence: 30 }]], 30),
+        );
+      const engine = createOcrEngine({
+        assetBaseUrl: 'chrome-extension://abc/ocr/',
+        createWorker: fake.createWorker,
+        idleTimeoutMs: 0,
+        jobTimeoutMs: 0,
+      });
+      const { store, saved } = memoryStore();
+      const summary = await runOcrJob({
+        pages: [1],
+        renderPage: async () => ({
+          image: new Canvas(400, 200) as unknown as OffscreenCanvas,
+          rotation: 0,
+        }),
+        engine,
+        store,
+        lineDirection: () => 'vertical',
+      });
+      expect(summary).toMatchObject({
+        status: 'completed',
+        reoriented: [{ pageNumber: 1, orientation: 90 }],
+      });
+      // the turned image is 200 x 400; a word at x 20..120, y 10..30 of it sits, on the page as it was
+      // rendered (400 x 200), at x = y_turned, y = 200 - (x_turned + w): the left edge, low on the page
+      const [page] = saved;
+      expect(page).toMatchObject({ width: 200, height: 400, rotation: 90, orientation: 90 });
+      const { pixelBoxToPageRect } = await import('./geometry');
+      const rect = pixelBoxToPageRect(
+        page!.words[0]!.bbox,
+        { width: 200, height: 400 },
+        page!.rotation,
+      );
+      expect(rect.x).toBeCloseTo(10 / 400, 6);
+      expect(rect.y).toBeCloseTo((200 - 120) / 200, 6);
+      expect(rect.w).toBeCloseTo(20 / 400, 6);
+      expect(rect.h).toBeCloseTo(100 / 200, 6);
+      await engine.terminate();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});

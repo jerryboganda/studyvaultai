@@ -15,11 +15,27 @@ export interface FixtureText {
   angle?: 0 | 90;
 }
 
+/** A link annotation. Exactly one of `goTo`, `named`, `uri` or `action` says what it does. */
+export interface FixtureLink {
+  /** `[x1, y1, x2, y2]` in the page's user space (origin bottom-left). */
+  rect: [number, number, number, number];
+  /** One-line wrapped link: a quadrilateral per entry, each `[x1, y1, x2, y2]` like `rect`. */
+  quads?: Array<[number, number, number, number]>;
+  /** GoTo an explicit destination: 1-based page, optional distance of the target from its top edge. */
+  goTo?: number | { page: number; fromTop?: number };
+  /** GoTo a named destination declared in `FixtureOptions.namedDests`. */
+  named?: string;
+  uri?: string;
+  /** The action dictionary's body, written as is (`/S /Named /N /Print`, `/S /Launch /F (calc.exe)`). */
+  action?: string;
+}
+
 export interface FixturePage {
   width?: number;
   height?: number;
   rotate?: 0 | 90 | 180 | 270;
   texts?: FixtureText[];
+  links?: FixtureLink[];
   /** Draw a full-page raster image and no text: a scanned page. */
   imageOnly?: boolean;
   /**
@@ -44,6 +60,8 @@ export interface FixtureOptions {
   userPassword?: string;
   /** Bookmarks (not combined with a password). */
   outline?: FixtureOutlineItem[];
+  /** Named destinations (catalog /Dests): name -> page and distance from the page's top edge. */
+  namedDests?: Record<string, { page: number; fromTop?: number }>;
 }
 
 const PAD = Uint8Array.from([
@@ -164,8 +182,43 @@ export function buildPdf(pages: FixturePage[], options: FixtureOptions = {}): Ui
           ` /Dest ${dest} >>`,
       });
     }
-    bodies.set(1, { dict: `<< /Type /Catalog /Pages 2 0 R /Outlines ${outlineRoot} 0 R >>` });
   }
+
+  // Link annotations (numbered after everything above) and the catalog's named destinations.
+  const destOf = (page: number, fromTop?: number): string =>
+    `[${pageObj(page - 1)} 0 R /XYZ 72 ${(pages[page - 1]?.height ?? 792) - (fromTop ?? 0)} 0]`;
+  const annotObjs = new Map<number, number[]>();
+  pages.forEach((p, i) => {
+    for (const link of p.links ?? []) {
+      const id = nextObj++;
+      const goTo = link.goTo;
+      const action =
+        link.uri !== undefined
+          ? `<< /S /URI /URI (${escapeText(link.uri)}) >>`
+          : link.named !== undefined
+            ? `<< /S /GoTo /D (${escapeText(link.named)}) >>`
+            : goTo !== undefined
+              ? `<< /S /GoTo /D ${typeof goTo === 'number' ? destOf(goTo) : destOf(goTo.page, goTo.fromTop)} >>`
+              : `<< ${link.action ?? ''} >>`;
+      const quads = link.quads?.length
+        ? ` /QuadPoints [${link.quads.map(([a, b, c, d]) => `${a} ${d} ${c} ${d} ${a} ${b} ${c} ${b}`).join(' ')}]`
+        : '';
+      bodies.set(id, {
+        dict: `<< /Type /Annot /Subtype /Link /Rect [${link.rect.join(' ')}] /Border [0 0 0]${quads} /A ${action} >>`,
+      });
+      annotObjs.set(i, [...(annotObjs.get(i) ?? []), id]);
+    }
+  });
+  const dests = Object.entries(options.namedDests ?? {});
+  bodies.set(1, {
+    dict:
+      `<< /Type /Catalog /Pages 2 0 R` +
+      (outlineRoot ? ` /Outlines ${outlineRoot} 0 R` : '') +
+      (dests.length
+        ? ` /Dests << ${dests.map(([name, d]) => `/${name} ${destOf(d.page, d.fromTop)}`).join(' ')} >>`
+        : '') +
+      ' >>',
+  });
 
   pages.forEach((p, i) => {
     const w = p.width ?? 612;
@@ -189,8 +242,10 @@ export function buildPdf(pages: FixturePage[], options: FixtureOptions = {}): Ui
             )
             .join('\n');
     const rotate = p.rotate ? ` /Rotate ${p.rotate}` : '';
+    const annots = annotObjs.get(i);
+    const annotsKey = annots ? ` /Annots [${annots.map((id) => `${id} 0 R`).join(' ')}]` : '';
     bodies.set(pageObj(i), {
-      dict: `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${w} ${h}]${rotate} /Resources << /Font << /F1 3 0 R >> /XObject << /Im0 5 0 R${gray ? ` /Im1 ${grayObj.get(i)} 0 R` : ''} >> >> /Contents ${pageObj(i) + 1} 0 R >>`,
+      dict: `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${w} ${h}]${rotate}${annotsKey} /Resources << /Font << /F1 3 0 R >> /XObject << /Im0 5 0 R${gray ? ` /Im1 ${grayObj.get(i)} 0 R` : ''} >> >> /Contents ${pageObj(i) + 1} 0 R >>`,
     });
     bodies.set(pageObj(i) + 1, { dict: '<< >>', stream: latin1(content) });
   });

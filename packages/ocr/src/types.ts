@@ -42,7 +42,17 @@ export interface OcrPage {
   /** Pixel size of the image all boxes refer to. */
   width: number;
   height: number;
+  /**
+   * Clockwise rotation of the image the boxes refer to, relative to the page box: the page's own
+   * displayed rotation plus `orientation`. Boxes map to page space through this value alone.
+   */
   rotation: OcrRotation;
+  /**
+   * Extra clockwise turn the engine applied to the image before recognising it (a scan stored
+   * sideways or upside down). Absent or 0: the page was read as rendered; absent is also what a page
+   * recognised before orientation checks was stored with.
+   */
+  orientation?: OcrRotation;
   /** Render scale hint passed by the caller (1 = 72 dpi), or null when unknown. */
   scale: number | null;
   /** Mean engine confidence 0..100 (0 for a blank page). */
@@ -78,6 +88,12 @@ export interface RecognizeOptions {
   pageNumber?: number;
   /** Clockwise rotation of the image relative to the page box, multiples of 90. Default 0. */
   rotation?: number;
+  /**
+   * Turn a canvas or ImageData clockwise by this many degrees (multiple of 90, default 0) before
+   * recognising it. Boxes come back in the turned image's pixels and the result's `rotation` already
+   * includes the turn, so they still map to page space. Encoded inputs cannot be turned.
+   */
+  orientation?: number;
   /** Render scale where 1 = 72 dpi (PDF.js viewport scale). Used as a DPI hint (72 x scale). */
   scale?: number;
   /** Required for encoded inputs (Blob/bytes); ignored for canvas and ImageData. */

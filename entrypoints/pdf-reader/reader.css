@@ -243,6 +243,16 @@ body,
 .sv-textlayer.selecting .endOfContent {
   top: 0;
 }
+/*
+ * Selectable once complete. The spans are drawn before the page finishes painting, but they are put
+ * into stream order (every span detached and attached again) and the sentinel above is placed only
+ * afterwards: a selection made in between is cut loose by the re-ordering and no save bar follows it.
+ */
+.sv-textlayer:not(:has(> .endOfContent)) :is(span, br) {
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
 /* The layer is laid out in the raw page frame and rotated as a block (pdf.js does the same). */
 .sv-textlayer[data-main-rotation='90'] {
   transform: rotate(90deg) translateY(-100%);
@@ -312,6 +322,31 @@ body,
   background: rgba(37, 99, 235, 0.22);
   outline: 1px dashed #1d4ed8;
 }
+/* Links: transparent anchors for keyboard focus and assistive technology. They take no pointer
+   events; the page catches the click (linkLayer.ts), so a drag that starts on a link still selects. */
+.sv-pdf-link {
+  position: absolute;
+  display: block;
+  border-radius: 2px;
+  background: transparent;
+  pointer-events: none;
+}
+.sv-pdf-link:focus-visible {
+  outline: 2px solid var(--sv-focus);
+  outline-offset: 1px;
+  background: color-mix(in srgb, var(--sv-focus) 16%, transparent);
+}
+.sv-page.sv-over-link .sv-textlayer > span {
+  cursor: pointer;
+}
+/* Where focus lands after a link or Back moved the view. */
+.sv-slot:focus-visible {
+  outline: 2px solid var(--sv-focus);
+  outline-offset: 2px;
+}
+.sv-linkallow {
+  min-height: 24px;
+}
 @media (prefers-contrast: more) {
   .sv-pdf-hl__rule {
     border-bottom-width: calc(var(--sv-hl-w) + 1px);
@@ -341,6 +376,13 @@ body,
   }
   .sv-pdf-pending {
     outline: 2px dashed Highlight;
+  }
+  .sv-pdf-link:focus-visible {
+    background: transparent;
+    outline: 3px solid Highlight;
+  }
+  .sv-slot:focus-visible {
+    outline-color: Highlight;
   }
 }
 

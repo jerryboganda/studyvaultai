@@ -1,6 +1,6 @@
 import { OCR_LANGUAGE, resolveAssetUrls } from './assets';
 import { OcrError, toOcrError } from './errors';
-import { normalizeRotation } from './geometry';
+import { composeRotation, normalizeRotation } from './geometry';
 import { prepareImage } from './image';
 import type { PreparedImage } from './image';
 import { convertRecognition } from './result';
@@ -59,6 +59,8 @@ export interface TesseractWorkerLike {
     output?: Record<string, boolean>,
   ): Promise<{ data: unknown }>;
   terminate(): Promise<unknown> | unknown;
+  /** Tesseract variables (absent in test doubles). */
+  setParameters?(params: Record<string, string | number>): Promise<unknown>;
   /** The underlying DOM Worker (when present) so a crash after start can be observed. */
   worker?: {
     addEventListener?: (type: 'error', listener: (event: { message?: string }) => void) => void;
@@ -203,6 +205,14 @@ export function createOcrEngine(options: OcrEngineOptions): OcrEngine {
     }).catch((error: unknown) => {
       throw toOcrError(error ?? lastWorkerError, 'init');
     });
+    try {
+      // Tesseract prints a line for every speck it cannot read ("Line cannot be recognized!!") to
+      // stderr, which the worker turns into console errors on a page that was read correctly. They
+      // say nothing a person can act on: send them to the null device. Purely cosmetic.
+      await w.setParameters?.({ debug_file: '/dev/null' });
+    } catch {
+      /* a recogniser that refuses the variable still recognises */
+    }
     w.worker?.addEventListener?.('error', (event) => {
       if (worker !== w) return;
       dropWorker();
@@ -271,8 +281,14 @@ export function createOcrEngine(options: OcrEngineOptions): OcrEngine {
     try {
       if (opts.signal?.aborted) throw new OcrError('cancelled');
       const rotation = normalizeRotation(opts.rotation ?? 0);
+      const orientation = normalizeRotation(opts.orientation ?? 0);
       const prepared: PreparedImage = await guard(
-        prepareImage(job.source, { width: opts.width, height: opts.height, maxPixels }),
+        prepareImage(job.source, {
+          width: opts.width,
+          height: opts.height,
+          maxPixels,
+          turn: orientation,
+        }),
       );
       if (opts.signal?.aborted) throw new OcrError('cancelled');
 
@@ -301,7 +317,9 @@ export function createOcrEngine(options: OcrEngineOptions): OcrEngine {
         height: prepared.height,
         factorX: prepared.factorX,
         factorY: prepared.factorY,
-        rotation,
+        // The image the boxes refer to was turned by `orientation` after the page was rendered.
+        rotation: composeRotation(rotation, orientation),
+        orientation,
         scale: opts.scale ?? null,
       });
       report('recognizing', 1);

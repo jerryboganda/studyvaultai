@@ -136,6 +136,50 @@ describe('asset URL policy (nothing may leave the extension)', () => {
   });
 });
 
+describe('recogniser diagnostics', () => {
+  const workerWith = (setParameters: (p: Record<string, string | number>) => Promise<unknown>) => {
+    const calls: Array<Record<string, string | number>> = [];
+    const create = async () => ({
+      recognize: async () => tesseractData(WORDS),
+      terminate: async () => undefined,
+      setParameters: async (p: Record<string, string | number>) => {
+        calls.push(p);
+        return setParameters(p);
+      },
+    });
+    return { calls, create };
+  };
+
+  it('sends the recogniser printouts to the null device, once per worker', async () => {
+    vi.stubGlobal('WebAssembly', { validate: () => true, compile: () => Promise.resolve({}) });
+    const { calls, create } = workerWith(async () => undefined);
+    const engine = createOcrEngine({
+      assetBaseUrl: BASE,
+      createWorker: create,
+      idleTimeoutMs: 0,
+      jobTimeoutMs: 0,
+    });
+    await engine.recognize(bytes(1), { width: 100, height: 50 });
+    await engine.recognize(bytes(2), { width: 100, height: 50 });
+    expect(calls).toEqual([{ debug_file: '/dev/null' }]);
+  });
+
+  it('still recognises when the recogniser refuses the variable', async () => {
+    vi.stubGlobal('WebAssembly', { validate: () => true, compile: () => Promise.resolve({}) });
+    const { create } = workerWith(async () => {
+      throw new Error('unknown variable');
+    });
+    const engine = createOcrEngine({
+      assetBaseUrl: BASE,
+      createWorker: create,
+      idleTimeoutMs: 0,
+      jobTimeoutMs: 0,
+    });
+    const page = await engine.recognize(bytes(1), { width: 100, height: 50 });
+    expect(page.words.map((w) => w.text)).toEqual(['Hello']);
+  });
+});
+
 describe('queue and cancellation', () => {
   it('runs one job at a time in FIFO order', async () => {
     const { fake, engine } = setup();
@@ -432,6 +476,122 @@ describe('result conversion and image handling', () => {
     fake.onRecognize = (job) => done(job);
     await engine.recognize(source as unknown as OffscreenCanvas);
     expect(Array.from(fake.workers[0]!.pending[0]!.image)).toEqual([137, 80, 78, 71, 5]);
+  });
+});
+
+/** Canvas double that records how it was drawn onto; its PNG bytes say which turn it holds. */
+class RecordingCanvas {
+  static drawn: Array<{ from: unknown; transform: number[] | null; args: number[] }> = [];
+  static created: Array<{ width: number; height: number }> = [];
+  private transform: number[] | null = null;
+  constructor(
+    public width: number,
+    public height: number,
+  ) {
+    RecordingCanvas.created.push({ width, height });
+  }
+  getContext() {
+    return {
+      imageSmoothingQuality: 'low',
+      setTransform: (...t: number[]) => {
+        this.transform = t;
+      },
+      drawImage: (from: unknown, ...args: number[]) => {
+        RecordingCanvas.drawn.push({ from, transform: this.transform, args });
+      },
+    };
+  }
+  convertToBlob() {
+    return Promise.resolve(new Blob([new Uint8Array([137, 80, 78, 71, this.transform ? 1 : 0])]));
+  }
+}
+
+describe('turning a page that is stored sideways or upside down', () => {
+  const turned = async (
+    size: { width: number; height: number },
+    options: Record<string, number>,
+    extra: Parameters<typeof createOcrEngine>[0] extends infer T ? Partial<T> : never = {},
+  ) => {
+    RecordingCanvas.drawn = [];
+    RecordingCanvas.created = [];
+    vi.stubGlobal('OffscreenCanvas', RecordingCanvas);
+    const { fake, engine } = setup(extra);
+    fake.onRecognize = (job) =>
+      job.resolve(tesseractData([[{ text: 'Hello', x0: 10, y0: 20, x1: 60, y1: 40 }]]));
+    const source = new RecordingCanvas(size.width, size.height);
+    RecordingCanvas.created = [];
+    const page = await engine.recognize(source as unknown as OffscreenCanvas, {
+      pageNumber: 4,
+      ...options,
+    });
+    return { page, fake, source };
+  };
+
+  const cases: Array<[number, number[]]> = [
+    // clockwise quarter: (x, y) of a 400 x 200 image lands at (200 - y, x) of a 200 x 400 one
+    [90, [0, 1, -1, 0, 200, 0]],
+    [180, [-1, 0, 0, -1, 400, 200]],
+    // three quarters: (x, y) -> (y, 400 - x)
+    [270, [0, -1, 1, 0, 0, 400]],
+  ];
+  it.each(cases)(
+    'turns the canvas %i degrees clockwise, reports boxes in the turned pixels and maps them with the combined rotation',
+    async (turn, transform) => {
+      const { page, source } = await turned(
+        { width: 400, height: 200 },
+        { orientation: turn, rotation: 270 },
+      );
+      expect(RecordingCanvas.drawn).toHaveLength(1);
+      expect(RecordingCanvas.drawn[0]).toMatchObject({ from: source, transform, args: [0, 0] });
+      const swapped = turn !== 180;
+      expect(RecordingCanvas.created).toEqual([
+        swapped ? { width: 200, height: 400 } : { width: 400, height: 200 },
+      ]);
+      expect(page).toMatchObject({
+        width: swapped ? 200 : 400,
+        height: swapped ? 400 : 200,
+        // the page's own /Rotate (270) and the turn compose: this is what maps boxes to page space
+        rotation: (270 + turn) % 360,
+        orientation: turn,
+      });
+      expect(page.words[0]!.bbox).toEqual({ x: 10, y: 20, w: 50, h: 20 });
+    },
+  );
+
+  it('scales a turned page to the pixel budget in the same draw and maps boxes back', async () => {
+    const { page } = await turned(
+      { width: 4000, height: 2000 },
+      { orientation: 90, rotation: 0 },
+      { maxPixels: 2_000_000 },
+    );
+    // turned 2000 x 4000 (8 MP) -> 1000 x 2000 (2 MP): both axes halve
+    expect(RecordingCanvas.created).toEqual([{ width: 1000, height: 2000 }]);
+    expect(RecordingCanvas.drawn[0]!.transform).toEqual([0, 0.5, -0.5, 0, 1000, 0]);
+    expect(page).toMatchObject({ width: 2000, height: 4000, rotation: 90, orientation: 90 });
+    expect(page.words[0]!.bbox).toEqual({ x: 20, y: 40, w: 100, h: 40 });
+  });
+
+  it('draws nothing extra and records no orientation when the page is not turned', async () => {
+    const { page } = await turned({ width: 400, height: 200 }, { orientation: 0, rotation: 90 });
+    expect(RecordingCanvas.drawn).toEqual([]);
+    expect(page.rotation).toBe(90);
+    expect('orientation' in page).toBe(false);
+  });
+
+  it('refuses to turn an encoded image, before a worker is started', async () => {
+    const { fake, engine } = setup();
+    const code = await codeOf(
+      engine.recognize(bytes(1), { width: 100, height: 50, orientation: 90 }),
+    );
+    expect(code).toBe('failed');
+    expect(fake.created).toHaveLength(0);
+  });
+
+  it('rejects a turn that is not a multiple of 90', async () => {
+    const { engine } = setup();
+    expect(
+      await codeOf(engine.recognize(bytes(1), { width: 10, height: 10, orientation: 45 })),
+    ).toBe('failed');
   });
 });
 

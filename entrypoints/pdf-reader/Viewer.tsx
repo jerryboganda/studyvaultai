@@ -10,6 +10,7 @@ import {
 import {
   CSS_UNITS,
   LazyPages,
+  NO_LINKS,
   pageHasText,
   paintOverlay,
   paintRects,
@@ -20,8 +21,10 @@ import {
   rotateRect,
   type FindMatch,
   type OverlayItem,
+  type PageLink,
   type PdfDocument,
   type RenderedPage,
+  type ViewPosition,
 } from '@pdf';
 import type { PdfRect } from '@shared';
 import {
@@ -47,6 +50,15 @@ export interface ViewerHandle {
   flushSelection(): boolean;
   /** Draw pages again (their text source changed): one page, or every kept page. */
   redraw(pageNumber?: number): void;
+  /** The current page and how far the top edge of the view is into it (what Back returns to). */
+  position(): ViewPosition;
+  /** Scroll back to a position taken with `position()`, and move focus to its page. */
+  restore(position: ViewPosition): void;
+  /**
+   * Scroll a link's destination to the top of the view and move keyboard focus to its page. `point` is
+   * the destination in the raw page frame (0..1, top-left origin); null: the page's top.
+   */
+  goToDestination(pageNumber: number, point: { x: number; y: number } | null): void;
 }
 
 export type ViewerShortcut =
@@ -83,6 +95,8 @@ interface Props {
   onSelection(selection: PdfSelection | null): void;
   onPageText(pageNumber: number, info: { hasText: boolean; source: 'embedded' | 'ocr' }): void;
   onSelectHighlight(id: string): void;
+  /** A link on a page was clicked or activated from the keyboard (the caller decides what it does). */
+  onFollowLink(link: PageLink): void;
   onShortcut(action: ViewerShortcut): void;
   onError(pageNumber: number, message: string): void;
   /** Zoom factor the latest drawn page used (fit modes depend on the window and the page). */
@@ -198,11 +212,13 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
       render: async (n: number, signal: AbortSignal): Promise<RenderedPage> => {
         const host = hosts.current.get(n);
         if (!host) throw new DOMException('Page slot is gone.', 'AbortError');
-        const [pdfPage, pageText, content, source] = await Promise.all([
+        const [pdfPage, pageText, content, source, links] = await Promise.all([
           doc.getPage(n),
           doc.pageText(n),
           doc.textContent(n),
           doc.textSource(n),
+          // Links are an extra: a page whose annotations cannot be read is still drawn.
+          doc.getLinks(n).catch(() => NO_LINKS),
         ]);
         if (signal.aborted) throw new DOMException('Render cancelled.', 'AbortError');
         const p = latest.current;
@@ -220,6 +236,8 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
           scale,
           rotation: rot,
           signal,
+          links,
+          onLink: (link) => latest.current.onFollowLink(link),
         });
         rendered.current.set(n, page);
         setInfos((prev) => {
@@ -470,6 +488,39 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
       },
       redraw: (n) =>
         n === undefined ? lazy.current?.invalidate() : lazy.current?.invalidatePage(n),
+      position: () => {
+        // The page the toolbar says is current, and how far the top edge of the view is into it (above
+        // its top edge is negative), so Back names the page the person was on and lands exactly.
+        const el = scroller.current;
+        const n = Math.max(1, currentPage.current);
+        const slot = slots.current.get(n);
+        const host = hosts.current.get(n);
+        if (!el || !slot || !host || host.offsetHeight <= 0) return { page: n, frac: 0 };
+        return { page: n, frac: (el.scrollTop - slot.offsetTop) / host.offsetHeight };
+      },
+      restore: (position) => {
+        const el = scroller.current;
+        const slot = slots.current.get(position.page);
+        const host = hosts.current.get(position.page);
+        if (!el || !slot || !host) return;
+        el.scrollTop = Math.max(0, slot.offsetTop + position.frac * host.offsetHeight);
+        slot.focus({ preventScroll: true });
+      },
+      goToDestination: (n, point) => {
+        const el = scroller.current;
+        const slot = slots.current.get(n);
+        const host = hosts.current.get(n);
+        if (!el || !slot || !host) return;
+        // The point is in the raw page frame: rotate it into the frame the page is shown in. A
+        // destination names a baseline, so some room is left above it for the line it belongs to.
+        const shown = point ? rotateRect({ ...point, w: 0, h: 0 }, rotationOf(infoFor(n))) : null;
+        const room = point ? Math.max(24, el.clientHeight / 10) : 8;
+        el.scrollTop = Math.max(
+          0,
+          slot.offsetTop + (shown ? shown.y * host.offsetHeight : 0) - room,
+        );
+        slot.focus({ preventScroll: true });
+      },
     }),
     // cssSize/rotationOf/infoFor close over the latest render; the handle is re-created each time.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -477,7 +528,9 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
   );
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
-    if (e.target !== e.currentTarget || e.ctrlKey || e.metaKey || e.altKey) return;
+    // Focus sits on the viewer itself or, after a link or Back moved the view, on a page.
+    const onPage = e.target instanceof HTMLElement && e.target.classList.contains('sv-slot');
+    if ((e.target !== e.currentTarget && !onPage) || e.ctrlKey || e.metaKey || e.altKey) return;
     const map: Record<string, ViewerShortcut> = {
       ']': 'next-page',
       '[': 'previous-page',
@@ -530,6 +583,8 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
               data-page-number={n}
               data-testid={`pdf-page-${n}`}
               aria-label={`Page ${n} of ${doc.pageCount}`}
+              // Focus lands here after a link or Back moves the view; it is not a tab stop.
+              tabIndex={-1}
               style={{ width: size.w }}
             >
               <div ref={hostRef(n)} className="sv-page" style={{ width: size.w, height: size.h }} />

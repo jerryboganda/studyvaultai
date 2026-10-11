@@ -461,6 +461,7 @@ export async function saveOcrPage(input: SaveOcrPageInput): Promise<OcrPage> {
       language: true,
       engine: true,
       confidence: true,
+      orientation: true,
     }),
     {
       documentId: input.documentId,
@@ -470,6 +471,7 @@ export async function saveOcrPage(input: SaveOcrPageInput): Promise<OcrPage> {
       language: input.language,
       engine: input.engine,
       confidence: input.confidence ?? null,
+      orientation: input.orientation,
     },
     'OCR page',
   );
@@ -499,6 +501,10 @@ export async function saveOcrPage(input: SaveOcrPageInput): Promise<OcrPage> {
             ? (existing?.correctedText ?? null)
             : input.correctedText,
       };
+      // Saving a correction does not say how the page was read: the stored orientation stays.
+      const orientation = base.orientation ?? existing?.orientation;
+      if (orientation !== undefined) row.orientation = orientation;
+      else delete row.orientation;
       await db.ocrPages.put(row);
       return row;
     }),

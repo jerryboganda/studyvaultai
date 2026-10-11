@@ -459,6 +459,36 @@ describe('OCR pages', () => {
     expect(await getOcrPages(DOC)).toEqual([]);
   });
 
+  it('records the turn a sideways scan needed, keeps it through a correction and an omitted value', async () => {
+    const base = {
+      documentId: DOC,
+      pageNumber: 1,
+      text: 'Technology Goals',
+      words: [{ text: 'Technology', x: 0.1, y: 0.2, w: 0.04, h: 0.3, confidence: 0.9 }],
+      language: 'eng',
+      engine: 'tesseract-7',
+      confidence: 0.9,
+    };
+    // a page recognised before orientation checks has no field: read as 0 by every consumer
+    const old = await saveOcrPage(base);
+    expect(old.orientation).toBeUndefined();
+    expect('orientation' in old).toBe(false);
+
+    const turned = await saveOcrPage({ ...base, orientation: 90 });
+    expect(turned.orientation).toBe(90);
+    expect((await getOcrPages(DOC))[0]!.orientation).toBe(90);
+
+    // a correction saved without the turn does not forget it
+    const fixed = await saveOcrPage({ ...base, correctedText: 'Technology Goals!' });
+    expect(fixed).toMatchObject({ orientation: 90, correctedText: 'Technology Goals!' });
+
+    // a re-recognition that read the page upright says so
+    expect((await saveOcrPage({ ...base, orientation: 0 })).orientation).toBe(0);
+
+    // only quarter turns are stored
+    await expect(saveOcrPage({ ...base, orientation: 45 as never })).rejects.toThrow();
+  });
+
   it('validates word boxes and the document', async () => {
     const bad = (words: unknown) =>
       expect(

@@ -310,6 +310,8 @@ export interface SaveOcrPageInput {
   confidence?: number | null;
   /** The user's correction. Omitted: an existing correction is kept; null: cleared. */
   correctedText?: string | null;
+  /** Turn the recogniser applied to a sideways or upside-down scan. Omitted: the stored one is kept. */
+  orientation?: 0 | 90 | 180 | 270;
 }
 
 export interface StorageUsage {

@@ -1,12 +1,16 @@
 import type { PdfRect } from '@shared/schema';
 import { OcrError, toOcrError } from './errors';
 import type { OcrErrorCode } from './errors';
+import { inkLineDirection } from './image';
+import { ORIENTATION_BUDGET_MS, recognizeUpright } from './orientation';
+import type { LineDirection } from './orientation';
 import { buildPageTextStream } from './stream';
 import type {
   OcrEngine,
   OcrImageSource,
   OcrJobStore,
   OcrPage,
+  OcrRotation,
   PixelBox,
   RecognizeOptions,
 } from './types';
@@ -36,7 +40,16 @@ const toRendered = (value: OcrImageSource | RenderedPage): RenderedPage =>
 // ---------------------------------------------------------------------------------------------
 
 export type OcrJobPhase =
-  'skipped' | 'rendering' | 'initializing' | 'recognizing' | 'saving' | 'saved' | 'failed' | 'done';
+  | 'skipped'
+  | 'rendering'
+  | 'initializing'
+  | 'recognizing'
+  /** The page looks sideways or upside down, or its first reading was poor: other turns are tried. */
+  | 'orienting'
+  | 'saving'
+  | 'saved'
+  | 'failed'
+  | 'done';
 
 export interface OcrJobProgress {
   phase: OcrJobPhase;
@@ -69,6 +82,8 @@ export interface OcrJobSummary {
   requested: number;
   skipped: number[];
   saved: number[];
+  /** Saved pages that were read after turning them (stored sideways or upside down). */
+  reoriented: Array<{ pageNumber: number; orientation: OcrRotation }>;
   failed: OcrJobPageFailure[];
   error?: { code: OcrErrorCode; message: string; detail?: string };
   durationMs: number;
@@ -84,6 +99,16 @@ export interface RunOcrJobOptions {
   onProgress?: (event: OcrJobProgress) => void;
   /** Extra attempts per page after a retryable failure (worker crash, out of memory). Default 1. */
   retries?: number;
+  /**
+   * Read pages that are stored sideways or upside down by turning them (never more than four readings
+   * of a page, never a network request, no extra data). Default true. Encoded images (Blob, bytes)
+   * cannot be turned and are read as they are.
+   */
+  checkOrientation?: boolean;
+  /** Time allowed for all the readings of one page. Default ORIENTATION_BUDGET_MS. */
+  orientationBudgetMs?: number;
+  /** Test seam: which way the lines of the image run. Default: measured from the canvas ink. */
+  lineDirection?(image: OcrImageSource): LineDirection | null;
 }
 
 /** Errors that will repeat for every page: stop instead of failing the whole document page by page. */
@@ -111,6 +136,7 @@ export async function runOcrJob(options: RunOcrJobOptions): Promise<OcrJobSummar
     requested: requested.length,
     skipped: [],
     saved: [],
+    reoriented: [],
     failed: [],
     durationMs: 0,
   };
@@ -161,19 +187,43 @@ export async function runOcrJob(options: RunOcrJobOptions): Promise<OcrJobSummar
           rendered = toRendered(await options.renderPage(pageNumber, controller.signal));
           if (controller.signal.aborted) throw new OcrError('cancelled');
           stage = 'recognize';
-          const recognizeOptions: RecognizeOptions = {
-            pageNumber,
-            rotation: rendered.rotation,
-            scale: rendered.scale,
-            width: rendered.width,
-            height: rendered.height,
-            signal: controller.signal,
-            onProgress: (event) =>
-              event.phase === 'initializing'
-                ? emit('initializing', pageNumber)
-                : emit('recognizing', pageNumber, event.progress),
-          };
-          const page = await options.engine.recognize(rendered.image, recognizeOptions);
+          const current = rendered;
+          const image = current.image;
+          const direction =
+            options.checkOrientation === false
+              ? null
+              : (options.lineDirection ?? inkLineDirection)(image);
+          // With an orientation check a page's progress is 0..0.9 reading, 0.9..0.99 turned readings.
+          const share = direction === null ? 1 : 0.9;
+          const read = (turn: number): Promise<OcrPage> =>
+            options.engine.recognize(image, {
+              pageNumber,
+              rotation: current.rotation,
+              orientation: turn,
+              scale: current.scale,
+              width: current.width,
+              height: current.height,
+              signal: controller.signal,
+              onProgress: (event) =>
+                event.phase === 'initializing'
+                  ? emit('initializing', pageNumber)
+                  : emit('recognizing', pageNumber, event.progress * share),
+            });
+          let page: OcrPage;
+          let orientation: OcrRotation = 0;
+          if (direction === null) {
+            page = await read(0);
+          } else {
+            const upright = await recognizeUpright({
+              direction,
+              signal: controller.signal,
+              budgetMs: options.orientationBudgetMs ?? ORIENTATION_BUDGET_MS,
+              onTurned: (_turn, index) => emit('orienting', pageNumber, 0.9 + 0.03 * index),
+              recognize: read,
+            });
+            page = upright.page;
+            orientation = upright.orientation;
+          }
           stage = 'save';
           emit('saving', pageNumber, 1);
           try {
@@ -183,6 +233,7 @@ export async function runOcrJob(options: RunOcrJobOptions): Promise<OcrJobSummar
             await options.store.saveOcrPage(page);
           }
           summary.saved.push(pageNumber);
+          if (orientation !== 0) summary.reoriented.push({ pageNumber, orientation });
           completed += 1;
           emit('saved', pageNumber);
           lastError = null;

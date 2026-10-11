@@ -1,5 +1,6 @@
 import type { PDFDocumentProxy, PDFPageProxy } from 'pdfjs-dist';
 import type * as PdfjsNamespace from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { buildPageLinks, NO_LINKS, type PageLinks, type RawAnnotation } from './links';
 import { buildOcrPageText, ocrWordsToContent, usableOcrWords, type OcrWordInput } from './ocr';
 import { buildOutline, type OutlineEntry, type ResolvedDest } from './outline';
 import { buildPageText, type PageText, type PageTextItem } from './pageText';
@@ -111,6 +112,11 @@ export interface PdfDocument {
   setOcrPages(pages: ReadonlyMap<number, readonly OcrWordInput[]>): void;
   /** Bookmarks as a flat, depth-annotated list (empty when the file has none). Cached. */
   getOutline(): Promise<OutlineEntry[]>;
+  /**
+   * Link annotations of a page, destinations resolved, in reading order (cached; never rejects: a
+   * page whose annotations cannot be read has no links). See links.ts for what is and is not followed.
+   */
+  getLinks(pageNumber: number): Promise<PageLinks>;
   /** The document's original bytes (for a user-approved stored copy). */
   getBytes(): Promise<Uint8Array>;
   destroy(): Promise<void>;
@@ -253,9 +259,50 @@ export async function openPdf(bytes: Uint8Array, opts: OpenOptions = {}): Promis
           : kind === 'FitR'
             ? explicit[5]
             : null;
-    return { pageNumber: index + 1, top: typeof y === 'number' && Number.isFinite(y) ? y : null };
+    // [ref, /FitV left], [ref, /FitBV left] name only the x; /XYZ and /FitR name it as well.
+    const x =
+      kind === 'XYZ' || kind === 'FitR' || kind === 'FitV' || kind === 'FitBV' ? explicit[2] : null;
+    const num = (n: unknown): number | null =>
+      typeof n === 'number' && Number.isFinite(n) ? n : null;
+    return { pageNumber: index + 1, top: num(y), left: num(x) };
   };
   let outline: Promise<OutlineEntry[]> | null = null;
+
+  // Link destinations repeat (every entry of a table of contents, every citation of one reference):
+  // each distinct destination is asked of the worker once.
+  const destCache = new Map<string, Promise<ResolvedDest>>();
+  const resolveCached = (dest: unknown): Promise<ResolvedDest> => {
+    const key = JSON.stringify(dest);
+    let hit = destCache.get(key);
+    if (!hit) {
+      if (destCache.size >= 5000) destCache.clear();
+      hit = resolveDest(dest);
+      destCache.set(key, hit);
+    }
+    return hit;
+  };
+  const linkCache = new Map<number, Promise<PageLinks>>();
+  const getLinks = (n: number): Promise<PageLinks> => {
+    let hit = linkCache.get(n);
+    if (hit) {
+      linkCache.delete(n); // refresh LRU position
+    } else {
+      hit = (async () => {
+        const page = await getPage(n);
+        const raw = (await page.getAnnotations({ intent: 'display' })) as RawAnnotation[];
+        return buildPageLinks(raw, {
+          view: page.view,
+          rotate: page.rotate,
+          pageNumber: n,
+          pageCount: doc.numPages,
+          resolve: resolveCached,
+        });
+      })().catch(() => NO_LINKS);
+    }
+    linkCache.set(n, hit);
+    while (linkCache.size > CACHE_PAGES) linkCache.delete(linkCache.keys().next().value as number);
+    return hit;
+  };
 
   return {
     pageCount: doc.numPages,
@@ -276,6 +323,7 @@ export async function openPdf(bytes: Uint8Array, opts: OpenOptions = {}): Promis
         .catch(() => []);
       return outline;
     },
+    getLinks,
     getBytes: () => task.getData(),
     destroy: () => task.destroy(),
   };

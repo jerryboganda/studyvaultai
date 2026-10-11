@@ -70,6 +70,7 @@ export function createMemoryPdfStore(): PdfStore & {
         engine: input.engine,
         correctedText:
           input.correctedText === undefined ? (prev?.correctedText ?? null) : input.correctedText,
+        orientation: input.orientation ?? prev?.orientation,
       });
       ocr.set(input.documentId, pages);
     },

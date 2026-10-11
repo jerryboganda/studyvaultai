@@ -115,8 +115,9 @@ if (walk(prod).some((f) => f.endsWith('.map'))) fail('source maps are shipped');
 const KB = 1024;
 const size = (rel) => statSync(join(prod, rel)).size;
 const budgets = [
-  // Preact in place of React (docs/adr/012): 405 KB -> 209 KB measured, budget = measured + 5%.
-  ['content-scripts/highlighter.js', 220 * KB],
+  // Preact in place of React (docs/adr/012): 405 KB -> 209 KB measured; the filing notice and the
+  // selection-at-start fix took it to ~214 KB. Budget = measured + ~7%.
+  ['content-scripts/highlighter.js', 230 * KB],
   // The worker bundles @storage, which includes the study, AI, sync, rules, syllabi and relations
   // repositories (they register their table schemas at import time, so they are not tree-shaken), plus
   // the filing, reminder and exam-free worker modules. 450 KB is a regress guard (measured ~425 KB).

@@ -7,7 +7,8 @@ thumbnails, document properties and stored-copy manager; context-menu entry; web
 selection fix. Amendments are folded into the sections below.
 **Amendment 2 (2026-10-11, privacy hardening)** is appended at the end: the private-window rule
 (`?incognito=1`), the per-origin grant lifecycle, the `redirect-needs-access` failure and the
-redirect rule. Where it differs from a section above, the amendment wins.
+redirect rule. **Amendment 3 (2026-10-12, links)** follows it: link annotations are clickable, safely.
+Where an amendment differs from a section above, the amendment wins.
 
 ## What this is, and what it is not
 StudyVault annotates PDFs **only in its own reader page** (`pdf-reader.html`, an unlisted WXT page). It
@@ -277,7 +278,7 @@ about them depends on the cached bytes.
   vertical (`ttb`) text and mixed-direction lines are ordered by position only.
 - Hyphen joining is a heuristic (see above). Ligatures are expanded by pdf.js's own normalisation.
 - JBIG2/JPEG2000 images need the CSP change above; XFA forms, form scripting, optional-content toggles and
-  annotation layers (links, widgets) are not rendered.
+  annotation layers other than links (widgets, stamps, free text) are not rendered. Links: Amendment 3.
 - Not verified here: Chrome 120-127 (only a current Chromium was available), Edge, `file://` PDFs, real
   screen readers, cMaps for every CJK encoding (one Japanese path was exercised).
 
@@ -363,3 +364,119 @@ the request".
 A real private window; Chrome's own permission prompt and `permissions.remove` for a pattern the
 person gave at the prompt (only mocked ports and the test harness's build-time grants were used);
 whether Chrome lists a handed-back grant at all afterwards.
+
+## Amendment 3 (2026-10-12): links
+
+**Status:** accepted · Refines "Rendering" and "Known limitations" (which said link annotations are not
+rendered). The real-document corpus run found it: "PDF hyperlinks are not clickable; no annotation layer
+exists". Tests: unit (`packages/pdf/src/links.test.ts`, `linkLayer.test.ts`,
+`entrypoints/pdf-reader/links.test.tsx`), real files through the loader (`real.integration.test.ts`, "links
+of real documents") and browser (`tests/e2e/pdf-links.spec.ts`).
+
+### What is read, and when
+`PDFPageProxy.getAnnotations({ intent: 'display' })`, subtype `Link` only, for a page when that page is
+drawn (`PdfDocument.getLinks`: cached for 24 pages, one worker round trip per distinct destination, up to
+5,000 destinations remembered). At most 500 links are kept per page; the rest are counted (`omitted`) and
+the Links list says so. Widgets, stamps, free text, popups and every other subtype are not read.
+
+| What pdf.js reports | What the reader does |
+| --- | --- |
+| `dest` (explicit array or named destination) | resolved with the outline's resolver (`getDestination`, `getPageIndex`): a place in this document, label "Link to page N". A destination the file does not have is refused ("not in this PDF") |
+| `action` NextPage / PrevPage / FirstPage / LastPage | goes to that page (relative to the link's own page) |
+| any other `action` (Print, Download, Find, GoBack...) | refused, naming the action |
+| `url` or `unsafeUrl` | judged by `vetExternalUrl` (below) |
+| `newWindow` is a boolean | refused: pdf.js sets it only for Launch, GoToR and a script it could read an address from |
+| `attachment` (GoToE), `resetForm`, `setOCGState` | refused |
+| nothing it understands (a JavaScript or SubmitForm action, a bare box) | no anchor is made; nothing can be followed |
+
+### Rectangles
+A link's rectangle (`[x1 y1 x2 y2]`, user space) goes to the **same raw page frame** as highlights
+(`userRectToFrame`: 0..1 of `page.view`, top-left origin, cut to the page) and is displayed with
+`rotateRect(frame, rotation)`, where `rotation` is the absolute viewport rotation (the page's `/Rotate` plus
+the reader's). Percent placement means zoom needs no recomputation. A link with QuadPoints (a link wrapped
+over lines) keeps one rectangle per quadrilateral (at most 16); a rectangle with no area on the page is
+dropped. The transform is tested against the real pdf.js viewport (`convertToViewportPoint`) for rotations
+0, 90, 180 and 270 on pages with `/Rotate` 0 and 90, at three scales.
+Measured on the real files: `cdc-sti-guidelines-2021` has 4,131 link annotations, of which 352 are
+zero-width boxes (a link set on a line-end space), so 3,779 are clickable; `nist-cswp29-csf-2-0` has 103.
+
+### The layer (`packages/pdf/src/linkLayer.ts`)
+One layer per page element (`.sv-pdf-layer--links`), above the text layer and below the highlight underline
+and the save bar (which is `position: fixed`, z-index 40). It holds one transparent `<a role="link">` per
+link, placed over the union of the link's rectangles, with the accessible name above. There is **no
+`href`**: nothing the browser could open by itself (middle click, drag, context menu, status bar) exists.
+
+**Pointer.** The anchors, and the layer, have `pointer-events: none`: a real hit target above the text
+would end every drag-selection that begins on a link. The click is caught on the page element
+(`.sv-page`) and matched to a link's rectangles by arithmetic (`hitTest`, topmost wins). It counts only if
+the pointer travelled at most 4 px between press and release, no text was selected when it was pressed and
+none is selected at the click: never during or after a selection (the click that only clears a selection
+does not also follow a link). A click on a highlight's underline belongs to the highlight. An assistive
+technology's "activate" is a click on the anchor itself and is followed. The page element gets
+`sv-over-link` (pointer cursor) while the pointer, with no button down, is over a link. A double click
+on a link follows it on the first click (the second only selects the word).
+
+**Keyboard and assistive technology.** Anchors exist only for drawn pages, so the lazy window bounds them
+(a few pages, never the 3,779). A page with **at most 40** links puts each in the tab order, in reading
+order (top to bottom, left to right within a line: geometric, not column-aware). A page with **more than
+40** has **one** tab stop (the first link) and arrow keys, Home and End between the rest (roving
+tabindex); the layer's group label says so. **Enter** follows the focused link. The side pane has a
+**Links** tab: the "Links on this page" list of the page in view (every link by its accessible name, the
+address as text, "will not be opened" for a refused one). It is the primary way through a dense page and
+follows links through the same code. Focus ring: `:focus-visible` outline plus a tint, `Highlight` in
+forced-colors.
+
+### Following a link (`entrypoints/pdf-reader/links.tsx`)
+- **A place in the document.** The view scrolls so the destination point (rotated into the displayed
+  frame) sits about a tenth of the view (at least 24 px) below its top edge; the **page element takes keyboard focus** (it is
+  `tabindex="-1"`, not a tab stop, and the viewer's own keys keep working with focus there); the polite
+  status region says "Went to page N."; where the view was goes on the **Back stack** (50 entries; a
+  position is the current page and how far the top edge of the view is into it, so Back lands exactly; the
+  same place is not stacked twice). **Back** is a toolbar button ("Back to page N", disabled with the
+  reason "No link has been followed yet.") and **Alt+Left**. Alt+Left is always handled in the reader,
+  with an empty stack too (it says so): the browser's own Alt+Left would leave the page, and the open
+  document with it.
+- **An address** (`vetExternalUrl`). Parsed with `new URL`; the scheme is read from the parsed address
+  (`JaVaScRiPt:`, a leading space or a hidden newline cannot slip past a text test). Only an absolute
+  `http:` or `https:` address of at most 2,048 characters, without a user name or password and with a
+  host, passes. `javascript:`, `data:`, `file:`, `blob:`, `chrome:`, `chrome-extension:`, `ftp:`,
+  `mailto:`, `tel:`, `about:` and every other scheme are refused with a notice that names the scheme;
+  relative addresses, over-long ones and ones with credentials are refused with their own sentence. A
+  passing address is **never opened by the link itself**: an in-reader dialog (`ConfirmDialog`: focus
+  trapped, Cancel focused, Escape cancels) shows the whole address as text and the site (the ASCII host,
+  so an internationalised name shows as `xn--...`), and only "Open in a new tab" opens it, with
+  `window.open(url, '_blank', 'noopener,noreferrer')` from that click (nothing is awaited before it). The
+  new tab has no opener and no referrer. "Always allow this site ({host}) in this reader session" is
+  **off** by default; when on, links to that origin (scheme, host and port) open without the dialog until
+  the reader page is closed (a ref, never persisted); another origin, scheme or port still asks. The
+  status region says "Opening {host} in a new tab." (the reader cannot know whether the browser's popup
+  blocker allowed it: `noopener` makes `window.open` return null).
+- **A refused link** shows an `InlineNotice` (`role="status"`, "Link not opened", Dismiss) with the
+  reason. Nothing runs and nothing is requested.
+
+### Limits, stated exactly
+- pdf.js folds URI, GoToR and Launch actions into one `url`, so they cannot be told apart unless the action
+  carries the optional `NewWindow` key (then it is refused as above). A Launch or GoToR without it is
+  judged by its address alone: a file name or path is "not a full web address" or a non-web scheme and is
+  refused; a web address is an ordinary address and goes through the dialog.
+- No JavaScript, form or layer actions, no attachments, and only four named actions. A link whose action
+  pdf.js does not turn into a destination has no anchor at all, so nothing tells the person it exists.
+- Reading order is geometric. A link wrapped over lines has one tab stop and one focus ring around the
+  union of its lines (the pointer hit area is per line).
+- A sparse page is up to 40 tab stops per drawn page, so up to about 160 with the window of four pages:
+  bounded, not small. Back remembers 50 positions.
+- Not verified: a real screen reader, Chrome 120-127, Edge, a real forced-colors rendering (the rules
+  exist), touch.
+
+### A defect found on the way
+The toolbar's page box committed on blur even when nothing had been typed. After "go to page", scrolling
+within the page and clicking into the document, the view jumped back to the top of the page between the
+press and the release, and the click landed on a different link. It now commits on blur only what was
+typed (`Toolbar.tsx`; covered in `links.test.tsx`).
+
+### Size
+The new code lives in the reader page's chunks only (nothing in the content script, the background or the
+other pages): `links.ts` 5.1 KB, `linkLayer.ts` 3.3 KB and `links.tsx` 4.4 KB minified (about 5.6 KB
+gzipped together), plus 0.6 KB of CSS. The reader chunk of the e2e build went from 136,770 to 151,107
+bytes (+14.3 KB; that figure also contains anything else that changed in the tree since the earlier
+build).

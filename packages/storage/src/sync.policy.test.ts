@@ -47,7 +47,7 @@ const SCALARS: Record<string, readonly string[]> = {
     'aiResultId',
   ],
   documents: ['pageCount', 'byteLength', 'originalUrl', 'textStatus'],
-  ocrPages: ['text', 'words', 'language', 'engine', 'confidence'],
+  ocrPages: ['text', 'words', 'language', 'engine', 'confidence', 'orientation'],
   // `order` is a rank (a concurrent re-ordering ends with the later write per rule; ties are
   // broken by age and id), the two flags are on/off switches: all three are short scalars.
   filingRules: ['enabled', 'order', 'requireConfirm'],

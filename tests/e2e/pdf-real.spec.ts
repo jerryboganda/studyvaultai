@@ -19,6 +19,7 @@ import {
   selectWords,
   squash,
   storedHighlights,
+  storedOcrPages,
   type Passage,
 } from './helpers.pdfReal';
 
@@ -52,13 +53,14 @@ const ROUND_TRIP = new Set([
 /** A test that is not finished in this long is stuck: a retry costs the same again. */
 const PER_TEST_MS = 90_000;
 const OCR_TIMEOUT_MS = 150_000;
-/** What recognition of the first page without text must read, per file; null: it cannot (see below). */
-const OCR_READS: Record<string, RegExp | null> = {
+/** What recognition of the first page without text must read, per file. */
+const OCR_READS: Record<string, RegExp> = {
   'naca-sr256-ground-speed-1943.pdf': /ADVISORY/i,
-  // Page 1 is stored sideways (text running bottom to top, /Rotate 0): the engine reads the page
-  // upright, so it returns junk and the page says "machine-recognised, may be wrong". Known gap.
-  'nasa-msfc-60k-combustion-testbed-2000.pdf': null,
+  // Page 1 is stored sideways (text running bottom to top, /Rotate 0): it is read by turning it.
+  'nasa-msfc-60k-combustion-testbed-2000.pdf': /Technology Goals and Objectives/i,
 };
+/** Scans stored sideways: their highlight round trip is `real layouts` > "a scan stored sideways". */
+const SIDEWAYS = new Set(['nasa-msfc-60k-combustion-testbed-2000.pdf']);
 /** Pages tried, in order, when looking for a passage of prose. */
 const PASSAGE_PAGES = 8;
 
@@ -310,9 +312,17 @@ for (const pdf of SHORT) {
         );
 
         const reads = OCR_READS[pdf.file];
-        expect(reads, `${pdf.file} must be listed in OCR_READS`).not.toBeUndefined();
-        if (reads) {
-          expect(recognised).toMatch(reads);
+        expect(reads, `${pdf.file} must be listed in OCR_READS`).toBeDefined();
+        await expect
+          .poll(
+            async () =>
+              (await page
+                .locator(`[data-testid="pdf-page-${target}"] .sv-textlayer`)
+                .textContent()) ?? '',
+            { timeout: 30_000 },
+          )
+          .toMatch(reads!);
+        if (!SIDEWAYS.has(pdf.file)) {
           // A highlight on recognised text of a real scan: anchored in the OCR stream, labelled as
           // machine-recognised, and painted on the words it quotes (the page may carry /Rotate).
           const words = await selectWords(page, target, 4);
@@ -333,8 +343,7 @@ for (const pdf of SHORT) {
             'the highlight sits on the recognised words',
           );
         } else {
-          // What is true even when the words are junk: the page says the text is machine output and
-          // shows its confidence, so nobody is told it is a transcription.
+          // The page says the text is machine output and shows its confidence.
           await page.getByRole('tab', { name: 'Page text' }).click();
           await expect(page.getByTestId('pdf-ocr-panel')).toContainText('Machine-recognised text');
           await expect(page.getByTestId('pdf-ocr-legend')).toContainText('Low confidence');
@@ -437,25 +446,110 @@ test.describe('real layouts', () => {
     expect(errors).toEqual([]);
   });
 
-  // KNOWN GAP, found with the real MSFC scan (page 1 is stored sideways, /Rotate 0): recognition
-  // reads the page upright whatever the person did to the view, so a sideways scan comes back as
-  // junk ("s (c) [7] s (c) NS 0 8 ...", 793 characters) under a green "Recognised 1 page". Rotating
-  // the view (R) does not change what is recognised, and there is no orientation detection (the OSD
-  // language data is not bundled). Fixing it means recognising at the rotation the person set,
-  // mapping word boxes back, and giving the text-layer items a rotated transform. Un-fixme it then.
-  test.fixme('recognition follows the rotation of the view: a sideways scan is read after rotating it', async ({
+  // The real MSFC scan: page 1 is stored sideways (lines run bottom to top, /Rotate 0). Recognition
+  // used to read it upright and returned junk ("s (c) [7] s (c) NS 0 8 ...", 793 characters) under a
+  // green "Recognised 1 page". The reader now finds the way the lines run, turns the page image to
+  // read it (no extra data, no network), and says so; the words keep their place on the page as it is
+  // shown, so a highlight made on them is found again on the same words after reopening.
+  test('a scan stored sideways is read without turning the view, and a highlight on it is found again after reopening', async ({
     env,
-  }) => {
+  }, testInfo) => {
+    test.setTimeout(OCR_TIMEOUT_MS);
     const pdf = byName('nasa-msfc-60k-combustion-testbed-2000.pdf');
-    const { page } = await openRealPdf(env, pdf);
+    const timings: Record<string, number | string> = {};
+    const { page, errors, bytes } = await openRealPdf(env, pdf);
     await expectPageDrawn(page, 1);
-    await page.getByTestId('pdf-rotate').click(); // clockwise: the sideways text is upright now
+    const layer = page.locator('[data-testid="pdf-page-1"] .sv-textlayer');
+    const complete = page.locator(
+      '[data-testid="pdf-page-1"] .sv-textlayer:has(> .endOfContent):has(> span)',
+    );
+
+    // Recognise page 1 exactly as it is shown: the view is NOT turned first.
+    const t = Date.now();
     await page.getByTestId('pdf-ocr-this-page').click();
+    await expect(page.getByTestId('pdf-ocr-status')).toBeVisible();
     await expect(page.getByText('Recognised 1 page', { exact: true })).toBeVisible({
       timeout: OCR_TIMEOUT_MS - 60_000,
     });
-    await expect(page.locator('[data-testid="pdf-page-1"] .sv-textlayer')).toContainText(
-      /testbed/i,
+    timings.ocrOnePageMs = Date.now() - t;
+    // The outcome says what was done to the page, so nobody is told it was read as it was.
+    await expect(page.getByTestId('pdf-ocr-outcome')).toContainText(
+      'Page 1 is stored sideways (its lines run from bottom to top); it was turned to be read.',
     );
+
+    // Real words, not 793 characters of noise.
+    await expect(complete).toBeAttached({ timeout: 30_000 });
+    const text = ((await layer.textContent()) ?? '').replace(/\s+/g, ' ');
+    const plausible = text.match(/\b[A-Za-z]{4,}\b/g) ?? [];
+    timings.ocrChars = text.length;
+    timings.plausibleWords = plausible.length;
+    console.log(`[real-pdf-ocr] ${pdf.file} page 1 (stored sideways): ${text.slice(0, 300)}`);
+    expect(plausible.length, 'words of four letters or more').toBeGreaterThan(40);
+    expect(text).toMatch(/Technology Goals and Objectives/i);
+    expect(text).toMatch(/Mitigate risk/i);
+
+    // The stored row records the turn; its boxes are in the page's own frame (tall, narrow words).
+    const rows = (await storedOcrPages(page)) as Array<{
+      pageNumber: number;
+      orientation?: number;
+      words: Array<{ w: number; h: number }>;
+    }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.pageNumber).toBe(1);
+    expect(rows[0]!.orientation).toBe(90);
+    const tall = rows[0]!.words.filter((w) => w.h > w.w).length;
+    expect(tall, 'most words are taller than wide on the stored page').toBeGreaterThan(
+      rows[0]!.words.length * 0.5,
+    );
+    await page.getByRole('tab', { name: 'Page text' }).click();
+    await expect(page.getByTestId('pdf-ocr-orientation')).toContainText('stored sideways');
+    await page.getByRole('tab', { name: /Highlights/ }).click();
+
+    // Turn the view so the sideways lines read left to right, select four words, save.
+    await page.getByTestId('pdf-rotate').click();
+    const rotated = await layer.getAttribute('data-main-rotation');
+    const words = await selectWords(page, 1, 4);
+    expect(words, 'a line of four recognised words').not.toBeNull();
+    await expect(page.getByTestId('pdf-save-ocr-note')).toContainText(
+      'recognised from a scanned image',
+    );
+    await saveSelection(page);
+    const saved = await storedHighlights(page);
+    expect(saved).toHaveLength(1);
+    const anchor = (saved[0] as { anchorSet: { contentSignature: string; pageNumber: number } })
+      .anchorSet;
+    expect(anchor.contentSignature.startsWith('ocr1:')).toBe(true);
+    expect(anchor.pageNumber).toBe(1);
+    await expect(page.getByTestId('pdf-highlight-card').first()).toContainText('OCR text');
+    await expectOverlayOnBox(page, 1, words!.box, 'the highlight sits on the recognised words');
+
+    // Reopen: the reader forgets the file; the recognised text and the highlight come back from the
+    // vault, the highlight resolves against the stored words (same stream, same signature) and is
+    // painted on the same words. No recognition runs.
+    await page.reload();
+    await expect(page.getByTestId('pdf-open')).toBeVisible();
+    const t1 = Date.now();
+    await chooseFile(page, pdf, bytes);
+    await expect(page.getByTestId('pdf-highlight-card')).toHaveCount(1, { timeout: 60_000 });
+    await expect(page.getByTestId('pdf-highlight-card').first()).toContainText('Found on page');
+    await expect(page.getByTestId('pdf-highlight-card').first()).toContainText('OCR text');
+    await expect(page.getByTestId('pdf-ocr-status')).toHaveCount(0);
+    await page.getByTestId('pdf-card-goto').click();
+    await expect(complete).toBeAttached({ timeout: 30_000 });
+    // Same view as before the reload, so the screen box is comparable.
+    for (let i = 0; i < 3 && (await layer.getAttribute('data-main-rotation')) !== rotated; i++) {
+      await page.getByTestId('pdf-rotate').click();
+      await expect(complete).toBeAttached({ timeout: 30_000 });
+    }
+    await expectOverlayOnBox(page, 1, words!.box, 'the restored highlight sits on the same words');
+    timings.restoreMs = Date.now() - t1;
+
+    // Nothing was duplicated or re-recognised by reopening.
+    const again = await storedHighlights(page);
+    expect(again).toHaveLength(1);
+    expect((again[0] as { id: string }).id).toBe((saved[0] as { id: string }).id);
+    expect((await storedOcrPages(page)).length).toBe(1);
+    expect(errors.filter((e) => !/favicon/.test(e))).toEqual([]);
+    report(testInfo, pdf, timings);
   });
 });

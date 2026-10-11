@@ -66,6 +66,11 @@ export interface SaveOcrPageInput {
    * Omitted: an existing correction is kept; null: cleared. The recognised text is never edited.
    */
   correctedText?: string | null;
+  /**
+   * Clockwise turn the recogniser applied to a scan stored sideways or upside down. Informational: the
+   * words' boxes are already in the page's own frame. Omitted: the stored value is kept.
+   */
+  orientation?: 0 | 90 | 180 | 270;
 }
 
 export interface StoredOcrPage {
@@ -73,6 +78,8 @@ export interface StoredOcrPage {
   text: string;
   correctedText: string | null;
   words: OcrStoredWord[];
+  /** Absent for pages recognised before orientation checks: 0. */
+  orientation?: 0 | 90 | 180 | 270;
 }
 
 /** A document whose bytes StudyVault keeps (user-approved), for the stored-copy manager. */

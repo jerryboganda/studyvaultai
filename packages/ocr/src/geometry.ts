@@ -25,6 +25,19 @@ export function normalizeRotation(degrees: number): OcrRotation {
   return (((degrees % 360) + 360) % 360) as OcrRotation;
 }
 
+/**
+ * Rotation of an image that was turned clockwise by `turn` after being rendered at `rotation` (the
+ * page's displayed rotation): the value `pixelBoxToPageRect` needs to map its boxes to page space.
+ */
+export function composeRotation(rotation: number, turn: number): OcrRotation {
+  return normalizeRotation(normalizeRotation(rotation) + normalizeRotation(turn));
+}
+
+/** Size of an image of `width` x `height` after a clockwise turn (axes swap for 90 and 270). */
+export function turnedSize(width: number, height: number, turn: OcrRotation): ImageSize {
+  return turn === 90 || turn === 270 ? { width: height, height: width } : { width, height };
+}
+
 /** View space (0..1 of the rotated image) -> page space. */
 function viewToPage(x: number, y: number, w: number, h: number, rotation: OcrRotation): PdfRect {
   switch (rotation) {

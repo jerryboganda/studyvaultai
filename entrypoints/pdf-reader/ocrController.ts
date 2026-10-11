@@ -19,7 +19,9 @@ const MAX_PIXELS = 9_000_000;
 /**
  * One page as an image for recognition, at the orientation the page is shown in by default (a scan
  * stored sideways with /Rotate 90 is upright here). `rotation` tells the engine how the image relates
- * to the page box, so word boxes come back in the raw page frame that anchors are stored in.
+ * to the page box, so word boxes come back in the raw page frame that anchors are stored in. A scan
+ * that is sideways or upside down as it is shown (stored with /Rotate 0) is turned by the job runner
+ * when its first reading is poor (`@ocr/orientation`); the turn is added to `rotation` there.
  */
 export async function renderForOcr(
   doc: Pick<PdfDocument, 'getPage'>,
@@ -154,6 +156,7 @@ export function useOcr(args: UseOcrArgs): OcrController {
                 requested: 0,
                 skipped: [],
                 saved: [],
+                reoriented: [],
                 failed: [],
                 durationMs: 0,
               }),

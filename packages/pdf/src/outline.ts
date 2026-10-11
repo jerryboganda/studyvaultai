@@ -26,6 +26,8 @@ export interface RawOutlineItem {
 export interface ResolvedDest {
   pageNumber: number | null;
   top: number | null;
+  /** Destination x in PDF user space when the destination names one (links use it; the outline does not). */
+  left?: number | null;
 }
 
 export const MAX_OUTLINE_ENTRIES = 2000;

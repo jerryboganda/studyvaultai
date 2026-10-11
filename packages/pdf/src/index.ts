@@ -12,6 +12,7 @@ export * from './virtualizer';
 export * from './overlay';
 export * from './ocr';
 export * from './outline';
+export * from './links';
 export * from './store';
 export {
   PdfOpenError,

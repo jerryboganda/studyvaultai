@@ -1,5 +1,7 @@
 import type { PDFPageProxy } from 'pdfjs-dist';
 import { loadPdfjs, type TextContent } from './engine';
+import { createLinkLayer } from './linkLayer';
+import { NO_LINKS, type PageLink, type PageLinks } from './links';
 import type { PageText } from './pageText';
 import type { PageDom } from './selection';
 
@@ -19,6 +21,8 @@ export interface PageLayers {
   highlights: HTMLElement;
   find: HTMLElement;
   pending: HTMLElement;
+  /** The page's link anchors (linkLayer.ts), above the text layer. */
+  links: HTMLElement;
 }
 
 export interface RenderedPage {
@@ -38,6 +42,10 @@ export interface RenderArgs {
   /** Absolute viewport rotation: the page's own /Rotate plus the reader's rotation. */
   rotation: number;
   signal: AbortSignal;
+  /** The page's link annotations (none: no link layer content). */
+  links?: PageLinks;
+  /** A link was clicked or activated from the keyboard; following it is the caller's decision. */
+  onLink?(link: PageLink): void;
 }
 
 /**
@@ -194,13 +202,15 @@ export async function renderPageInto(args: RenderArgs): Promise<RenderedPage> {
     el.className = `sv-pdf-layer sv-pdf-layer--${name}`;
     return el;
   };
+  const listener = new AbortController();
+  const linkLayer = createLinkLayer(host, listener.signal, (link) => args.onLink?.(link));
   const layers: PageLayers = {
     highlights: layer('highlights'),
     find: layer('find'),
     pending: layer('pending'),
+    links: linkLayer.el,
   };
 
-  const listener = new AbortController();
   const cleanup = (): void => {
     guardedLayers.delete(textLayer);
     listener.abort();
@@ -210,7 +220,14 @@ export async function renderPageInto(args: RenderArgs): Promise<RenderedPage> {
     pdfPage.cleanup();
   };
 
-  host.replaceChildren(canvas, layers.find, textLayer, layers.pending, layers.highlights);
+  host.replaceChildren(
+    canvas,
+    layers.find,
+    textLayer,
+    layers.links,
+    layers.pending,
+    layers.highlights,
+  );
 
   const renderTask = pdfPage.render({
     canvas,
@@ -252,6 +269,7 @@ export async function renderPageInto(args: RenderArgs): Promise<RenderedPage> {
   textLayer.addEventListener('mousedown', () => textLayer.classList.add('selecting'), {
     signal: listener.signal,
   });
+  linkLayer.paint(args.links ?? NO_LINKS, rotation, args.pageNumber);
 
   return {
     dom: {

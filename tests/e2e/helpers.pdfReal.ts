@@ -308,6 +308,26 @@ export async function storedHighlights(page: Page): Promise<Array<Record<string,
   );
 }
 
+/** The recognised-text rows of the vault (one per recognised page), as stored. */
+export async function storedOcrPages(page: Page): Promise<Array<Record<string, unknown>>> {
+  return page.evaluate(
+    () =>
+      new Promise((resolve, reject) => {
+        const open = indexedDB.open('studyvault');
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const db = open.result;
+          const all = db.transaction('ocrPages', 'readonly').objectStore('ocrPages').getAll();
+          all.onsuccess = () => {
+            db.close();
+            resolve(all.result as Array<Record<string, unknown>>);
+          };
+          all.onerror = () => reject(all.error);
+        };
+      }),
+  );
+}
+
 /** Wait until the painted highlight of page `n` covers the same screen box as the words it quotes. */
 export async function expectOverlayOnWords(
   page: Page,
@@ -578,7 +598,41 @@ export async function selectWords(
   n: number,
   count: number,
 ): Promise<{ text: string; box: Box } | null> {
-  const picked = await page.evaluate(
+  // A text layer is selectable once it holds words AND its end-of-content sentinel is placed. The
+  // spans are drawn before the page finishes painting but are put into stream order (each one detached
+  // and attached again, which cuts a selection loose) only after that, so on a slow machine a
+  // selection made as soon as the first span exists is lost and no save bar follows it. A redraw (the
+  // recognised words arriving) replaces the layer: wait for the new, complete one.
+  const complete = page.locator(
+    `[data-testid="pdf-page-${n}"] .sv-textlayer:has(> .endOfContent):has(> span)`,
+  );
+  const selectOnce = async (): Promise<{ text: string; box: Box } | null> => {
+    await expect(complete).toBeAttached({ timeout: 30_000 });
+    return pickWords(page, n, count);
+  };
+  for (let attempt = 1; ; attempt++) {
+    const picked = await selectOnce();
+    if (!picked) return null;
+    try {
+      // `data-sv-drag` is the selection gate's hold: absent unless a button is down in the text.
+      await expect(page.locator('html')).not.toHaveAttribute('data-sv-drag');
+      await expect(page.getByTestId('pdf-savebar')).toBeVisible({
+        timeout: attempt < 3 ? 4_000 : 10_000,
+      });
+      return picked;
+    } catch (error) {
+      // The layer was rebuilt under the selection and the selection collapsed: select again.
+      if (attempt >= 3) throw error;
+    }
+  }
+}
+
+async function pickWords(
+  page: Page,
+  n: number,
+  count: number,
+): Promise<{ text: string; box: Box } | null> {
+  return page.evaluate(
     ({ n, count }) => {
       const host = document.querySelector<HTMLElement>(`[data-testid="pdf-page-${n}"] .sv-page`);
       const leafs = [
@@ -637,8 +691,6 @@ export async function selectWords(
     },
     { n, count },
   );
-  if (picked) await expect(page.getByTestId('pdf-savebar')).toBeVisible();
-  return picked;
 }
 
 /** The painted highlight of page `n` sits on `box` (relative to the page), within the tolerance. */

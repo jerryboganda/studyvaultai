@@ -9,7 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { pageHasText, sha256Hex } from '@pdf';
+import { DENSE_PAGE_LINKS, openPdf, pageHasText, sha256Hex } from '@pdf';
 import { createMemoryPdfStore } from '@pdf/testing/memoryStore';
 import { openSession, type Session } from '../../../../entrypoints/pdf-reader/loader';
 import { readRealPdfs, REAL_PDF_DIR, type RealPdf } from './manifest';
@@ -160,4 +160,79 @@ afterAll(() => {
     (t) => `${t.file.padEnd(46)} ${String(t.pages).padStart(4)} pages  open ${String(t.openMs).padStart(5)} ms  geometry ${String(t.probeMs).padStart(5)} ms`,
   );
   console.info(`real PDFs through the reader loader:\n${rows.join('\n')}`);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Links of real documents (ADR-006, Amendment 3): pdf.js's annotations through the reader's rules.
+// The counts are what `page.getAnnotations()` reports for these files (SOURCES.md, "hyperlinks").
+// ---------------------------------------------------------------------------------------------
+describe('links of real documents', () => {
+  const byFile = (file: string): RealPdf => pdfs.find((p) => p.file === file)!;
+  const openReal = async (file: string) =>
+    openPdf(new Uint8Array(fs.readFileSync(byFile(file).path)));
+
+  it('nist-cswp29-csf-2-0: table-of-contents entries are places in the document, web links are addresses', async () => {
+    const doc = await openReal('nist-cswp29-csf-2-0.pdf');
+    try {
+      const toc = await doc.getLinks(4);
+      expect(toc.omitted).toBe(0);
+      expect(toc.links).toHaveLength(18);
+      expect(toc.links.every((l) => l.target.kind === 'page')).toBe(true);
+      // Reading order: the first entry of the contents is the first link, and it names page 6.
+      expect(toc.links[0]!.label).toBe('Link to page 6');
+      expect(toc.links[0]!.rects[0]!.y).toBeLessThan(toc.links[1]!.rects[0]!.y);
+
+      const web = await doc.getLinks(2);
+      expect(web.links.map((l) => l.label)).toEqual([
+        'External link to www.nist.gov',
+        'Link that StudyVault will not open', // mailto:
+      ]);
+      expect(web.links[0]!.target).toMatchObject({
+        kind: 'external',
+        url: 'https://www.nist.gov/cyberframework',
+        origin: 'https://www.nist.gov',
+      });
+      expect(web.links[1]!.target).toMatchObject({ kind: 'refused' });
+
+      let total = 0;
+      for (let n = 1; n <= doc.pageCount; n++) {
+        const { links, omitted } = await doc.getLinks(n);
+        total += links.length + omitted;
+        expect(links.length).toBeLessThanOrEqual(40); // no page of this file is "dense"
+      }
+      expect(total).toBe(103);
+    } finally {
+      await doc.destroy();
+    }
+  });
+
+  it('cdc-sti-guidelines-2021: thousands of links, read a page at a time, the reference pages are dense', async () => {
+    const doc = await openReal('cdc-sti-guidelines-2021.pdf');
+    try {
+      let total = 0;
+      let dense = 0;
+      let widest = 0;
+      for (let n = 1; n <= doc.pageCount; n++) {
+        const { links, omitted } = await doc.getLinks(n);
+        total += links.length + omitted;
+        widest = Math.max(widest, links.length);
+        if (links.length > DENSE_PAGE_LINKS) dense++;
+        expect(omitted).toBe(0);
+      }
+      // 4,131 annotations; 352 are zero-width boxes (a link set on a line-end space): nothing to click.
+      expect(total).toBe(3779);
+      expect(dense).toBe(48); // pages 138-185, the references
+      expect(widest).toBe(82);
+      // Table-of-contents entries are named destinations: they resolve to pages.
+      const toc = await doc.getLinks(2);
+      expect(toc.links).toHaveLength(22);
+      expect(toc.links.every((l) => l.target.kind === 'page')).toBe(true);
+      // A reference is an address.
+      const refs = await doc.getLinks(138);
+      expect(refs.links.length).toBeGreaterThan(DENSE_PAGE_LINKS);
+      expect(refs.links.some((l) => l.target.kind === 'external')).toBe(true);
+    } finally {
+      await doc.destroy();
+    }
+  }, 60_000);
 });

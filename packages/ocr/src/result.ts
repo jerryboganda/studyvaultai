@@ -10,7 +10,10 @@ export interface ConversionMeta {
   /** sent / original per axis; recogniser boxes are divided by these. */
   factorX: number;
   factorY: number;
+  /** Rotation of the image the boxes refer to relative to the page box (includes `orientation`). */
   rotation: OcrRotation;
+  /** Turn applied to the image before recognition; omitted from the page when 0 or absent. */
+  orientation?: OcrRotation;
   scale: number | null;
 }
 
@@ -89,6 +92,7 @@ export function convertRecognition(data: unknown, meta: ConversionMeta): OcrPage
     width: meta.width,
     height: meta.height,
     rotation: meta.rotation,
+    ...(meta.orientation ? { orientation: meta.orientation } : {}),
     scale: meta.scale,
     confidence: words.length === 0 ? 0 : clamp(num(data.confidence), 0, 100),
     text: lines.map((l) => l.text).join('\n'),

@@ -4,6 +4,7 @@ import {
   BAND_TEXT,
   HIGH_CONFIDENCE,
   MEDIUM_CONFIDENCE,
+  ORIENTATION_TEXT,
   confidenceBand,
   correctedLines,
   type PageOcr,
@@ -170,6 +171,13 @@ function RecognisedLines({
         {' · '}
         {changed === 0 ? 'no corrections' : plural(changed, 'corrected line')}
       </p>
+
+      {ocr.page.orientation ? (
+        <p className="sv-small" data-testid="pdf-ocr-orientation">
+          This scan is stored {ORIENTATION_TEXT[ocr.page.orientation as 90 | 180 | 270]}. It was
+          turned to be read; the words sit where they are on the page as it is shown.
+        </p>
+      ) : null}
 
       {error ? (
         <InlineNotice tone="error" title="Not saved">

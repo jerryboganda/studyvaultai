@@ -55,6 +55,7 @@ const completed = (saved: number[]): OcrJobSummary => ({
   requested: saved.length,
   skipped: [],
   saved,
+  reoriented: [],
   failed: [],
   durationMs: 1,
 });

@@ -52,6 +52,7 @@ import { useOcr } from './ocrController';
 import { describeProgress } from './ocrModel';
 import { OcrPanel, type PageTextState } from './OcrPanel';
 import { SaveBar, type SaveDraft } from './SaveBar';
+import { useLinks } from './links';
 import { SidePane } from './SidePane';
 import { Toolbar, type SearchState } from './Toolbar';
 import { Viewer, type ViewerHandle, type ViewerShortcut } from './Viewer';
@@ -328,6 +329,9 @@ export function DocumentView({
   }, []);
 
   const [effectiveZoom, setEffectiveZoom] = useState(1);
+
+  // Links of the pages: internal ones move the view (and Back returns), addresses are confirmed first.
+  const links = useLinks({ doc, viewer, onPage: setPage, announce: toast.announce });
 
   const onShortcut = useCallback(
     (a: ViewerShortcut) => {
@@ -770,6 +774,8 @@ export function DocumentView({
         onToggleCompanion={() => setCompanionOpen((v) => !v)}
         onToggleSidePane={() => setSidePaneOpen((v) => !v)}
         onOpenAnother={onOpenAnother}
+        backTo={links.backTo}
+        onBack={links.back}
       />
 
       <p className="sv-doc__keys sv-small sv-muted" data-testid="pdf-keyboard-hint">
@@ -878,12 +884,19 @@ export function DocumentView({
           <p data-testid="pdf-ocr-outcome">{ocr.outcome.detail}</p>
         </InlineNotice>
       ) : null}
+      {links.notice}
 
       <div
         className={`sv-doc__main${sidePaneOpen ? ' sv-doc__main--side' : ''}${companionOpen ? ' sv-doc__main--split' : ''}`}
       >
         {sidePaneOpen ? (
-          <SidePane doc={doc} outline={outline} page={page} onGoToPage={goToPage} />
+          <SidePane
+            doc={doc}
+            outline={outline}
+            page={page}
+            onGoToPage={goToPage}
+            onFollowLink={links.follow}
+          />
         ) : null}
         <Viewer
           ref={viewer}
@@ -903,6 +916,7 @@ export function DocumentView({
             setCompanionOpen(true);
             setRightTab('highlights');
           }}
+          onFollowLink={links.follow}
           onShortcut={onShortcut}
           onError={() => undefined}
           onEffectiveZoom={setEffectiveZoom}
@@ -969,6 +983,7 @@ export function DocumentView({
           }}
         />
       ) : null}
+      {links.dialog}
     </div>
   );
 }

@@ -73,7 +73,7 @@ function linesFromText(text: string, words: readonly string[]): number[] | null 
 
 /** Rebuilds the in-memory page from a vault row (the inverse of `storedInputFrom`). */
 export function pageOcrFromStored(
-  stored: Pick<StoredOcrPage, 'pageNumber' | 'text' | 'correctedText' | 'words'> & {
+  stored: Pick<StoredOcrPage, 'pageNumber' | 'text' | 'correctedText' | 'words' | 'orientation'> & {
     language?: string;
     engine?: string;
     confidence?: number | null;
@@ -129,7 +129,9 @@ export function pageOcrFromStored(
       pageNumber: stored.pageNumber,
       width: VIRTUAL_PX,
       height: VIRTUAL_PX,
+      // The stored boxes are already in the page's own frame, whatever turn the recogniser needed.
       rotation: 0,
+      ...(stored.orientation ? { orientation: stored.orientation } : {}),
       scale: null,
       confidence: meanConfidence,
       text: lines.map((l) => l.text).join('\n'),
@@ -169,6 +171,7 @@ export function storedInputFrom(documentId: string, po: PageOcr): SaveOcrPageInp
     language: page.engine.language,
     engine: `${page.engine.name} ${page.engine.version}`.slice(0, 64),
     confidence: page.words.length === 0 ? null : clamp(page.confidence / 100, 0, 1),
+    orientation: page.orientation ?? 0,
     correctedText: hasCorrections(po.corrections) ? correctedLines(po).join('\n') : null,
   };
 }
@@ -209,6 +212,8 @@ export function describeProgress(p: OcrJobProgress): string {
       return `Starting the text recogniser (${of}). This happens once and can take a few seconds…`;
     case 'recognizing':
       return `Recognising text on page ${n} (${of})…`;
+    case 'orienting':
+      return `Checking orientation of page ${n}: this scan may be sideways or upside down (${of})…`;
     case 'saving':
       return `Saving page ${n} (${of})…`;
     case 'saved':
@@ -230,6 +235,23 @@ export interface OcrOutcome {
 const plural = (n: number, one: string): string => `${n} ${n === 1 ? one : `${one}s`}`;
 const MACHINE = 'The text is machine-recognised and may be wrong. Check it before you rely on it.';
 
+/** How a page that needed a turn is stored, in words (the turn is the clockwise one that read it). */
+export const ORIENTATION_TEXT: Record<90 | 180 | 270, string> = {
+  90: 'sideways (its lines run from bottom to top)',
+  180: 'upside down',
+  270: 'sideways (its lines run from top to bottom)',
+};
+
+function turnedNote(summary: OcrJobSummary): string {
+  const turned = summary.reoriented;
+  if (turned.length === 0) return '';
+  const numbers = turned.map((t) => t.pageNumber);
+  const shown = numbers.slice(0, 5).join(', ') + (numbers.length > 5 ? ' and more' : '');
+  return numbers.length === 1
+    ? `Page ${shown} is stored ${ORIENTATION_TEXT[turned[0]!.orientation as 90 | 180 | 270]}; it was turned to be read. `
+    : `Pages ${shown} are stored sideways or upside down; they were turned to be read. `;
+}
+
 export function describeOutcome(summary: OcrJobSummary): OcrOutcome {
   const saved = summary.saved.length;
   const kept = saved + summary.skipped.length;
@@ -241,7 +263,7 @@ export function describeOutcome(summary: OcrJobSummary): OcrOutcome {
           saved === 0
             ? 'Every requested page was already recognised'
             : `Recognised ${plural(saved, 'page')}`,
-        detail: MACHINE,
+        detail: `${turnedNote(summary)}${MACHINE}`,
         codes: [],
       };
     case 'partial': {
@@ -250,7 +272,7 @@ export function describeOutcome(summary: OcrJobSummary): OcrOutcome {
       return {
         tone: 'warning',
         title: `Recognised ${plural(saved, 'page')}; ${plural(summary.failed.length, 'page')} could not be read`,
-        detail: `${first ? `${OCR_ERROR_MESSAGES[first.code]} (page ${first.pageNumber}${summary.failed.length > 1 ? `, and ${summary.failed.length - 1} more` : ''}). ` : ''}Choose OCR again to retry only those pages. ${MACHINE}`,
+        detail: `${first ? `${OCR_ERROR_MESSAGES[first.code]} (page ${first.pageNumber}${summary.failed.length > 1 ? `, and ${summary.failed.length - 1} more` : ''}). ` : ''}Choose OCR again to retry only those pages. ${turnedNote(summary)}${MACHINE}`,
         codes,
       };
     }

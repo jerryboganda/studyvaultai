@@ -158,6 +158,18 @@ export const OcrWord = PdfRect.extend({
 });
 export type OcrWord = z.infer<typeof OcrWord>;
 
+/**
+ * Extra clockwise turn, in degrees, the recogniser applied to a scanned page that is stored sideways
+ * or upside down. Informational: the words' boxes are already in the page's own frame.
+ */
+export const OcrOrientation = z.union([
+  z.literal(0),
+  z.literal(90),
+  z.literal(180),
+  z.literal(270),
+]);
+export type OcrOrientation = z.infer<typeof OcrOrientation>;
+
 /** Recognised text of one page, keyed by [documentId+pageNumber]. `correctedText` is the user's fix. */
 export const OcrPage = z.object({
   documentId: Id,
@@ -171,6 +183,8 @@ export const OcrPage = z.object({
   language: z.string().max(32),
   engine: z.string().max(64),
   confidence: z.number().min(0).max(1).nullable(),
+  /** Absent on pages recognised before orientation checks: read as 0 (the page as it is shown). */
+  orientation: OcrOrientation.optional(),
 });
 export type OcrPage = z.infer<typeof OcrPage>;
 
