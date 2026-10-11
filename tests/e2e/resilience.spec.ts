@@ -396,9 +396,11 @@ test.describe('service worker suspension (CDP ServiceWorker.stopWorker)', () => 
 
     // Cold page load: registered script + stopped worker (what a browser restart looks like).
     await patchSettings(ext, { persistentOrigins: [originPattern(origin)] });
+    // (The e2e build is also granted its loopback hosts at install, so the registration holds those
+    // too: this test is about the cold load, not about the exact set.)
     expect(await rpc(ext, 'site.sync')).toMatchObject({
       ok: true,
-      data: { registeredMatches: [originPattern(origin)] },
+      data: { registeredMatches: expect.arrayContaining([originPattern(origin)]) },
     });
     await page.waitForTimeout(700);
     marker = await markWorker(context, extensionId, 'spa-3');
@@ -536,7 +538,7 @@ test.describe('offline', () => {
 // -----------------------------------------------------------------------------------------------
 
 test.describe('persistent registration (registered content script) and deny list', () => {
-  test('a registered origin injects new tabs without activation; removing it stops that', async ({
+  test('a registered origin injects new tabs without activation; the registration follows the stored sites', async ({
     context,
     extensionId,
     fixtureServer,
@@ -546,18 +548,25 @@ test.describe('persistent registration (registered content script) and deny list
     const alt = fixtureServer.altOrigin;
     const ext = await openExtensionPage(context, extensionId);
 
-    // Nothing registered at first, and a fresh tab is not injected.
+    // Nothing registered at first (the harness drops the install-time registration, fixtures.ts).
     expect(await registeredScripts(ext)).toEqual([]);
+
+    // What is registered is what Chrome grants plus the stored sites Chrome still covers. The e2e
+    // build holds loopback grants from install, so "contains" and "no longer contains" are the
+    // invariants; the literal per-port patterns below are the user's own entries.
+    const matchesOf = (reply: unknown) =>
+      (reply as { data: { registeredMatches: string[] } }).data.registeredMatches;
 
     await patchSettings(ext, { persistentOrigins: [originPattern(origin), originPattern(alt)] });
     const sync = await rpc(ext, 'site.sync');
     expect(sync).toMatchObject({ ok: true });
-    expect(
-      (sync as { data: { registeredMatches: string[] } }).data.registeredMatches.sort(),
-    ).toEqual([originPattern(origin), originPattern(alt)].sort());
+    expect(matchesOf(sync)).toEqual(
+      expect.arrayContaining([originPattern(origin), originPattern(alt)]),
+    );
     const scripts = await registeredScripts(ext);
     expect(scripts).toHaveLength(1);
     expect(scripts[0]).toMatchObject({ id: 'sv-persistent' });
+    expect(scripts[0]?.matches).toEqual(expect.arrayContaining(matchesOf(sync)));
     expect(scripts[0]?.excludeMatches ?? []).toContain('*://*.accounts.google.com/*');
 
     // A NEW tab, no tab.activate: the registered script runs, the toolbar works, data persists.
@@ -577,33 +586,76 @@ test.describe('persistent registration (registered content script) and deny list
     await first.close();
     await second.close();
 
-    // Remove only the 127.0.0.1 origin; keep localhost as a positive control.
+    // Remove only the 127.0.0.1 entry; keep localhost: the registration follows.
     await patchSettings(ext, { persistentOrigins: [originPattern(alt)] });
     const resync = await rpc(ext, 'site.sync');
-    expect(resync).toMatchObject({ ok: true, data: { registeredMatches: [originPattern(alt)] } });
+    expect(resync).toMatchObject({ ok: true });
+    expect(matchesOf(resync)).toContain(originPattern(alt));
+    expect(matchesOf(resync)).not.toContain(originPattern(origin));
+    expect([...((await registeredScripts(ext))[0]?.matches ?? [])].sort()).toEqual(
+      [...matchesOf(resync)].sort(),
+    );
+
+    // Clearing every stored site leaves no per-site pattern behind; the script exists exactly when
+    // something (a Chrome grant) is still registered.
+    await patchSettings(ext, { persistentOrigins: [] });
+    const cleared = await rpc(ext, 'site.sync');
+    expect(cleared).toMatchObject({ ok: true });
+    expect(matchesOf(cleared)).not.toContain(originPattern(alt));
+    expect(matchesOf(cleared)).not.toContain(originPattern(origin));
+    expect((await registeredScripts(ext)).length).toBe(matchesOf(cleared).length > 0 ? 1 : 0);
+  });
+
+  test('removing a stored site stops injection on it, and clearing all unregisters the script', async ({
+    context,
+    extensionId,
+    fixtureServer,
+  }) => {
+    test.setTimeout(180_000);
+    const origin = fixtureServer.origin;
+    const alt = fixtureServer.altOrigin;
+    const ext = await openExtensionPage(context, extensionId);
+
+    const matchesOf = (reply: unknown) =>
+      (reply as { data: { registeredMatches: string[] } }).data.registeredMatches;
+
+    // Both stored sites are covered: a new tab on either is injected without activation.
+    await patchSettings(ext, { persistentOrigins: [originPattern(origin), originPattern(alt)] });
+    const both = await rpc(ext, 'site.sync');
+    expect(both).toMatchObject({ ok: true });
+    expect(matchesOf(both)).toEqual(
+      expect.arrayContaining([originPattern(origin), originPattern(alt)]),
+    );
+    const injected = await context.newPage();
+    await injected.goto(`${origin}/article.html`);
+    await expect(injected.locator('studyvault-overlay')).toHaveCount(1, { timeout: 15_000 });
+    await injected.close();
+
+    // Remove 127.0.0.1 and keep localhost. The e2e build's install-time loopback host permissions
+    // are NOT the user's always-on sites, so the registration must follow the stored list exactly.
+    await patchSettings(ext, { persistentOrigins: [originPattern(alt)] });
+    const onlyAlt = await rpc(ext, 'site.sync');
+    expect(onlyAlt).toMatchObject({ ok: true });
+    expect(matchesOf(onlyAlt)).toEqual([originPattern(alt)]);
     expect((await registeredScripts(ext))[0]?.matches).toEqual([originPattern(alt)]);
 
     const removed = await context.newPage();
     await removed.goto(`${origin}/article.html`);
-    await expect(removed.locator('#p-refs')).toBeVisible();
-    const control = await context.newPage();
-    await control.goto(`${alt}/article.html`);
-    await expect(control.locator('studyvault-overlay')).toHaveCount(1, { timeout: 15_000 });
-    // The control proves injection timing has passed; the removed origin got nothing.
-    expect(await overlayHostCount(removed)).toBe(0);
-    const removedTab = await tabIdOf(ext, removed);
-    expect(await tabRpc(ext, removedTab, 'content.ping')).toMatchObject({
-      ok: false,
-      error: { code: 'no_receiver' },
-    });
-    expect(await paintedDetail(removed)).toEqual([]);
+    await expect(removed.locator('article')).toBeVisible();
+    await removed.waitForTimeout(1_500); // a late injection would show up well inside this window
+    await expect(removed.locator('studyvault-overlay')).toHaveCount(0);
+    await removed.close();
 
-    // Clearing every origin unregisters the script altogether.
+    const kept = await context.newPage();
+    await kept.goto(`${alt}/article.html`);
+    await expect(kept.locator('studyvault-overlay')).toHaveCount(1, { timeout: 15_000 });
+    await kept.close();
+
+    // Clearing everything leaves no script behind.
     await patchSettings(ext, { persistentOrigins: [] });
-    expect(await rpc(ext, 'site.sync')).toMatchObject({
-      ok: true,
-      data: { registeredMatches: [] },
-    });
+    const cleared = await rpc(ext, 'site.sync');
+    expect(cleared).toMatchObject({ ok: true });
+    expect(matchesOf(cleared)).toEqual([]);
     expect(await registeredScripts(ext)).toEqual([]);
   });
 

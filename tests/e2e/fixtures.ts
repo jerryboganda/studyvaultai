@@ -21,38 +21,6 @@ type WorkerFixtures = {
 };
 
 /**
- * HARNESS WORKAROUND (remove when the product stops doing this; see the e2e agent report).
- *
- * The e2e build holds loopback host permissions up front (wxt.config.ts), and `site.sync()` treats
- * every granted origin as an always-on site: on install it registers the persistent content script
- * `sv-persistent` for http://127.0.0.1/* and http://localhost/*, so EVERY fixture page gets the
- * overlay without being activated. A shipped build has no install-time hosts, so there a tab is
- * "not running" until the user activates it, which is what most popup / side panel / permission
- * specs are about. The registration is dropped once, right after the worker's install-time sync has
- * made it; nothing in the product re-registers unless a test calls `site.sync` (or edits the deny
- * list / grants), which is the behaviour those tests want to exercise.
- */
-async function dropInstallTimeRegistration(worker: Worker): Promise<void> {
-  const deadline = Date.now() + 2_000;
-  for (;;) {
-    const dropped = await worker
-      .evaluate(async () => {
-        // The shipped build has no install-time hosts: nothing is registered, nothing to wait for.
-        if (!chrome.runtime.getManifest().host_permissions?.length) return true;
-        const found = await chrome.scripting.getRegisteredContentScripts({
-          ids: ['sv-persistent'],
-        });
-        if (found.length === 0) return false;
-        await chrome.scripting.unregisterContentScripts({ ids: ['sv-persistent'] });
-        return true;
-      })
-      .catch(() => false);
-    if (dropped || Date.now() > deadline) return;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-}
-
-/**
  * Real Chromium with the built extension loaded unpacked (not mocked APIs).
  * Branded Google Chrome 137+ ignores --load-extension, so Playwright's bundled Chromium is used;
  * `channel: 'chromium'` selects the new headless mode, which supports extensions.
@@ -89,7 +57,6 @@ function makeTest(extensionPath: string) {
     serviceWorker: async ({ context }, use) => {
       const existing = context.serviceWorkers()[0];
       const worker = existing ?? (await context.waitForEvent('serviceworker'));
-      await dropInstallTimeRegistration(worker);
       await use(worker);
     },
     extensionId: async ({ serviceWorker }, use) => {

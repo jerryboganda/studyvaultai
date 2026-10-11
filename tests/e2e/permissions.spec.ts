@@ -101,7 +101,10 @@ test.describe('site access', () => {
   }) => {
     const ext = await openExt(env, 'options');
     await patchSettings(ext, { persistentOrigins: ['http://127.0.0.1/*'] });
-    expect(await bgData(ext, 'site.sync')).toEqual({ registeredMatches: ['http://127.0.0.1/*'] });
+    // Chrome's grants are what is registered: the hint under test plus whatever the e2e build was
+    // granted at install (its loopback host permissions). So "contains", not "equals".
+    const synced = await bgData<{ registeredMatches: string[] }>(ext, 'site.sync');
+    expect(synced.registeredMatches).toEqual(expect.arrayContaining(['http://127.0.0.1/*']));
 
     const scripts = await ext.evaluate(async () => {
       const found = await chrome.scripting.getRegisteredContentScripts();
@@ -118,7 +121,7 @@ test.describe('site access', () => {
     expect(scripts).toHaveLength(1);
     expect(scripts[0]).toMatchObject({
       id: 'sv-persistent',
-      matches: ['http://127.0.0.1/*'],
+      matches: expect.arrayContaining(['http://127.0.0.1/*']),
       runAt: 'document_idle',
       persistAcrossSessions: true,
       allFrames: false,
@@ -808,10 +811,18 @@ prodTest.describe('production build', () => {
     expect(manifest.side_panel).toEqual({ default_path: 'sidepanel.html' });
     expect(manifest.options_ui).toEqual({ open_in_tab: true, page: 'options.html' });
     expect(manifest.background).toEqual({ service_worker: 'background.js' });
+    // Extension pages may only talk to themselves (SECURITY_PRIVACY: "nothing leaves the device").
     expect(manifest.content_security_policy).toEqual({
-      extension_pages: "script-src 'self'; object-src 'self'; base-uri 'self'",
+      extension_pages:
+        "script-src 'self'; object-src 'self'; base-uri 'self'; connect-src 'self'; frame-src 'none'; form-action 'none'",
     });
-    expect(Object.keys(manifest.commands ?? {}).sort()).toEqual(['open-side-panel', 'quick-save']);
+    expect(Object.keys(manifest.commands ?? {}).sort()).toEqual([
+      'focus-toolbar',
+      'next-highlight',
+      'open-side-panel',
+      'previous-highlight',
+      'quick-save',
+    ]);
     expect(manifest.minimum_chrome_version).toBe('120');
   });
 

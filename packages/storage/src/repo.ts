@@ -204,6 +204,9 @@ async function bankIdsByHighlight(
 }
 
 async function toViews(db: StudyVaultDb, rows: Highlight[]): Promise<HighlightView[]> {
+  // Nothing to join: touching the database again would run requests across a gap in which an
+  // idle read transaction auto-commits (Dexie PrematureCommit seen on CI for an empty page).
+  if (rows.length === 0) return [];
   const banks = await readBanks(db);
   const memberships = await bankIdsByHighlight(
     db,
@@ -214,6 +217,7 @@ async function toViews(db: StudyVaultDb, rows: Highlight[]): Promise<HighlightVi
 }
 
 async function toItems(db: StudyVaultDb, rows: Highlight[]): Promise<HighlightListItem[]> {
+  if (rows.length === 0) return []; // see toViews: no database work for an empty result
   const banks = new Map((await readBanks(db)).map((b) => [b.id, b]));
   const memberships = await bankIdsByHighlight(
     db,

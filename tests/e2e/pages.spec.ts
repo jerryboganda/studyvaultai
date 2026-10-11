@@ -960,10 +960,11 @@ test.describe('options: keyboard shortcuts', () => {
     const list = section.getByRole('list', { name: 'Browser shortcuts' });
     await expect(list.getByRole('listitem')).toHaveCount(commands.length);
     for (const c of commands) {
+      const name = c.name ?? '';
       const row = list.getByRole('listitem').filter({
-        has: ext.getByText(describeCommand(c.name, c.description), { exact: true }),
+        has: ext.getByText(describeCommand(name, c.description), { exact: true }),
       });
-      await expect(row, `${c.name} is listed`).toHaveCount(1);
+      await expect(row, `${name} is listed`).toHaveCount(1);
       // An unset command says so instead of being hidden.
       if (!c.shortcut) await expect(row).toContainText(/Not set/i);
     }

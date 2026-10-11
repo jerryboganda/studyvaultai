@@ -186,20 +186,33 @@ export function useAsync<T>(
  * Live database query: re-emits when Dexie reports a change (via @storage `observe`) and is
  * re-subscribed when another context bumps the data epoch. `query` must only call read functions.
  */
+const isTransientTransactionError = (err: unknown): boolean =>
+  err instanceof Error &&
+  /PrematureCommit|TransactionInactive|committed too early/i.test(`${err.name} ${err.message}`);
+
 export function useObserved<T>(query: () => Promise<T>, deps: readonly Dep[]): Loadable<T> {
   const latest = useLatest(query);
   const epoch = useDataEpoch();
   const key = JSON.stringify(deps);
   const [runs, setRuns] = useState(0);
   const [result, setResult] = useState<Result<T>>(null);
+  const autoRetries = useRef(0);
 
   useEffect(() => {
     let live = true;
     const stop = observe(() => latest.current()).subscribe(
       (data) => {
+        autoRetries.current = 0;
         if (live) setResult({ key, run: runs, data });
       },
       (err: unknown) => {
+        // A read transaction that auto-committed under us is transient: ask again once before
+        // showing an error the user could only answer with the same retry.
+        if (live && autoRetries.current < 1 && isTransientTransactionError(err)) {
+          autoRetries.current += 1;
+          setRuns((n) => n + 1);
+          return;
+        }
         if (live)
           setResult({ key, run: runs, error: errorMessage(err), retryable: isRetryable(err) });
       },
@@ -283,7 +296,6 @@ export function useActiveTab() {
       }
     };
     readAgain.current = read;
-    void read();
     const onActivated = () => void read();
     const onUpdated = (
       _tabId: number,
@@ -292,8 +304,11 @@ export function useActiveTab() {
     ) => {
       if (tab.active && (change.url || change.title || change.status)) void read();
     };
+    // Listeners first, read second: a tab switch landing between the query and the subscription
+    // would otherwise leave this page showing a stale tab.
     browser.tabs.onActivated.addListener(onActivated);
     browser.tabs.onUpdated.addListener(onUpdated);
+    void read();
     return () => {
       live = false;
       readAgain.current = null;
