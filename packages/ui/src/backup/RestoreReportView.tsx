@@ -55,8 +55,7 @@ export function RestoreReportView({ report }: { report: RestoreReport }) {
             </li>
             <li data-testid="restore-removed">
               <strong>
-                {plural(impact.removedLiveOnlyRows, 'item')} that exist only in your vault will be
-                deleted.
+                {plural(impact.removedLiveOnlyRows, 'item')} only in your vault will be deleted.
               </strong>
             </li>
             <li data-testid="restore-overwritten-newer">
@@ -87,8 +86,8 @@ export function RestoreReportView({ report }: { report: RestoreReport }) {
                 : `${plural(t.conflict, 'conflict')}: your version is kept (details below).`}
             </li>
             <li>
-              {plural(t.liveOnly, 'item')} exist only in your vault and are kept: merging never
-              deletes anything.
+              {plural(t.liveOnly, 'item')} only in your vault are kept: merging never deletes
+              anything.
             </li>
           </ul>
         )}

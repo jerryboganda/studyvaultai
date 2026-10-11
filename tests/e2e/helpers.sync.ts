@@ -1,11 +1,11 @@
 import AxeBuilder from '@axe-core/playwright';
 import type { Locator, Page } from '@playwright/test';
 import { DEFAULT_PALETTE, INBOX_BANK_ID } from '@shared';
-import { bgData, expect, openExt, test as pagesTest, type Env } from './helpers.pages';
+import { bgData, errorsOf, expect, openExt, test as pagesTest, type Env } from './helpers.pages';
 import { launchSession, newUserDataDir, removeDir } from './helpers.lifecycle';
 import { startFakeOidc, startSyncHarness, type FakeOidc, type SyncHarness } from './syncServer';
 
-export { expect, openExt };
+export { errorsOf, expect, openExt };
 export type { Env, FakeOidc, SyncHarness };
 
 /**
@@ -39,7 +39,7 @@ export const test = pagesTest.extend<{ idp: FakeOidc; sync: SyncHarness }>({
 });
 
 /** The pending line when something waits ("nothing waiting to upload" must not match). */
-export const WAITING = /^d+ changes? waiting to upload$/;
+export const WAITING = /^[0-9]+ changes? waiting to upload$/;
 
 export const PASSPHRASE = 'violet harbour 7 paper lanterns';
 export const OTHER_PASSPHRASE = 'amber orchard 4 quiet engines';
@@ -49,6 +49,15 @@ export const syncConfigOf = (sync: SyncHarness, idp: FakeOidc) => ({
   issuer: idp.issuer,
   clientId: idp.clientId,
 });
+
+/** console.error output of the extension's service worker from now on (do not use across a stop). */
+export function workerErrors(env: Env): string[] {
+  const errors: string[] = [];
+  env.serviceWorker.on('console', (m) => {
+    if (m.type() === 'error') errors.push(m.text());
+  });
+  return errors;
+}
 
 // ---------------------------------------------------------------------------------------------
 // A second browser profile (its own user data directory) with the same extension
@@ -129,7 +138,21 @@ export async function turnOnSync(
 export async function signIn(page: Page, subject: string): Promise<void> {
   const s = syncSection(page);
   await s.getByTestId('sync-sign-in').click();
-  await expect(s.getByTestId('sync-account')).toContainText(`Signed in as ${subject}`);
+  // Either the account line, or the page's own explanation of why sign-in did not complete.
+  await expect
+    .poll(
+      async () => {
+        const account = (await s.getByTestId('sync-account').textContent()) ?? '';
+        if (account.includes(`Signed in as ${subject}`)) return 'signed in';
+        const failed = s.getByText('Sign-in did not complete');
+        if ((await failed.count()) > 0) {
+          return `refused: ${await failed.locator('xpath=..').innerText()}`;
+        }
+        return 'waiting';
+      },
+      { message: 'sign-in should complete' },
+    )
+    .toBe('signed in');
 }
 
 /** Choose a passphrase in the encryption card (the first upload, or a device joining). */
@@ -259,10 +282,12 @@ export async function serverText(sync: SyncHarness): Promise<string> {
 const WCAG_TAGS = ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'];
 
 async function axeReport(page: Page, include: string): Promise<string> {
-  const { violations } = await new AxeBuilder({ page })
+  const { violations, passes } = await new AxeBuilder({ page })
     .withTags(WCAG_TAGS)
     .include(include)
     .analyze();
+  // A run that checked nothing (the section was not there) must not read as "no violations".
+  if (passes.length === 0) return `axe applied no rule under ${include}`;
   return violations
     .map(
       (v) =>

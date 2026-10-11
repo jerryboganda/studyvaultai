@@ -38,7 +38,6 @@ import {
   summaryTotal,
   test,
   toast,
-  treeCount,
   treeItem,
   treeMenu,
   treeOf,
@@ -1338,9 +1337,14 @@ test.describe('perf: 10,000 highlights', () => {
     await list.evaluate((el) => {
       el.scrollTop = 0;
     });
-    const formulaCount = Array.from({ length: N }, (_, k) => k + 1).filter(
+    const formulaRows = Array.from({ length: N }, (_, k) => k + 1).filter(
       (i) => i % 7 === 1 && i % 50 !== 0,
-    ).length;
+    );
+    const formulaCount = formulaRows.length;
+    // priority = (i % 5) + 1, so a formula row with i % 5 === 4 already has priority 5. The vault
+    // reports only the rows that really changed: "Priority changed on N highlights".
+    const willChange = formulaRows.filter((i) => i % 5 !== 4).length;
+    expect(willChange).toBeLessThan(formulaCount);
     const filterStart = Date.now();
     const kinds = await openFilter(page, 'filter-kind');
     await kinds.getByRole('checkbox', { name: KIND_NAME.formula! }).check();
@@ -1398,9 +1402,12 @@ test.describe('perf: 10,000 highlights', () => {
       .getByRole('menuitem', { name: /^Priority 5/ })
       .click();
     await expect(
-      toast(page, `Priority changed on ${formulaCount.toLocaleString('en-US')} highlights.`),
+      toast(page, `Priority changed on ${willChange.toLocaleString('en-US')} highlights.`),
     ).toBeVisible({ timeout: 120_000 });
-    recordPerf(`bulk priority change on ${formulaCount} highlights`, Date.now() - bulkStart);
+    recordPerf(
+      `bulk priority change: ${formulaCount} selected, ${willChange} changed`,
+      Date.now() - bulkStart,
+    );
 
     const rows = await storedHighlights(ctrl);
     const changed = rows.filter((h) => h.kind === 'formula' && h.deletedAt === null);
@@ -2614,8 +2621,9 @@ test.describe('bulk: selection and actions', () => {
     await expect(toast(page, 'Moved 2 highlights.')).toBeVisible();
 
     await expectTotal(page, 10);
-    expect(await treeCount(page, 'Work')).toBe(10);
-    expect(await treeCount(page, 'Other')).toBe(6);
+    // The tree reloads its counts after the list has refreshed: wait for them, do not sample.
+    await expectTreeCount(page, 'Work', 10);
+    await expectTreeCount(page, 'Other', 6);
     const memberships = await readTable<{ highlightId: string; bankId: string }>(
       ctrl,
       'highlightBanks',

@@ -279,9 +279,20 @@ export async function writeDatasetKeepingInbox(ctrl: Page, ds: Dataset): Promise
 // The Options page
 // -----------------------------------------------------------------------------------------------
 
+const PROBLEMS = new WeakMap<Page, string[]>();
+
+/** Uncaught exceptions and console errors of a page opened by `openBackupPage`. */
+export const pageProblems = (page: Page): string[] => PROBLEMS.get(page) ?? [];
+
 /** The Options page with its Backup section rendered (an extension page, same origin as the vault). */
 export async function openBackupPage(env: Env): Promise<Page> {
   const page = await env.context.newPage();
+  const problems: string[] = [];
+  PROBLEMS.set(page, problems);
+  page.on('pageerror', (err) => problems.push(`pageerror: ${err.message}`));
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') problems.push(`console.error: ${msg.text()}`);
+  });
   await page.goto(`chrome-extension://${env.extensionId}/options.html#backup`);
   await expect(page.getByTestId('backup-section')).toBeVisible();
   return page;
@@ -640,4 +651,75 @@ export async function archiveAsDataVersion1(rows: {
   });
   expect(out.manifest.appSchemaVersion).toBe(1);
   return out.bytes;
+}
+
+// -----------------------------------------------------------------------------------------------
+// The automatic copy taken before a database upgrade
+// -----------------------------------------------------------------------------------------------
+
+/**
+ * Plant the record the product keeps in its `studyvault-premigration` database (one row, id
+ * "latest") with `bytes` as the archive. A real one is made by an upgrade of the database
+ * (packages/storage lifecycle tests cover that); a loaded extension cannot be made to upgrade a
+ * database on demand, so this is what the Options page is shown in that situation. Written from
+ * an extension page, in the shape the product's own reader (`getPreMigrationInfo`) parses.
+ */
+export async function seedPreUpdateCopy(
+  page: Page,
+  bytes: Uint8Array,
+  filename = 'studyvault-before-update-20260301-120000.zip',
+): Promise<{ sha256: string; filename: string }> {
+  const sha256 = sha256Of(bytes);
+  const tables: Record<string, number> = {};
+  let rows = 0;
+  for (const t of readArchive(bytes).manifest.tables) {
+    if (t.rowCount > 0) tables[t.name] = t.rowCount;
+    rows += t.rowCount;
+  }
+  await page.evaluate(
+    async (record) => {
+      await new Promise<void>((resolve, reject) => {
+        // Dexie's version(1) is IndexedDB version 10.
+        const open = indexedDB.open('studyvault-premigration', 10);
+        open.onupgradeneeded = () => {
+          if (!open.result.objectStoreNames.contains('snapshots')) {
+            open.result.createObjectStore('snapshots', { keyPath: 'id' });
+          }
+        };
+        open.onerror = () => reject(open.error);
+        open.onsuccess = () => {
+          const db = open.result;
+          const tx = db.transaction('snapshots', 'readwrite');
+          tx.objectStore('snapshots').put(record);
+          tx.oncomplete = () => {
+            db.close();
+            resolve();
+          };
+          tx.onerror = () => reject(tx.error);
+        };
+      });
+    },
+    {
+      id: 'latest',
+      createdAt: '2026-03-01T12:00:00.000Z',
+      fromVersion: 20,
+      toVersion: 30,
+      status: 'kept',
+      reason: null,
+      rows,
+      tables,
+      byteLength: bytes.length,
+      sha256,
+      filename,
+      bytes: new Uint8Array(bytes),
+    },
+  );
+  return { sha256, filename };
+}
+
+/** Names of the IndexedDB databases of this extension origin. */
+export async function databaseNames(page: Page): Promise<string[]> {
+  return page.evaluate(async () =>
+    (await indexedDB.databases()).flatMap((d) => (d.name === undefined ? [] : [d.name])),
+  );
 }

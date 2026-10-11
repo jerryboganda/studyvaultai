@@ -1,13 +1,16 @@
+import type { Page } from '@playwright/test';
 import { STUDYVAULT_SYNC_POLICY } from '@sync';
 import { NEVER_UPLOADED, PROVIDER_LEARNS, SERVER_STILL_SEES, syncedGroups } from '@ui/sync/consent';
 import { STATUS_TEXT } from '@ui/sync/labels';
 import { stopWorker, workerState } from './helpers.lifecycle';
+import { startFakeOidc, startSyncHarness } from './syncServer';
 import {
   OTHER_PASSPHRASE,
   PASSPHRASE,
   WAITING,
   alarmNames,
   encryptionModeOf,
+  errorsOf,
   expect,
   expectAccessible,
   highlightRows,
@@ -27,6 +30,7 @@ import {
   test,
   turnOnEncryption,
   turnOnSync,
+  workerErrors,
 } from './helpers.sync';
 
 /**
@@ -44,6 +48,14 @@ import {
  * What is NOT driven (and why) is listed at the end as `test.fixme`: the native permission prompt, a
  * host origin Chrome has not granted, and a hosted identity provider over https.
  */
+
+/** Everything that was waiting has been sent: the line says so, and the status is "up to date". */
+async function expectUploaded(page: Page): Promise<void> {
+  await expect(syncSection(page).getByTestId('sync-pending')).toHaveText(
+    'nothing waiting to upload',
+  );
+  await expect(syncStatusOf(page)).toHaveText(STATUS_TEXT.idle);
+}
 
 const QUOTE = 'Digoxin toxicity is worsened by hypokalaemia and by loop diuretics.';
 const TITLE = 'Cardiology revision, private page title';
@@ -89,7 +101,7 @@ test.describe('off by default', () => {
     const enable = s.getByTestId('sync-enable');
     await expect(enable).toHaveAttribute('aria-disabled', 'true');
     await expect(enable).toHaveAttribute('title', /understand where your data will go/);
-    await enable.click();
+    await enable.click({ force: true }); // aria-disabled: focusable, does nothing
     await expect(s.getByTestId('sync-setup')).toBeVisible();
     await expect(s.getByTestId('sync-connected')).toHaveCount(0);
     expect(await syncFlag(options)).toBeFalsy();
@@ -161,6 +173,7 @@ test.describe('turning it on and the first upload', () => {
     idp,
     sync,
   }) => {
+    const worker = workerErrors(env);
     const options = await openSyncSettings(env);
     const id = await saveQuote(options, { url: PAGE, title: TITLE, quote: QUOTE });
     await turnOnSync(options, syncConfigOf(sync, idp));
@@ -174,7 +187,7 @@ test.describe('turning it on and the first upload', () => {
     await expect(s.getByTestId('e2ee-setup')).toHaveAttribute('title', /stronger passphrase/);
 
     await turnOnEncryption(options, PASSPHRASE);
-    await expect(syncStatusOf(options)).toHaveText(STATUS_TEXT.idle);
+    await expectUploaded(options);
     await expect(s.getByTestId('sync-pending')).toHaveText('nothing waiting to upload');
     await expect(encryptionModeOf(options)).toContainText('unlocked on this device');
     await expectAccessible(options, 'encryption on, unlocked');
@@ -229,6 +242,8 @@ test.describe('turning it on and the first upload', () => {
     expect(sync.count('POST /v1/ops')).toBeGreaterThan(pushes);
     expect(await serverText(sync)).not.toContain('written while locked');
     expect((await sync.stored()).every((o) => o.op.payloadEncrypted)).toBe(true);
+    expect(errorsOf(options), 'no page error or console.error').toEqual([]);
+    expect(worker, 'no service worker console.error').toEqual([]);
   });
 
   test('"Upload without end-to-end encryption" needs its acknowledgement; afterwards the server holds readable text, and a passphrase later re-encrypts it', async ({
@@ -246,7 +261,7 @@ test.describe('turning it on and the first upload', () => {
     const plain = s.getByTestId('e2ee-upload-plain');
     await expect(plain).toHaveAttribute('aria-disabled', 'true');
     await expect(plain).toHaveAttribute('title', /operator of the server can read/);
-    await plain.click();
+    await plain.click({ force: true });
     await expect(s.getByTestId('e2ee-plain-choice')).toBeVisible();
     expect(sync.count('POST /v1/ops'), 'the button did nothing without its acknowledgement').toBe(
       0,
@@ -269,7 +284,7 @@ test.describe('turning it on and the first upload', () => {
 
     // Turning encryption on afterwards replaces what the server stores.
     await turnOnEncryption(options, PASSPHRASE);
-    await expect(syncStatusOf(options)).toHaveText(STATUS_TEXT.idle);
+    await expectUploaded(options);
     expect(await serverText(sync)).not.toContain(QUOTE);
     expect((await sync.stored()).every((o) => o.op.payloadEncrypted)).toBe(true);
   });
@@ -287,14 +302,16 @@ test.describe('two devices', () => {
   }) => {
     test.setTimeout(240_000);
     const config = syncConfigOf(sync, idp);
+    const workerA = workerErrors(env);
     const a = await openSyncSettings(env);
     const id = await saveQuote(a, { url: PAGE, title: TITLE, quote: QUOTE });
     await turnOnSync(a, config);
     await signIn(a, idp.subject);
     await turnOnEncryption(a, PASSPHRASE);
-    await expect(syncStatusOf(a)).toHaveText(STATUS_TEXT.idle);
+    await expectUploaded(a);
 
     const profile = await launchProfile(env);
+    const workerB = workerErrors(profile.env);
     try {
       const b = await openSyncSettings(profile.env);
       await turnOnSync(b, config);
@@ -338,10 +355,11 @@ test.describe('two devices', () => {
         );
       }
       // Converged on one value (the later edit wins the shared field), neither device lost a version.
-      const finalA = (await highlightRows(a))[0]?.userComment;
-      const finalB = (await highlightRows(b))[0]?.userComment;
-      expect(finalA).toBe(finalB);
-      expect(finalA).toBe('comment typed on profile B');
+      for (const page of [a, b]) {
+        await expect
+          .poll(async () => (await highlightRows(page))[0]?.userComment)
+          .toBe('comment typed on profile B');
+      }
 
       // The conflict is in the UI with both texts; picking one reaches the other device.
       const sa = syncSection(a);
@@ -365,6 +383,8 @@ test.describe('two devices', () => {
         .toBe('comment typed on profile A');
       expect((await highlightRows(a))[0]?.userComment).toBe('comment typed on profile A');
       expect(await serverText(sync)).not.toContain('comment typed on profile');
+      expect([...errorsOf(a), ...errorsOf(b)], 'no page error or console.error').toEqual([]);
+      expect([...workerA, ...workerB], 'no service worker console.error').toEqual([]);
     } finally {
       await profile.dispose();
     }
@@ -388,7 +408,7 @@ test.describe('leaving', () => {
     const s = syncSection(options);
     await s.getByTestId('e2ee-plain-ack').check();
     await s.getByTestId('e2ee-upload-plain').click();
-    await expect(syncStatusOf(options)).toHaveText(STATUS_TEXT.idle);
+    await expectUploaded(options);
     expect(await serverText(sync)).toContain(QUOTE);
     expect((await sessionStore(options)).syncTokens).toBeDefined();
 
@@ -447,7 +467,7 @@ test.describe('leaving', () => {
     await turnOnSync(options, syncConfigOf(sync, idp));
     await signIn(options, idp.subject);
     await turnOnEncryption(options, PASSPHRASE);
-    await expect(syncStatusOf(options)).toHaveText(STATUS_TEXT.idle);
+    await expectUploaded(options);
     expect(await metaValue(options, 'sync.config')).toMatchObject({ serverUrl: sync.base });
     expect(await metaValue(options, 'sync.encryption')).toMatchObject({ mode: 'e2ee' });
     const before = await sessionStore(options);
@@ -482,6 +502,83 @@ test.describe('leaving', () => {
     await expect(syncSection(options).getByTestId('sync-setup')).toBeVisible();
     await expect(syncSection(options).getByTestId('sync-server-url')).toHaveValue('');
   });
+
+  test('signing out with "remove all StudyVault data" empties this device and the sign-in, and leaves the server copy', async ({
+    env,
+    idp,
+    sync,
+  }) => {
+    const options = await openSyncSettings(env);
+    await saveQuote(options, { url: PAGE, title: TITLE, quote: QUOTE });
+    await turnOnSync(options, syncConfigOf(sync, idp));
+    await signIn(options, idp.subject);
+    const s = syncSection(options);
+    await s.getByTestId('e2ee-plain-ack').check();
+    await s.getByTestId('e2ee-upload-plain').click();
+    await expectUploaded(options);
+    const stored = (await sync.stored()).length;
+    expect(stored).toBeGreaterThan(0);
+
+    await s.getByTestId('sync-sign-out').click();
+    const dialog = options.getByRole('dialog', { name: 'Sign out of sync?' });
+    await dialog.getByTestId('sync-signout-wipe').check();
+    const confirmLabel = dialog.getByRole('button', { name: 'Sign out and remove data' });
+    await confirmLabel.click();
+    await expect(dialog.getByRole('alert')).toContainText('Type the word delete');
+    await dialog.getByTestId('sync-signout-typed').fill('delete');
+    await confirmLabel.click();
+
+    await expect(s.getByTestId('sync-note').or(s.getByTestId('sync-setup'))).toBeVisible();
+    await expect.poll(async () => (await highlightRows(options)).length).toBe(0);
+    expect((await sessionStore(options)).syncTokens).toBeUndefined();
+    expect(idp.revoked.sort()).toEqual(['access_token', 'refresh_token']);
+    expect((await sync.stored()).length, 'the server copy is separate').toBe(stored);
+    expect(await syncFlag(options)).toBeFalsy();
+  });
+
+  test('a provider that ends the session sends the person back to sign in without losing work; refreshed tokens keep syncing meanwhile', async ({
+    env,
+  }) => {
+    // Tokens that are always about to expire, so every request goes through the refresh grant.
+    const idp = await startFakeOidc({ accessTokenSeconds: 30 });
+    const sync = await startSyncHarness({
+      idp,
+      extensionOrigin: `chrome-extension://${env.extensionId}`,
+    });
+    try {
+      const options = await openSyncSettings(env);
+      const id = await saveQuote(options, { url: PAGE, title: TITLE, quote: QUOTE });
+      await turnOnSync(options, syncConfigOf(sync, idp));
+      await signIn(options, idp.subject);
+      const s = syncSection(options);
+      await s.getByTestId('e2ee-plain-ack').check();
+      await s.getByTestId('e2ee-upload-plain').click();
+      await expectUploaded(options);
+      await setComment(options, id, 'second edit, new token');
+      await expect.poll(() => serverText(sync)).toContain('second edit, new token');
+      const grants = idp.requests.filter((r) => r === 'POST /idp/token').length;
+      expect(grants, 'the code exchange, then refreshes').toBeGreaterThan(1);
+
+      // The provider ends the session: the refresh token no longer works.
+      idp.failRefresh = true;
+      await setComment(options, id, 'edit after the session ended');
+      await expect(syncStatusOf(options)).toHaveText(STATUS_TEXT.auth_required);
+      await expect(s.getByTestId('sync-account')).toContainText('Not signed in.');
+      await expect(s.getByTestId('sync-pending')).toHaveText(WAITING);
+      expect((await sessionStore(options)).syncTokens).toBeUndefined();
+      expect(await serverText(sync)).not.toContain('edit after the session ended');
+      expect((await highlightRows(options))[0]?.userComment).toBe('edit after the session ended');
+
+      // Signing in again sends what waited.
+      idp.failRefresh = false;
+      await signIn(options, idp.subject);
+      await expect(syncStatusOf(options)).toHaveText(STATUS_TEXT.idle);
+      await expect.poll(() => serverText(sync)).toContain('edit after the session ended');
+    } finally {
+      await sync.close();
+      await idp.close();
+    }
+  });
 });
 
 // =============================================================================================
@@ -499,7 +596,7 @@ test.describe('downgrade protection', () => {
     await turnOnSync(options, syncConfigOf(sync, idp));
     await signIn(options, idp.subject);
     await turnOnEncryption(options, PASSPHRASE);
-    await expect(syncStatusOf(options)).toHaveText(STATUS_TEXT.idle);
+    await expectUploaded(options);
     const s = syncSection(options);
 
     // The server is restarted over the same data with the key profile removed.
@@ -550,7 +647,7 @@ test.describe('worker and session', () => {
     await turnOnSync(options, syncConfigOf(sync, idp));
     await signIn(options, idp.subject);
     await turnOnEncryption(options, PASSPHRASE);
-    await expect(syncStatusOf(options)).toHaveText(STATUS_TEXT.idle);
+    await expectUploaded(options);
     const s = syncSection(options);
 
     // Chrome stops the worker (what it does when idle). Its memory is gone; the session store is not.
@@ -558,8 +655,9 @@ test.describe('worker and session', () => {
     expect((await sessionStore(options)).syncKey).toBeDefined();
     const pushes = sync.count('POST /v1/ops');
     await setComment(options, id, 'edited after the worker was suspended');
+    // The push itself, not the pending line: that still shows the state from before the edit.
+    await expect.poll(() => sync.count('POST /v1/ops')).toBeGreaterThan(pushes);
     await expect(s.getByTestId('sync-pending')).toHaveText('nothing waiting to upload');
-    expect(sync.count('POST /v1/ops')).toBeGreaterThan(pushes);
     expect(await serverText(sync)).not.toContain('edited after the worker');
     await expect(encryptionModeOf(options)).toContainText('unlocked on this device');
 
@@ -600,7 +698,7 @@ test.describe('worker and session', () => {
       await turnOnSync(options, syncConfigOf(sync, idp));
       await signIn(options, idp.subject);
       await turnOnEncryption(options, PASSPHRASE);
-      await expect(syncStatusOf(options)).toHaveText(STATUS_TEXT.idle);
+      await expectUploaded(options);
       await options.close();
       await profile.closeBrowser();
       const requests = sync.events.length;
@@ -630,21 +728,28 @@ test.describe('worker and session', () => {
     }
   });
 
-  test('a periodic sync alarm wakes a stopped worker, also in the first worker lifetime after the permission was granted', async ({
+  test('a sync alarm wakes a stopped worker that has started once since the permission was granted', async ({
     env,
     idp,
     sync,
   }) => {
     const options = await openSyncSettings(env);
-    await saveQuote(options, { url: PAGE, title: TITLE, quote: QUOTE });
+    const id = await saveQuote(options, { url: PAGE, title: TITLE, quote: QUOTE });
     await turnOnSync(options, syncConfigOf(sync, idp));
     await signIn(options, idp.subject);
     const s = syncSection(options);
     await s.getByTestId('e2ee-plain-ack').check();
     await s.getByTestId('e2ee-upload-plain').click();
-    await expect(syncStatusOf(options)).toHaveText(STATUS_TEXT.idle);
+    await expectUploaded(options);
 
-    // The worker that handled the grant is stopped. Nothing wakes it but the alarm.
+    // The worker that handled the grant is stopped and started again by a message: only a listener
+    // added during a worker's initial evaluation is one Chrome remembers across stops.
+    await stopWorker(env.context, env.extensionId, options);
+    const pushes = sync.count('POST /v1/ops');
+    await setComment(options, id, 'edited by the restarted worker');
+    await expect.poll(() => sync.count('POST /v1/ops')).toBeGreaterThan(pushes);
+
+    // Stopped again: nothing wakes it but the alarm, and it syncs.
     await stopWorker(env.context, env.extensionId, options);
     expect(await workerState(env.context, env.extensionId)).toBeNull();
     const requests = sync.events.length;
@@ -664,6 +769,32 @@ test.describe('worker and session', () => {
 // =============================================================================================
 
 test.describe('not drivable here', () => {
+  // OBSERVED (Chromium 1248 bundled with Playwright 1.64): the worker that handled
+  // chrome.permissions.request({ permissions: ['alarms'] }) has no chrome.alarms.onAlarm listener,
+  // because registerSync() looked for chrome.alarms during the worker's initial evaluation, before
+  // the permission existed. Chrome only remembers listeners added during initial evaluation, so once
+  // that worker is stopped an alarm does not start it; the first cold start for any other reason (a
+  // message from a page, the side panel or a content script) registers the listener for good. The
+  // control above ("has started once since the permission was granted") passes; this one, which only
+  // differs by that restart, waited 30 s and saw neither a worker nor a request. Nothing the
+  // extension can do restarts its own worker without reloading the extension.
+  test.fixme('a sync alarm wakes the worker that handled the permission grant, once it was stopped', async ({
+    env,
+    idp,
+    sync,
+  }) => {
+    const options = await openSyncSettings(env);
+    await turnOnSync(options, syncConfigOf(sync, idp));
+    await signIn(options, idp.subject);
+    await stopWorker(env.context, env.extensionId, options);
+    const requests = sync.events.length;
+    await options.evaluate(() => chrome.alarms.create('sv-sync-soon', { when: Date.now() + 1500 }));
+    await expect
+      .poll(() => workerState(env.context, env.extensionId), { timeout: 30_000 })
+      .not.toBeNull();
+    await expect.poll(() => sync.events.length).toBeGreaterThan(requests);
+  });
+
   // The e2e manifest holds http://127.0.0.1/* and http://localhost/* as required host permissions
   // (a native permission prompt cannot be clicked in headless Chromium), so Chrome never asks about
   // the loopback origins this suite uses, and there is no prompt to decline.

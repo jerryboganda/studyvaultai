@@ -10,8 +10,10 @@ copy it when a version is tagged.
 
 Nothing has been released or submitted to a store. `package.json` is at 0.1.0. The entries below say
 what exists in the repository, not what has been proven: on 2026-10-11 every completed `ci.yml` run
-had concluded `failure` and the manual checklist had not been run. The evidence for each privacy
-and store statement is tracked in `docs/PRIVACY_CLAIMS.md`.
+had concluded `failure` and the manual checklist had not been run. In the last run
+(<https://github.com/jerryboganda/studyvaultai/actions/runs/38130710828>, commit `ff0377f`) lint,
+typecheck, format, unit, build, audit and stress succeeded and seven of eight `e2e` shards failed.
+The evidence for each privacy and store statement is tracked in `docs/PRIVACY_CLAIMS.md`.
 
 ### Added
 

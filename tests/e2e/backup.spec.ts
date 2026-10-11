@@ -10,6 +10,7 @@ import {
   commitRestore,
   countsOf,
   createBackup,
+  databaseNames,
   deleteAllData,
   downloadOf,
   expectReview,
@@ -19,11 +20,13 @@ import {
   metaValue,
   openBackupPage,
   openWipeDialog,
+  pageProblems,
   readArchive,
   refusal,
   rewriteTable,
   rowsOf,
   seedPdfSourcedHighlight,
+  seedPreUpdateCopy,
   selectReplace,
   setPassphrase,
   sha256Of,
@@ -86,9 +89,18 @@ test.describe.configure({ timeout: 300_000 });
  * without a PDF or an AI provider are written with the extension-origin raw writer after they were
  * validated with the product's own schemas (see helpers.backup.ts). Nothing mocks a Chrome API.
  *
- * What is NOT covered here: a real incognito window, a second window holding the database while
- * a restore commits, and a backup larger than a few hundred rows (unit and stress tests cover
- * those at the engine level).
+ * What is NOT covered here, and why:
+ *  - the single-file JSON export and `exportHighlightsJson`: no Options control offers them, so
+ *    there is no user path to drive (the engine's unit tests cover them);
+ *  - the pre-update copy being MADE by a real database upgrade: a loaded extension cannot be made
+ *    to upgrade on demand, so the copy is planted in the shape the product reads
+ *    (`seedPreUpdateCopy`); making it is covered by packages/storage lifecycle tests;
+ *  - the frozen fixtures of packages/backup/src/fixtures are written in the engine's toy data
+ *    model, so they cannot restore into the real vault: what is driven here is how the wizard
+ *    refuses them. An older archive that does restore is built from the live rows in the shape of
+ *    data version 1 (`archiveAsDataVersion1`);
+ *  - a real incognito window, a second window holding the database while a restore commits, and a
+ *    backup larger than a few hundred rows (unit and stress tests cover those at the engine level).
  */
 
 const CARDIO_QUOTE = 'Cardiac output equals heart rate multiplied by stroke volume.';
@@ -374,7 +386,7 @@ test.describe('export, Delete all data, restore', () => {
       `Your vault becomes the backup: ${total} items from the file.`,
     );
     await expect(w.getByTestId('restore-removed')).toContainText(
-      '0 items that exist only in your vault will be deleted.',
+      '0 items only in your vault will be deleted.',
     );
     await expect(
       w.getByTestId('backup-import-safety'),
@@ -463,6 +475,7 @@ test.describe('export, Delete all data, restore', () => {
     );
     const fromWorker = await highlightsOf(ctrl, `${env.origin}/article.html`);
     expect(fromWorker.map((h) => h.id).sort()).toEqual(cardio.map((c) => c.id).sort());
+    expect(pageProblems(page), 'no exception or console error on the Options page').toEqual([]);
   });
 
   // =============================================================================================
@@ -536,6 +549,7 @@ test.describe('export, Delete all data, restore', () => {
     expect(rowsOf<StoredHighlight>(after, 'highlights').map((h) => h.id)).toEqual(
       expect.arrayContaining([ds.id.hl('a1'), ds.id.hl('a2'), ds.id.hl('b1')]),
     );
+    expect(pageProblems(page), 'no exception or console error on the Options page').toEqual([]);
   });
 
   // =============================================================================================
@@ -790,6 +804,7 @@ test.describe('export, Delete all data, restore', () => {
         await chooseAnother(page);
       });
     }
+    expect(pageProblems(page), 'no exception or console error on the Options page').toEqual([]);
   });
 
   // =============================================================================================
@@ -889,6 +904,71 @@ test.describe('export, Delete all data, restore', () => {
       expectSameVault(await snapshotVault(ctrl), baseline, `the vault after ${name}`);
     }
     expect(await metaValue(ctrl, 'lastRestore')).toBeUndefined();
+  });
+
+  test('the copy made before an update can be saved, reviewed and restored or deleted, and Delete all data removes it', async ({
+    env,
+  }) => {
+    const { ctrl } = await seedSmall(env);
+    const first = await openBackupPage(env);
+    const backup = await createBackup(first);
+    const before = await snapshotVault(ctrl);
+    const planted = await seedPreUpdateCopy(ctrl, backup.bytes);
+    await captureQuote(ctrl, {
+      url: sourceA(env),
+      title: 'Cell biology notes',
+      quote: 'A fact saved after the update.',
+      at: 5_000,
+    });
+    const withLocalFact = await snapshotVault(ctrl);
+    expect(rowsOf(withLocalFact, 'highlights')).toHaveLength(5);
+
+    const page = await openBackupPage(env);
+    const copy = page.getByTestId('backup-safety-copy');
+    await expect(copy).toContainText('Copy made before the last update');
+    await expect(copy).toContainText('version 20 to 30');
+    await expect(copy).toContainText(planted.sha256);
+    await expect(copy).toContainText('4 highlights');
+
+    // Save as a file: the same bytes, under the name the product gave the copy.
+    const saved = await downloadOf(page, () => copy.getByTestId('backup-safety-download').click());
+    expect(saved.name).toBe(planted.filename);
+    expect(sha256Of(saved.bytes)).toBe(planted.sha256);
+
+    // Review and restore: the wizard starts with it; replace brings the vault back to that day.
+    await copy.getByTestId('backup-safety-restore').click();
+    await expectReview(page);
+    await selectReplace(page);
+    await expect(wizard(page).getByTestId('restore-removed')).toContainText(
+      // the new highlight and its filing in the Inbox
+      '2 items only in your vault will be deleted.',
+    );
+    await commitRestore(page, { mode: 'replace', safety: false });
+    expectSameVault(
+      await snapshotVault(ctrl),
+      before,
+      'the vault restored from the pre-update copy',
+    );
+
+    // Delete the copy (a confirmation first; the data itself is not touched).
+    await copy.getByTestId('backup-safety-delete').click();
+    await dialogOf(page, 'Delete the copy made before the update?')
+      .getByRole('button', { name: 'Cancel' })
+      .click();
+    await expect(copy).toBeVisible();
+    await copy.getByTestId('backup-safety-delete').click();
+    await dialogOf(page, 'Delete the copy made before the update?')
+      .getByRole('button', { name: 'Delete the copy' })
+      .click();
+    await expect(page.getByTestId('backup-safety-copy')).toHaveCount(0);
+    expect(await databaseNames(ctrl)).not.toContain('studyvault-premigration');
+    expectSameVault(await snapshotVault(ctrl), before, 'the vault after deleting the copy');
+
+    // "Delete all data" says it removes this copy too, and it does.
+    await seedPreUpdateCopy(ctrl, backup.bytes);
+    expect(await databaseNames(ctrl)).toContain('studyvault-premigration');
+    await deleteAllData(page);
+    expect(await databaseNames(ctrl)).not.toContain('studyvault-premigration');
   });
 
   // =============================================================================================
@@ -1170,6 +1250,7 @@ test.describe('export, Delete all data, restore', () => {
       ).toEqual([]);
       const restored = await snapshotVault(ctrl);
       expectSameVault(restored, before, 'the vault restored while offline');
+      expect(pageProblems(page), 'no exception or console error on the Options page').toEqual([]);
       await session.context.setOffline(false);
 
       // ---- a new browser process on the same profile -----------------------------------------

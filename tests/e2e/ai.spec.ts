@@ -951,6 +951,7 @@ test.describe('accessibility', () => {
     await setUpAi(options, provider);
     await options.getByTestId('ai-test').click();
     await expect(options.getByTestId('ai-test-result')).toContainText('Reply: "OK"');
+    const probes = provider.seen.length; // the connection test is the only request so far
     expect(await axeReport(options, '#ai'), 'AI settings, light').toBe('');
     await options.emulateMedia({ colorScheme: 'dark' });
     expect(await axeReport(options, '#ai'), 'AI settings, dark').toBe('');
@@ -988,7 +989,7 @@ test.describe('accessibility', () => {
     await side.keyboard.press('Escape');
     await expect(dialog).toHaveCount(0);
     await expect(trigger, 'focus returns to the button that opened it').toBeFocused();
-    expect(provider.seen, 'cancelling sent nothing').toEqual([]);
+    expect(provider.seen, 'previewing and cancelling sent nothing').toHaveLength(probes);
 
     // Failure state.
     provider.queue(failure(429, { type: 'insufficient_quota', code: 'insufficient_quota' }));

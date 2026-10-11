@@ -378,7 +378,7 @@ describe('ImportWizard', () => {
     await user.click(screen.getByTestId('backup-import-mode-replace'));
     await waitFor(() => expect(screen.getByTestId('restore-removed')).toBeTruthy(), TIMEOUT);
     expect(screen.getByTestId('restore-removed').textContent).toMatch(
-      /1 item that exist only in your vault will be deleted/,
+      /1 item only in your vault will be deleted/,
     );
     // safety backup is on by default for replace, and the word gates the button
     expect((screen.getByTestId('backup-import-safety') as HTMLInputElement).checked).toBe(true);

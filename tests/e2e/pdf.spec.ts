@@ -140,9 +140,13 @@ function unionOf(boxes: Box[]): Box {
   };
 }
 
-/** Drag-select from the start of `from` to the end of `to` with the real mouse (horizontal text). */
-async function dragSelect(page: Page, pageNumber: number, from: string, to: string): Promise<void> {
-  // Layout may still be settling (a pane opened, a zoom redraw): act on boxes that stopped moving.
+/** Boxes of two passages once they have stopped moving (a pane opened, a zoom or resize redraw). */
+async function settledBoxes(
+  page: Page,
+  pageNumber: number,
+  from: string,
+  to: string,
+): Promise<[Box, Box]> {
   let a = await textBox(page, pageNumber, from);
   let b = await textBox(page, pageNumber, to);
   for (let i = 0; i < 20; i++) {
@@ -155,6 +159,12 @@ async function dragSelect(page: Page, pageNumber: number, from: string, to: stri
     b = b2;
     if (still) break;
   }
+  return [a, b];
+}
+
+/** Drag-select from the start of `from` to the end of `to` with the real mouse (horizontal text). */
+async function dragSelect(page: Page, pageNumber: number, from: string, to: string): Promise<void> {
+  const [a, b] = await settledBoxes(page, pageNumber, from, to);
   await page.mouse.move(a.x + 1, a.y + a.h / 2);
   await page.mouse.down();
   await page.mouse.move(b.x + b.w - 1, b.y + b.h / 2, { steps: 12 });
@@ -421,6 +431,36 @@ test.describe('highlights', () => {
     await expect(page.getByTestId('pdf-highlight-card')).toHaveCount(1);
     await expect(page.getByTestId('pdf-highlight-card').first()).toContainText('Found on page');
     await expect(page.getByLabel('Note').first()).toHaveValue('wraps over two lines');
+  });
+
+  test('the save bar waits for the button to be released, so a drag never runs on into it', async ({
+    env,
+  }) => {
+    const { page } = await openDocument(env, 'wrapped.pdf', wrappedDoc());
+    await textOnPage(page, 1);
+    // The bar used to appear 80 ms into a drag and, placed over the selection, swallowed the rest of
+    // the drag: the quote then ran through the bar's own text into the next page (seen on CI).
+    await page.setViewportSize({ width: 1280, height: 480 });
+    const [from, to] = await settledBoxes(page, 1, 'glomerulus filters', 'tubule reabsorbs');
+    await page.mouse.move(from.x + 1, from.y + from.h / 2);
+    await page.mouse.down();
+    await page.mouse.move(to.x + to.w - 1, to.y + to.h / 2, { steps: 12 });
+    // The drag has selected the text ...
+    await expect
+      .poll(async () => page.evaluate(() => document.getSelection()?.toString() ?? ''))
+      .toContain('tubule reabsorbs');
+    await page.waitForTimeout(500); // ... well past the 80 ms a selection takes to be evaluated
+    // ... and the button is still down, so there is no bar yet.
+    await expect(page.getByTestId('pdf-savebar')).toHaveCount(0);
+    await page.mouse.up();
+
+    const bar = page.getByTestId('pdf-savebar');
+    await expect(bar).toBeVisible();
+    await expect(bar.locator('blockquote')).toHaveText(
+      'glomerulus filters plasma at a steady rate and the tubule reabsorbs',
+    );
+    await saveSelection(page);
+    expect(await storedHighlights(page)).toHaveLength(1);
   });
 
   test('the overlay stays on its words through zoom and rotation', async ({ env }) => {

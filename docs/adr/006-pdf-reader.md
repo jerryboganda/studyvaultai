@@ -352,8 +352,9 @@ after the status and content type and before any of the body is read (`vetFinalA
 
 **Limit.** The browser followed the redirect, so the other site may have received the request (IP
 address, the address redirected to, no cookies, no referrer); only its answer is withheld. The reader
-screen's advice for this failure currently says StudyVault "never contacts a site you have not
-allowed" (`entrypoints/pdf-reader/OpenPanel.tsx`; docs/PRIVACY_CLAIMS.md U-14).
+screen's advice for this failure no longer promises that StudyVault "never contacts a site you have
+not allowed" (`entrypoints/pdf-reader/OpenPanel.tsx`), but it does not say that the other site may
+already have received the request either (docs/PRIVACY_CLAIMS.md U-14).
 Tests: `packages/pdf/src/source.test.ts` "fetchPdf: where a redirect may end";
 `tests/e2e/pdf.spec.ts` "a redirect to another origin that is allowed opens; nothing is sent to it but
 the request".

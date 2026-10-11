@@ -75,7 +75,7 @@ Behaviour that clients rely on:
 | Fail-closed configuration | No auth configured, public bind without a TLS proxy, wildcard CORS, dev tokens under `NODE_ENV=production`: the process exits with a reason | `config.test.ts`, `process.test.ts` |
 | Durable and corruption-safe file store | fsync per append, torn tail discarded, real corruption makes that user's requests fail instead of serving a partial log, directories named by digest | `store.test.ts` |
 | No secrets or content in logs | Logs carry route, status, latency and a truncated digest of the user id; never tokens, bodies or ids | `app.test.ts` "never logs" |
-| Works end to end | The real client engine and HTTP transport against this server over a socket, including E2EE and rotation | `integration.test.ts` |
+| Works end to end | The real client engine and HTTP transport against this server over a socket, including E2EE and rotation | `integration.test.ts`; and, in a loaded extension with a stand-in OIDC provider (agent-run local e2e, CI pending), `tests/e2e/sync.spec.ts` |
 
 ### Why CSRF does not apply
 
@@ -178,9 +178,14 @@ decisions and resources that are not in it. Each box is something a person has t
       categories, and the difference between E2EE and non-E2EE sync.
 - [x] A user-facing explanation in the settings screen before the flag can be switched on. Done in
       the extension (`Explanation` in `packages/ui/src/sync/SyncSection.tsx`, generated from the sync
-      policy and unit-tested; no end-to-end run yet): it says what is uploaded, that nothing is
-      uploaded until the person chooses a passphrase or "Upload without end-to-end encryption", and
-      what the server and the sign-in provider learn.
+      policy and unit-tested): it says what is uploaded, that nothing is uploaded until the person
+      chooses a passphrase or "Upload without end-to-end encryption", and what the server and the
+      sign-in provider learn. It is also driven end to end by `tests/e2e/sync.spec.ts` against this
+      server, with a stand-in OpenID Connect provider and the real `chrome.identity` flow (agent-run
+      local e2e on Windows; **CI pending**: the last Actions run failed eight of that spec's tests
+      in an earlier version, and no run has executed the current one). It is not a run against a
+      hosted provider, an https origin or a native permission prompt (the four `test.fixme` entries
+      there; `docs/MANUAL_TEST_CHECKLIST.md` MT-46, MT-47).
 
 ## 6. Known limitations
 
@@ -206,3 +211,7 @@ decisions and resources that are not in it. Each box is something a person has t
   that enabled encryption: it uploads nothing until the person deletes the server data.
 - The JWT verifier checks signature and claims, not revocation: a revoked access token stays valid until
   it expires (keep lifetimes short).
+- The end-to-end spec's identity provider (`tests/e2e/syncServer.ts`) implements the authorisation
+  code with PKCE, refresh and revocation only, and signs ES256 access tokens the server verifies
+  against its JWKS. It says nothing about a hosted provider's consent screens, MFA, https or
+  refresh-token rotation (manual row MT-46).

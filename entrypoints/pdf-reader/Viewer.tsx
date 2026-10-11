@@ -32,6 +32,7 @@ import {
   type Size,
   type ZoomMode,
 } from './model';
+import { createSelectionGate } from './selectionGate';
 
 export interface ViewerHandle {
   jumpToPage(pageNumber: number): void;
@@ -396,9 +397,9 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
     return f;
   };
 
-  // Selection -> stream ranges on the rendered pages.
+  // Selection -> stream ranges on the rendered pages. Evaluated after a short pause and, for a drag,
+  // only once the button is released: the save bar must not appear under the pointer mid-drag.
   useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
     const evaluate = (): void => {
       const sel = document.getSelection();
       if (!sel || sel.rangeCount === 0 || sel.isCollapsed) {
@@ -420,14 +421,12 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
         bounds: { left: b.left, top: b.top, right: b.right, bottom: b.bottom },
       });
     };
-    const soon = (): void => {
-      clearTimeout(timer);
-      timer = setTimeout(evaluate, 80);
-    };
+    const gate = createSelectionGate(document, evaluate);
+    const soon = gate.notify;
     evaluateSelection.current = soon;
     document.addEventListener('selectionchange', soon);
     return () => {
-      clearTimeout(timer);
+      gate.dispose();
       evaluateSelection.current = null;
       document.removeEventListener('selectionchange', soon);
     };

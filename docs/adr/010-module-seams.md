@@ -411,3 +411,80 @@ from the e2e build. `tests/e2e/settings-trust.spec.ts` proves in real Chromium t
 not lift a denial or turn sync on, and that a fresh profile enforces the starter list without any
 write (the worker seeds its copy from defaults on its first read: no race and no rejected load was
 observed).
+
+## Amendment 3 (2026-10-11): what the loaded-extension suite and the reviews changed or exposed
+
+**Status:** accepted · Records seams that changed after amendment 2 and one platform limit. It
+revises no earlier decision. Evidence is the e2e wave (`tests/e2e/sync.spec.ts`, `backup.spec.ts`,
+`ai.spec.ts`, `settings-trust.spec.ts`, `review.spec.ts`; passing in agent-run local runs, no
+Actions run of the current versions) and `docs/A11Y_REVIEW.md`, `docs/PERF_REVIEW.md`.
+
+### Decisions
+**1. `identity` is read per call, like `alarms`.** `browserSyncDeps()` in
+`entrypoints/background/sync.ts` exposes `identity` as a getter. The permission is optional and is
+granted from the click that turns sync on, while the worker is already running; Chrome then adds
+`chrome.identity` to that same worker. A value read once at start stayed `null` and sign-in was
+refused until the worker happened to restart. `sync.spec.ts` "Chrome grants identity and alarms, ..."
+signs in with the real `launchWebAuthFlow` in that same worker lifetime.
+
+**2. Limit: the first worker lifetime after `alarms` is granted has no `onAlarm` listener.**
+`registerSync` adds `browser.alarms?.onAlarm` during the worker's initial evaluation. In the lifetime
+in which the permission is granted `chrome.alarms` did not exist then, so nothing is added, and
+Chrome only remembers listeners added during initial evaluation: once that worker is stopped an
+alarm does not start it. The first start for any other reason (a message from a page, the side
+panel or a content script, a browser start) registers the listener for good. Observed in the
+Chromium bundled with Playwright 1.64 (the spec records it as "Chromium 1248"): `sync.spec.ts` "a sync alarm wakes a stopped
+worker that has started once since the permission was granted" passes and its sibling, which only
+differs by that restart, is `test.fixme` ("a sync alarm wakes the worker that handled the permission
+grant, once it was stopped"). Nothing the extension can do restarts its own worker without reloading
+it, so it is not worked around. Consequence: the periodic sync of a freshly enabled account may not
+run until a StudyVault page is opened or the browser is restarted. Manual row MT-49; ledger P30.
+
+**3. The one e2e-only hook and its absence check.** `e2e.settings.patch`
+(`entrypoints/background/e2e.ts`, behind `__SV_E2E__`, answers extension pages only) is the only
+message the e2e build adds; see the addendum to amendment 1. `scripts/check-build.mjs` (`E2E_HOOKS`)
+fails the build when the name appears in any production `.js` or `.html` file and when it is missing
+from the e2e build; the `build` job's release gate passed in Actions run 38130710828. The same build
+constant also skips the install-time welcome tab, so no e2e covers that open (ledger U-10).
+
+**4. A restore checks each table's checksum with the fields the archive says it left out.**
+`scanTable` in `packages/backup/src/restore.ts` hashes rows without `entry.derivedFields` from the
+manifest, not without the running build's `derivedFields` for that table (`export.ts` writes the list
+into each manifest table). A later build that derives a different set of fields therefore cannot turn
+an untouched older backup into "damaged"; an entry that lists none is hashed whole. Test:
+`packages/backup/src/migration.test.ts` "checksum verification of an older backup" > "uses the derived
+fields the archive recorded, not the list this build derives".
+
+**5. Search hits can be counted per highlight.** `SearchOptions.collapseNotes`
+(`packages/search/src/searchIndex.ts`, default `false`) folds the candidates to one hit per
+highlight before sorting: a note document repeats its highlight's quote and facets, so one highlight
+used to match through several documents. `total`, paging and the facet counts then count highlights;
+the best-scoring document leads and a note leads only when the words matched inside it. The
+dashboard (`entrypoints/dashboard/results.ts`) and the side panel's Search tab pass it; the index
+itself is unchanged. Tests: `packages/search/src/collapse.test.ts`.
+
+**6. Focus rescue and the single-key switches are shared UI seams, not settings.** `useFocusRescue`
+(`packages/ui/src/focus.ts`, exported from `@ui`) returns a ref callback for the element that holds
+the controls: when the control that had focus is removed and focus fell to `<body>`, it focuses the
+innermost region still on the page (or the `pick` an entrypoint names); focus that moved on purpose is
+left alone. It is used by the dashboard, review, PDF reader, side panel and options pages. The
+review session's "Turn single-key shortcuts off" (`sv.review.keys`) and the dashboard's "The / and ?
+keys" (`sv.dashboard.singleKeys`) are per-viewer `localStorage` preferences read in try/catch (WCAG
+2.1.4): they are not in `Settings`, not synchronised, not in a backup and not removed by "Delete all
+data" (ledger P15, U-16). Tests: `packages/ui/src/focus.test.tsx`, `entrypoints/review/Review.test.tsx`
+"single-key shortcuts can be turned off, and stay off (WCAG 2.1.4)",
+`entrypoints/dashboard/a11y.test.tsx`; Chrome's report of a removed focused node as `focusout`
+followed by a `MutationObserver` record is exercised in jsdom only (`docs/A11Y_REVIEW.md`).
+
+**7. The per-deck settings form is keyed by the deck id alone.** `ReviewSettingsSection` renders
+`<DeckSettingsForm key={deck.id} ... />`; it was keyed by `${deck.id}-${deck.updatedAt}`, so saving
+(which changes `updatedAt`) remounted the form and dropped its "Saved. The new rules apply from the
+next answer" confirmation. `review.spec.ts` "deck settings are validated before saving, say what is
+wrong, and apply from the next answer; study-day settings are validated too" asserts that the
+confirmation stays. By code reading, the draft is seeded once from `deck.settings`, so a change to
+the same deck made in another window is not pulled into an open form (Save still compares with the
+live row).
+
+### Not verified here
+Branded Chrome or Edge for decisions 1 and 2; the alarm limit on any Chrome other than the bundled
+one; decision 6 in a real browser with a screen reader (manual rows MT-42 to MT-44).
