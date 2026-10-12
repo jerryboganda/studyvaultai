@@ -122,3 +122,15 @@ the same module as the provider form; splitting them is a follow-up).
 - Retrieval is lexical (the existing index); there is no embedding search (ROADMAP: out of scope).
 - Chrome's own permission prompt for a second origin is not driven by the e2e suite (the e2e build holds
   loopback host permissions); the single `permissions.request({origins})` call is unit-tested.
+
+## Amendment 1 (2026-10-12): the Anthropic provider kind has an e2e spec
+The Messages API adapter (`createAnthropicProvider`: `x-api-key`, `anthropic-version`, the system text in
+the top-level `system` field, the provider's `usage` in the ledger) was already in `@ai`. What changed is
+its evidence and one classification: an empty account answers `400 invalid_request_error` whose only
+tell is the message ("credit balance is too low"), which `classifyHttp` now reads as `quota_exhausted`
+(not retryable, the text never shown). `tests/e2e/ai-anthropic.spec.ts` (four tests: the preset and the
+key, a request and its ledger, every failure, and Anthropic as a fallback behind an OpenAI-compatible
+provider) and `tests/e2e/backup-secrets.spec.ts` (no key, fallback key or AI setting in a plain or an
+encrypted backup) ran and passed in Actions run 38186957997 on Ubuntu and Windows. **Both run against a
+local stand-in in `tests/e2e/aiServer.ts` that enforces the published request shape: no live provider
+was contacted and the repository holds no key** (docs/PRIVACY_CLAIMS.md P20d, manual row MT-67).

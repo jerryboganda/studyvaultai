@@ -15,9 +15,10 @@ still what is painted first, what stays while the typesetter loads, and what sta
 typesetter refuses or cannot build. A formula is therefore never lost and never half-typeset.
 
 ### Decision
-- **temml 0.14.0** (MIT, no dependencies, no `eval`/`new Function`, no network or storage use: grep of
-  `dist/temml.mjs`), pinned exactly in `package.json` and `pnpm-lock.yaml`. It was published 2026-10-08;
-  the lockfile passes pnpm's supply-chain policy (minimum release age) as installed.
+- **temml 0.13.5** (MIT, no dependencies, no `eval`/`new Function`, no network or storage use: grep of
+  `dist/temml.mjs`), pinned exactly in `package.json` and `pnpm-lock.yaml`. It was published 2026-08-28,
+  which meets the two-week pin age (ADR-002). The first integration used 0.14.0 (published 2026-10-08,
+  too young for that rule); the pin was moved to 0.13.5 and the math unit and e2e specs re-run.
 - The package's own ESM entry, `dist/temml.mjs`, is used (it carries the `\ce{...}` chemistry
   extension, which study notes use); the source entry `temml.js` is about 38 KB smaller and has no
   `\ce`. Chemistry notes were judged worth the bytes.
@@ -121,7 +122,8 @@ Real production-variant build (`scripts/build-e2e.mjs`, same minifier as product
 | Eager: `mathLoader` and `mathBudget` in the `vault` chunk (same bundler, before and after) | +573 B | +516 B |
 
 The non-OCR total of that build was 6,903 KB with the whole tree of the finish wave in it, of which the
-two lazy files are 205 KB; the budget is 7,000 KB. The content script and the service worker do not
+two lazy files are 205 KB; the budget is 7,000 KB. The release gate of run 38186957997 printed the same
+total: "content script 215 KB; total 6903 KB" (97 KB of headroom; it was 6,662 KB before this change). The content script and the service worker do not
 include any of it (the loader is reachable only from the pages that render notes).
 
 Time, in Chromium (Playwright's bundled Chromium 1248, new headless, Windows 11, 4 CPUs shared with
@@ -182,8 +184,12 @@ slower than Chromium's. Nothing here was measured on Linux or macOS, in Edge, or
   stylesheet after, hostile payload inert, a refused formula and a failed fetch fall back, axe in light,
   dark and forced colours, RTL, Chromium's accessibility tree, and the 50-formula timing.
   `tests/e2e/math-panel.spec.ts`: the same for a card note in the side panel, with axe in both schemes.
-  Run by this change on one machine only (Windows, Chromium 1248, private build); the CI `e2e` jobs have
-  not run it.
+  Written and first run on one machine (Windows, Chromium 1248, private build). **In CI:** Actions run
+  38186957997 (commit `dadafe3`) ran both specs on Ubuntu and Windows and all 10 tests passed, with
+  the unit files above in its `unit` job (275 files, 5,268 tests). The CI timings of the "fifty formulas"
+  test, on GitHub-hosted runners: first use 116 ms (Ubuntu) and 174 ms (Windows), 57 and 56 ms with the
+  typesetter loaded, 12 and 15 ms as plain text, so 45 and 42 ms to typeset 50 formulas. Still not run:
+  a screen reader, Firefox, Safari, Edge.
 
 ### What differs from the design recorded under "If this is revisited"
 `style` and `class` could not be left out: array cell padding and the strike and box drawing need
@@ -203,7 +209,8 @@ and element caps.
 
 ## Context
 Notes are user-typed Markdown. Study material needs formulas (`$E = mc^2$`, `$$ \int_0^1 x\,dx $$`).
-The brief preferred `temml` (TeX to MathML, MIT) loaded lazily on the first math span, with a hard stop:
+The brief preferred `temml` (TeX to MathML, MIT) loaded lazily on the first math span, with a hard stop
+(superseded by Amendment 1; this paragraph is the 2026-10-11 reasoning):
 if it is over **120 KB minified**, or MathML cannot be allow-listed safely, ship nothing partial and
 implement only the fallback of showing math as styled source text.
 
@@ -226,9 +233,9 @@ would ship, measured on this machine with Node 24:
 
 Every figure is above the 120 KB ceiling (by 43 to 81 KB); tree-shaking does not help because the
 symbol, macro and function tables register at import time. The stylesheet and font are separate (about
-9 KB each) and were not counted. For scale: the non-OCR extension total is 6,486 of 6,500 KB
-(`docs/PERF_REVIEW.md`, `scripts/check-build.mjs`), so even as a lazy chunk the library would need the
-budget raised by roughly 150 to 190 KB.
+9 KB each) and were not counted. For scale: the non-OCR extension total was 6,486 of 6,500 KB
+(`docs/PERF_REVIEW.md`, `scripts/check-build.mjs`) then, so even as a lazy chunk the library would need the
+budget raised by roughly 150 to 190 KB; Amendment 1 raised it to 7,000 KB (6,800 KB before it).
 
 The second condition (a safe MathML allow-list) was therefore not evaluated, and nothing of temml was
 added: no dependency, no lockfile change, no allow-listed MathML.

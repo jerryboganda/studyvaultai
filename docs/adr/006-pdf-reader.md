@@ -517,7 +517,9 @@ down", `geometry.test.ts` "a page turned after it was rendered (sideways and ups
 an omitted value", `entrypoints/pdf-reader/ocrModel.test.ts` "orientation in stored rows") and browser
 (`tests/e2e/pdf-real.spec.ts` "a scan stored sideways is read without turning the view, and a highlight on it
 is found again after reopening", and "recognises one scanned page on this device, and its text becomes
-selectable" for both real scans). No CI run has executed them: unit-only, e2e written and not yet run.
+selectable" for both real scans). When this amendment was written no CI run had executed them; Actions runs
+38173629818 and 38186957997 have since run the unit files and the two e2e specs on Ubuntu and Windows,
+and they passed.
 
 ### How a page is turned
 The recogniser reads text that runs left to right, so a page whose lines run the other way comes back as
@@ -622,9 +624,10 @@ Tests: unit (`packages/ocr/src/runner.test.ts` "force: reading stored pages agai
 one-step undo of a re-recognition never leaves the device", `packages/storage/src/backupTarget.test.ts` "the
 reading a re-recognition replaced stays on this device", `entrypoints/pdf-reader/ocrRerun.test.ts`,
 `ocrController.rerun.test.tsx`, `OcrPanel.rerun.test.tsx`) and browser (`tests/e2e/pdf-ocr-rerun.spec.ts`,
-four tests). Those files and the e2e spec were run locally on a private build (one Playwright process, one
-worker): they passed, as did the five existing OCR tests of `tests/e2e/pdf.spec.ts`. No Actions run has
-executed them yet.
+four tests). Those files and the e2e spec were first run locally on a private build (one Playwright
+process, one worker): they passed, as did the five existing OCR tests of `tests/e2e/pdf.spec.ts`. **In
+CI:** Actions run 38186957997 (commit `dadafe3`) ran the unit files in its `unit` job and the four
+e2e tests on Ubuntu and Windows, and all of them passed.
 
 ### What the person gets
 The "Page text" tab gets a region "Read the text again":
@@ -765,4 +768,4 @@ overhead; the reader's own load is 8.0 KB smaller than that variant (+4.9 KB aga
 Real scanned documents (the e2e fixtures are generated rasters; to make "the new reading differs from the
 stored one" a fact they make a stored reading worse in IndexedDB before the reader reopens it, which is a
 test device and not a product path); Chrome 120 to 127; a screen reader; a document of hundreds of pages
-(the unit tests use two to six). Manual row: none added.
+(the unit tests use two to six). Manual row: `docs/MANUAL_TEST_CHECKLIST.md` MT-68.

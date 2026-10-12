@@ -18,8 +18,10 @@ MT-53) holds what the accessibility and performance reviews and the e2e wave cou
 reminders across a restart, filing-rule toasts, the exam and the graph with a screen reader, real
 office files, two real AI providers and the Preact overlay; section 14 (MT-62 to MT-65) holds what the
 PDF reader's three late changes added (links, scans stored sideways, the real-document corpus) and
-no spec can drive. The agent-run local e2e passes recorded
-in `docs/PRIVACY_CLAIMS.md` are not evidence for any row here.
+no spec can drive; section 15 (MT-66 to MT-68) holds what the third run could not show: typeset math
+with a screen reader, a live OpenAI-compatible and Anthropic provider, and a page read again on a real
+scan. The Actions runs and agent-run e2e passes recorded in `docs/PRIVACY_CLAIMS.md` are not
+evidence for any row here.
 
 ## 0. Set-up (once per run)
 
@@ -198,8 +200,9 @@ in the Check column. Run on Chrome and Edge unless a row says otherwise.
 
 ## 13. The finish wave (2026-10-12): what no spec can drive
 
-ADR-011 to ADR-020 added features whose loaded-extension specs are written and not yet run in CI
-(`docs/PRIVACY_CLAIMS.md` P20a to P20c, P26j, P33 to P44; `TEST_PLAN.md`). The rows below are what
+ADR-011 to ADR-020 added features whose loaded-extension specs passed in Actions run 38186957997
+(`docs/PRIVACY_CLAIMS.md` P20a to P20d, P26h to P26j, P33 to P44; `TEST_PLAN.md`). The real folder
+picker is MT-54. The rows below are what
 only a person with a real browser, real files or a screen reader can check. Use the production zip and
 branded Chrome and Edge, not the e2e build.
 
@@ -218,8 +221,8 @@ branded Chrome and Edge, not the e2e build.
 
 ADR-006 amendments 3 and 4 added link following and the turned reading of scans stored sideways; the
 real-document corpus (`tests/fixtures/pdf/real/`, eleven public-domain files, `SOURCES.md`) gave the
-tests real files. `tests/e2e/pdf-links.spec.ts`, `pdf-real.spec.ts` and `pdf-real-memory.spec.ts` are
-written and not yet run in CI (`docs/PRIVACY_CLAIMS.md` P45 to P47). The rows below are what only a
+tests real files. `tests/e2e/pdf-links.spec.ts`, `pdf-real.spec.ts` and `pdf-real-memory.spec.ts` passed
+in Actions run 38186957997 (`docs/PRIVACY_CLAIMS.md` P45 to P47). The rows below are what only a
 person with a real browser, a screen reader or a scanner can check. Use the production zip in branded
 Chrome and Edge; the real PDFs are in the repository and can be chosen with the reader's file picker.
 
@@ -229,6 +232,20 @@ Chrome and Edge; the real PDFs are in the repository and can be chosen with the 
 | MT-63 | **The new tab and Chrome's pop-up blocker** (P45; `noopener` makes `window.open` return null, so the reader cannot know whether the tab opened). Production zip in branded Chrome with pop-ups at the default. In `nist-cswp29-csf-2-0.pdf`, page 2, follow the web address and confirm; follow it again with "Always allow this site" ticked (the second click opens without the dialog); then, in Chrome's site settings for the extension's address (`chrome-extension://<id>`), set "Pop-ups and redirects" to blocked and repeat; follow a link while another window has focus | By default the tab opens next to the reader with `window.opener` null in its console and no `Referer` in the site's own log; the address bar shows the address the dialog showed; with pop-ups blocked Chrome shows its own blocked-pop-up indicator, the reader still says "Opening {host} in a new tab." (the known limit: record it), stays usable and opens nothing else; the reader's Network panel shows no request from StudyVault; a reader that cannot return to its page or dialog is a failure | no |
 | MT-64 | **OCR of a physically sideways scan** (`pdf-real.spec.ts` covers the one real file in the repository; P46, ADR-006 amendment 4). Scan one printed English page of at least 15 lines to image-only PDFs with `/Rotate 0` (a scanner's PDF mode or a phone scan app, not print-to-PDF): sheet turned a quarter turn one way, the other way, upside down, and upright. Open each in the reader, press "OCR this page", time it, read the *Page text* tab; turn the view with Rotate, select four recognised words, save the highlight, reload the reader and choose the file again; repeat the first with the network off. Add one scan with a sideways table beside upright text | Each turned scan comes back as English text and the outcome names it ("Page 1 is stored sideways (its lines run from bottom to top); it was turned to be read.", "... from top to bottom", "... upside down"); the Page text tab says the same; "Checking orientation of page 1..." appears only for the turned ones; the upright scan takes one reading (compare the times with each other and with MT-39a); the highlight sits on the words and is found again after the reload with no new recognition; nothing is requested while it runs; the mixed page is read in one orientation only (record what comes back: the known limit) | no |
 | MT-65 | **Forced colours on PDF links** (`docs/A11Y_REVIEW.md` addendum "links in the PDF reader"; extends MT-42). Windows "Contrast themes" (Aquatic, Desert, Night sky) on. Open `nist-cswp29-csf-2-0.pdf`, page 4, and Tab through the contents links; `cdc-sti-guidelines-2021.pdf` page 138 (one tab stop and the arrow keys); the confirmation dialog and the Back button | The focused link has a visible `Highlight` ring that is not clipped by the page edge and does not hide the text under it; on the dense page the ring follows the arrow keys; the dialog, the Back button and the Links list are readable in every theme; the pointer over a link is a hand | yes |
+
+## 15. Typeset math, live providers and reading a page again (2026-10-12, third run)
+
+Actions run 38186957997 passed `tests/e2e/math.spec.ts`, `math-panel.spec.ts`, `ai-anthropic.spec.ts`
+and `pdf-ocr-rerun.spec.ts` (`docs/PRIVACY_CLAIMS.md` P39, P20d, P48). They run in Playwright's bundled
+Chromium against local stand-ins and generated scans: they cannot hear a screen reader, call a real
+provider or read paper. MT-44 is unchanged and still covers the surfaces it names. Use the
+production zip in branded Chrome and Edge.
+
+| ID | Check | Expected | Blocker |
+| --- | --- | --- | --- |
+| MT-66 | **Typeset math with a screen reader, the keyboard and forced colours** (`math.spec.ts` reads Chromium's accessibility tree and runs axe; it cannot hear it; P39, ADR-015 amendment 1; extends MT-44). NVDA and JAWS with Chrome on Windows, VoiceOver with Chrome on macOS (MathML support differs by reader and version: record each). Make a note with `$\frac{a+b}{c}$`, `$\sqrt{x^2+1}$`, a display matrix (`$$\begin{pmatrix} a & b \\ c & d \end{pmatrix}$$`), `$\ce{H2O}$`, one formula that is refused (`$\color{red}x$`) and one display formula wider than the column (a long sum); read them in the dashboard preview and in a side-panel note; Tab to the note and look for a way to scroll the wide formula by keyboard; select a formula and paste it into a text editor; open the note in the editor; turn Windows contrast themes on and look at a `\cancel` strike | The reader announces the fraction, the root and the matrix as mathematics (record what exactly is said), not as the characters of the TeX; the refused formula is read as its TeX source; nothing is announced when a formula is swapped in after the typesetter has loaded; the wide display formula can be scrolled by keyboard (an unverified point: record it); the pasted text is the formula's plain text, not the TeX; the editor shows the TeX as typed; under a contrast theme the formulas and the strike stay visible in the text colour | yes |
+| MT-67 | **A live AI provider** (the AI specs use local stand-ins that enforce the request shape, and the repository holds no key; P20, P20a, P20d, THREAT_MODEL C7.4). With your own keys, in Settings > AI: (a) a real OpenAI-compatible service and (b) Anthropic (the default address, a model you have access to), each as the primary provider and then as a fallback behind an unreachable address. Press "Test connection", then run an action on one highlight from its preview; watch DevTools > Network of the Settings page and the provider's own usage page; then save a wrong key; with an account that has no credit, if you have one, ask again | Chrome's prompt names exactly the provider origin (one prompt for a primary and its fallbacks); "Test connection" sends one small request and shows the reply; the real request holds the previewed text and the key in `Authorization` (a) or `x-api-key` (b), no cookie and no referrer; the answer is accepted (a JSON answer in a code fence too) and is an unverified draft citing the quote; the ledger's counts match the provider's page; a wrong key says it was rejected and is not echoed; an empty account says there is no quota or credit and shows none of the provider's text; as a fallback the second provider receives the text only after the first did not answer, under its own key | yes, if AI ships |
+| MT-68 | **Reading a page again on a real scan** (`pdf-ocr-rerun.spec.ts` uses generated rasters and makes the stored reading worse in IndexedDB first; P48, ADR-006 amendment 5; extends MT-64). A phone or scanner PDF of 6 printed pages with a table on one page and a handwritten margin note on another. Press "OCR this document"; correct two lines on page 2 and one on page 4; save a highlight on a recognised passage on pages 2 and 4; press "Re-recognise this page" on page 2; press "Re-recognise all pages" and Cancel after about half; read the outcome lists; press "Restore the previous reading" on page 2 twice; then restore a backup of that vault in replace mode and look at page 2; repeat the single page in a private window with "Save from private windows" off | The dialog's estimate is the right size (record the real time per page); a page changes only after its new reading finished, and a cancelled run leaves the pages it did not reach exactly as they were; a corrected line is kept where the new reading has a line at the same place and listed with its text where it has none; the highlights are found again or listed by their quote; "Restore" brings the earlier text and its corrections back and the second press brings the newer one back; the step back is gone after the replace restore; nothing is requested (DevTools > Network); in the private window nothing is written and a reload shows the old text | no |
 
 ## Evidence table
 
@@ -296,6 +313,9 @@ screenshots, screen recordings or logs; name the files after the ID.
 | MT-63 | | | | | | | | |
 | MT-64 | | | | | | | | |
 | MT-65 | | | | | | | | |
+| MT-66 | | | | | | | | |
+| MT-67 | | | | | | | | |
+| MT-68 | | | | | | | | |
 
 Summary line for the release notes: *"Manual checklist run on <date> against <zip SHA-256 prefix>:
 N pass, N fail, N not run. Blocker failures: none / <list>."*

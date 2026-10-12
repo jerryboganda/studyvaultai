@@ -30,9 +30,25 @@
 > sign-in provider, a screen reader or the Web Store review. `release.yml`, `reproducible-build.yml` and
 > `stress.yml` have still never executed (`gh run list --workflow <file>` shows no run of any of them)
 > and the manual checklist has not been run. Each wave row in `docs/PRIVACY_CLAIMS.md` that has a
-> loaded-extension spec is now `verified (CI 38173629818)` for what that spec asserts and `unit-only` or
-> manual for the rest (P40 and P44 have no spec and stay `unit-only`), and
-> `docs/MANUAL_TEST_CHECKLIST.md` MT-54 to MT-65 hold what only a person can check for it.
+> loaded-extension spec was `verified (CI 38173629818)` for what that spec asserts and is
+> `verified (CI 38186957997)` now (see the next paragraph); `unit-only` or manual for the rest (P40 and
+> P44 have no spec and stay `unit-only`), and `docs/MANUAL_TEST_CHECKLIST.md` MT-54 to MT-68 hold what
+> only a person can check for it.
+>
+> Third run, 2026-10-12: https://github.com/jerryboganda/studyvaultai/actions/runs/38186957997 (commit
+> `dadafe3af4576d8be90b8df467cfb91f9d412fc2`) concluded `success` in every job: `static` (three jobs),
+> `unit` (275 files and 5,268 tests passed; 5 files and 13 tests skipped by their environment gates),
+> `build` (both builds, the zip, `scripts/check-build.mjs`: "content script 215 KB; total 6903 KB", and
+> `scripts/check-release-docs.mjs`), `audit`, `stress` (seven suites, 39 tests) and all eight `e2e`
+> shards (per OS 564 tests passed, 6 `test.fixme` skipped, none failed or flaky). On top of the run
+> above it holds typeset math (ADR-015 amendment 1), an exam drawn from a syllabus topic (ADR-020
+> part 2 addendum), reading a recognised page again (ADR-006 amendment 5) and e2e specs for the
+> Anthropic provider and for backups and AI keys. The pipeline described below is unchanged (the
+> budgets in `scripts/check-build.mjs` moved to 230 KB for the content script and 7,000 KB for the
+> non-OCR total). The limits are the same, and one is now explicit: no live AI provider was contacted
+> (the AI specs run against local stand-ins that enforce the request shape), so
+> `docs/MANUAL_TEST_CHECKLIST.md` MT-67 holds the live-provider check, and no screen reader has read
+> a typeset formula (MT-66) or a page read again on a real scan (MT-68).
 
 How a version gets from `main` to the Chrome Web Store, what the pipeline proves on the way, and
 what only the account owner can do. The pipeline never publishes to the store: that needs the
@@ -82,8 +98,8 @@ Scripts (all plain Node, no remote code): `scripts/check-build.mjs`, `scripts/ch
    `release` artifact and verify: `sha256sum -c SHA256SUMS`; open the zip's `manifest.json`;
    skim `licenses.json` and the SBOM.
 4. **Manual checks.** Install the zip unpacked in branded Chrome and Edge and fill in
-   `docs/MANUAL_TEST_CHECKLIST.md` (the upgrade check needs the previous release; MT-54 to MT-65 cover
-   the finish wave and need real folders, real office files, two real AI providers, a scanner and a
+   `docs/MANUAL_TEST_CHECKLIST.md` (the upgrade check needs the previous release; MT-54 to MT-68 cover
+   the finish wave and need real folders, real office files, real AI providers, a scanner and a
    screen reader). Attach the evidence table to the draft release. Blocker failures stop the release.
 5. **Tag.** `git tag -a vX.Y.Z -m "StudyVault AI X.Y.Z" && git push origin vX.Y.Z`. `release.yml`
    builds again from the tag and creates the draft release with the zip, `SHA256SUMS`, SBOM and
@@ -260,10 +276,14 @@ Written 2026-10-11 for 0.1.x. Modules still being integrated are listed separate
   (`wxt.config.ts`, `SV_E2E`). The production manifest is asserted separately.
 - **Performance budgets** are engineering goals measured on CI runners (TEST_PLAN.md), not
   guarantees on every machine.
-- **Size budgets** in `scripts/check-build.mjs` are regression guards: content script 220 KB (Preact,
-  ADR-012; it was 450), worker 450 KB (was 420) and non-OCR total 6800 KB (was 6500), with the OCR
-  assets budgeted apart. They were set from private e2e-variant builds and an earlier run's `build`
-  job; they have not passed a `build` job on the finish-wave branch.
+- **Size budgets** in `scripts/check-build.mjs` are regression guards: content script 230 KB (Preact,
+  ADR-012; it was 450), worker 450 KB (was 420) and non-OCR total 7,000 KB (was 6,500, then 6,800
+  before the typesetter chunk), with the OCR assets budgeted apart (7 MB). They passed the `build` job
+  of run 38186957997: "content script 215 KB; total 6903 KB" and OCR assets 5,870 KB, so the total has
+  97 KB (1.4%) of headroom. The typesetter of ADR-015 is a lazily loaded chunk of 207 KB (61 KB gzip)
+  and 2 KB of CSS, fetched only when a note holds a formula; the content script and the worker do not
+  include it. Earlier documents said 220 KB for the content script: the file has held 230 KB since
+  the budgets were set.
 - **Build provenance attestation** is not generated (THREAT_MODEL O10).
 - **TypeScript 6.0.3**, not 7.x, until typescript-eslint supports it (ADR-002).
 
@@ -271,8 +291,14 @@ Written 2026-10-11 for 0.1.x. Modules still being integrated are listed separate
 
 Taken from ADR-011 to ADR-020 and the code; remove an entry only when the code changes.
 
-- **Math is not typeset.** `$..$` and `$$..$$` are kept and shown as styled TeX source (ADR-015).
-  Do not describe it as math rendering.
+- **Math is typeset on the device, for the TeX the typesetter accepts (ADR-015 amendment 1).**
+  `$..$` and `$$..$$` become native MathML (temml 0.13.5, a chunk loaded when a note first holds a
+  formula). A formula it refuses (colour, links, images, macro definitions, more than 60 formulas, 1,000
+  characters one or 3,000 characters in all in a note) and every formula while the chunk loads or when
+  it cannot be fetched stays readable TeX source. The stored note, search, export and backup keep the
+  TeX; selecting and copying a typeset formula gives flattened text, not the TeX; flashcard faces and AI
+  result cards show TeX as typed. Tuned for Chromium; the chunk's own CSS has no Firefox or Safari
+  corrections. Chromium's accessibility tree was read; no screen reader was (MT-44, MT-66).
 - **Reminders** are a toolbar count and an in-extension notice, only while the browser runs, with no
   system notification and no `notifications` permission. The daily time needs the optional `alarms`
   permission, asked from the click that saves it; the first daily notice after the grant can be
@@ -286,10 +312,12 @@ Taken from ADR-011 to ADR-020 and the code; remove an entry only when the code c
   `.ppt`, password-protected and DRM files are refused, and imported rows have no position on a page
   (ADR-014).
 - **The graph** draws at most 60 items; **related highlights** match whole words with no stemming
-  and no embeddings; an **exam** is scored by the person for recall questions, and its history is
-  device-only, outside backups and sync (ADR-018, ADR-020).
+  and no embeddings; an **exam** (from a bank, folder, tag, a syllabus or one of its topics) is scored
+  by the person for recall questions, a card that belongs to several topics counts under one, and its
+  history is device-only, outside backups and sync (ADR-018, ADR-020).
 - **AI fallbacks** hand over only after a network failure, a 5xx or a timeout, and a provider that
-  timed out may already hold the text (ADR-013).
+  timed out may already hold the text (ADR-013). An Anthropic provider sends its key as `x-api-key`;
+  every provider kind has been driven only against local stand-ins, never a live API.
 - **Not built, with reasons** (`docs/plans/FINISH_BRIEF.md`, `PRD.md` "Delivery status"): shared or
   collaborative banks, calendar and cloud-drive sync, YouTube captions, semantic search, image
   occlusion, a reading view. Edge automation is not possible: Edge ignores `--load-extension`.
@@ -300,17 +328,23 @@ Taken from ADR-011 to ADR-020 and the code; remove an entry only when the code c
   confirmation, in a new tab, and the reader cannot tell whether Chrome's pop-up blocker allowed it.
   A scan stored sideways or upside down is turned to be read, one orientation per page, with no
   deskew and English only; a page that mixes orientations is read in the one that scores best, and a
-  blank page can cost four readings. **Pages recognised before the turn was added keep their text**
-  (junk included) until a re-run action exists; the reader has none. Matrix items 6 (password) and 7
+  blank page can cost four readings. **A recognised page can be read again** ("Re-recognise this page"
+  or "all pages", with an estimate and a confirmation, amendment 5): a page is replaced only after its
+  new reading succeeded, a correction follows its line by position (one with no counterpart is dropped
+  and listed), highlights are never touched, and one earlier reading is kept per page on this device
+  only (outside backups and sync; a replace-restore from a backup removes it). A second re-run
+  overwrites that step back; no control removes recognised text; the specs read generated scans.
+  Matrix items 6 (password) and 7
   (remote PDF, redirect) have no real file and stay on synthetic fixtures; no hostile-PDF fixture
   exists. Eleven real public-domain PDFs (20.7 MB, `tests/fixtures/pdf/real/SOURCES.md`) are test
   material: they live under `tests/`, not `public/`, and no build gate asserts their absence.
-- **Verification state:** the unit files and the e2e specs ran and passed in Actions run 38173629818
-  (Ubuntu and Windows, Playwright's bundled Chromium, the e2e build); the manual rows MT-54 to MT-65
-  are the only check of the real folder prompt, real office files, two real providers, screen readers
-  on the exam, the graph and PDF links, the pop-up blocker on a followed link, a physically sideways
-  scan, and the Preact overlay in branded Chrome. `docs/PRIVACY_CLAIMS.md` P20a to P20c, P26h to P26j
-  and P33 to P47.
+- **Verification state:** the unit files and the e2e specs ran and passed in Actions run 38186957997
+  (Ubuntu and Windows, Playwright's bundled Chromium, the e2e build; the same specs also passed in run
+  38173629818); the manual rows MT-54 to MT-68 are the only check of the real folder prompt, real
+  office files, real providers (OpenAI-compatible and Anthropic), screen readers on typeset math, the
+  exam, the graph and PDF links, the pop-up blocker on a followed link, a physically sideways scan
+  read again, and the Preact overlay in branded Chrome. `docs/PRIVACY_CLAIMS.md` P20a to P20d, P26h to
+  P26j and P33 to P48.
 
 ### Modules still being integrated (2026-10-11)
 
@@ -326,21 +360,24 @@ The second-pass hardening changes are in the same position: unit and integration
 job of run 38139836238 ran them) and e2e specs that passed there, but no branded-Chrome run and no
 manual checklist. docs/PRIVACY_CLAIMS.md lists each as `verified`, `unit-only` or `open` per part, and
 THREAT_MODEL.md section 7 lists the findings and the accepted limitations. Run 38173629818 ran the
-same specs again, with the finish wave included; it adds no browser the first run lacked.
+same specs again, with the finish wave included, and run 38186957997 ran them a third time with the
+typeset-math, syllabus-exam and re-recognition changes; neither adds a browser the first run lacked.
 
 ## CI map
 
 Every job, what a green result proves, and how to run it again. Rule 1 of `AGENTS.md` applies: the
 heavy ones run on Actions, not on the developer machine. Status on 2026-10-12: the latest `ci.yml` run in
-which every job concluded `success` is <https://github.com/jerryboganda/studyvaultai/actions/runs/38173629818>
-(branch `feat/finish-all`, commit `79d8cbc38111bfcde0e621f37d4795fd3f38e736`): `static` (three jobs),
-`unit` (271 files: 266 passed, 5 skipped by their gates; 4,846 tests passed, 13 skipped), `build` (including
-`scripts/check-build.mjs`: "content script 214 KB; total 6662 KB", OCR assets 5870 KB under their own
+which every job concluded `success` is <https://github.com/jerryboganda/studyvaultai/actions/runs/38186957997>
+(branch `feat/finish-all`, commit `dadafe3af4576d8be90b8df467cfb91f9d412fc2`): `static` (three jobs),
+`unit` (280 files: 275 passed, 5 skipped by their gates; 5,268 tests passed, 13 skipped), `build` (including
+`scripts/check-build.mjs`: "content script 215 KB; total 6903 KB", OCR assets 5870 KB under their own
 budget, and `scripts/check-release-docs.mjs`), `audit`, `stress` (39 tests in seven suites), all eight
-`e2e` shards (per OS 552 tests scheduled, 546 passed, 6 `test.fixme` skipped, 0 failed, 0 flaky) and
-`ci-ok`. The first green run was <https://github.com/jerryboganda/studyvaultai/actions/runs/38139836238>
-(branch `ci/wave-c`, commit `d641515b1154aa46597e7ebb069d2341014c125c`; 443 of 449 e2e tests per OS); the
-13 completed runs before it all concluded `failure` (their failures were in `unit`, `static (format)` and
+`e2e` shards (per OS 570 tests scheduled, 564 passed, 6 `test.fixme` skipped, 0 failed, 0 flaky) and
+`ci-ok`. The run before it was <https://github.com/jerryboganda/studyvaultai/actions/runs/38173629818>
+(commit `79d8cbc38111bfcde0e621f37d4795fd3f38e736`; 546 of 552 e2e tests per OS) and the first green run
+<https://github.com/jerryboganda/studyvaultai/actions/runs/38139836238> (branch `ci/wave-c`, commit
+`d641515b1154aa46597e7ebb069d2341014c125c`; 443 of 449); the 13 completed runs before it all concluded
+`failure` (their failures were in `unit`, `static (format)` and
 `e2e` test steps, not in the workflow wiring). `stress.yml`, `release.yml` and `reproducible-build.yml`
 have never executed. A green `e2e` job proves the specs passed against the e2e build in Playwright's
 bundled Chromium; it does not prove the production zip (that is the release gate and the two
@@ -355,7 +392,7 @@ provider or a screen reader.
 | `unit (vitest)` | push, PR, manual | required | every `*.test.ts(x)` under `packages/`, `entrypoints/`, `server/` passes in jsdom/node with `SV_PERF` unset (the 10k-row suite in `packages/storage` skips itself) | a loaded extension, a real browser, IndexedDB outside `fake-indexeddb` |
 | `build (prod + e2e + zip)` | push, PR, manual | required | production and e2e builds succeed, the zip is produced, `scripts/check-build.mjs` (manifest, permissions, CSP, remote code, size budgets, test hooks) and `scripts/check-release-docs.mjs` pass. Uploads `extension-builds`; the size table is in the job summary | that the build is reproducible (`reproducible-build.yml`) |
 | `e2e (<os>, shard <n>/4)` | push, PR, manual, after `build` | required, 2 OSes x 4 shards | the Playwright suite passes against the built MV3 extension in Playwright's bundled Chromium (headless) on Ubuntu and Windows; a test that needed its retry fails the run. Uploads `e2e-report-<os>-<n>` and `screenshots-<os>-<n>` | branded Chrome or Edge, macOS, permission prompts, screen readers (manual checklist) |
-| `stress (perf suites, SV_PERF=1)` | push, PR, manual | advisory (`continue-on-error`; `ci-ok` prints it and does not require it until it has a few green runs; it has two, runs 38139836238 and 38173629818) | the seeded 10k-row and round-trip suites (`scripts/run-perf.mjs`: storage, search, highlights, backup, study: 10k-card queue and 100k review-log analytics) ran, none was skipped, and their budgets held on a CI runner. Uploads `perf-results` (`timings.json`, `summary.md`) | the study suite is pure functions (no IndexedDB), so the Zod parse of due cards in `getDueSummary` is not in it; numbers on a shared runner are regression guards, not user hardware. The 10k dashboard spec is not here: it is `perf: 10,000 highlights` in `tests/e2e/dashboard.spec.ts` and runs in `e2e` |
+| `stress (perf suites, SV_PERF=1)` | push, PR, manual | advisory (`continue-on-error`; `ci-ok` prints it and does not require it until it has a few green runs; it has three, runs 38139836238, 38173629818 and 38186957997) | the seeded 10k-row and round-trip suites (`scripts/run-perf.mjs`: storage, search, highlights, backup, study: 10k-card queue and 100k review-log analytics) ran, none was skipped, and their budgets, asserted on the wall-clock p95 (CPU time is printed beside it: it counts the helper threads of a collection), held on a CI runner. Uploads `perf-results` (`timings.json`, `summary.md`) | the study suite is pure functions (no IndexedDB), so the Zod parse of due cards in `getDueSummary` is not in it; numbers on a shared runner are regression guards, not user hardware. The 10k dashboard spec is not here: it is `perf: 10,000 highlights` in `tests/e2e/dashboard.spec.ts` and runs in `e2e` |
 | `audit (advisory)` | push, PR, manual | advisory | nothing is promised: `pnpm audit --prod --audit-level=high` and the licence allow-list report | `release.yml` enforces the licence allow-list |
 | `ci-ok (required checks)` | always | the only check to require in branch protection | `static`, `unit`, `build`, `e2e` all concluded `success`; failed, cancelled and skipped all count as failure (`stress` is printed, not required) | |
 

@@ -40,9 +40,9 @@
 - No unauthorized scraping/copyright bypassing, content injection into privileged Chrome pages, abusive automated browsing, or privilege escalation.
 - Auto-filing authority (ADR-017, THREAT_MODEL C2.10): a rule runs only in the worker (and in the PDF reader's own store adapter), once, after a capture created a highlight, from the worker's trusted settings (`Settings.useFilingRules`). A content script sends only a highlight id (`filing.accept`, `filing.dismiss`, `filing.undo`) and may act only on a highlight of its own site; the placement comes from a record the worker wrote in `chrome.storage.session` (closed to content scripts), so a page cannot choose a bank. A bank the capture named is never overridden, a rule with a gone target blocks instead of handing over to a lower rule, and a backup restore, an import and a sync apply never reach a rule. Filing writes no provenance field.
 - Document import (ADR-014, THREAT_MODEL C5.11): Word, PowerPoint, EPUB, HTML and Anki text files are untrusted ZIP/XML/HTML. They are parsed in an extension page, never the worker or a content script, by StudyVault's own central-directory reader (entry, size, ratio and name limits; an entry whose stream does not match its header is abandoned) and `DOMParser` after any `<!DOCTYPE`/`<!ENTITY` refusal; HTML is parsed inert and never attached to a document; encrypted and DRM files are refused, not opened. No new dependency was added for it. The parse runs on the page's thread (no Worker was added: a worker would add a message protocol for no change in trust, ADR-014), so a hostile file inside the caps can keep a page busy for seconds (R26).
-- Rendered text (ADR-015, THREAT_MODEL C3.3, C3.7): Markdown goes through the DOMPurify allow-list as before; TeX is shown as `<code class="math">` source text and never evaluated, `class` is allowed only on `<code>` and only as `math` or `math math-display`; a text whose estimated render cost is over budget is shown as plain text with a note, so a hostile note cannot freeze a page; AI-drafted notes escape `$`.
+- Rendered text (ADR-015, THREAT_MODEL C3.3, C3.7, C3.8): Markdown goes through the DOMPurify allow-list as before; TeX is first `<code class="math">` source text (`class` is allowed only on `<code>` and only as `math` or `math math-display`) and is then typeset on the device to MathML only when the note passed the render budget and the formula is within the caps, holds no macro definition and survives a second sanitiser and an independent walk against a closed list of elements, attributes, classes and styles (no links, images, ids, annotations, colour or `url()`); anything refused, any error and an unreachable typesetter chunk leave the source text; nothing in a note is evaluated or fetched. A text whose estimated render cost is over budget is shown as plain text with a note, so a hostile note cannot freeze a page; AI-drafted notes escape `$`.
 - Backup folder (ADR-016, THREAT_MODEL C5.10): written only from a click on an extension page; each file is read back and compared; only files with the exact name shape and the `origin: "backup-folder"` marker are ever pruned; an existing file is never replaced; the handle and state are `meta` rows (not in backups or sync, removed with the database).
-- PDF links (docs/adr/006 amendment 3, THREAT_MODEL C6.6 and R31): a link inside a PDF is never opened by the click itself. Only an absolute `http:` or `https:` address of at most 2,048 characters, with no user name or password, is offered, and only through a dialog that shows the whole address and the site; "Open in a new tab" then opens it with `noopener,noreferrer`, so the new tab has no opener and no referrer. `javascript:`, `data:`, `file:`, `blob:`, `chrome:`, `chrome-extension:`, `mailto:` and every other scheme, and Launch, JavaScript, form and attachment actions, are refused with a notice and nothing runs. The extension makes no request for a link: it is a navigation by the browser that the person confirmed, not a fourth network path (docs/PRIVACY_CLAIMS.md P45: unit-only, e2e written and not yet run in CI).
+- PDF links (docs/adr/006 amendment 3, THREAT_MODEL C6.6 and R31): a link inside a PDF is never opened by the click itself. Only an absolute `http:` or `https:` address of at most 2,048 characters, with no user name or password, is offered, and only through a dialog that shows the whole address and the site; "Open in a new tab" then opens it with `noopener,noreferrer`, so the new tab has no opener and no referrer. `javascript:`, `data:`, `file:`, `blob:`, `chrome:`, `chrome-extension:`, `mailto:` and every other scheme, and Launch, JavaScript, form and attachment actions, are refused with a notice and nothing runs. The extension makes no request for a link: it is a navigation by the browser that the person confirmed, not a fourth network path (docs/PRIVACY_CLAIMS.md P45: the unit files and `pdf-links.spec.ts` passed in run 38186957997).
 
 ## Exposures to page scripts (known, accepted, disclosed)
 A web page is untrusted code running in the same document the extension annotates. Verified by review
@@ -97,20 +97,31 @@ token row after a wipe); database lifecycle (R20, R21); sync (R16, R17, R23, a r
 moment of trust in the plaintext history, no key recovery).
 
 ## Finish wave (2026-10-12, branch `feat/finish-all`)
-Rows C2.10, C2.11, C3.7, C4.11, C5.10, C5.11, C7.7, C7.8, C9.7 and C10.1 to C10.4 and the residual
-risks R24 to R30 of THREAT_MODEL.md cover ADR-011 to ADR-020. Status of every one of them is
-**unit-only, with the loaded-extension spec written and not yet run in CI**: no Actions run of the
-branch has concluded `success`, and run 38139836238 predates the code. Accepted limitations, by change:
+Rows C2.10, C2.11, C3.7, C3.8, C4.11, C5.10, C5.11, C7.7, C7.8, C9.7 and C10.1 to C10.4 and the
+residual risks R24 to R30 of THREAT_MODEL.md cover ADR-011 to ADR-020. Status: Actions run
+38186957997 (commit `dadafe3`, Ubuntu and Windows, Playwright's bundled Chromium against the e2e
+build) passed their unit files and loaded-extension specs, so each row is `verified` for what its spec
+asserts and keeps its unit-only or manual parts in its own cell; branded Chrome, a real incognito
+window, Chrome's permission prompts, a live AI provider and a screen reader are not covered by it.
+Accepted limitations, by change:
 auto-filing (R24, a rule that does not ask; undo lasts the browser session, at most 24 h); backup folder
 (R25, Chrome's grant outlives "Stop using this folder", files are plain unless a passphrase is set,
 anyone with write access to the folder can plant a marked file); document import (R26, a hostile file
 inside the caps can occupy the page for seconds); AI fallbacks (R27, two providers may hold one
-request); TeX and Markdown (R28, formulas are not typeset, expensive notes are shown plain); links
+request); TeX and Markdown (R28, a formula the typesetter refuses is shown as source, expensive notes are shown plain); links
 (R29, two devices can create one link twice and it is folded on read); reminders (R30, browser must be
-running, the first-lifetime alarm miss). Open items O15 to O17 are the CI run, the manual rows MT-54 to
-MT-61 and a real v3 to v4 upgrade.
+running, the first-lifetime alarm miss). Open items O15 to O17 are the CI run (done), the manual rows
+MT-54 to MT-61 and a real v3 to v4 upgrade.
 
 PDF reader changes of the same day (links; scans stored sideways read by turning them; eleven real
 public-domain PDFs as test material): rows C6.6 to C6.8, residual risk R31 and open item O18 of
-THREAT_MODEL.md (docs/adr/006 amendments 3 and 4). Status of each is unit-only with the e2e spec written
-and not yet run in CI; no new permission, no new network path and no new bundled data.
+THREAT_MODEL.md (docs/adr/006 amendments 3 and 4). The unit files and the e2e specs passed in run
+38186957997; no new permission, no new network path and no new bundled data.
+
+Changes of the third run: a recognised page can be read again (row C6.9, residual risk R32, ADR-006
+amendment 5): the page is replaced only after its new reading succeeded, one earlier reading is kept on
+the device only (not in backups, not synced, removed with its row), and a window that saves nothing
+keeps it in memory. TeX is typeset (C3.8, ADR-015 amendment 1). An exam can be drawn from a syllabus
+topic (C4.11, ADR-020 part 2 addendum). The Anthropic provider kind sends its key as `x-api-key` under
+the same consent, endpoint and no-cookie rules (C7.4). None of them adds a permission, a network path
+or remote code. Open item O19 lists what they leave to a person.

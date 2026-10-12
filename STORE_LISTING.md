@@ -27,6 +27,17 @@
 > sign-in provider, a screen reader, the Web Store review); its rows still name unit-only or
 > manual parts, so this listing is still a draft. This revision adds one sentence about links
 > inside a PDF to the description and to "PDF limitations" (open item U-23).
+>
+> Revised 2026-10-12 (third pass): run 38186957997
+> (https://github.com/jerryboganda/studyvaultai/actions/runs/38186957997, commit
+> `dadafe3af4576d8be90b8df467cfb91f9d412fc2`, branch `feat/finish-all`) concluded `success` in
+> every job and passed the specs of the run above again. Three changes since: TeX in notes is
+> typeset on the device (the description and "Limitations" said it was shown as text; they now say
+> what is typeset and what is not, P39), an exam can be drawn from a syllabus topic (P36a) and a
+> recognised page can be read again (P48, in "PDF limitations" and "Limitations"). The manifest did
+> not change. What that run does not show is unchanged and one item is added: a screen reader on a
+> typeset formula and a live AI provider were not tried (`docs/MANUAL_TEST_CHECKLIST.md` MT-66, MT-67), so
+> this listing is still a draft.
 
 Working copy of everything the Chrome Web Store dashboard asks for. Text here is written to be pasted
 into the dashboard. Fields only the account owner can supply carry a bracketed USER-REQUIRED marker;
@@ -92,7 +103,7 @@ WHAT YOU CAN DO
 - Review what you saved with flashcards and spaced repetition that run on your device. Optionally
   show the number of cards due on the toolbar icon and get a daily reminder notice inside StudyVault
   (no system notifications).
-- Practise a timed exam from your own cards: no feedback until the end, your own marking of recall
+- Practise a timed exam from your own cards, or from one topic of your syllabus: no feedback until the end, your own marking of recall
   questions, a score by bank and tag, and the questions you missed with a link to their source. An
   exam does not change your review schedule unless you ask it to.
 - Outline an exam or course as a syllabus, map each topic to your banks and tags, and see how much
@@ -105,7 +116,9 @@ WHAT YOU CAN DO
   your device and you see what was found before anything is saved.
 - Back up into a folder you choose: dated files, each read back and checked, with a reminder when
   it is time. A backup starts when you press the button.
-- Write TeX in notes (such as $E = mc^2$). It is kept exactly as typed and shown as source text.
+- Write TeX in notes (such as $E = mc^2$). Formulas are typeset on your device where the typesetter
+  can; what you typed is what is kept, searched and exported, and a formula it cannot typeset is
+  shown as the text you typed.
 - Turn on optional AI help with your own API key, and optionally fallback providers. You see exactly
   what will be sent, and to which addresses, before it is sent, and AI output is always labelled as
   unverified. You can also ask questions of your own notes: the passages are found on your device and
@@ -139,11 +152,14 @@ LIMITATIONS, STATED PLAINLY
   passphrase or explicitly choose to upload without encryption; without a passphrase, whoever runs
   that server can read what you sync. Settings and the AI key are not synced or backed up.
 - Scanned PDFs have no text to select until OCR is run; OCR is slower and can make mistakes, which
-  you can correct.
+  you can correct. A page can be read again; the reading it replaces is kept as one step back, on
+  your device only.
 - It cannot run on chrome:// pages, the Chrome Web Store, or other pages Chrome protects, and it
   does not highlight text inside iframes or shadow DOM.
 - AI output is a study aid. Verify it, especially medical and clinical content.
-- TeX in notes is shown as text, not typeset.
+- Typeset math covers the common subset of TeX: colour, links, images and macro definitions are not
+  typeset, a formula the typesetter cannot take is shown as the text you typed, and copying a typeset
+  formula copies its plain text, not the TeX. Flashcards show TeX as typed.
 - A backup into a folder starts only when you press the button; StudyVault cannot back up in the
   background. Reminders appear only while the browser is running and are not system notifications.
 - Imports read .docx, .pptx, EPUB, HTML and Anki plain-text exports. Anki .apkg packages, old .doc
@@ -321,7 +337,10 @@ Optional: small promo tile 440 x 280 and marquee 1400 x 560 (not generated;
   private windows" is on.
 - A scanned PDF has no selectable text. OCR can add it; recognition runs on the device, is slow on
   long documents and can be wrong. Results can be corrected, and corrected text is kept apart from the
-  original recognition.
+  original recognition. A page, or the whole document, can be read again after a confirmation: a page
+  is replaced only once its new reading succeeded, your corrections follow their lines where the new
+  reading has a matching line (the rest are listed), and one earlier reading is kept per page, on this
+  device only (not in backups, not synced).
 - `file://` PDFs open only through the file picker or drag and drop; StudyVault does not need the
   "Allow access to file URLs" switch for that.
 
@@ -329,9 +348,9 @@ Optional: small promo tile 440 x 280 and marquee 1400 x 560 (not generated;
 
 The store has no keyword field; ranking uses the name, summary and description. Terms worth keeping
 in the text: study, highlighter, annotations, flashcards, spaced repetition, PDF, notes, citations,
-exam, exam practice, syllabus, knowledge graph, local-first, privacy, offline. Do not add "semantic
-search", "math rendering" or "notifications": the product does not do those (docs/PRIVACY_CLAIMS.md
-S18).
+exam, exam practice, syllabus, knowledge graph, local-first, privacy, offline. "Math" and "formulas"
+are accurate for typeset TeX; do not claim full LaTeX. Do not add "semantic search" or
+"notifications": the product does not do those (docs/PRIVACY_CLAIMS.md S18).
 
 ## Submission checklist
 

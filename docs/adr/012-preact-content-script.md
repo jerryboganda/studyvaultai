@@ -28,8 +28,10 @@ uses only hooks, context, one class error boundary and `useSyncExternalStore`.
   suite keeps React. The overlay tests no longer use React Testing Library (its `act` is React's):
   `ui/testHarness.ts` exports Preact's `act` (an async callback also waits for the promise chain it
   started, as React's does) and routes `@testing-library/dom` and user-event dispatches through it.
-- **Budget:** `scripts/check-build.mjs` content script 450 KB -> 220 KB (measured + 5%). A build where the
-  alias silently stopped applying would be about 400 KB and fail it.
+- **Budget:** `scripts/check-build.mjs` content script 450 KB -> 230 KB (measured + about 7%; this ADR
+  first said 220 KB, which is not what the file holds). The production gate printed "content script
+  214 KB" in run 38173629818 and "content script 215 KB" in run 38186957997, against 230 KB. A build
+  where the alias silently stopped applying would be about 400 KB and fail it.
 
 ## Compatibility review of the overlay
 Checked in source and by the overlay tests (jsdom, Preact runtime); real-Chromium behaviour is

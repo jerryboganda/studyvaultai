@@ -38,6 +38,25 @@
 > **Manual items remain, all of them:** no screen reader, forced-colours, 400% zoom, OS reduced-motion,
 > caret-browsing or touch pass has been made (`docs/MANUAL_TEST_CHECKLIST.md` MT-17, MT-18, MT-42 to
 > MT-44 as extended, MT-53, MT-55, MT-57, MT-58 and MT-62 to MT-65).
+>
+> **Status, 2026-10-12 (third run; typeset math, an exam from a syllabus, reading a page again; the
+> findings are unchanged).** Actions run 38186957997
+> (<https://github.com/jerryboganda/studyvaultai/actions/runs/38186957997>, commit
+> `dadafe3af4576d8be90b8df467cfb91f9d412fc2`, branch `feat/finish-all`) concluded `success` in every
+> job, with 564 e2e tests per OS passed on Ubuntu and Windows (none failed or retried; the 6
+> `test.fixme` tests are the same and none is an accessibility test). It ran, with the same tags and
+> browser as above: `math.spec.ts` (typeset math in the saved note and the editor's preview, light and
+> dark; direction in a right-to-left note and the `\cancel` strike under emulated forced colours;
+> Chromium's accessibility tree through `Accessibility.getFullAXTree`: `MathMLMath`, `MathMLFraction`,
+> `MathMLSquareRoot` and the like with their text and no name taken from the TeX), `math-panel.spec.ts`
+> (axe in light and dark on a side-panel note), `exam.spec.ts` (axe on the setup for a syllabus, with
+> its plan open, and on the results by topic) and `pdf-ocr-rerun.spec.ts` (axe on the dialog that
+> offers to read a page again, with Cancel focused). A tree read from the DevTools protocol is not a
+> screen reader: **nobody has heard a typeset formula**, and whether a display formula wider than its
+> column can be scrolled by keyboard was never exercised because no test formula overflows
+> (`docs/MANUAL_TEST_CHECKLIST.md` MT-66; the dialog and lists of a page read again: MT-68). The
+> addendum of this date below was written before the run and is not rewritten: where it says "not
+> yet run in CI", read run 38173629818 and then run 38186957997.
 
 Target: WCAG 2.2 AA (UX_DESIGN.md, "Accessibility contract"). Method: reading the code and CSS of
 the surfaces below, computing contrast from the real token files, and unit tests (jsdom) for every
@@ -186,9 +205,9 @@ Local, scoped (AGENTS.md rule 1); the full suite, lint, typecheck and e2e run on
 
 Method: the code, the ADRs (011 to 020) and the titles of the unit and e2e tests were read; no
 Playwright, axe, screen reader or real-browser run was made for this addendum. **None of the changes
-below has a green Actions run** (no run of branch `feat/finish-all` has concluded `success`; the axe
-runs in the status paragraph at the top predate them). "Fixed" again means "changed and unit-tested";
-the matching e2e specs were written and not yet run in CI at that time; run 38173629818 has since executed them (status paragraph at the top, 2026-10-12).
+below had a green Actions run when this was written** (no run of branch `feat/finish-all` had concluded
+`success`; the axe runs in the first status paragraph at the top predate them). "Fixed" again means "changed and unit-tested";
+the matching e2e specs were written and not yet run in CI at that time; runs 38173629818 and 38186957997 have since executed them (status paragraphs at the top, 2026-10-12).
 
 ### Findings above that moved
 
@@ -203,7 +222,7 @@ N4, N6, N7, N8, N9: unchanged and not re-examined).
 
 ### New or changed surfaces and what they do for accessibility (design, from ADR-011 to ADR-020)
 
-None of these was part of the original review; each has axe checks in its own spec (run in CI 38173629818: see the status paragraph at the top)
+None of these was part of the original review; each has axe checks in its own spec (run in CI 38173629818 and CI 38186957997: see the status paragraphs at the top)
 and a manual row.
 
 | Surface | What the code does | Needs a real browser |
@@ -214,23 +233,26 @@ and a manual row.
 | Exam | The visible clock is `role="timer"` with `aria-live="off"`; milestones at 50 %, 10 %, one minute and the end go through ONE polite region that outlives each screen, so "time is up" is heard when the screen is replaced; no single-key shortcut (2.1.4); a picked option has a heavier border and a checked radio (not colour alone); recall answers appear only in marking | The announcements with NVDA and VoiceOver (MT-57) |
 | Reminders | The notice is a live region with a Dismiss button in the popup and the side panel; the toolbar badge text is not read by assistive technology, so the tooltip carries the same sentence; the badge colours were computed at 4.5:1 against the white text | The tooltip and badge as the operating system draws them (MT-55) |
 | Provider list, consent dialog with several addresses, chat view | `AsyncSwitch` is `aria-busy` while a write is pending; the dialog lists every address and each passage and earlier turn with a checkbox above the exact text; "Send" is disabled with its reason when nothing is ticked; axe in light and dark in `ai-extras.spec.ts` | The dialog with a screen reader (MT-44 extended; MT-60) |
-| Backup folder, import panel, math in notes | The panels use the existing native `<dialog>` and notice primitives; math is a `<code>` element read as TeX source (no `role="math"`: the element is not math markup, ADR-015) | Screen reader on the folder panel and a formula (MT-44 extended) |
+| Backup folder, import panel | The panels use the existing native `<dialog>` and notice primitives | Screen reader on the folder panel (MT-44 extended) |
+| Math in notes (ADR-015 amendment 1) | A typeset formula is native MathML with no `role`, no `aria-label` and no `semantics` or `annotation`: a name taken from the TeX would replace the structure Chromium exposes (a fraction, a root, a table), and MathML Core renders only the first child of `semantics`. A formula that is refused, and every formula until the typesetter has loaded, is a `<code>` element read as TeX source, and nothing is announced when the swap happens. A display formula wider than its column scrolls inside its own box (`overflow-x: auto`); inline formulas do not wrap. Formulas are `direction: ltr` and `unicode-bidi: isolate` inside a right-to-left note; the stylesheet has no colour of its own and the `\cancel` strike keeps `forced-color-adjust: none` | A screen reader on a formula, and that the wide box is keyboard-reachable (MT-66); forced colours (MT-42) |
+| Exam from a syllabus topic | The source is a radio group (a bank, folder or tag, or a syllabus) and the topic picker a native select that names each topic with its card count; the weighted plan is a `<details>` with a table, and what was left out is a sentence; "Exam on this topic" in the coverage table is `aria-disabled` with the reason when a topic has no cards; opening the setup from a topic moves focus to the form's heading; "Study this topic" carries the topic's name in its label; axe in `exam.spec.ts` on the setup with the plan open and on the results | The plan and the by-topic table with a screen reader (MT-57 extended) |
+| Reading a page again | `ConfirmDialog` (modal, focus on Cancel, Escape cancels, focus returns to the button) holds the estimate and what happens to corrections as text; progress is the existing status line and `<progress>` with one sentence per finished page; the result is a live-region notice with an itemised list of dropped corrections and highlights that could not be placed; "Restore the previous reading" has its own status line; axe on the dialog in `pdf-ocr-rerun.spec.ts` | The dialog and the lists with a screen reader (MT-68) |
 
 ### Not changed
 
 - The toolbar badge and the tooltip, the graph, the exam timer and every other finish-wave surface
   are unverified with assistive technology; the rows are MT-42 to MT-44 (extended to the new
-  surfaces), MT-53, MT-55, MT-57 and MT-58.
+  surfaces), MT-53, MT-55, MT-57, MT-58, MT-66 and MT-68.
 - The `Alt+Up` / `Alt+Down` and `F2` shortcuts of the new trees and lists are modified keys, so
   2.1.4 does not apply; the exam has none by design.
 
 ## Addendum, 2026-10-12: links in the PDF reader (ADR-006 amendment 3)
 
 Method: the code, the ADR and the titles of the unit and e2e tests were read; no Playwright, axe, screen
-reader or real-browser run was made for this addendum. **None of it has a green Actions run**: the unit
+reader or real-browser run was made for this addendum. **None of it had a green Actions run when this was written**: the unit
 files (`packages/pdf/src/links.test.ts`, `linkLayer.test.ts`, `entrypoints/pdf-reader/links.test.tsx`)
-were written with the code, and `tests/e2e/pdf-links.spec.ts` (14 tests, one of them axe over the page,
-the Links list and the dialog) was written and not yet run in CI when this addendum was made; it passed in run 38173629818 (status paragraph at the top). Before this change a link inside a PDF
+were written with the code, and `tests/e2e/pdf-links.spec.ts` (14 tests then, 15 now; one of them axe over the page,
+the Links list and the dialog) was written and not yet run in CI when this addendum was made; it passed in run 38173629818 and again in run 38186957997 (status paragraphs at the top). Before this change a link inside a PDF
 did nothing, for the keyboard and for assistive technology as well.
 
 | Surface | What the code does | Needs a real browser |
@@ -240,7 +262,7 @@ did nothing, for the keyboard and for assistive technology as well.
 | Links list | The navigation pane's "Links (N)" tab lists "Links on this page" for the page in view: each link by its accessible name, the address as text, "will not be opened" for a refused one, and "Page N has no links." when empty. It follows a link through the same code as a click | The same pass |
 | After a link is followed | The page element takes keyboard focus (`tabindex="-1"`, not a tab stop; the viewer's own keys keep working there); the polite status region says "Went to page N."; **Back** is a toolbar button (`aria-disabled` with the title "No link has been followed yet." until one is) and **Alt+Left**, which is always handled in the reader and says "Nothing to go back to: no link has been followed yet." with an empty stack, so the browser's own Alt+Left never leaves the page and the open document | Back and Alt+Left with a screen reader's virtual cursor (MT-62) |
 | Confirmation dialog | `ConfirmDialog`: focus trapped, Cancel focused, Escape cancels; the whole address and the site are text in a list; "Always allow this site ({host}) in this reader session" is an unchecked checkbox; the status line says "Opening {host} in a new tab." | Whether Chrome's pop-up blocker lets the tab open: the reader cannot tell and says it is opening either way (MT-63) |
-| A link that is refused | An `InlineNotice` (`role="status"`, "Link not opened") with the reason and a Dismiss button; nothing opens | The announcement once, not doubled |
+| A link that is refused | An `InlineNotice` (`role="status"`, "Link not opened") with the reason and a Dismiss button; nothing opens. It floats over the pages and no longer resizes the viewer (a resized viewer drew every page again, and a click in that gap was lost); `pdf-links.spec.ts` asserts the viewer's box is unchanged | The announcement once, not doubled |
 | Pointer | The anchors take no pointer events, so a drag that starts on a link selects text and a click never follows a link during or after a selection; the cursor is a pointer over a link | Touch (not exercised) |
 
 Also fixed on the way: the toolbar's page box committed on blur even when nothing had been typed, so the

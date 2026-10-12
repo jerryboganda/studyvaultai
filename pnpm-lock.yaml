@@ -197,8 +197,8 @@ importers:
         specifier: 19.3.0
         version: 19.3.0(react@19.3.0)
       temml:
-        specifier: 0.14.0
-        version: 0.14.0
+        specifier: 0.13.5
+        version: 0.13.5
       tesseract.js:
         specifier: 7.0.0
         version: 7.0.0
@@ -1762,8 +1762,8 @@ packages:
   tasuku@2.3.0:
     resolution: {integrity: sha512-9Jtk+XAnttslCw4i9RceSZGr2PT5TLn0vUyWnoP2SdlSYzkiYRY6kB5qnPi5IQ/Em8e4oBow1rpaA39iijTIrA==}
 
-  temml@0.14.0:
-    resolution: {integrity: sha512-tz1LW/5IZpThK8c7ZpdTSH/n56eAj+ThirLieErtKxYC3EKCIiB4sKdRUehAgH+fQmvIKqMfP3gqTLBdLpy9zw==}
+  temml@0.13.5:
+    resolution: {integrity: sha512-aPkDDgunanpLNL0ql32HbolqLep+w8DRcVXRql7rWrMt/PhczdLgL4UBYYVU3BYjCNjkGq4EqwIicu/zWr1iOg==}
     engines: {node: '>=18.13.0'}
 
   tesseract.js-core@7.0.0:
@@ -3449,7 +3449,7 @@ snapshots:
 
   tasuku@2.3.0: {}
 
-  temml@0.14.0: {}
+  temml@0.13.5: {}
 
   tesseract.js-core@7.0.0: {}
 

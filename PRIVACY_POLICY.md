@@ -40,6 +40,20 @@
 > provider, a screen reader and the Chrome Web Store review. The rows still name unit-only or
 > manual parts, so this document is still a draft. This revision adds one sentence about links
 > inside a PDF (in "Opening a PDF from a web address"; open item U-23).
+>
+> Revised 2026-10-12 (fifth pass), after Actions run 38186957997
+> (https://github.com/jerryboganda/studyvaultai/actions/runs/38186957997, commit
+> `dadafe3af4576d8be90b8df467cfb91f9d412fc2`, branch `feat/finish-all`), in which every job
+> concluded `success` and which passed the specs of the run above again. Three changes are described
+> here. TeX in notes is now **typeset on your device** (the third-pass sentence above that says TeX is
+> shown as text no longer holds; what you typed is still what is stored, searched and exported). An
+> exam can be drawn from a syllabus topic (it stays on your device like every exam). A scanned page can
+> be **read again**, and the earlier reading is kept on your device as one step back, outside backups
+> and sync. None adds a network path, a permission or a new category of data collected, and the AI
+> section now says which header an Anthropic provider receives the key in. What that run does not
+> show: no live AI provider was contacted (the specs use local stand-ins), no screen reader read a
+> typeset formula, and the browser, folder-picker and store-review limits above still apply, so this
+> document is still a draft (`docs/PRIVACY_CLAIMS.md` P20d, P36a, P39, P48).
 
 [USER-REQUIRED: legal review of this policy, the effective date, and the legal name and postal address
 of the publisher. Delete this line when done.]
@@ -76,8 +90,8 @@ of it is uploaded in the default configuration.
 | Where it came from | The page address, the address the page declares as its own when it names the page itself, the page title (up to 500 characters) and the site name. Before an address is stored, StudyVault removes a user name or password in it, query parameters and `;name=value` path parameters whose name looks like a credential, and any `#fragment` that is not a page route (`#/...` or `#!...`); inside a route, parameters whose name looks like a credential are removed too, a route that is really a credential blob (for example `#/access_token=...`) is dropped, and anything after a second `#` is dropped. "Looks like a credential" is judged on the name alone, split into words: it contains a stem such as token, secret, password, credential, bearer, session, csrf, signature, authorization, jwt or hmac, ends in key, has a word such as key, sig, sid, auth, oauth, otp, pass or ticket, has code as its last word, or starts with `x-amz-` or `x-goog-` (`packages/shared/src/urls.ts`, `isCredentialName`). The rule is a heuristic: it can remove a harmless parameter and it cannot recognise a secret in a parameter with an unremarkable name. Other parts of the address, such as tracking parameters, are kept as you visited. The rule is applied when an address is saved: addresses already stored are not rewritten, and a backup you restore, or an item that arrives by sync, keeps the address exactly as the device that made it stored it. |
 | How to find the passage again | Up to 64 characters of page text just before and just after the passage, the nearest heading above it (up to 300 characters), a short description of where it sits in the page structure (a chain of element names and positions that stops at the nearest ancestor element carrying an `id` attribute, and includes that `id` value as the page wrote it), its position in the page text, and a hash and the length of the whole page text at the time you saved it. The hash and length only tell StudyVault that the page changed; the page text itself is not stored. |
 | What you add | Your note on a highlight (up to 20,000 characters), standalone notes (title, and body up to 100,000 characters), the kind, colour and priority you chose, custom fields, the banks, folders and tags a passage is in (their names, colours and aliases), how you saved it (toolbar, shortcut, menu or import) and when. Also what you write for the organising features: auto-filing rules (the conditions you set, such as site names, address prefixes, words in a title or a passage, kinds and sources, and the bank, folder and tags the rule files into, and whether it asks first), syllabus outlines (a name and a tree of topics, each pointing at banks and tags, with optional weights) and the links you draw between highlights, notes and knowledge points (the two ends, the type and an optional note). |
-| Study data | Flashcards and quiz questions you create or accept, the decks they sit in and each deck's scheduling settings, knowledge points, the review history that schedules them (each rating and when), the review session in progress, and your study-day settings (time zone, hour a study day starts, ordering). An exam simulation in progress (the cards asked, your answers and marks, the times) is kept for 24 hours, and a summary of each of your last 20 finished exams (scope, counts, time used; no question text) is kept until you clear it; both stay in the database of this device and are not part of backups or sync. The two thresholds you set for syllabus coverage are kept the same way. |
-| Documents you open in the reader | The document's title, page count, size in bytes, whether it has selectable text, a SHA-256 fingerprint of the file, the web address it was fetched from (with credentials removed; none for a file you chose from your computer), and the highlights you make. The text of pages that have a text layer is read in memory and is not stored, apart from the passages you save and their short context. Text recognised by the optional OCR feature is stored page by page (the recognised text, the position and confidence of each word, the language and engine, and your corrections). The PDF file itself is kept only if you choose to keep a copy. In a private window none of this is stored unless "Save from private windows" is on (see "Opening a PDF from a web address"). |
+| Study data | Flashcards and quiz questions you create or accept, the decks they sit in and each deck's scheduling settings, knowledge points, the review history that schedules them (each rating and when), the review session in progress, and your study-day settings (time zone, hour a study day starts, ordering). An exam simulation in progress (the cards asked, your answers and marks, the times and, for an exam drawn from a syllabus, the titles of its topics) is kept for 24 hours, and a summary of each of your last 20 finished exams (scope, counts, time used; no question text) is kept until you clear it; both stay in the database of this device and are not part of backups or sync. The two thresholds you set for syllabus coverage are kept the same way. |
+| Documents you open in the reader | The document's title, page count, size in bytes, whether it has selectable text, a SHA-256 fingerprint of the file, the web address it was fetched from (with credentials removed; none for a file you chose from your computer), and the highlights you make. The text of pages that have a text layer is read in memory and is not stored, apart from the passages you save and their short context. Text recognised by the optional OCR feature is stored page by page (the recognised text, the position and confidence of each word, the language and engine, and your corrections). If you read a page again, the reading it replaced is kept with that page, with its corrections, as one step back; that step back stays on this device only (it is never part of a backup and is never synced) and goes with the page. The PDF file itself is kept only if you choose to keep a copy. In a private window none of this is stored unless "Save from private windows" is on (see "Opening a PDF from a web address"). |
 | Settings | Theme, density, whether the toolbar shows, default kind, colours, the last bank you saved into, your deny list, the sites you enabled, whether highlights are painted, highlight style, whether private windows may be saved, and which optional features are on. Also: study-day settings (above), your progress through the welcome tour, and the AI provider address, model, limits, price settings and usage counters (and, if you add them, up to three fallback providers with their own address, model and prices, and which task starts with which provider). Also: whether study reminders are on and the time of day you chose, and whether auto-filing rules are applied. The sync server address, sign-in provider address and client id, and your choice about encrypting what is uploaded, are kept in the extension's database, not in extension storage, so that scripts running in web pages cannot change where your data is sent. For the same reason the background worker enforces your deny list, the private-window setting and the optional-feature switches from a second copy of your settings kept in that database. Saved searches are kept in the database. |
 | Secrets | If you enter an AI API key it is stored in the extension's database (the `meta` store of its IndexedDB), not in `chrome.storage`, without extra encryption; the key of each fallback provider you add is one more row in the same store, bound to that provider's address and removed with the provider. Sync sign-in tokens, and the sync encryption key while it is unlocked (at most 15 minutes, see "Sync"), are kept in browser session storage: memory only, closed to web pages and content scripts, cleared when the browser closes. None of these is written to backups or synced (see below). |
 | Search index | A search index built from your saved text is cached in the database so search is fast. It is derived data. After you permanently delete items or restore a backup it is rebuilt by a page that hosts search (the dashboard or the side panel), as soon as one is open or, when none is, the next time one opens; the old cached copy, which holds the text of what you deleted until then, is replaced a few seconds after the rebuild. A rebuild skips items it cannot read and counts them as rejected instead of stopping. After "Delete all StudyVault data" the new, empty database holds one random marker value (no study data) that makes open pages drop their copy of the index. |
@@ -128,7 +142,7 @@ Three user-started paths can make a request that leaves the device:
 
 No other feature has a code path that makes a request: filing rules, syllabi, links and the
 graph, the exam simulation, reminders, the import of Word, PowerPoint, EPUB, HTML and Anki files,
-backups into a folder, related highlights and the display of TeX all run on your device
+backups into a folder, related highlights, the typesetting of TeX and reading a scanned page again all run on your device
 (`docs/PRIVACY_CLAIMS.md` P1, P33 to P39).
 
 **What the browser-enforced security policy does and does not do.** The extension declares a content
@@ -207,7 +221,9 @@ makes those requests runs only behind the feature switches and your action descr
 - The request goes **directly from your browser to the provider address you configured**, over HTTPS
   (plain `http://` is accepted only for `localhost` and `127.0.0.1`, for models you run yourself).
   The provider receives the approved text, your question if you asked one, the model name and your
-  API key, and learns your IP address. Its own privacy policy governs what it does with them;
+  API key (in the header that provider's own API uses: `Authorization` for an OpenAI-compatible
+  service, `x-api-key` for Anthropic, never in the body or in the address), and learns your IP
+  address. Its own privacy policy governs what it does with them;
   StudyVault does not control that. The request carries no cookies and no referrer, and a redirect is
   treated as an error rather than followed with your key.
 - **With fallback providers**, the preview lists every address that may receive the text, in the
@@ -263,13 +279,15 @@ makes those requests runs only behind the feature switches and your action descr
   - flashcards, decks, knowledge points and your review history (every rating and when);
   - documents opened in the reader: title, page count, size in bytes, the web address it came from
     and whether it has text; and OCR pages: the recognised text, your corrections, the position
-    and confidence of each recognised word, the language and engine.
+    and confidence of each recognised word, the language and engine (not the earlier reading kept
+    as one step back when a page is read again).
 - **What is not uploaded:** settings (including the deny list and the sites you enabled), study-day
   settings, welcome-tour progress, PDF files and kept copies, AI drafts, the AI provider settings,
   key and usage counters (including fallback providers and their keys), saved searches, the exam in
   progress and your exam history, the syllabus coverage thresholds, the backup folder you chose, the
-  reminder settings, auto-filing suggestions and undo records, the search index, whether a highlight
-  was found on the page at its last check, sign-in tokens, and the encryption key and passphrase.
+  reminder settings, auto-filing suggestions and undo records, the earlier reading of a page that was
+  read again, the search index, whether a highlight was found on the page at its last check, sign-in
+  tokens, and the encryption key and passphrase.
 - **What the server can see even with encryption on:** the type of each item (for example highlight,
   note, card), its identifier, whether it was created, changed or deleted, a revision number and a
   logical clock, the identifier of the device that made the change, timestamps, the size of each
@@ -367,8 +385,8 @@ deny list, enabled sites, study-day settings, welcome-tour progress, the AI prov
 and usage, the sync configuration, account and queue, your saved searches, the backup folder you
 chose, the reminder settings, an exam in progress, your exam history, the syllabus thresholds or a
 review session that is in progress, and it never contains the AI key (or a fallback provider's key),
-the sync sign-in or the sync encryption key. It does hold your auto-filing rules, syllabi and
-links. Cached PDF copies are included only if you choose to include them. After restoring on a new
+the sync sign-in or the sync encryption key, nor the earlier reading kept when you read a scanned page
+again. It does hold your auto-filing rules, syllabi and links. Cached PDF copies are included only if you choose to include them. After restoring on a new
 profile you set those up again.
 
 **Backing up into a folder.** If your browser offers a folder picker, you can choose a folder and

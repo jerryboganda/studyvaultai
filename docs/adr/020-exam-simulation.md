@@ -108,7 +108,8 @@ would be a backup-format decision (as `savedSearches`), not taken here.
 - Two windows editing one exam last-write-wins; the exam is single-user and single-page by design.
 - A new exam replaces unread results of the previous one (the history keeps its summary).
 - Not covered: adaptive "targeted review" from exam results (a later slice can build a deck from the
-  missed list); images, math rendering inside questions follow the card renderer (ADR-015).
+  missed list); images, and math inside questions: card faces render text as React text nodes, so a
+  formula in a question or an answer is shown as typed, not typeset (ADR-015 amendment 1).
 
 ### Tests
 `packages/study/src/exam.test.ts` (scope, configuration, seeded draw, shuffle, timer, milestones,
@@ -118,7 +119,8 @@ idempotent count-as-review and undo, no scheduling side effect), `entrypoints/re
 (whole run without feedback, marking, results, count and undo, export, leave/continue/discard, reload
 and clock, the timer is not chatty), `tests/e2e/exam.spec.ts` (loaded extension: start, answer,
 time-out on the pinned clock, reload mid-exam with the worker stopped, results, count-as-review and
-undo, source jump, offline, axe WCAG 2.2 AA).
+undo, source jump, offline, axe WCAG 2.2 AA). Run in Actions run 38186957997 (Ubuntu and Windows,
+Playwright's Chromium): the 8 tests of Part 1 and the 2 of the addendum below passed.
 
 ### Size
 Measured with a private e2e build (minified, unzipped): the lazy `Exam-*.js` chunk is 45,315 B

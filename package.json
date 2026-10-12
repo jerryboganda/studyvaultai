@@ -39,7 +39,7 @@
     "preact": "10.29.8",
     "react": "19.3.0",
     "react-dom": "19.3.0",
-    "temml": "0.14.0",
+    "temml": "0.13.5",
     "tesseract.js": "7.0.0",
     "ts-fsrs": "5.4.2",
     "uuidv7": "1.2.1",
