@@ -1,23 +1,33 @@
 import './ai.css';
-import { useEffect, useId, useState, type ReactNode } from 'react';
+import { Suspense, lazy, useEffect, useId, useState } from 'react';
 import {
   checkAiEndpoint,
   clearAiApiKey,
   getAiSettings,
   setAiApiKey,
-  setAiSettings,
+  updateAiSettings,
   type AiProviderId,
   type AiSettings,
 } from '@storage';
+import { AsyncSwitch } from '../AsyncSwitch';
 import { Button } from '../Button';
 import { useAction, useAsync, useDataEpoch } from '../hooks';
 import { InlineNotice } from '../Notice';
 import { useAiEnv } from './context';
+import { Field } from './Field';
 import { useAiConfig, useAiFlag } from './hooks';
 import { describeAiError, type AiErrorView } from './labels';
 import { hasEndpointAccess, requestEndpointAccess, revokeEndpointAccess } from './permission';
 import { configSecrets, sendBlocker, testAiConnection } from './runtime';
 import { UsageLedger } from './UsageLedger';
+
+// Fallback providers and per-task routing: only loaded once the feature is on and this section shows.
+const AiRoutingSection = lazy(() =>
+  import('./AiRoutingSection').then((m) => ({ default: m.AiRoutingSection })),
+);
+
+/** The fields of the primary provider's form: everything but the fallback providers and the routes. */
+type PrimarySettings = Omit<AiSettings, 'fallbacks' | 'routes'>;
 
 const PRESETS: { label: string; provider: AiProviderId; baseUrl: string }[] = [
   { label: 'OpenAI', provider: 'openai_compatible', baseUrl: 'https://api.openai.com/v1' },
@@ -65,7 +75,9 @@ const toForm = (s: AiSettings): Form => ({
 
 const num = (t: string): number => (t.trim() === '' ? Number.NaN : Number(t));
 
-function fromForm(f: Form): { ok: true; settings: AiSettings } | { ok: false; errors: string[] } {
+function fromForm(
+  f: Form,
+): { ok: true; settings: PrimarySettings } | { ok: false; errors: string[] } {
   const errors: string[] = [];
   const maxRequests = num(f.maxRequests);
   if (!Number.isInteger(maxRequests) || maxRequests < 0 || maxRequests > 10_000) {
@@ -108,32 +120,6 @@ function fromForm(f: Form): { ok: true; settings: AiSettings } | { ok: false; er
       preferences: { flashcardCount: flashcards, mcqChoices: mcq },
     },
   };
-}
-
-function Field({
-  label,
-  hint,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  children: (id: string, describedBy: string | undefined) => ReactNode;
-}) {
-  const id = useId();
-  const hintId = hint ? `${id}-hint` : undefined;
-  return (
-    <div className="sv-field">
-      <label className="sv-label" htmlFor={id}>
-        {label}
-      </label>
-      {children(id, hintId)}
-      {hint ? (
-        <p id={hintId} className="sv-muted sv-small">
-          {hint}
-        </p>
-      ) : null}
-    </div>
-  );
 }
 
 /**
@@ -194,7 +180,8 @@ export function AiSettingsSection() {
       return;
     }
     setErrors([]);
-    await setAiSettings(parsed.settings);
+    // Only this form's fields: the fallback providers and the routes are edited in their own section.
+    await updateAiSettings((current) => ({ ...current, ...parsed.settings }));
     setDraft(null);
     saved.refresh();
     cfg.refresh();
@@ -275,11 +262,12 @@ export function AiSettingsSection() {
       </p>
       <p>
         When it is on and you use an AI action, StudyVault sends{' '}
-        <strong>only the highlights you selected</strong> (and your question, if you ask one) to the
-        provider address you set below. You see the exact text first, text that looks like an email,
-        phone number, card number or key is replaced unless you choose otherwise, and nothing is
-        sent until you press Send. Your library, notes and browsing history are never sent unless
-        you select them.
+        <strong>only the highlights you selected</strong> (and your question, if you ask one; in
+        chat, the notes and earlier turns you tick) to the provider address you set below, or to a
+        fallback provider you added, which every confirmation lists. You see the exact text first,
+        text that looks like an email, phone number, card number or key is replaced unless you
+        choose otherwise, and nothing is sent until you press Send. Your library, notes and browsing
+        history are never sent unless you select them.
       </p>
       <p>
         AI results are drafts: labelled unverified, linked to your saved quotes, and never able to
@@ -288,17 +276,15 @@ export function AiSettingsSection() {
     </div>
   );
 
+  // Pending until the setting is written: shown as chosen, busy, never snapping back; a failure
+  // rolls back and is the alert notice below.
   const flagBox = (
-    <div className="sv-check">
-      <input
-        id={`${uid}-flag`}
-        type="checkbox"
-        data-testid="ai-enable"
-        checked={flag.on}
-        onChange={(e) => void toggle.run(e.target.checked)}
-      />
-      <label htmlFor={`${uid}-flag`}>Turn on AI features</label>
-    </div>
+    <AsyncSwitch
+      checked={flag.on}
+      testId="ai-enable"
+      label="Turn on AI features"
+      onChange={(next) => toggle.run(next)}
+    />
   );
 
   if (!flag.on) {
@@ -712,6 +698,10 @@ export function AiSettingsSection() {
           ) : null}
         </>
       ) : null}
+
+      <Suspense fallback={<p className="sv-muted">Loading the provider list…</p>}>
+        <AiRoutingSection />
+      </Suspense>
 
       <UsageLedger />
     </section>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useState } from 'react';
 import { watchSettings } from '@runtime';
 import './backup.css';
 import { createBackupDeps, type BackupDeps } from './deps';
@@ -16,6 +16,12 @@ export interface BackupSectionProps {
   /** Called after a restore was committed, e.g. to refresh counts elsewhere on the page. */
   onRestored?(): void;
 }
+
+// Loaded when the section shows, not with the page: the folder panel and the File System Access
+// code are only needed here.
+const BackupFolder = lazy(() =>
+  import('./BackupFolder').then((m) => ({ default: m.BackupFolder })),
+);
 
 /** Where the data lives depends on optional sync, so the sentence follows `deps.syncActive()`. */
 export const INTRO_SYNC_ON =
@@ -64,6 +70,10 @@ export function BackupSection({ appVersion, deps: override, onRestored }: Backup
         {syncOn === null ? INTRO_SYNC_UNKNOWN : syncOn ? INTRO_SYNC_ON : INTRO_SYNC_OFF}
       </p>
       <ExportPanel deps={deps} />
+      <hr className="bk-rule" />
+      <Suspense fallback={<p className="sv-muted">Loading the backup folder options…</p>}>
+        <BackupFolder deps={deps} />
+      </Suspense>
       <hr className="bk-rule" />
       <ImportWizard
         key={preload ? `preload-${preload.nonce}` : 'manual'}

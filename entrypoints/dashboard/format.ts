@@ -41,9 +41,31 @@ const CAPTURE_METHODS: Record<string, string> = {
   toolbar: 'the selection toolbar',
   shortcut: 'a keyboard shortcut',
   'context-menu': 'the context menu',
-  import: 'a Markdown or CSV import',
+  import: 'a file import',
 };
-export const describeCaptureMethod = (method: string) => CAPTURE_METHODS[method] ?? method;
+
+/** The file format of an import, from `customFields.importedFrom` (`ImportFormat`, @backup). */
+const IMPORT_FORMATS: Record<string, string> = {
+  markdown: 'a Markdown import',
+  csv: 'a CSV import',
+  anki: 'an Anki text import',
+  docx: 'a Word document import',
+  pptx: 'a PowerPoint import',
+  epub: 'an EPUB import',
+  html: 'an HTML import',
+};
+
+/** `fields` is the highlight's `customFields`: an import names its format there, a capture does not. */
+export function describeCaptureMethod(
+  method: string,
+  fields?: Readonly<Record<string, string | number | boolean>>,
+): string {
+  const from = fields?.importedFrom;
+  if (method === 'import' && typeof from === 'string' && Object.hasOwn(IMPORT_FORMATS, from)) {
+    return IMPORT_FORMATS[from] as string;
+  }
+  return CAPTURE_METHODS[method] ?? method;
+}
 
 /** "1,234 highlights": a count with thousands separators and the right plural. */
 export function countLabel(count: number, one: string, many = `${one}s`): string {

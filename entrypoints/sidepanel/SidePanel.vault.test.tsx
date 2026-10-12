@@ -1,9 +1,9 @@
 import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { configure, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, configure, cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { browser } from 'wxt/browser';
-import { defaultSettings, type PageStatus } from '@shared';
+import { PENDING_SEARCH_KEY, defaultSettings, type PageStatus } from '@shared';
 import {
   addToBank,
   attachTags,
@@ -136,6 +136,10 @@ describe('Search over the real vault', () => {
     await waitFor(() =>
       expect(screen.getByTestId('search-status').textContent).toMatch(/^1 match in/),
     );
+    // the timing is shown but not read aloud
+    expect(
+      screen.getByTestId('search-status').querySelector('[aria-hidden="true"]')?.textContent,
+    ).toMatch(/^ in \d+ ms$/);
     expect(screen.getAllByTestId('search-result')).toHaveLength(1);
     expect(screen.getByTestId('search-result').getAttribute('data-highlight-id')).toBe(hl.id);
     // the count and the list agree, so there is nothing more to show
@@ -287,5 +291,56 @@ describe('Review in the real vault', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Start reviewing' }));
     await waitFor(() => expect(created).toHaveLength(1));
     expect(new URL(created[0]!).searchParams.get('start')).toBe('1');
+  });
+});
+
+describe('the focus-search command', () => {
+  const request = (value: unknown) =>
+    act(async () => {
+      await browser.storage.session.set({ [PENDING_SEARCH_KEY]: value });
+    });
+  const stored = async () =>
+    (await browser.storage.session.get(PENDING_SEARCH_KEY))[PENDING_SEARCH_KEY];
+
+  it('opens on Search with the cursor in the box, and removes the request', async () => {
+    await browser.storage.session.set({
+      [PENDING_SEARCH_KEY]: { target: 'panel', at: Date.now() },
+    });
+    await open();
+    await waitFor(() => expect(document.activeElement).toBe(queryBox()));
+    expect(screen.getByRole('tab', { name: 'Search' }).getAttribute('aria-selected')).toBe('true');
+    await waitFor(async () => expect(await stored()).toBeUndefined());
+  });
+
+  it('moves an open panel from another tab to Search and focuses the box', async () => {
+    await save('Aspirin irreversibly inhibits cyclooxygenase.');
+    await open();
+    await userEvent.click(await screen.findByRole('tab', { name: 'Recent' }));
+    expect(screen.queryByRole('searchbox')).toBeNull();
+
+    await request({ target: 'panel', at: Date.now() });
+
+    await waitFor(() => expect(document.activeElement).toBe(queryBox()));
+    expect(screen.getByRole('tab', { name: 'Search' }).getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('leaves a request for the dashboard alone', async () => {
+    await open();
+    await screen.findByRole('tab', { name: 'Search' });
+    await request({ target: 'dashboard', at: Date.now() });
+    await Promise.resolve();
+    expect(screen.queryByRole('searchbox')).toBeNull();
+    expect(await stored()).toMatchObject({ target: 'dashboard' });
+  });
+
+  it('ignores and removes a stale request', async () => {
+    await browser.storage.session.set({
+      [PENDING_SEARCH_KEY]: { target: 'panel', at: Date.now() - 60_000 },
+    });
+    await open();
+    await screen.findByRole('tab', { name: 'Search' });
+    await waitFor(async () => expect(await stored()).toBeUndefined());
+    expect(screen.queryByRole('searchbox')).toBeNull();
+    expect(document.activeElement).toBe(document.body);
   });
 });

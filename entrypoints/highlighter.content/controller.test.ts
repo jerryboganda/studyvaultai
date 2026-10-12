@@ -274,6 +274,38 @@ describe('selection watcher', () => {
     expect(h.ui.toolbar[0]!.text).toBe(MITO);
   });
 
+  it('shows the toolbar for a selection made while the overlay was still starting', async () => {
+    // The script answers a ping as soon as it runs, but the listeners exist only once the overlay
+    // is built: a selection (and its events) in between used to be lost for good.
+    let release!: () => void;
+    const uiGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const h = startHarness({ uiGate });
+    harnesses.push(h);
+    await flushPromises();
+    await selectText(MITO);
+    expect(h.ui.toolbar).toHaveLength(0);
+    release();
+    await h.controller.ready;
+    await flushPromises();
+    expect(h.ui.toolbar).toHaveLength(1);
+    expect(h.ui.toolbar[0]!.text).toBe(MITO);
+  });
+
+  it('shows the toolbar for text that was already selected when the script started', async () => {
+    select(MITO); // selected first, StudyVault switched on afterwards
+    const h = await boot();
+    expect(h.ui.toolbar).toHaveLength(1);
+    expect(h.ui.toolbar[0]!.text).toBe(MITO);
+  });
+
+  it('shows no toolbar at start-up when nothing is selected', async () => {
+    const h = await boot();
+    expect(h.ui.toolbar).toHaveLength(0);
+    expect(h.ui.hidden).toBe(0);
+  });
+
   it('does not show the toolbar when it is disabled in settings', async () => {
     const h = await boot({ settings: { toolbarEnabled: false } });
     await selectText(MITO);

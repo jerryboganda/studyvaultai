@@ -500,12 +500,12 @@ test.describe('highlights', () => {
     await expect
       .poll(async () => page.evaluate(() => document.getSelection()?.toString() ?? ''))
       .toContain('tubule reabsorbs');
-    // Browsers also report moves with no button down, and focus changes, in the middle of a drag
-    // (after a layout change, an auto-scroll): none of that is a release.
+    // Browsers also report moves with no button down in the middle of a drag (after a layout change,
+    // an auto-scroll): that is not a release. (Window blur is covered by the gate's unit tests; it is
+    // left out here because the text layer's own selection guard also resets itself on blur.)
     await page.evaluate(() => {
       document.dispatchEvent(new PointerEvent('pointermove', { buttons: 0, bubbles: true }));
       document.dispatchEvent(new MouseEvent('mousemove', { buttons: 0, bubbles: true }));
-      window.dispatchEvent(new Event('blur'));
     });
     await page.waitForTimeout(300); // ... well past the 80 ms a selection takes to be evaluated
     // ... and the button is still down: the page knows a drag is on, and there is no bar yet.
@@ -518,16 +518,39 @@ test.describe('highlights', () => {
         { cause: err },
       );
     }
+    // What the browser selected when the button was let go. Where exactly a drag ends depends on font
+    // metrics (the end of the last word may snap to the end of the run), so the quote the bar offers
+    // is compared with THIS, never with a guess at the end of the drag.
+    const compact = (text: string): string => text.replace(/\s+/g, '');
+    const selectedAtRelease = await page.evaluate(() => document.getSelection()?.toString() ?? '');
     await page.mouse.up();
 
     const bar = page.getByTestId('pdf-savebar');
     await expect(bar).toBeVisible();
     await expect(page.locator('html')).not.toHaveAttribute('data-sv-drag', '');
-    await expect(bar.locator('blockquote')).toHaveText(
-      'glomerulus filters plasma at a steady rate and the tubule reabsorbs',
+    // One page, one part: nothing from another page is in the quote.
+    await expect(bar).toHaveAttribute('aria-label', 'Save selection from page 1');
+    await expect(bar.getByText('This selection spans more than one page')).toHaveCount(0);
+    const quote = ((await bar.locator('blockquote').textContent()) ?? '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    expect(quote.startsWith('glomerulus filters plasma')).toBe(true);
+    expect(quote).not.toContain(' … ');
+    // It is what the drag selected, and at least all of what was dragged over.
+    expect(compact(selectedAtRelease).startsWith(compact(quote))).toBe(true);
+    expect(compact(quote)).toContain(
+      compact('glomerulus filters plasma at a steady rate and the tubule reabsorbs'),
     );
+
+    // Saving stores exactly that one quote, on page 1.
     await saveSelection(page);
-    expect(await storedHighlights(page)).toHaveLength(1);
+    const rows = (await storedHighlights(page)) as Array<{
+      exactQuote: string;
+      anchorSet: { pageNumber: number };
+    }>;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.anchorSet.pageNumber).toBe(1);
+    expect(compact(rows[0]!.exactQuote)).toBe(compact(quote));
   });
 
   test('the overlay stays on its words through zoom and rotation', async ({ env }) => {

@@ -9,6 +9,7 @@ import {
 } from '@shared';
 import {
   cmp,
+  FOLDER_PATH_DEPTH,
   keysWhereIn,
   rowsWhereIn,
   isDeleted,
@@ -85,7 +86,7 @@ async function buildDocuments(
   const folderPath = (id: string | null): string[] => {
     const names: string[] = [];
     let cursor = id;
-    for (let i = 0; cursor !== null && i < 16; i++) {
+    for (let i = 0; cursor !== null && i < FOLDER_PATH_DEPTH; i++) {
       const f = folders.get(cursor);
       if (!f) break;
       names.unshift(f.name);

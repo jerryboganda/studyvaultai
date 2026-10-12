@@ -27,12 +27,14 @@ function setup(over: Partial<BulkBarProps> = {}) {
 describe('BulkBar', () => {
   it('is absent while nothing is selected', () => {
     setup({ count: 0 });
-    expect(screen.queryByRole('toolbar')).toBeNull();
+    expect(screen.queryByRole('group', { name: /selected highlights/ })).toBeNull();
   });
 
   it('announces how many rows are selected', () => {
     setup();
-    expect(screen.getByRole('toolbar', { name: /selected highlights/ })).toBeTruthy();
+    expect(screen.getByRole('group', { name: /selected highlights/ })).toBeTruthy();
+    // It is not a toolbar: nothing here promises arrow-key movement between the buttons.
+    expect(screen.queryByRole('toolbar')).toBeNull();
     expect(screen.getByRole('status').textContent).toBe('3 selected');
   });
 

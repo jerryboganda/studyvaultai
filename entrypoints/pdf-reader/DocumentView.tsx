@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { flushSync } from 'react-dom';
 import {
   buildPdfAnchor,
   findInDocument,
@@ -36,6 +37,7 @@ import {
 } from '@ui';
 import { Companion } from './Companion';
 import { DocInfo, type StoredCopyState } from './DocInfo';
+import { filingToasts, type Filed } from './filing';
 import type { Session } from './loader';
 import {
   isPainted,
@@ -48,11 +50,16 @@ import {
 import type { OcrService } from './ocr';
 import { useOcr } from './ocrController';
 import { describeProgress } from './ocrModel';
-import { OcrPanel, type PageTextState } from './OcrPanel';
+import { OcrPanel, type PageTextState, type RerunInfo } from './OcrPanel';
 import { SaveBar, type SaveDraft } from './SaveBar';
+import { useLinks } from './links';
 import { SidePane } from './SidePane';
 import { Toolbar, type SearchState } from './Toolbar';
 import { Viewer, type ViewerHandle, type ViewerShortcut } from './Viewer';
+
+/** Said when S or Enter is pressed with nothing selected: how to select without a mouse. */
+const NO_SELECTION_HELP =
+  'Nothing is selected. Press F7 for caret browsing, select text with Shift and the arrow keys, then press S.';
 
 const NO_HIGHLIGHTS: readonly HighlightView[] = [];
 const NO_BANKS: readonly BankLite[] = [];
@@ -323,6 +330,9 @@ export function DocumentView({
 
   const [effectiveZoom, setEffectiveZoom] = useState(1);
 
+  // Links of the pages: internal ones move the view (and Back returns), addresses are confirmed first.
+  const links = useLinks({ doc, viewer, onPage: setPage, announce: toast.announce });
+
   const onShortcut = useCallback(
     (a: ViewerShortcut) => {
       switch (a) {
@@ -346,11 +356,22 @@ export function DocumentView({
           return searchInput.current?.focus();
         case 'go-to-page':
           return pageInput.current?.focus();
-        case 'save-selection':
-          return bar.current?.querySelector<HTMLElement>('select, textarea, button')?.focus();
+        case 'save-selection': {
+          const focusBar = () =>
+            bar.current?.querySelector<HTMLElement>('select, textarea, button')?.focus();
+          if (bar.current) return focusBar();
+          // The bar waits for the gate's pause after a selection: ask for it now, and let React
+          // show it before focus moves (the key press is the user's act; nothing is guessed).
+          flushSync(() => {
+            viewer.current?.flushSelection();
+          });
+          if (bar.current) return focusBar();
+          toast.push({ message: NO_SELECTION_HELP });
+          return undefined;
+        }
       }
     },
-    [doc.pageCount, effectiveZoom, goToPage, page],
+    [doc.pageCount, effectiveZoom, goToPage, page, toast],
   );
 
   // ---- search --------------------------------------------------------------------------------
@@ -515,6 +536,7 @@ export function DocumentView({
         persisted.current = true;
       }
       const created: string[] = [];
+      const filings: Filed[] = [];
       let duplicates = 0;
       let bankName = '';
       for (const part of sel.parts) {
@@ -549,6 +571,10 @@ export function DocumentView({
         bankName = res.bank.name;
         if (res.status === 'duplicate' && !res.addedToBank) duplicates++;
         else created.push(res.highlight.id);
+        // A filing rule that names PDF document as a source answered for this new highlight.
+        if (res.filing && res.status === 'created') {
+          filings.push({ id: res.highlight.id, filing: res.filing });
+        }
       }
       await refresh();
       void updateSettings((s) => ({ ...s, lastBankId: draft.bankId ?? s.lastBankId })).catch(
@@ -574,6 +600,11 @@ export function DocumentView({
               }
             : undefined,
       });
+      if (store.filing && filings.length > 0) {
+        for (const t of filingToasts(filings, store.filing, (next) => toast.push(next), refresh)) {
+          toast.push(t);
+        }
+      }
       engaged.current = false;
       document.getSelection()?.removeAllRanges();
       setSelection(null);
@@ -686,6 +717,29 @@ export function DocumentView({
     ? undefined
     : 'Text recognition is not available in this build.';
   const running = ocr.run !== null;
+  const rerunInfo = useMemo((): RerunInfo => {
+    let lines = 0;
+    let withCorrections = 0;
+    let withEarlier = 0;
+    for (const po of ocr.pages.values()) {
+      const n = Object.keys(po.corrections.lines).length + Object.keys(po.corrections.words).length;
+      if (n > 0) {
+        lines += n;
+        withCorrections += 1;
+      }
+      if (po.previous) withEarlier += 1;
+    }
+    return {
+      recognisedPages: ocr.pages.size,
+      corrected: { pages: withCorrections, lines },
+      withEarlier,
+      msPerPage: ocr.msPerPage,
+      sessionOnly: !persistAllowed,
+      onRerecognisePage: () => ocr.rerun('page', page),
+      onRerecogniseAll: () => ocr.rerun('document'),
+      onRestore: () => ocr.restore(page),
+    };
+  }, [ocr, page, persistAllowed]);
 
   return (
     <div className="sv-doc">
@@ -743,7 +797,15 @@ export function DocumentView({
         onToggleCompanion={() => setCompanionOpen((v) => !v)}
         onToggleSidePane={() => setSidePaneOpen((v) => !v)}
         onOpenAnother={onOpenAnother}
+        backTo={links.backTo}
+        onBack={links.back}
       />
+
+      <p className="sv-doc__keys sv-small sv-muted" data-testid="pdf-keyboard-hint">
+        Without a mouse: press <kbd className="sv-kbd">F7</kbd> to turn on caret browsing, select
+        text with <kbd className="sv-kbd">Shift</kbd> and the arrow keys, then press{' '}
+        <kbd className="sv-kbd">S</kbd> or <kbd className="sv-kbd">Enter</kbd> to save it.
+      </p>
 
       {!persistAllowed ? (
         <InlineNotice tone="warning" live title="Nothing is being saved">
@@ -804,7 +866,15 @@ export function DocumentView({
       {ocr.run ? (
         <InlineNotice
           tone="info"
-          title={ocr.run.scope === 'document' ? 'Recognising this document' : 'Recognising a page'}
+          title={
+            ocr.run.again
+              ? ocr.run.scope === 'document'
+                ? 'Reading the recognised pages again'
+                : 'Reading a page again'
+              : ocr.run.scope === 'document'
+                ? 'Recognising this document'
+                : 'Recognising a page'
+          }
           action={
             <Button onClick={ocr.cancel} data-testid="pdf-ocr-cancel">
               Cancel
@@ -843,14 +913,30 @@ export function DocumentView({
           action={<Button onClick={ocr.dismissOutcome}>Dismiss</Button>}
         >
           <p data-testid="pdf-ocr-outcome">{ocr.outcome.detail}</p>
+          {ocr.outcome.lines && ocr.outcome.lines.length > 0 ? (
+            <ul className="sv-small" data-testid="pdf-ocr-outcome-list">
+              {ocr.outcome.lines.map((line, i) => (
+                <li key={i}>{line}</li>
+              ))}
+            </ul>
+          ) : null}
         </InlineNotice>
       ) : null}
 
       <div
         className={`sv-doc__main${sidePaneOpen ? ' sv-doc__main--side' : ''}${companionOpen ? ' sv-doc__main--split' : ''}`}
       >
+        {/* Over the pages, not above them: a notice that pushes the pages down moves the link the person
+            meant to click next, and shortens the viewer (which draws every page again). */}
+        {links.notice ? <div className="sv-linknotice">{links.notice}</div> : null}
         {sidePaneOpen ? (
-          <SidePane doc={doc} outline={outline} page={page} onGoToPage={goToPage} />
+          <SidePane
+            doc={doc}
+            outline={outline}
+            page={page}
+            onGoToPage={goToPage}
+            onFollowLink={links.follow}
+          />
         ) : null}
         <Viewer
           ref={viewer}
@@ -870,6 +956,7 @@ export function DocumentView({
             setCompanionOpen(true);
             setRightTab('highlights');
           }}
+          onFollowLink={links.follow}
           onShortcut={onShortcut}
           onError={() => undefined}
           onEffectiveZoom={setEffectiveZoom}
@@ -907,6 +994,7 @@ export function DocumentView({
                   onSetLine={(line, text) => ocr.setLine(page, line, text)}
                   onRevertLine={(line) => ocr.revertLine(page, line)}
                   onRevertPage={() => ocr.revertPage(page)}
+                  rerun={rerunInfo}
                 />
               )}
             </Tabs>
@@ -936,6 +1024,7 @@ export function DocumentView({
           }}
         />
       ) : null}
+      {links.dialog}
     </div>
   );
 }

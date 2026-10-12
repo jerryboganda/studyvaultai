@@ -343,6 +343,40 @@ describe('Preview: notes', () => {
     expect(preview.querySelectorAll('li')).toHaveLength(1);
   });
 
+  it('previews TeX (source first, typeset once loaded) and saves the body exactly as typed', async () => {
+    const body = String.raw`Rate: $v_1 * t_2$ and area
+
+$$
+A = \int_0^1 f(x)\,dx
+$$
+
+<img src=x onerror=alert(1)> costs $5 and $10`;
+    const { vault } = await open();
+    fireEvent.click(screen.getByTestId('note-add'));
+    fireEvent.change(screen.getByTestId('note-body'), { target: { value: body } });
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+
+    const preview = screen.getByTestId('note-preview');
+    // Typeset math is a lazily loaded chunk: the preview shows the formulas as source text first and
+    // as MathML once it has loaded (or at once, when an earlier test in this file loaded it).
+    await waitFor(() => expect(preview.querySelectorAll('math')).toHaveLength(2));
+    expect(preview.querySelector('code.math')).toBeNull();
+    const [inline, display] = [...preview.querySelectorAll('math')];
+    expect(inline!.hasAttribute('display')).toBe(false);
+    expect(inline!.querySelector('msub')).not.toBeNull();
+    expect(display!.getAttribute('display')).toBe('block');
+    expect(display!.querySelector('msubsup')).not.toBeNull();
+    // the markup and the price are still text
+    expect(preview.querySelector('em, img, script')).toBeNull();
+    expect(preview.textContent).toContain('<img src=x onerror=alert(1)> costs $5 and $10');
+
+    // What is stored is the Markdown body, not the rendered text.
+    fireEvent.click(screen.getByRole('button', { name: 'Back to editing' }));
+    fireEvent.click(screen.getByTestId('note-save'));
+    await waitFor(() => expect(vault.called('createNote')).toHaveLength(1));
+    expect(vault.called('createNote')[0]!.args[0]).toMatchObject({ body });
+  });
+
   it('edits and deletes a note, with an undo for the delete', async () => {
     const { vault } = await open(undefined, (v) => {
       void v.api().createNote({ highlightId: 'hl-00000001', body: 'first draft' });

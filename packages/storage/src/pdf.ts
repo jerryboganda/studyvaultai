@@ -13,6 +13,7 @@ import {
   UpsertDocumentInput,
   redactUrl,
   type CaptureResult,
+  type PreviousOcrReading,
   type HighlightView,
 } from '@shared';
 import {
@@ -449,7 +450,40 @@ export async function removeDocumentBytes(documentId: string): Promise<boolean> 
 // OCR
 // ---------------------------------------------------------------------------------------------
 
-export async function saveOcrPage(input: SaveOcrPageInput): Promise<OcrPage> {
+/** The row's current reading as the slot that keeps it for one step back. */
+function readingOf(row: OcrPage, replacedAt: string): PreviousOcrReading {
+  return {
+    text: row.text,
+    correctedText: row.correctedText,
+    words: row.words,
+    language: row.language,
+    engine: row.engine,
+    confidence: row.confidence,
+    ...(row.orientation === undefined ? {} : { orientation: row.orientation }),
+    replacedAt,
+  };
+}
+
+/**
+ * Save a page's recognised text. A correction survives it (omitted `correctedText` keeps the stored
+ * one) and so does the slot that holds the reading a re-run replaced.
+ */
+export function saveOcrPage(input: SaveOcrPageInput): Promise<OcrPage> {
+  return writeOcrPage(input, 'save');
+}
+
+/**
+ * Put a NEW reading of a page in place of the stored one, in one transaction: the stored reading
+ * (text, words, corrections, orientation) moves to `previousReading` and the row gets the new text.
+ * `correctedText` is the new reading's corrections as the caller carried them over (lines of the new
+ * text); omitted or null means none, because corrections of the old lines cannot be kept by omission.
+ * Only the last replaced reading is kept (`swapOcrReading` puts it back).
+ */
+export function replaceOcrPage(input: SaveOcrPageInput): Promise<OcrPage> {
+  return writeOcrPage(input, 'replace');
+}
+
+async function writeOcrPage(input: SaveOcrPageInput, mode: 'save' | 'replace'): Promise<OcrPage> {
   await assertPdfWriteAllowed();
   requireId(input.documentId);
   const base = parseInput(
@@ -461,6 +495,7 @@ export async function saveOcrPage(input: SaveOcrPageInput): Promise<OcrPage> {
       language: true,
       engine: true,
       confidence: true,
+      orientation: true,
     }),
     {
       documentId: input.documentId,
@@ -470,6 +505,7 @@ export async function saveOcrPage(input: SaveOcrPageInput): Promise<OcrPage> {
       language: input.language,
       engine: input.engine,
       confidence: input.confidence ?? null,
+      orientation: input.orientation,
     },
     'OCR page',
   );
@@ -488,17 +524,79 @@ export async function saveOcrPage(input: SaveOcrPageInput): Promise<OcrPage> {
           'The stored OCR text of this page could not be read, so it was not changed.',
         );
       }
+      const replacing = mode === 'replace';
       const row: OcrPage = {
         ...base,
         schemaVersion: SCHEMA_VERSION,
         createdAt: existing?.createdAt ?? ts,
         updatedAt: ts,
-        // The user's correction survives a re-run of the recogniser unless they clear it.
+        // The user's correction survives a save of the same reading unless they clear it; a new
+        // reading brings the corrections the caller mapped onto it, and nothing else.
         correctedText:
           input.correctedText === undefined
-            ? (existing?.correctedText ?? null)
+            ? replacing
+              ? null
+              : (existing?.correctedText ?? null)
             : input.correctedText,
       };
+      // Saving a correction does not say how the page was read: the stored orientation stays. A
+      // new reading says it (an upright page is stored as 0).
+      const orientation = replacing
+        ? base.orientation
+        : (base.orientation ?? existing?.orientation);
+      if (orientation !== undefined) row.orientation = orientation;
+      else delete row.orientation;
+      if (replacing) {
+        if (existing) row.previousReading = readingOf(existing, ts);
+      } else if (existing?.previousReading) row.previousReading = existing.previousReading;
+      await db.ocrPages.put(row);
+      return row;
+    }),
+  );
+  await signalChange();
+  return page;
+}
+
+/**
+ * Put the kept earlier reading of a page back. The reading it replaces takes its place in the slot,
+ * so the swap can be undone as well and nothing recognised or corrected is ever lost by it.
+ */
+export async function swapOcrReading(documentId: string, pageNumber: number): Promise<OcrPage> {
+  await assertPdfWriteAllowed();
+  requireId(documentId);
+  const number = parseInput(OcrPage.shape.pageNumber, pageNumber, 'page number');
+  const page = await withWritableDb((db) =>
+    db.transaction('rw', [db.documents, db.ocrPages], async () => {
+      await liveDocument(db, documentId);
+      const stored = await db.ocrPages.get([documentId, number]);
+      const existing = stored ? parseRow(OcrPage, stored, 'ocrPage') : null;
+      if (stored && !existing) {
+        throw new StudyVaultError(
+          'storage_unavailable',
+          'The stored OCR text of this page could not be read, so it was not changed.',
+        );
+      }
+      const previous = existing?.previousReading;
+      if (!existing || !previous) {
+        throw new StudyVaultError(
+          'not_found',
+          'There is no earlier reading of this page to restore.',
+        );
+      }
+      const ts = now();
+      const row: OcrPage = {
+        ...existing,
+        updatedAt: ts,
+        text: previous.text,
+        correctedText: previous.correctedText,
+        words: previous.words,
+        language: previous.language,
+        engine: previous.engine,
+        confidence: previous.confidence,
+        previousReading: readingOf(existing, ts),
+      };
+      if (previous.orientation !== undefined) row.orientation = previous.orientation;
+      else delete row.orientation;
       await db.ocrPages.put(row);
       return row;
     }),

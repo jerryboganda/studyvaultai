@@ -8,10 +8,11 @@ import {
   type BankLite,
   type CaptureInput,
   type CaptureResult,
+  type FilingOutcome,
   type HighlightView,
   type Settings,
 } from '@shared';
-import type { RepoApi } from '@storage';
+import type { FilingCapture, RepoApi } from '@storage';
 import { createHandlers } from './handlers';
 import type { SiteAccess } from './siteAccess';
 
@@ -147,9 +148,22 @@ function setup(initial: Partial<Settings> = {}) {
     }),
   };
   const openSidePanel = vi.fn(async (_tabId: number): Promise<void> => undefined);
+  const filing = {
+    afterCapture: vi.fn(async (_input: FilingCapture): Promise<FilingOutcome | null> => null),
+    accept: vi.fn(async (_id: string): Promise<FilingOutcome> => ({
+      status: 'filed',
+      ruleName: 'Cardio',
+      bank: OTHER_BANK,
+      folderName: null,
+      addedTags: 0,
+    })),
+    dismiss: vi.fn(async (_id: string): Promise<void> => undefined),
+    undo: vi.fn(async (_id: string) => ({ restored: true, reason: null as string | null })),
+  };
 
   const handlers = createHandlers({
     repo,
+    filing,
     getSettings: async () => settings,
     updateSettings,
     site,
@@ -161,6 +175,7 @@ function setup(initial: Partial<Settings> = {}) {
   return {
     handlers,
     repo,
+    filing,
     updateSettings,
     site,
     own,
@@ -743,5 +758,147 @@ describe('banks and extension-only actions', () => {
     await t.handlers['site.sync']({}, ext);
     expect(await t.handlers['tab.activate']({ tabId: 1 }, ext)).toEqual({ ok: true });
     expect(t.site.activate).toHaveBeenCalledWith(1);
+  });
+});
+
+describe('capture.save and filing rules', () => {
+  const sender = pageSender('https://example.com/notes/pharm');
+  const suggested: FilingOutcome = {
+    status: 'suggested',
+    ruleName: 'Cardio',
+    bank: OTHER_BANK,
+    folderName: 'Week 1',
+    addedTags: 1,
+  };
+
+  it('asks the rules about a newly created highlight and returns what they say', async () => {
+    const t = setup({ lastBankId: OTHER_BANK.id });
+    t.filing.afterCapture.mockResolvedValueOnce(suggested);
+    const result = await t.handlers['capture.save'](
+      captureInput({ title: 'Cardiology week 1' }),
+      sender,
+    );
+    expect(result.filing).toEqual(suggested);
+    expect(result.status).toBe('created');
+    expect(t.filing.afterCapture).toHaveBeenCalledOnce();
+    expect(t.filing.afterCapture.mock.calls[0]![0]).toEqual({
+      highlightId: VIEW.id,
+      placed: { bankId: OTHER_BANK.id, folderId: null },
+      requestedBankId: null,
+      lastBankId: OTHER_BANK.id,
+      candidate: {
+        url: 'https://example.com/notes/pharm',
+        title: 'Cardiology week 1',
+        quote: VIEW.exactQuote,
+        kind: 'essential',
+        tagIds: [],
+        sourceType: 'web',
+      },
+    });
+  });
+
+  it('omits the field when no rule applied', async () => {
+    const t = setup();
+    const result = await t.handlers['capture.save'](captureInput(), sender);
+    expect(result).not.toHaveProperty('filing');
+  });
+
+  it('is not asked for a duplicate or a restored highlight (nothing new was created)', async () => {
+    for (const status of ['duplicate', 'restored'] as const) {
+      const t = setup();
+      const again: CaptureResult = { status, highlight: VIEW, bank: BANK, addedToBank: true };
+      (
+        t.repo.saveCapture as unknown as { mockResolvedValueOnce(v: CaptureResult): void }
+      ).mockResolvedValueOnce(again);
+      await t.handlers['capture.save'](captureInput(), sender);
+      expect(t.filing.afterCapture, status).not.toHaveBeenCalled();
+    }
+  });
+
+  it('is not asked while "Use filing rules" is off', async () => {
+    const t = setup({ useFilingRules: false });
+    const result = await t.handlers['capture.save'](captureInput(), sender);
+    expect(result.status).toBe('created');
+    expect(t.filing.afterCapture).not.toHaveBeenCalled();
+  });
+
+  it('is not asked from a private window that is refused, and is from one that is allowed', async () => {
+    const url = 'https://example.com/notes/pharm';
+    const refused = setup();
+    await expect(
+      refused.handlers['capture.save'](captureInput(), incognitoSender(url)),
+    ).rejects.toMatchObject({ code: 'forbidden' });
+    expect(refused.filing.afterCapture).not.toHaveBeenCalled();
+
+    const allowed = setup({ allowIncognitoCapture: true });
+    await allowed.handlers['capture.save'](captureInput(), incognitoSender(url));
+    expect(allowed.filing.afterCapture).toHaveBeenCalledOnce();
+  });
+
+  it('passes the bank the capture named, so a chosen bank is not overridden', async () => {
+    const t = setup({ lastBankId: BANK.id });
+    await t.handlers['capture.save']({ ...captureInput(), bankId: OTHER_BANK.id }, sender);
+    expect(t.filing.afterCapture.mock.calls[0]![0]).toMatchObject({
+      requestedBankId: OTHER_BANK.id,
+      lastBankId: BANK.id,
+      placed: { bankId: OTHER_BANK.id },
+    });
+  });
+});
+
+describe('filing.* ownership', () => {
+  const sender = pageSender('https://example.com/notes/pharm');
+
+  it('a page acts only on a highlight of its own site, and never names a bank', async () => {
+    const t = setup();
+    t.own('hl-own0001', 'https://example.com/notes/pharm');
+    t.own('hl-foreign1', 'https://bank.example/account');
+
+    expect(await t.handlers['filing.accept']({ highlightId: 'hl-own0001' }, sender)).toMatchObject({
+      status: 'filed',
+    });
+    expect(await t.handlers['filing.undo']({ highlightId: 'hl-own0001' }, sender)).toEqual({
+      restored: true,
+      reason: null,
+    });
+    expect(await t.handlers['filing.dismiss']({ highlightId: 'hl-own0001' }, sender)).toEqual({
+      ok: true,
+    });
+    expect(t.filing.accept).toHaveBeenCalledWith('hl-own0001');
+
+    for (const type of ['filing.accept', 'filing.undo', 'filing.dismiss'] as const) {
+      expect(await code(t.handlers[type]({ highlightId: 'hl-foreign1' }, sender)), type).toBe(
+        'forbidden',
+      );
+      expect(await code(t.handlers[type]({ highlightId: 'hl-unknown1' }, sender)), type).toBe(
+        'not_found',
+      );
+    }
+    expect(t.filing.accept).toHaveBeenCalledOnce();
+    expect(t.filing.undo).toHaveBeenCalledOnce();
+    expect(t.filing.dismiss).toHaveBeenCalledOnce();
+  });
+
+  it('extension pages may act on any highlight', async () => {
+    const t = setup();
+    await t.handlers['filing.accept']({ highlightId: 'hl-any00001' }, extensionSender());
+    expect(t.filing.accept).toHaveBeenCalledWith('hl-any00001');
+  });
+
+  it('accepting from a private window follows the capture rule', async () => {
+    const url = 'https://example.com/notes/pharm';
+    const t = setup();
+    t.own('hl-own0001', url);
+    expect(
+      await code(t.handlers['filing.accept']({ highlightId: 'hl-own0001' }, incognitoSender(url))),
+    ).toBe('forbidden');
+    expect(t.filing.accept).not.toHaveBeenCalled();
+    const allowed = setup({ allowIncognitoCapture: true });
+    allowed.own('hl-own0001', url);
+    expect(
+      await code(
+        allowed.handlers['filing.accept']({ highlightId: 'hl-own0001' }, incognitoSender(url)),
+      ),
+    ).toBe('resolved');
   });
 });

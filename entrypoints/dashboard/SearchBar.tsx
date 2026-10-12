@@ -122,11 +122,17 @@ export function SearchBar({
 
       <p id={`${id}-status`} className="sv-small sv-muted dash-search__status" role="status">
         {indexNote ??
-          (searching && total !== null
-            ? `${total.toLocaleString()} ${total === 1 ? 'match' : 'matches'}${
-                extras ? ` in ${Math.max(1, Math.round(extras.took))} ms` : ''
-              }`
-            : 'Press / to search. Ctrl+K opens the command palette.')}{' '}
+          (searching && total !== null ? (
+            <>
+              {total.toLocaleString()} {total === 1 ? 'match' : 'matches'}
+              {/* The timing is for the eye: read aloud on every query it is noise. */}
+              {extras ? (
+                <span aria-hidden="true"> in {Math.max(1, Math.round(extras.took))} ms</span>
+              ) : null}
+            </>
+          ) : (
+            'Press / to search. Ctrl+K opens the command palette.'
+          ))}{' '}
         {hostState.phase === 'error' ? (
           <Button variant="ghost" onClick={onRebuild}>
             Rebuild the index

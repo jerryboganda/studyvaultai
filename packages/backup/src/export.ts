@@ -36,6 +36,8 @@ export interface ExportOptions {
   includeLocalOnlyTables?: readonly string[];
   /** Encrypts the whole archive (AES-256-GCM, PBKDF2-SHA-256 key). Lose it and the backup is gone. */
   passphrase?: string;
+  /** Marks the file as written by the backup-folder feature (manifest, and header when encrypted). */
+  origin?: 'backup-folder';
   /** PBKDF2 iterations; default 600 000. Lower values are for tests only. */
   kdfIterations?: number;
   /** Rows requested per readTable page. Default 500. */
@@ -284,6 +286,7 @@ export async function exportBackup(
       includesAttachments: tables.some((t) => t.localOnly === true),
       encrypted: options.passphrase !== undefined,
     },
+    ...(options.origin ? { origin: options.origin } : {}),
   };
   const manifest = await sealManifest(deps.subtle, base);
   sink.add(MANIFEST_FILE, textBytes(JSON.stringify(manifest, null, 2)), 6);
@@ -298,6 +301,7 @@ export async function exportBackup(
       bytes,
       options.passphrase as string,
       options.kdfIterations ?? DEFAULT_KDF_ITERATIONS,
+      options.origin,
     );
   }
   progress('done', null, tablesDone);

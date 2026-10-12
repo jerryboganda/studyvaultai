@@ -27,6 +27,7 @@ import {
 } from './core';
 import { STUDYVAULT_SYNC_POLICY, encodeEntityId } from '@sync';
 import { withDb, withWritableDb, type MetaRow, type StudyVaultDb } from './db';
+import { dropRelationsOf } from './relations';
 import { tableRegistry } from './registry';
 import type { SyncOpRow } from './sync';
 import type { PurgeResult, TrashItem, TrashKind, TrashRef } from './types';
@@ -773,6 +774,12 @@ async function purgeInTx(db: StudyVaultDb, refs: readonly TrashRef[]): Promise<P
   }
 
   if (textIds.size > 0) out.related.aiResults += await dropAiResults(db, textIds);
+  // Relations name highlights, notes and knowledge points by id: none may outlive an end. Every row
+  // removed above is in `gone` (highlights, their notes and knowledge points included).
+  const endIds = gone
+    .filter(([table]) => table === 'highlights' || table === 'notes' || table === 'knowledgePoints')
+    .map(([, key]) => String(key));
+  for (const id of await dropRelationsOf(db, endIds)) gone.push(['relations', id]);
   await scrubSyncBookkeeping(db, gone);
 
   await touchHighlights(db, [...touchedHighlights], ts);

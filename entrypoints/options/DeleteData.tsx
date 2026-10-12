@@ -257,18 +257,32 @@ export function DeleteData({ syncOn }: { syncOn: boolean }) {
               folders and tags;
             </li>
             <li>
+              your auto-filing rules, your syllabi with their coverage thresholds, and the links you
+              drew between items;
+            </li>
+            <li>
               the pages and PDFs they came from, any text recognised from scans, and kept PDF
               copies;
             </li>
-            <li>flashcards and review history;</li>
-            <li>AI drafts, your provider settings and your API key;</li>
+            <li>
+              flashcards and review history, a review session or exam in progress, and your exam
+              history;
+            </li>
+            <li>
+              AI drafts, your provider settings and your API key, with any fallback providers you
+              added and their keys;
+            </li>
             <li>
               sync settings, the sign-in and the records of what was sent, and the automatic copy
               StudyVault made before its last update;
             </li>
             <li>
-              your settings (theme, colours, deny list) and the access Chrome gave StudyVault to
-              websites, so it stops starting on them;
+              your settings (theme, colours, deny list, study reminder) and the access Chrome gave
+              StudyVault to websites, so it stops starting on them;
+            </li>
+            <li>
+              the reference to the backup folder you chose and its last-backup status (the backup
+              files already in that folder stay), and any auto-filing suggestions still waiting;
             </li>
             <li>
               the optional sign-in and timer permissions (identity, alarms) and the display

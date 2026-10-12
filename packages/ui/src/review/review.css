@@ -90,6 +90,9 @@
   border-top: 1px solid var(--sv-border);
 }
 .rv-tablewrap {
+  /* The containing block of a visually hidden reason (a disabled button's) inside a cell: without
+     it the hidden text sits at the cell's x and widens the whole page past the wrapper's clip. */
+  position: relative;
   max-width: 100%;
   overflow-x: auto;
 }
@@ -602,7 +605,39 @@ button.rv-choice:hover {
   text-align: end;
 }
 
+/* Exam simulation -------------------------------------------------------------------------- */
+.rv-exam__clock {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sv-space-1);
+  white-space: nowrap;
+}
+.rv-exam__timer {
+  font-size: 1.25rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.rv-exam__heading {
+  font-size: var(--sv-text-md);
+}
+/* The picked option is marked by its border weight as well as its colour (1.4.1). */
+label.rv-choice {
+  cursor: pointer;
+}
+label.rv-choice:has(input:checked) {
+  border-color: var(--sv-accent);
+  border-width: 2px;
+  background: var(--sv-info-bg);
+}
+label.rv-choice input {
+  flex: none;
+  accent-color: var(--sv-accent);
+}
+
 @media (forced-colors: active) {
+  label.rv-choice:has(input:checked) {
+    border-color: Highlight;
+  }
   .rv-card,
   .rv-deck,
   .rv-rating,
@@ -631,4 +666,48 @@ button.rv-choice:hover {
     border: 2px solid Highlight;
     background: Canvas;
   }
+}
+
+/* Syllabus coverage ---------------------------------------------------------------------------- */
+.rv-syl-thresholds {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+  min-width: 0;
+  margin: 0;
+  padding: var(--sv-space-3);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+}
+.rv-syl-thresholds legend {
+  padding: 0 var(--sv-space-1);
+  font-weight: 700;
+}
+.rv-syl-num {
+  width: 6rem;
+}
+.rv-syl-error {
+  color: var(--sv-danger);
+  font-weight: 600;
+}
+.rv-syl-sort {
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  text-align: inherit;
+  cursor: pointer;
+}
+.rv-syl-sort:focus-visible {
+  outline: 2px solid var(--sv-focus);
+  outline-offset: 2px;
+}
+.rv-syl-table th[scope='row'] {
+  font-weight: 400;
+}
+.rv-syl-numeric {
+  text-align: end !important;
+  white-space: nowrap;
 }

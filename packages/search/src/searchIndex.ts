@@ -32,6 +32,21 @@ import {
 } from './analyzer';
 import { collectLeaves, parseQuery } from './query';
 import type { ParsedQuery, QueryNode, QueryWarning } from './query';
+import {
+  COMMON_TERM_FLOOR,
+  COMMON_TERM_FRACTION,
+  RELATED_DEFAULT_LIMIT,
+  RELATED_DEFAULT_TERMS,
+  RELATED_FIELDS,
+  RELATED_MAX_LIMIT,
+  RELATED_MAX_TERMS,
+  contentFields,
+  explainShared,
+  highlightOf,
+  relatedTerms,
+  sourceKeyOf,
+} from './related';
+import type { RelatedHit, RelatedOptions, RelatedResult } from './related';
 import { FIELD_WEIGHTS, SEARCH_FIELDS, SearchDocumentSchema } from './schema';
 import type { SearchDocument, SearchField } from './schema';
 import { buildSnippet, matchedSpans } from './snippets';
@@ -187,6 +202,14 @@ export interface SearchIndex {
   applyChangesAsync(docs: readonly unknown[], options?: ApplyAsyncOptions): Promise<ApplyResult>;
   clear(): void;
   search(query: string, options?: SearchOptions): SearchResult;
+  /**
+   * The highlights of the vault that share the most telling words with this document (a highlight or
+   * a note), from the same lexical index: no network, no model. The document's own highlight, trashed
+   * highlights (unless asked for) and notes attached to nothing are never returned. See related.ts.
+   */
+  related(id: string, options?: RelatedOptions): RelatedResult;
+  /** The same for free text, such as a knowledge point: nothing is excluded as "its own". */
+  relatedToText(text: string, options?: RelatedOptions): RelatedResult;
   stats(): IndexStats;
   /** Versioned JSON text for the meta table; restore with `deserializeSearchIndex`. */
   serialize(): string;
@@ -474,6 +497,8 @@ const LEAF_OPTIONS = {
 /** Minimal view of MiniSearch's internal radix tree (version-pinned; feature-detected). */
 interface Vocabulary {
   has(key: string): boolean;
+  /** field id -> (internal document id -> frequency) of one exact term. */
+  get(key: string): Map<number, Map<number, number>> | undefined;
   atPrefix(prefix: string): { keys(): { next(): { done?: boolean } } };
   fuzzyGet(key: string, maxEditDistance: number): Map<string, [unknown, number]>;
 }
@@ -482,10 +507,31 @@ function vocabularyOf(core: MiniSearch<SearchDocument>): Vocabulary | null {
   const v = (core as unknown as { _index?: Partial<Vocabulary> })._index;
   return v &&
     typeof v.has === 'function' &&
+    typeof v.get === 'function' &&
     typeof v.atPrefix === 'function' &&
     typeof v.fuzzyGet === 'function'
     ? (v as Vocabulary)
     : null;
+}
+
+const RELATED_FIELD_IDS = RELATED_FIELDS.map((f) => SEARCH_FIELDS.indexOf(f));
+
+const clampInt = (value: number | undefined, fallback: number, max: number): number =>
+  Math.min(max, Math.max(1, Math.floor(value ?? fallback)));
+
+/** Documents holding `term` in a related field. */
+function docFreq(vocab: Vocabulary, term: string): number {
+  const data = vocab.get(term);
+  if (!data) return 0;
+  const lists: Array<Map<number, number>> = [];
+  for (const id of RELATED_FIELD_IDS) {
+    const m = data.get(id);
+    if (m) lists.push(m);
+  }
+  if (lists.length <= 1) return lists[0]?.size ?? 0;
+  const ids = new Set<number>();
+  for (const m of lists) for (const id of m.keys()) ids.add(id);
+  return ids.size;
 }
 
 function intersect(maps: Scores[]): Scores {
@@ -535,6 +581,8 @@ class Index implements SearchIndex {
   private readonly docs = new Map<string, Stored>();
   /** highlightId -> live note documents attached to it (for `has:note`). */
   private readonly noteRefs = new Map<string, number>();
+  /** highlightId -> every note document attached to it, trashed or not (for `related`). */
+  private readonly notesOf = new Map<string, Set<string>>();
 
   constructor(options: SearchIndexOptions, core?: MiniSearch<SearchDocument>) {
     this.stop = stopSet(options.stopWords);
@@ -562,7 +610,13 @@ class Index implements SearchIndex {
   }
 
   private track(doc: SearchDocument, delta: 1 | -1): void {
-    if (doc.docType !== 'note' || doc.highlightId === null || doc.deletedAt !== null) return;
+    if (doc.docType !== 'note' || doc.highlightId === null) return;
+    let notes = this.notesOf.get(doc.highlightId);
+    if (delta > 0) {
+      if (!notes) this.notesOf.set(doc.highlightId, (notes = new Set()));
+      notes.add(doc.id);
+    } else if (notes?.delete(doc.id) && notes.size === 0) this.notesOf.delete(doc.highlightId);
+    if (doc.deletedAt !== null) return;
     const next = (this.noteRefs.get(doc.highlightId) ?? 0) + delta;
     if (next > 0) this.noteRefs.set(doc.highlightId, next);
     else this.noteRefs.delete(doc.highlightId);
@@ -652,6 +706,7 @@ class Index implements SearchIndex {
     this.core = newCore(this.stop);
     this.docs.clear();
     this.noteRefs.clear();
+    this.notesOf.clear();
   }
 
   stats(): IndexStats {
@@ -1006,6 +1061,121 @@ class Index implements SearchIndex {
       matchedTerms: [...terms],
       highlights,
     };
+  }
+
+  // --- related highlights (method and limits: related.ts) -----------------------------------
+
+  related(id: string, options: RelatedOptions = {}): RelatedResult {
+    const s = this.docs.get(id);
+    if (!s) return { found: false, hits: [], total: 0, terms: [], took: 0 };
+    const d = s.doc;
+    return this.relatedFrom(contentFields(d), highlightOf(d) ?? d.id, sourceKeyOf(d), options);
+  }
+
+  relatedToText(text: string, options: RelatedOptions = {}): RelatedResult {
+    return this.relatedFrom([['quote', text]], null, null, options);
+  }
+
+  /** Content terms of one highlight's documents (it and its notes), counted per document. */
+  private ownTermCounts(group: string): Map<string, number> {
+    const out = new Map<string, number>();
+    for (const id of [group, ...(this.notesOf.get(group) ?? [])]) {
+      const s = this.docs.get(id);
+      if (!s) continue;
+      for (const term of relatedTerms(contentFields(s.doc), this.stop).keys()) {
+        out.set(term, (out.get(term) ?? 0) + 1);
+      }
+    }
+    return out;
+  }
+
+  private relatedFrom(
+    fields: ReadonlyArray<readonly [SearchField, string]>,
+    group: string | null,
+    sourceKey: string | null,
+    options: RelatedOptions,
+  ): RelatedResult {
+    const t0 = nowMs();
+    const limit = clampInt(options.limit, RELATED_DEFAULT_LIMIT, RELATED_MAX_LIMIT);
+    const maxTerms = clampInt(options.maxTerms, RELATED_DEFAULT_TERMS, RELATED_MAX_TERMS);
+    const includeDeleted = options.includeDeleted === true;
+    const sameSource = options.excludeSameSource === true && sourceKey !== null;
+
+    // Terms are judged by the documents OTHER than the source's own highlight: its notes repeat its
+    // quote, so counting them would make its rarest words look shared (and then match nothing).
+    const own = group === null ? null : this.ownTermCounts(group);
+    const vocab = vocabularyOf(this.core);
+    const n = this.docs.size;
+    const common = Math.max(COMMON_TERM_FLOOR, Math.ceil(n * COMMON_TERM_FRACTION));
+    const ranked: Array<{ term: string; weight: number; shown: string; rank: number }> = [];
+    for (const [term, w] of relatedTerms(fields, this.stop)) {
+      const df = vocab ? docFreq(vocab, term) - (own?.get(term) ?? 0) : 1;
+      if (df < 1 || df > common) continue; // held by no other document, or by far too many
+      const idf = Math.log(1 + (n - df + 0.5) / (df + 0.5));
+      ranked.push({ term, weight: w.weight, shown: w.shown, rank: w.weight * idf });
+    }
+    ranked.sort((a, b) => q6(b.rank) - q6(a.rank) || cmpStr(a.term, b.term));
+    const used = ranked.slice(0, maxTerms);
+    const terms = used.map((u) => u.shown);
+    if (used.length === 0) return { found: true, hits: [], total: 0, terms, took: nowMs() - t0 };
+
+    const boost = new Map(used.map((u) => [u.term, u.weight] as const));
+    const order = new Map(used.map((u, i) => [u.term, i] as const));
+    const shown = new Map(used.map((u) => [u.term, u.shown] as const));
+    const found = this.core.search(used.map((u) => u.term).join(' '), {
+      fields: [...RELATED_FIELDS],
+      boost: FIELD_WEIGHTS as Record<string, number>,
+      combineWith: 'OR',
+      prefix: false,
+      fuzzy: false,
+      tokenize: (t) => t.split(' '),
+      processTerm: (t) => t,
+      boostTerm: (t) => boost.get(t) ?? 1,
+      filter: (r) => {
+        const d = this.docs.get(r.id as string)?.doc;
+        if (!d || d.quote === '') return false; // a note whose highlight is gone cannot be opened
+        const h = highlightOf(d);
+        if (h === null || h === group) return false; // free-standing note, or the source's own
+        if (!includeDeleted && d.deletedAt !== null) return false;
+        return !(sameSource && sourceKeyOf(d) === sourceKey);
+      },
+    });
+
+    const cands = found.map((r) => ({
+      s: this.docs.get(r.id as string)!,
+      k: q6(r.score),
+      score: r.score,
+      terms: r.terms as string[],
+    }));
+    // Best score first; on a tie the highlight leads its notes, then the newer, then the id.
+    cands.sort(
+      (a, b) =>
+        b.k - a.k ||
+        (a.s.doc.docType === b.s.doc.docType ? 0 : a.s.doc.docType === 'highlight' ? -1 : 1) ||
+        cmpStr(b.s.doc.updatedAt, a.s.doc.updatedAt) ||
+        cmpStr(a.s.doc.id, b.s.doc.id),
+    );
+    // One hit per highlight: the best-scoring of its documents stands for it (as in `collapseNotes`).
+    const seen = new Set<string>();
+    const hits: RelatedHit[] = [];
+    for (const c of cands) {
+      const h = highlightOf(c.s.doc)!;
+      if (seen.has(h)) continue;
+      seen.add(h);
+      if (hits.length >= limit) continue;
+      const shared = c.terms
+        .filter((t) => order.has(t))
+        .sort((a, b) => order.get(a)! - order.get(b)!)
+        .map((t) => shown.get(t)!);
+      hits.push({
+        highlightId: h,
+        doc: c.s.doc,
+        score: c.score,
+        sharedTerms: shared,
+        explanation: explainShared(shared),
+      });
+    }
+    return { found: true, hits, total: seen.size, terms, took: nowMs() - t0 };
   }
 
   private facets(stored: Stored[]): Facets {

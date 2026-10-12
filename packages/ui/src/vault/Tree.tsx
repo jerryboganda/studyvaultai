@@ -16,6 +16,15 @@ import {
   type VisibleNode,
 } from './treeModel';
 
+/** Levels that still indent. Deeper nodes keep this indent (`aria-level` carries the real depth), so a
+ * 32-level tree never pushes its labels out of a 320 px panel (288 px wide: 96 px of indent leaves
+ * the label about 120 px). */
+export const MAX_INDENT_LEVELS = 6;
+const INDENT_PX = 16;
+/** Indent in px for a node at `level` (1 = top). */
+export const indentFor = (level: number): number =>
+  Math.min(Math.max(level - 1, 0), MAX_INDENT_LEVELS) * INDENT_PX;
+
 export interface TreeHandle {
   /** Move keyboard focus into the tree (to `id`, else the current item). */
   focus(id?: string): void;
@@ -166,7 +175,7 @@ export function Tree({
             aria-selected={id === selectedId}
             data-tree-id={id}
             className="sv-treeitem"
-            style={{ paddingInlineStart: `calc(var(--sv-space-2) + ${(node.level - 1) * 16}px)` }}
+            style={{ paddingInlineStart: `calc(var(--sv-space-2) + ${indentFor(node.level)}px)` }}
             onFocus={(e) => {
               if (e.target === e.currentTarget) setFocused(id);
             }}

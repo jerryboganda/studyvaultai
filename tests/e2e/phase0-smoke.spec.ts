@@ -31,6 +31,7 @@ test.describe('Phase 0: production build loads in real Chromium', () => {
         'focus-toolbar',
         'next-highlight',
         'previous-highlight',
+        'focus-search',
       ]),
     );
     for (const [name, command] of Object.entries(commands)) {

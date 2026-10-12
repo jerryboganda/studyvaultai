@@ -62,7 +62,7 @@ function measure(runs: number, fn: (i: number) => unknown): Samples {
 }
 
 const report: string[] = [];
-/** Print one line; returns the CPU p95 the budget is asserted on. */
+/** Print one line; returns the WALL p95 the budget is asserted on (CPU time includes GC helper threads and is only reported). */
 const note = (label: string, s: Samples, budget?: number) => {
   const f = (n: number) => n.toFixed(1).padStart(7);
   report.push(
@@ -72,7 +72,7 @@ const note = (label: string, s: Samples, budget?: number) => {
       percentile(s.cpu, 95),
     )} ms${budget ? `  (budget ${budget} ms p95)` : ''}`,
   );
-  return percentile(s.cpu, 95);
+  return percentile(s.wall, 95);
 };
 
 /** A learner's library: ~30% new, ~10% in a learning step, the rest graduated at varied ages. */

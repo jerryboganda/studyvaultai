@@ -1,6 +1,7 @@
 import { browser } from 'wxt/browser';
-import { StudyVaultError } from '@shared';
+import { PENDING_SEARCH_KEY, StudyVaultError } from '@shared';
 import { callTab, getTrustedSettings, updateSettings } from '@runtime';
+import { dashboardUrl } from '@ui/vault/dashboardLink'; // imports only wxt/browser: no UI in the worker
 import type { Badge, CommandDeps, MenuPort } from './commands';
 import type { SessionArea } from './handlers';
 import {
@@ -82,9 +83,17 @@ export function createBadgePort(defaultTitle: string, ms = BADGE_MS) {
     await browser.action.setBadgeText({ tabId, text: badge.text });
     await browser.action.setTitle({ tabId, title: badge.title });
     setTimeout(() => {
-      // Best effort: the worker may be suspended before this fires.
-      void browser.action.setBadgeText({ tabId, text: '' }).catch(() => undefined);
-      void browser.action.setTitle({ tabId, title: defaultTitle }).catch(() => undefined);
+      // Best effort: the worker may be suspended before this fires. A tab-scoped value hides the
+      // global one until the tab navigates, even an empty one, so put back what every other tab
+      // shows (the due count, when the person turned reminders on) instead of blanking this one.
+      void (async () => {
+        const text = await browser.action.getBadgeText({});
+        const title = (await browser.action.getTitle({})) || defaultTitle;
+        await browser.action.setBadgeText({ tabId, text });
+        await browser.action.setTitle({ tabId, title });
+        const color = await browser.action.getBadgeBackgroundColor({});
+        await browser.action.setBadgeBackgroundColor({ tabId, color });
+      })().catch(() => undefined);
     }, ms);
   };
 }
@@ -98,6 +107,13 @@ export function browserCommandDeps(site: SiteAccess): CommandDeps {
     allowIncognitoCapture: async () => (await getTrustedSettings()).allowIncognitoCapture,
     focusToolbar: (tabId) => callTab(tabId, 'content.focusToolbar', {}),
     stepHighlight: (tabId, direction) => callTab(tabId, 'content.stepHighlight', { direction }),
+    isDashboardUrl: (url) => {
+      if (!url) return false;
+      const page = dashboardUrl();
+      return url === page || url.startsWith(`${page}?`) || url.startsWith(`${page}#`);
+    },
+    requestSearchFocus: (target) =>
+      browser.storage.session.set({ [PENDING_SEARCH_KEY]: { target, at: Date.now() } }),
     openSidePanel: async (windowId) => {
       try {
         await browser.sidePanel.open({ windowId });

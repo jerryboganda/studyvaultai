@@ -14,6 +14,7 @@ import {
   StudyVaultError,
   type Attachment,
   type BankRecord,
+  type FilingRule,
   type Folder,
   type Highlight,
   type HighlightBank,
@@ -21,7 +22,9 @@ import {
   type Note,
   type OcrPage,
   type PdfDocument,
+  type Relation,
   type Source,
+  type Syllabus,
   type Tag,
 } from '@shared';
 import { isNewerRow, normaliseRow } from './rows';
@@ -91,8 +94,22 @@ export const SCHEMA_V3 = {
   syncQuarantine: 'id, entityType, reason, at',
 } as const;
 
+/**
+ * Dexie store definitions of schema version 4 (ADR-011). Additive: three user-data tables, no
+ * existing table changes. A boolean is not an IndexedDB key, so "enabled rules by order" is the
+ * `order` index with `enabled` filtered in code (the same way `cards.suspended` is). `fromId` and
+ * `toId` alone are indexed too: ids are unique across tables, so purge finds every relation that
+ * touches a removed row with one lookup per id instead of one per (kind, id).
+ */
+export const SCHEMA_V4 = {
+  ...SCHEMA_V3,
+  filingRules: 'id, order, updatedAt, deletedAt',
+  syllabi: 'id, updatedAt, deletedAt',
+  relations: 'id, [fromKind+fromId], [toKind+toId], fromId, toId, updatedAt, deletedAt',
+} as const;
+
 /** The Dexie (IndexedDB) version this build declares. Not the per-record `schemaVersion`. */
-export const DB_VERSION = 3;
+export const DB_VERSION = 4;
 
 /** Row of a table whose entity schema belongs to another module (study, ai, sync). */
 export type ForeignRow = { id: string } & Record<string, unknown>;
@@ -209,6 +226,34 @@ export async function upgradeV2ToV3(tx: Transaction): Promise<UpgradeV3Stats> {
   };
   await metaTable.put(marker);
   return stats;
+}
+
+/**
+ * v3 -> v4. The three new tables start empty and no existing row is read or written: the only thing
+ * to do is advance the marker, keeping what earlier steps recorded. Safe to run again (it rewrites
+ * the same marker fields), which is also what "re-opening changes nothing observable" relies on.
+ */
+export async function upgradeV3ToV4(tx: Transaction): Promise<void> {
+  const ts = new Date().toISOString();
+  const metaTable = tx.table('meta');
+  const previous = (await metaTable.get(META_SCHEMA_KEY)) as MetaRow | undefined;
+  const prior =
+    previous && typeof previous.value === 'object' && previous.value !== null
+      ? (previous.value as Record<string, unknown>)
+      : {};
+  const marker: MetaRow = {
+    key: META_SCHEMA_KEY,
+    value: {
+      recordSchemaVersion: SCHEMA_VERSION,
+      migratedFrom: 3,
+      migratedAt: ts,
+      ...prior,
+      dbVersion: 4,
+      v4MigratedAt: typeof prior.v4MigratedAt === 'string' ? prior.v4MigratedAt : ts,
+    },
+    updatedAt: ts,
+  };
+  await metaTable.put(marker);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -409,6 +454,9 @@ export class StudyVaultDb extends Dexie {
   declare syncEntityMeta: Table<Record<string, unknown>, [string, string]>;
   declare syncConflicts: Table<{ id: string } & Record<string, unknown>, string>;
   declare syncQuarantine: Table<{ id: string } & Record<string, unknown>, string>;
+  declare filingRules: Table<FilingRule, string>;
+  declare syllabi: Table<Syllabus, string>;
+  declare relations: Table<Relation, string>;
   declare meta: Table<MetaRow, string>;
 
   constructor(name: string = DB_NAME) {
@@ -423,6 +471,11 @@ export class StudyVaultDb extends Dexie {
       .stores(SCHEMA_V3)
       .upgrade(async (tx) => {
         await upgradeV2ToV3(tx);
+      });
+    this.version(4)
+      .stores(SCHEMA_V4)
+      .upgrade(async (tx) => {
+        await upgradeV3ToV4(tx);
       });
     this.use(syncCaptureMiddleware(() => this.syncInterceptor));
   }
@@ -688,7 +741,15 @@ export async function assertNoNewerRows(db: StudyVaultDb): Promise<void> {
       throw refuse();
     }
   }
-  for (const table of [db.banks, db.folders, db.tags, db.documents] as const) {
+  for (const table of [
+    db.banks,
+    db.folders,
+    db.tags,
+    db.documents,
+    db.filingRules,
+    db.syllabi,
+    db.relations,
+  ] as const) {
     if ((await table.filter(isNewerRow).first()) !== undefined) throw refuse();
   }
   verifiedCurrent = true;

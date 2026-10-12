@@ -30,7 +30,7 @@ import type { BankInfo, FolderNode } from './types';
 
 /**
  * Bank and folder hierarchy. Bank > Folder > Topic > Subtopic is one nested `folders` table
- * (max depth 8). Every write is one transaction and signals once after it commits.
+ * (max depth `MAX_FOLDER_DEPTH`). Every write is one transaction and signals once after it commits.
  */
 
 const byOrder = (a: Folder, b: Folder) =>

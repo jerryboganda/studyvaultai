@@ -3,6 +3,7 @@ import { buildOcrPageText } from '@pdf';
 import { emptyCorrections, revertLine, setLineText } from '@ocr/corrections';
 import { OCR_ERROR_MESSAGES } from '@ocr/errors';
 import type { OcrJobSummary } from '@ocr/runner';
+import type { OcrPage } from '@ocr/types';
 import {
   confidenceBand,
   correctedLines,
@@ -168,6 +169,7 @@ describe('confidence and messages', () => {
     requested: 3,
     skipped: [],
     saved: [1, 2, 3],
+    reoriented: [],
     failed: [],
     durationMs: 10,
     ...over,
@@ -220,5 +222,122 @@ describe('confidence and messages', () => {
     expect(p('recognizing')).toBe('Recognising text on page 7 (2 of 4)…');
     expect(p('initializing')).toContain('Starting the text recogniser');
     expect(p('saved', 2)).toBe('2 of 4 pages done.');
+  });
+
+  it('says it is checking orientation, and which pages were turned to be read', () => {
+    const progress = describeProgress({
+      phase: 'orienting',
+      pageNumber: 1,
+      completed: 0,
+      total: 1,
+      progress: 0.9,
+    });
+    expect(progress).toMatch(/checking orientation of page 1/i);
+
+    const one = describeOutcome(
+      summary({ saved: [1], reoriented: [{ pageNumber: 1, orientation: 90 }] }),
+    );
+    expect(one.tone).toBe('success');
+    expect(one.title).toBe('Recognised 1 page');
+    expect(one.detail).toContain(
+      'Page 1 is stored sideways (its lines run from bottom to top); it was turned to be read.',
+    );
+    expect(one.detail).toContain('may be wrong');
+
+    const down = describeOutcome(
+      summary({ saved: [2], reoriented: [{ pageNumber: 2, orientation: 180 }] }),
+    );
+    expect(down.detail).toContain('Page 2 is stored upside down');
+    const other = describeOutcome(
+      summary({ saved: [3], reoriented: [{ pageNumber: 3, orientation: 270 }] }),
+    );
+    expect(other.detail).toContain('(its lines run from top to bottom)');
+
+    const several = describeOutcome(
+      summary({
+        saved: [1, 2, 3],
+        reoriented: [
+          { pageNumber: 1, orientation: 90 },
+          { pageNumber: 3, orientation: 270 },
+        ],
+      }),
+    );
+    expect(several.detail).toContain('Pages 1, 3 are stored sideways or upside down');
+    // a pass with no turned page says nothing about turning
+    expect(describeOutcome(summary({})).detail).not.toContain('turned');
+  });
+});
+
+describe('orientation in stored rows', () => {
+  const row = (extra: Record<string, unknown> = {}) => ({
+    pageNumber: 1,
+    text: 'Technology Goals',
+    correctedText: null,
+    words: [
+      { text: 'Technology', x: 0.1, y: 0.2, w: 0.04, h: 0.3, confidence: 0.9 },
+      { text: 'Goals', x: 0.1, y: 0.55, w: 0.04, h: 0.15, confidence: 0.9 },
+    ],
+    ...extra,
+  });
+
+  it('keeps the turn of a recognised page through a save, a reload and a correction', () => {
+    const po = pageOcrFromStored(row({ orientation: 90 }));
+    expect(po.page.orientation).toBe(90);
+    // the boxes are already in the page's own frame: no second rotation is applied
+    expect(po.page.rotation).toBe(0);
+    const input = storedInputFrom('doc', po);
+    expect(input.orientation).toBe(90);
+    expect(input.words[0]!.y).toBeCloseTo(0.2, 6);
+    expect(input.words[0]!.h).toBeCloseTo(0.3, 6);
+    // saving a correction keeps it
+    const corrected = {
+      ...po,
+      corrections: setLineText(emptyCorrections(), po.page, 0, 'Technology Goals!'),
+    };
+    expect(storedInputFrom('doc', corrected).orientation).toBe(90);
+  });
+
+  it('reads a row stored before orientation checks as read upright', () => {
+    const po = pageOcrFromStored(row());
+    expect(po.page.orientation).toBeUndefined();
+    expect(storedInputFrom('doc', po).orientation).toBe(0);
+  });
+
+  it('turns the boxes of a freshly recognised, turned page into the page frame', () => {
+    // The turned image is 3000 x 2000 (a page of 2000 x 3000 stored sideways, turned 90 clockwise).
+    const page: OcrPage = {
+      pageNumber: 1,
+      width: 3000,
+      height: 2000,
+      rotation: 90,
+      orientation: 90,
+      scale: null,
+      confidence: 90,
+      text: 'Technology',
+      words: [
+        { text: 'Technology', confidence: 90, bbox: { x: 300, y: 200, w: 600, h: 100 }, line: 0 },
+      ],
+      lines: [
+        {
+          text: 'Technology',
+          confidence: 90,
+          bbox: { x: 300, y: 200, w: 600, h: 100 },
+          first: 0,
+          end: 1,
+        },
+      ],
+      engine: { name: 'tesseract', version: 'test', language: 'eng' },
+      recognizedAt: '2026-01-01T00:00:00.000Z',
+    };
+    const input = storedInputFrom('doc', { page, corrections: emptyCorrections() });
+    expect(input.orientation).toBe(90);
+    const w = input.words[0]!;
+    // 0.1 across, 0.1 down and 0.2 wide in the turned image: 0.1 from the left of the stored page,
+    // 0.7 down it, 0.05 wide and 0.2 high (what read left to right now runs up the page)
+    expect(w.x).toBeCloseTo(0.1, 6);
+    expect(w.y).toBeCloseTo(0.7, 6);
+    expect(w.w).toBeCloseTo(0.05, 6);
+    expect(w.h).toBeCloseTo(0.2, 6);
+    expect(w.h).toBeGreaterThan(w.w); // a word of a sideways line is tall on the stored page
   });
 });

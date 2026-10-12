@@ -38,6 +38,9 @@ describe('TrashView', () => {
     expect(screen.getByTestId('trash-list').textContent).toContain('First deleted quote');
     expect(screen.getByTestId('trash-list').textContent).toContain('Cell biology notes');
     expect(screen.queryByText('Still alive')).toBeNull();
+    // A named group of buttons in the Tab order, not a toolbar that promises arrow keys.
+    expect(screen.getByRole('group', { name: 'Trash actions' })).toBeTruthy();
+    expect(screen.queryByRole('toolbar')).toBeNull();
   });
 
   it('restores the selected items and says how many', async () => {

@@ -60,6 +60,30 @@ describe('without a button held', () => {
   });
 });
 
+describe('flush (a keyboard command asks for the selection now)', () => {
+  it('evaluates at once, once, and cancels the pause that was waiting', () => {
+    const evaluate = vi.fn();
+    gate = createSelectionGate(document, evaluate);
+    gate.notify();
+    expect(gate.flush()).toBe(true);
+    expect(evaluate).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(5000);
+    expect(evaluate).toHaveBeenCalledTimes(1);
+  });
+
+  it('is refused while the button is held, and the release still evaluates', () => {
+    const evaluate = vi.fn();
+    gate = createSelectionGate(document, evaluate);
+    press();
+    gate.notify();
+    expect(gate.flush()).toBe(false);
+    expect(evaluate).not.toHaveBeenCalled();
+    lift();
+    vi.advanceTimersByTime(80);
+    expect(evaluate).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('a drag', () => {
   it('is not evaluated while the button is down, however long it goes on', () => {
     const evaluate = vi.fn();

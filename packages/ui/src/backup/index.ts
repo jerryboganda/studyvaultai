@@ -1,5 +1,6 @@
 export { BackupSection, type BackupSectionProps } from './BackupSection';
 export { ExportPanel } from './ExportPanel';
+export { BackupReminder } from './BackupReminder';
 export { ImportWizard } from './ImportWizard';
 export { ReadableExports } from './ReadableExports';
 export { ExternalImport } from './ExternalImport';

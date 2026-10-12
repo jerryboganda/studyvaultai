@@ -23,6 +23,7 @@ import {
 import { HANDLER_TIMEOUT_MS, type Handlers, type callBackground } from '@runtime';
 import type { ContentScriptContext } from 'wxt/utils/content-script-context';
 import type { CaptureHost, CaptureUi, CreateCaptureUi, SaveRequest } from './contract';
+import { pushSaved } from './filingNotice';
 import {
   inspectSelection,
   isEditingContext,
@@ -310,20 +311,25 @@ export function startController(deps: ControllerDeps): Controller {
           : result.addedToBank
             ? `Already saved. Added to ${bank}`
             : `Already saved in ${bank}`;
-    session?.ui?.toast({
-      text,
-      tone: 'success',
-      action: undoable
-        ? {
-            label: 'Undo',
-            run: () => {
-              host.undo(result.highlight.id).catch((err: unknown) => {
-                session?.ui?.toast({ text: describeError(err), tone: 'error' });
-              });
-            },
-          }
-        : undefined,
-    });
+    pushSaved(
+      result,
+      {
+        text,
+        tone: 'success',
+        action: undoable
+          ? {
+              label: 'Undo',
+              run: () => {
+                host.undo(result.highlight.id).catch((err: unknown) => {
+                  session?.ui?.toast({ text: describeError(err), tone: 'error' });
+                });
+              },
+            }
+          : undefined,
+      },
+      host,
+      (notice) => session?.ui?.toast(notice),
+    );
   }
 
   /** Saves and, on failure, tells the user and offers a retry. The selection is never discarded. */
@@ -410,6 +416,11 @@ export function startController(deps: ControllerDeps): Controller {
     listBanks: () => rpc('banks.list', {}),
     createBank: (name) => rpc('bank.create', { name }),
     undo: removeHighlight,
+    acceptFiling: (highlightId) => rpc('filing.accept', { highlightId }),
+    dismissFiling: async (highlightId) => {
+      await rpc('filing.dismiss', { highlightId });
+    },
+    undoFiling: (highlightId) => rpc('filing.undo', { highlightId }),
     remove: removeHighlight,
 
     async update(id, patch) {
@@ -797,6 +808,10 @@ export function startController(deps: ControllerDeps): Controller {
     }
 
     wire(s);
+    // The page raised its selection events before these listeners existed (the script answers a
+    // ping while the overlay is still being built, and a person may select text and only then
+    // switch StudyVault on): look at the selection that is there now, once, so it gets its toolbar.
+    evaluateSelection();
     if (doc.readyState === 'loading') {
       // The body is still being parsed: resolving now would call every highlight lost.
       const onParsed = (): void => void rehydrator.refresh();

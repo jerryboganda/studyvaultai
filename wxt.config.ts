@@ -38,9 +38,11 @@ export default defineConfig({
     // activeTab, or persistently via optional host permissions the user grants explicitly.
     permissions: ['storage', 'sidePanel', 'contextMenus', 'activeTab', 'scripting'],
     optional_host_permissions: ['https://*/*', 'http://*/*'],
-    // Optional sync only (docs/adr/009). Both are requested at runtime, from the click that turns
-    // sync on, and are never granted at install: "identity" opens the sign-in window
-    // (chrome.identity.launchWebAuthFlow), "alarms" lets the worker sync on a timer.
+    // Optional: sync and the daily study reminder (docs/adr/009, 019). Both are requested at
+    // runtime, from the click that needs them, and are never granted at install: "identity" opens
+    // the sync sign-in window (chrome.identity.launchWebAuthFlow); "alarms" lets the worker sync on
+    // a timer (asked for when sync is turned on) and fire the daily reminder (asked for when a
+    // reminder time is saved).
     optional_permissions: ['identity', 'alarms'],
     action: { default_title: 'StudyVault AI' },
     commands: {
@@ -52,7 +54,8 @@ export default defineConfig({
         suggested_key: { default: 'Alt+Shift+H' },
         description: 'Quick-save the current selection',
       },
-      // Chrome allows at most four suggested keys; previous-highlight is user-assignable.
+      // Chrome allows at most four suggested keys; previous-highlight and focus-search are
+      // user-assignable only (no `suggested_key`), so a fifth or sixth suggestion is not made.
       // [ and ] are not valid manifest keys, so the in-page Alt+Shift+] / [ stay as extra routes.
       'focus-toolbar': {
         suggested_key: { default: 'Alt+Shift+Y' },
@@ -64,6 +67,9 @@ export default defineConfig({
       },
       'previous-highlight': {
         description: 'Go to the previous highlight on the page',
+      },
+      'focus-search': {
+        description: 'Search your highlights: open the side panel on the search box',
       },
     },
     // Defence in depth. Local features (capture, banks, search, review, backup, OCR) make no network

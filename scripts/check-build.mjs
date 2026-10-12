@@ -89,7 +89,11 @@ for (const [name, sources] of Object.entries(policy)) {
 const commands = Object.keys(m.commands ?? {})
   .sort()
   .join(',');
-const wantCommands = 'focus-toolbar,next-highlight,open-side-panel,previous-highlight,quick-save';
+const wantCommands =
+  'focus-search,focus-toolbar,next-highlight,open-side-panel,previous-highlight,quick-save';
+// Chrome honours at most four suggested keys per extension; a fifth would be dropped silently.
+const suggested = Object.values(m.commands ?? {}).filter((c) => c.suggested_key).length;
+if (suggested > 4) fail(`${suggested} commands carry a suggested key; Chrome allows four`);
 if (commands !== wantCommands) fail(`commands "${commands}" != "${wantCommands}"`);
 
 // --- no remote code or assets in extension pages -------------------------------------------
@@ -111,10 +115,13 @@ if (walk(prod).some((f) => f.endsWith('.map'))) fail('source maps are shipped');
 const KB = 1024;
 const size = (rel) => statSync(join(prod, rel)).size;
 const budgets = [
-  ['content-scripts/highlighter.js', 450 * KB],
-  // The worker bundles @storage, which now includes the study, AI and sync repositories (they register
-  // their table schemas at import time, so they are not tree-shaken). 420 KB is a regress guard.
-  ['background.js', 420 * KB],
+  // Preact in place of React (docs/adr/012): 405 KB -> 209 KB measured; the filing notice and the
+  // selection-at-start fix took it to ~214 KB. Budget = measured + ~7%.
+  ['content-scripts/highlighter.js', 230 * KB],
+  // The worker bundles @storage, which includes the study, AI, sync, rules, syllabi and relations
+  // repositories (they register their table schemas at import time, so they are not tree-shaken), plus
+  // the filing, reminder and exam-free worker modules. 450 KB is a regress guard (measured ~425 KB).
+  ['background.js', 450 * KB],
 ];
 for (const [rel, max] of budgets) {
   if (!existsSync(join(prod, rel))) fail(`missing ${rel}`);
@@ -126,10 +133,15 @@ const ocrDir = join(prod, 'ocr');
 const total = walk(prod)
   .filter((f) => !f.startsWith(ocrDir + sep))
   .reduce((n, f) => n + statSync(f).size, 0);
-// Phase 1 shipped ~1.1 MB. PDF.js (worker, CJK character maps, standard fonts) and the new pages take
-// the non-OCR total to ~5.3 MB; 6500 KB leaves room for the dashboard/review pages. OCR assets are
+// Phase 1 shipped ~1.1 MB. PDF.js (worker, CJK character maps, standard fonts) and the pages take the
+// non-OCR total to ~6.3 MB after the Preact content script (-200 KB, docs/adr/012). The finish wave
+// (filing rules, syllabus, graph, AI router and chat, exam, reminders, import formats, backup folder,
+// related, bounded Markdown) measured 6643 KB in Actions run 38165977562 before the rules UI landed, so
+// 6800 KB leaves ~2% headroom. Typeset math (docs/adr/015) added the lazily loaded mathTypeset chunk
+// (temml 0.14.0 with mhchem, ~207 KB minified, ~61 KB gzip, fetched only when a note holds a formula)
+// and 2 KB of its stylesheet: measured 6662 KB before it, so 7000 KB keeps ~2% headroom. OCR assets are
 // budgeted separately above. Raise this only with a reason in the commit.
-const TOTAL_BUDGET_KB = 6500;
+const TOTAL_BUDGET_KB = 7000;
 if (total > TOTAL_BUDGET_KB * KB)
   fail(`total extension size ${Math.round(total / KB)} KB exceeds ${TOTAL_BUDGET_KB} KB`);
 

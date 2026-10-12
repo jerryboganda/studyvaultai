@@ -2,7 +2,14 @@ import { browser } from 'wxt/browser';
 import { defineBackground } from 'wxt/utils/define-background';
 import { BackgroundRpc } from '@shared';
 import { getTrustedSettings, serveRpc, updateSettings } from '@runtime';
-import { repo, withDb } from '@storage';
+import {
+  acceptFiling,
+  dismissFiling,
+  filingAfterCapture,
+  repo,
+  undoFiling,
+  withDb,
+} from '@storage';
 import { onboardingPath } from '@ui/shell/paths';
 import { createCommandHandlers, installContextMenu } from './commands';
 import { registerE2eHooks } from './e2e';
@@ -15,6 +22,7 @@ import {
   browserSiteDeps,
 } from './platform';
 import { registerPdfReaderMenu } from './pdf';
+import { registerReminders } from './reminders';
 import { createSiteAccess } from './siteAccess';
 import { registerSync } from './sync';
 
@@ -35,6 +43,12 @@ export default defineBackground(() => {
     BackgroundRpc,
     createHandlers({
       repo,
+      filing: {
+        afterCapture: (input) => filingAfterCapture(input),
+        accept: (id) => acceptFiling(id),
+        dismiss: (id) => dismissFiling(id),
+        undo: (id) => undoFiling(id),
+      },
       // The authoritative copy: a content script can write chrome.storage.local, not the database.
       getSettings: getTrustedSettings,
       updateSettings,
@@ -51,6 +65,10 @@ export default defineBackground(() => {
   browser.contextMenus.onClicked.addListener((info, tab) => {
     commands.onMenuClick(info.menuItemId, tab).catch(report);
   });
+
+  // Opt-in toolbar count and daily notice (see ./reminders.ts). With the feature off, a start reads
+  // one key of chrome.storage.local and nothing else.
+  const reminders = registerReminders(undefined, report);
 
   // Registrations may not survive an update and permissions can change outside the UI.
   browser.runtime.onInstalled.addListener((details) => {
@@ -76,9 +94,11 @@ export default defineBackground(() => {
   // policy): reconcile the registration in both directions.
   browser.permissions.onAdded.addListener(() => {
     site.sync().catch(report);
+    reminders.onPermissionsChanged().catch(report);
   });
   browser.permissions.onRemoved.addListener(() => {
     site.sync().catch(report);
+    reminders.onPermissionsChanged().catch(report);
   });
 
   // "Open in StudyVault reader" on links/pages/frames that look like PDFs (see ./pdf.ts).

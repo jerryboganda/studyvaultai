@@ -85,6 +85,27 @@ export const IMPORTED_SOURCE_URL_PREFIX = `${PLACEHOLDER_SOURCE_PREFIX}imported/
  */
 export const BACKUP_EXCLUDED_TABLES: readonly string[] = ['meta', 'syncOps'];
 
+/**
+ * Fields of an exported table that stay on this device: left out of every archive and of the rows a
+ * restore compares, whatever the stored row holds. `ocrPages.previousReading` is the one-step undo of
+ * a re-recognition (ADR-006 Amendment 5).
+ */
+export const BACKUP_LOCAL_FIELDS: Readonly<Record<string, readonly string[]>> = {
+  ocrPages: ['previousReading'],
+};
+
+/** The rows as an archive may carry them. Returns the same array when the table has no such field. */
+function forBackup(table: string, rows: Row[]): Row[] {
+  const fields = BACKUP_LOCAL_FIELDS[table];
+  if (!fields) return rows;
+  return rows.map((row) => {
+    if (!fields.some((f) => f in row)) return row;
+    const copy = { ...row };
+    for (const f of fields) delete copy[f];
+    return copy;
+  });
+}
+
 /** Live view of the registry minus the excluded tables (schemas other modules register show up). */
 export const backupTableRegistry: TableRegistry = {
   get schemaVersion() {
@@ -110,6 +131,9 @@ export const BACKUP_MIGRATIONS: readonly MigrationStep[] = [
   },
   // v3 added only device-local sync bookkeeping tables (never exported): rows are unchanged.
   { from: 2 },
+  // v4 added three tables (filingRules, syllabi, relations): an older archive simply lacks them, and
+  // a replace restore empties them (`tablesCleared`, "clearedWithoutArchiveData"). Rows unchanged.
+  { from: 3 },
 ];
 
 /** Tables whose ids share one namespace (same list as the integrity check). */
@@ -153,7 +177,7 @@ function liveSource(): BackupSource {
           afterKey === undefined
             ? table.toCollection()
             : table.where(':id').above(afterKey as IndexableType);
-        return rows.limit(limit).toArray();
+        return forBackup(name, await rows.limit(limit).toArray());
       });
     },
     counts() {
@@ -221,7 +245,9 @@ export async function createSnapshotSource(): Promise<BackupSource> {
       'r',
       specs.map((s) => tableOf(db, s.name)),
       async () => {
-        for (const spec of specs) data.set(spec.name, await tableOf(db, spec.name).toArray());
+        for (const spec of specs) {
+          data.set(spec.name, forBackup(spec.name, await tableOf(db, spec.name).toArray()));
+        }
       },
     ),
   );
@@ -597,7 +623,9 @@ export function installPreMigrationSnapshot(
         };
       } else {
         const raw = await ctx.snapshot(names);
-        const data = new Map(specs.map((s) => [s.name, raw[s.name] as Row[]] as const));
+        const data = new Map(
+          specs.map((s) => [s.name, forBackup(s.name, raw[s.name] as Row[])] as const),
+        );
         const appVersion = options.appVersion ?? manifestVersion();
         const out = await exportBackup(
           memorySource({ schemaVersion: ctx.fromVersion, tables: specs }, data),
@@ -742,7 +770,7 @@ export async function loadExportDataset(
 }
 
 // ---------------------------------------------------------------------------------------------
-// External (Markdown / CSV) highlights
+// External highlights (Markdown, CSV, Anki text, DOCX, PPTX, EPUB, HTML)
 // ---------------------------------------------------------------------------------------------
 
 /** quoteHash of every live highlight: input of the importer's duplicate detection. */
@@ -766,7 +794,10 @@ const ImportedRow = z.object({
   sourceTitle: z.string().nullable(),
   sourceUrl: z.string().max(MAX_URL_CHARS).nullable(),
   capturedAt: z.iso.datetime().nullable(),
-  format: z.enum(['markdown', 'csv']),
+  format: z.enum(['markdown', 'csv', 'anki', 'html', 'epub', 'docx', 'pptx']),
+  /** Documents and Anki: the file name and where in it ("Slide 3"); never a source address. */
+  file: z.string().max(MAX_TITLE_CHARS).nullish(),
+  locator: z.string().max(MAX_TITLE_CHARS).nullish(),
 });
 
 export interface ImportExternalResult {
@@ -778,14 +809,28 @@ export interface ImportExternalResult {
   /** The bank they went to (the Inbox when the requested bank is gone). */
   bankId: string;
   highlightIds: string[];
+  /** Names this import: its Sources are keyed `imported:<batchId>:<n>`. See `undoExternalImport`. */
+  batchId: string;
 }
+
+/** What each `format` is called in a sentence ("Imported from a CSV file"). */
+const FORMAT_NOUN: Record<z.infer<typeof ImportedRow>['format'], string> = {
+  markdown: 'a Markdown file',
+  csv: 'a CSV file',
+  anki: 'an Anki export',
+  html: 'an HTML file',
+  epub: 'an EPUB file',
+  docx: 'a Word document',
+  pptx: 'a PowerPoint file',
+};
 
 const trimTo = (s: string, max: number) => (s.length > max ? s.slice(0, max) : s);
 
 /**
- * Write reviewed rows from `importMarkdownHighlights` / `importCsvHighlights` into one bank, in one
- * transaction. Every row is re-validated (the UI is a boundary) and its hash recomputed. Rows get
- * `customFields: { importedFrom, needsReview: true }` and `captureMethod: 'import'`. Their Source
+ * Write reviewed rows from the external importers of @backup into one bank, in one transaction.
+ * Every row is re-validated (the UI is a boundary) and its hash recomputed. Rows get
+ * `customFields: { importedFrom, needsReview: true }` (plus `importedFile` and `importedLocator`
+ * for documents and Anki: the file name and "Slide 3") and `captureMethod: 'import'`. Their Source
  * is always a new one made by this import (never a Source a capture made): it shows the row's
  * http(s) address as the claim, or an `IMPORTED_SOURCE_URL_PREFIX` placeholder without one. Quotes
  * already in the vault are skipped, so importing a file twice adds nothing.
@@ -841,6 +886,7 @@ export async function importExternalHighlights(
           tagsCreated: 0,
           bankId: bank.id,
           highlightIds: [],
+          batchId: batch,
         };
 
         // An imported highlight never joins a Source that a capture made: the file's address is a
@@ -879,7 +925,7 @@ export async function importExternalHighlights(
             host: usable ? usable.host : 'imported',
             title: trimTo(
               (usable ? row.sourceTitle || usable.host : label) ||
-                `Imported from ${row.format === 'csv' ? 'a CSV file' : 'a Markdown file'}`,
+                `Imported from ${FORMAT_NOUN[row.format]}`,
               MAX_TITLE_CHARS,
             ),
           };
@@ -935,6 +981,8 @@ export async function importExternalHighlights(
           };
           if (row.bank) marker.importedBank = trimTo(row.bank, 500);
           if (row.folder) marker.importedFolder = trimTo(row.folder, 500);
+          if (row.file) marker.importedFile = trimTo(row.file, 500);
+          if (row.locator) marker.importedLocator = trimTo(row.locator, 500);
           const highlight: Highlight = {
             id: uuidv7(),
             schemaVersion: SCHEMA_VERSION,
@@ -992,12 +1040,45 @@ export async function importExternalHighlights(
   return result;
 }
 
+/**
+ * Undo one import by its `batchId`: its highlights go to the Trash, the same soft delete every
+ * delete in StudyVault is, so "Restore" brings them back. They are found through the import's own
+ * Sources (keyed `imported:<batchId>:<n>`), so nothing a capture made can be touched. The Sources
+ * and any tags the import made stay (a Source with no live highlight is not shown; tags are the
+ * person's to prune). Already-trashed rows are skipped; running it twice removes nothing more.
+ */
+export async function undoExternalImport(batchId: string): Promise<{ removed: number }> {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(batchId)) {
+    throw new StudyVaultError('invalid_request', 'That is not the name of an import.');
+  }
+  const prefix = `imported:${batchId}:`;
+  const removed = await withWritableDb((db) =>
+    db.transaction('rw', [db.sources, db.highlights], async () => {
+      const sourceIds = await db.sources.where('urlKey').startsWith(prefix).primaryKeys();
+      if (sourceIds.length === 0) return 0;
+      const live = await db.highlights
+        .where('sourceId')
+        .anyOf(sourceIds)
+        .filter((h) => h.deletedAt === null)
+        .primaryKeys();
+      const ts = now();
+      for (const id of live) await db.highlights.update(id, { deletedAt: ts, updatedAt: ts });
+      return live.length;
+    }),
+  );
+  if (removed > 0) await signalChange();
+  return { removed };
+}
+
 export interface NeedsReviewItem {
   id: string;
   quote: string;
   comment: string;
   importedFrom: string;
   capturedAt: string;
+  /** Documents and Anki: the file it came from and where in it. */
+  file?: string;
+  locator?: string;
 }
 
 /** Live highlights that were imported from a file and not yet marked reviewed (newest first). */
@@ -1017,6 +1098,12 @@ export async function listImportedNeedingReview(
         comment: h.userComment,
         importedFrom: String(h.customFields?.importedFrom ?? 'file'),
         capturedAt: h.capturedAt,
+        ...(typeof h.customFields?.importedFile === 'string'
+          ? { file: h.customFields.importedFile }
+          : {}),
+        ...(typeof h.customFields?.importedLocator === 'string'
+          ? { locator: h.customFields.importedLocator }
+          : {}),
       })),
     };
   });

@@ -10,6 +10,7 @@ import {
   type SearchDocument,
   type Settings,
 } from '@shared';
+import { readReminderFlag, writeReminderFlag } from '@ui/review/reminders';
 import { BIOLOGY, INBOX, makeChromeFakes, makeItem, rpc, store } from '@ui/testing/fakes';
 import { SidePanel } from './SidePanel';
 import { extras } from './testing';
@@ -510,6 +511,52 @@ describe('Review tab', () => {
 
 // ---------------------------------------------------------------------------------------------
 
+describe('daily review notice', () => {
+  const raise = () => writeReminderFlag({ at: Date.now(), expiresAt: Date.now() + 3_600_000 });
+
+  it('says how many cards are due above every tab, opens Review, and can be dismissed', async () => {
+    live();
+    extras.due = { total: 5, new: 5, learning: 0, review: 0 };
+    await raise();
+    await open();
+
+    expect(await screen.findByText('Time to review: 5 cards due')).toBeTruthy();
+    // Above the tabs: it is there on "This page" and stays when another tab is chosen.
+    expect(screen.getByRole('tab', { name: /^This page/, selected: true })).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Show review' }));
+    expect(screen.getByRole('tab', { name: /^Review/, selected: true })).toBeTruthy();
+    expect(screen.getByText('Time to review: 5 cards due')).toBeTruthy();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    await waitFor(() => expect(screen.queryByText(/Time to review/)).toBeNull());
+    expect(await readReminderFlag()).toBeNull();
+    expect(document.activeElement?.getAttribute('role')).toBe('tabpanel'); // not <body>
+  });
+
+  it('is not there when nothing is due, when none was raised, or while review is off', async () => {
+    live();
+    await raise();
+    await open(); // nothing due
+    await screen.findByRole('tab', { name: 'Review' });
+    expect(screen.queryByText(/Time to review/)).toBeNull();
+    cleanup();
+
+    extras.due = { total: 2, new: 2, learning: 0, review: 0 };
+    await writeReminderFlag(null);
+    await open();
+    await screen.findByRole('tab', { name: /^Review.*2/ });
+    expect(screen.queryByText(/Time to review/)).toBeNull();
+    cleanup();
+
+    await raise();
+    await open(features({ review: false }));
+    await screen.findByRole('tab', { name: 'Review' });
+    expect(screen.queryByText(/Time to review/)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+
 describe('sources', () => {
   it('opens a PDF source in the StudyVault reader at the highlight page and hides the made-up address', async () => {
     live();
@@ -622,6 +669,34 @@ describe('bank filter', () => {
       within(list).getByRole('button', { name: 'Show Organelles in Recent and Search' }),
     );
     expect(screen.getByTestId('bank-scope').textContent).toContain('Biology › Organelles');
+  });
+
+  it('offers chat with a bank only while AI is on; off, the button says why and opens nothing', async () => {
+    live();
+    store.reset([makeItem({ highlight: { exactQuote: 'Biology only.' }, banks: [BIOLOGY] })], []);
+    store.banks = [INBOX, BIOLOGY];
+    await open();
+    await userEvent.click(await screen.findByRole('tab', { name: 'Banks' }));
+    const off = await screen.findByRole('button', { name: 'Chat with the notes of Biology (AI)' });
+    expect(off.getAttribute('aria-disabled')).toBe('true');
+    expect(off.getAttribute('title')).toMatch(/AI features are off/);
+    await userEvent.click(off);
+    expect(created).toHaveLength(0);
+  });
+
+  it('opens the dashboard chat view scoped to the bank when AI is on', async () => {
+    live();
+    store.reset([makeItem({ highlight: { exactQuote: 'Biology only.' }, banks: [BIOLOGY] })], []);
+    store.banks = [INBOX, BIOLOGY];
+    await open(features({ ai: true }));
+    await userEvent.click(await screen.findByRole('tab', { name: 'Banks' }));
+    const chat = await screen.findByRole('button', { name: 'Chat with the notes of Biology (AI)' });
+    await waitFor(() => expect(chat.getAttribute('aria-disabled')).toBeNull());
+    await userEvent.click(chat);
+    await waitFor(() => expect(created).toHaveLength(1));
+    const url = new URL(created[0]!);
+    expect(url.searchParams.get('bank')).toBe(BIOLOGY.id);
+    expect(url.searchParams.get('view')).toBe('chat');
   });
 
   it('says so when a bank has no folders, and offers the dashboard for managing them', async () => {

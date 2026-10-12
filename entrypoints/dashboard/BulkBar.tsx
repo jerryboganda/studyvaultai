@@ -64,9 +64,11 @@ export function BulkBar(props: BulkBarProps) {
   const canSelectAll = !allFiltered && totalMatching !== null && totalMatching > count;
 
   return (
+    // A named group, not role="toolbar": a toolbar promises one Tab stop and arrow keys between its
+    // buttons, and this bar is ordinary buttons in the Tab order.
     <div
       className="dash-bulk"
-      role="toolbar"
+      role="group"
       aria-label="Actions for the selected highlights"
       data-testid="bulk-bar"
     >

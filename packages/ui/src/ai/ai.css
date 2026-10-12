@@ -69,3 +69,12 @@
 .ai-number {
   width: 8rem;
 }
+.ai-outline {
+  margin: 0;
+}
+.ai-outline--l2 {
+  margin-inline-start: var(--sv-space-4);
+}
+.ai-outline--l3 {
+  margin-inline-start: calc(2 * var(--sv-space-4));
+}

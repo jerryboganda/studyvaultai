@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { HIGHLIGHT_KINDS, KIND_LABELS, type BankLite, type HighlightKind } from '@shared';
 import type { SaveRequest } from '../contract';
 import { errorMessage, openSidePanel, truncate, useUi } from './context';
@@ -80,7 +80,9 @@ export function Composer({ quote, busy, onSave, onCancel }: ComposerProps) {
   }, [fetchBanks]);
 
   // Opening the panel is a deliberate act: focus moves into it, so Tab and Escape work from here.
-  useEffect(() => {
+  // A layout effect: Preact would run a passive one a frame later, and a key pressed right after the
+  // click would go to the page (docs/adr/012).
+  useLayoutEffect(() => {
     panelRef.current?.focus({ preventScroll: true });
   }, []);
 

@@ -393,6 +393,56 @@ describe('real round trip through the Dexie target', () => {
     expect(await getDb().meta.get('lastRestore')).toBeUndefined();
   });
 
+  it('the reading a re-recognition replaced stays on this device: not in the archive, kept by a merge, gone after a replace', async () => {
+    await seed({ highlights: 10 });
+    const db = getDb();
+    const slot = {
+      text: 'tbe earlier reading',
+      correctedText: null,
+      words: [],
+      language: 'eng',
+      engine: 'tesseract',
+      confidence: 0.5,
+      replacedAt: at(50),
+    };
+    await db.ocrPages.update(['doc-000001', 2], { previousReading: slot } as never);
+    expect((await db.ocrPages.get(['doc-000001', 2]))?.previousReading).toBeDefined();
+
+    const out = await exportBackup(await createSnapshotSource(), baseOptions);
+    // the table is in the archive whole, its rows are not carrying the slot
+    const files = unzipSync(out.bytes);
+    const name = Object.keys(files).find((n) => /ocrPages/.test(n))!;
+    const rows = strFromU8(files[name]!)
+      .split('\n')
+      .filter((l) => l.trim() !== '')
+      .map((l) => JSON.parse(l) as Record<string, unknown>);
+    expect(rows).toHaveLength(3);
+    expect(rows.every((r) => !('previousReading' in r))).toBe(true);
+    expect(JSON.stringify(rows)).not.toContain('tbe earlier reading');
+    expect(out.manifest.tables.find((t) => t.name === 'ocrPages')?.rowCount).toBe(3);
+
+    // merging the same archive leaves the vault, slot included, exactly as it was
+    const merged = await restoreBackup(out.bytes, {
+      target: createBackupTarget(),
+      mode: 'merge',
+      migrations: BACKUP_MIGRATIONS,
+    });
+    expect(merged.report.totals.add + merged.report.totals.update).toBe(0);
+    expect((await db.ocrPages.get(['doc-000001', 2]))?.previousReading).toEqual(slot);
+
+    // replacing from it writes the archive's rows: the device's step back is not part of them
+    const replaced = await restoreBackup(out.bytes, {
+      target: createBackupTarget(),
+      mode: 'replace',
+      migrations: BACKUP_MIGRATIONS,
+    });
+    expect(replaced.report.totals.invalid).toBe(0);
+    const back = await db.ocrPages.get(['doc-000001', 2]);
+    expect(back?.text).toBe('ocr text page 2');
+    expect(back?.previousReading).toBeUndefined();
+    expect((await checkIntegrity()).ok).toBe(true);
+  });
+
   it('cached PDFs are left out unless the user opts in', async () => {
     await seed({ highlights: 20 });
     const without = await exportBackup(await createSnapshotSource(), { appVersion: 'test' });

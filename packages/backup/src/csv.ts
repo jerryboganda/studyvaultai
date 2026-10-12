@@ -139,10 +139,13 @@ export const DEFAULT_CSV_LIMITS: CsvParseLimits = {
   maxFieldChars: 100_000,
 };
 
-/** Strict RFC 4180 reader. Rejects unterminated quotes, over-long fields and too many records. */
+/**
+ * Strict RFC 4180 reader. Rejects unterminated quotes, over-long fields and too many records.
+ * `delimiter` is one character (Anki text exports also use `|`, `:` and a space).
+ */
 export function parseCsv(
   input: string,
-  delimiter: ',' | ';' | '\t' = ',',
+  delimiter: string = ',',
   limits: CsvParseLimits = DEFAULT_CSV_LIMITS,
 ): string[][] {
   const text = input.charCodeAt(0) === 0xfeff ? input.slice(1) : input;

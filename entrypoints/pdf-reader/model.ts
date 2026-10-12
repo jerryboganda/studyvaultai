@@ -129,7 +129,10 @@ export interface BarPlacement {
 
 /**
  * Where the save bar goes: under the selection, flipped above it when there is no room below, kept
- * inside the viewport horizontally. The bar never covers the selected text.
+ * inside the viewport in both directions. The bar never covers the selected text it sits next to, and
+ * it is always reachable: a selection that lies wholly above or below what is on screen (made with the
+ * keyboard, or by script, or by a long drag that auto-scrolled) puts the bar at the nearest edge of
+ * the viewport instead of beside text nobody can see.
  */
 export function placeBar(
   bounds: PdfSelection['bounds'],
@@ -139,12 +142,15 @@ export function placeBar(
 ): BarPlacement {
   const below = bounds.bottom + gap;
   const above = bounds.top - gap - bar.h;
-  const top =
+  const preferred =
     below + bar.h <= viewport.h
       ? below
       : above >= 0
         ? above
         : Math.max(0, viewport.h - bar.h - gap);
+  // `above` can still be below the fold (selection wholly under the viewport) and `below` above the
+  // top edge (selection wholly over it): clamp.
+  const top = Math.min(Math.max(0, preferred), Math.max(0, viewport.h - bar.h));
   const left = Math.min(Math.max(gap, bounds.left), Math.max(gap, viewport.w - bar.w - gap));
   return { left, top };
 }

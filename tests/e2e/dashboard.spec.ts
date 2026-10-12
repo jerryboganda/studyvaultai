@@ -385,7 +385,7 @@ test.describe('tree: banks, folders, topics', () => {
     await expect(treeOf(page).getByRole('treeitem')).toHaveCount(1);
   });
 
-  test('folders can be nested eight levels deep and no further', async ({ env }) => {
+  test('folders can be nested up to the depth limit and no further', async ({ env }) => {
     const folders = Array.from({ length: MAX_FOLDER_DEPTH }, (_, i) => ({
       key: `lvl${i + 1}`,
       bank: 'deep',
@@ -406,7 +406,7 @@ test.describe('tree: banks, folders, topics', () => {
     await treeItem(page, `Level ${MAX_FOLDER_DEPTH}`).click({ button: 'right' });
     const item = page.getByRole('menu').getByRole('menuitem', { name: /New subfolder/ });
     await expect(item).toHaveAttribute('aria-disabled', 'true');
-    await expect(item).toContainText('at most 8 levels deep');
+    await expect(item).toContainText(`at most ${MAX_FOLDER_DEPTH} levels deep`);
     await item.click({ force: true }); // a disabled item explains itself and does nothing
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await page.keyboard.press('Escape');

@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { KIND_LABELS } from '@shared';
-import type { ImportRowSet } from '@backup';
+import { BackupError, MAX_DOCUMENT_BYTES, type ImportFormat, type ImportRowSet } from '@backup';
 import type { ImportExternalResult } from '@storage';
 import { Button } from '../Button';
 import { useAsync } from '../hooks';
@@ -8,9 +8,9 @@ import { InlineNotice } from '../Notice';
 import { plural, truncate } from '../text';
 import type { BackupDeps } from './deps';
 import { describeRejection, explainBackupError, type ErrorExplanation } from './explain';
-import { formatWhen } from './format';
+import { formatBytes, formatWhen } from './format';
 
-type Kind = 'markdown' | 'csv';
+type Kind = 'markdown' | 'csv' | 'document';
 
 interface Parsed {
   name: string;
@@ -18,12 +18,35 @@ interface Parsed {
   rowSet: ImportRowSet;
 }
 
-const kindOf = (name: string): Kind => (/\.(csv|tsv)$/i.test(name) ? 'csv' : 'markdown');
+/** DOCX, PPTX, EPUB and HTML are read by the document reader; the rest are refused with a reason. */
+const DOCUMENT_FILE = /\.(docx|pptx|epub|html?|xhtml|apkg|colpkg|doc|ppt)$/i;
+const kindOf = (name: string): Kind =>
+  DOCUMENT_FILE.test(name) ? 'document' : /\.(csv|tsv)$/i.test(name) ? 'csv' : 'markdown';
+
+/** How each format reads in "X read as ...", what one record is, and what its position means. */
+const FORMAT: Record<ImportFormat, { label: string; unit: string; where: string; from: string }> = {
+  markdown: { label: 'Markdown', unit: 'record', where: 'Line', from: 'a Markdown file' },
+  csv: { label: 'CSV', unit: 'record', where: 'Line', from: 'a CSV file' },
+  anki: { label: 'an Anki text export', unit: 'note', where: 'Note', from: 'an Anki export' },
+  html: { label: 'an HTML page', unit: 'paragraph', where: 'Paragraph', from: 'an HTML file' },
+  epub: { label: 'an EPUB book', unit: 'paragraph', where: 'Paragraph', from: 'an EPUB file' },
+  docx: {
+    label: 'a Word document',
+    unit: 'paragraph',
+    where: 'Paragraph',
+    from: 'a Word document',
+  },
+  pptx: { label: 'a PowerPoint file', unit: 'slide', where: 'Slide', from: 'a PowerPoint file' },
+};
+
+/** The list shows this many candidates at first; all are still imported unless unticked. */
+const FIRST_ROWS = 200;
 
 /**
- * Import highlights from a Markdown or CSV file (untrusted). The parsed rows are shown first, with
- * duplicates and rejects, and only the rows the user keeps ticked are written, marked
- * "imported - needs review".
+ * Import highlights from a file (untrusted): Markdown, CSV, an Anki text export, a Word, PowerPoint,
+ * EPUB or HTML file. It is a dry run first: what was read, what was skipped and why, and the
+ * candidates to untick. Only the ticked rows are written, in one step, marked "imported, needs
+ * review", and the whole import can be undone from the result (the highlights go to the Trash).
  */
 export function ExternalImport({ deps }: { deps: BackupDeps }) {
   const [parsed, setParsed] = useState<Parsed | null>(null);
@@ -34,25 +57,47 @@ export function ExternalImport({ deps }: { deps: BackupDeps }) {
   const [excluded, setExcluded] = useState<ReadonlySet<number>>(new Set());
   const [bankId, setBankId] = useState<string>('');
   const [busy, setBusy] = useState(false);
+  const [reading, setReading] = useState<string | null>(null);
   const [error, setError] = useState<ErrorExplanation | null>(null);
   const [result, setResult] = useState<ImportExternalResult | null>(null);
+  const [undone, setUndone] = useState<number | null>(null);
   const [reviewEpoch, setReviewEpoch] = useState(0);
+  const [showAll, setShowAll] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const resultRef = useRef<HTMLDivElement>(null);
+
+  // The review panel (and the button that was pressed in it) is replaced by the result: say so.
+  useEffect(() => {
+    if (result) resultRef.current?.focus();
+  }, [result, undone]);
 
   async function pick(file: File | undefined) {
     if (!file) return;
     setBusy(true);
+    setReading(file.name);
     setError(null);
     setResult(null);
+    setUndone(null);
     setParsed(null);
+    setShowAll(false);
     setExcluded(new Set());
     try {
-      const text = await deps.readText(file);
+      if (file.size > MAX_DOCUMENT_BYTES) {
+        throw new BackupError('limit_exceeded', 'The file is larger than the import limit.', {
+          maxBytes: MAX_DOCUMENT_BYTES,
+        });
+      }
       const kind = kindOf(file.name);
-      setParsed({ name: file.name, kind, rowSet: await deps.parseExternal(kind, text) });
+      const rowSet =
+        kind === 'document'
+          ? await deps.parseDocument(file.name, await deps.readBytes(file))
+          : await deps.parseExternal(kind, await deps.readText(file), file.name);
+      setParsed({ name: file.name, kind, rowSet });
     } catch (err) {
       setError(explainBackupError(err));
     } finally {
       setBusy(false);
+      setReading(null);
     }
   }
 
@@ -65,6 +110,7 @@ export function ExternalImport({ deps }: { deps: BackupDeps }) {
     try {
       const res = await deps.importExternal({ highlights: chosen }, { bankId: bankId || null });
       setResult(res);
+      setUndone(null);
       setParsed(null);
       setReviewEpoch((n) => n + 1);
     } catch (err) {
@@ -74,22 +120,49 @@ export function ExternalImport({ deps }: { deps: BackupDeps }) {
     }
   }
 
+  async function undo() {
+    if (!result) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const { removed } = await deps.undoImport(result.batchId);
+      setUndone(removed);
+      setReviewEpoch((n) => n + 1);
+    } catch (err) {
+      setError(explainBackupError(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const format: ImportFormat | null = parsed
+    ? (parsed.rowSet.format ?? (parsed.kind === 'csv' ? 'csv' : 'markdown'))
+    : null;
+  const spec = format ? FORMAT[format] : null;
+  const where = (position: number, locator?: string | null) =>
+    locator ?? `${spec?.where ?? 'Line'} ${position}`;
+  const rows = parsed ? parsed.rowSet.highlights : [];
+  const shown = showAll ? rows : rows.slice(0, FIRST_ROWS);
+
   return (
     <div className="sv-stack" data-testid="backup-external">
-      <h3>Import highlights from a Markdown or CSV file</h3>
+      <h3>Import highlights from a file</h3>
       <p>
-        For notes from other tools, or a spreadsheet. Imported highlights are not captures from a
-        web page, so they are marked <strong>imported, needs review</strong> and nothing is added
-        until you confirm the list below.
+        For notes from other tools, a spreadsheet, an Anki export, or a document you want to study
+        from. Imported highlights are not captures from a web page, so they are marked{' '}
+        <strong>imported, needs review</strong> and nothing is added until you confirm the list
+        below.
       </p>
       <div className="sv-field">
         <label className="sv-label" htmlFor="bk-external-file">
-          Markdown (.md) or CSV (.csv) file
+          File to import
         </label>
         <input
+          ref={fileRef}
           id="bk-external-file"
           type="file"
-          accept=".md,.markdown,.txt,.csv,.tsv,text/markdown,text/csv,text/plain"
+          aria-describedby="bk-external-help"
+          accept=".md,.markdown,.txt,.csv,.tsv,.docx,.pptx,.epub,.html,.htm,.xhtml,.apkg,.colpkg,.doc,.ppt,text/markdown,text/csv,text/plain,text/html"
           disabled={busy}
           data-testid="backup-external-file"
           onChange={(e) => {
@@ -98,25 +171,56 @@ export function ExternalImport({ deps }: { deps: BackupDeps }) {
             void pick(f);
           }}
         />
+        <p id="bk-external-help" className="sv-small sv-muted" data-testid="backup-external-help">
+          Reads Markdown (.md), CSV (.csv, .tsv), Anki “Notes in Plain Text” (.txt), Word (.docx),
+          PowerPoint (.pptx), EPUB (.epub) and HTML (.html). One highlight per paragraph, or per
+          slide for PowerPoint; text only, nothing is fetched from the internet. Files up to{' '}
+          {formatBytes(MAX_DOCUMENT_BYTES)}. Not supported: Anki .apkg packages (export “Notes in
+          Plain Text” from Anki instead), old .doc and .ppt files (save as .docx or .pptx), and
+          password-protected or DRM-protected files.
+        </p>
       </div>
+
+      {reading ? (
+        <p className="sv-small" role="status" data-testid="backup-external-reading">
+          Reading {reading}…
+        </p>
+      ) : null}
 
       {error ? (
         <InlineNotice tone="error" title={error.title} live>
           {error.body}
+          {error.lines.length > 0 ? (
+            <ul className="bk-files" data-testid="backup-external-error-detail">
+              {error.lines.map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+          ) : null}
         </InlineNotice>
       ) : null}
 
-      {parsed ? (
+      {parsed && spec ? (
         <div className="sv-stack" data-testid="backup-external-review">
           <p data-testid="backup-external-stats">
-            <strong>{parsed.name}</strong> read as {parsed.kind === 'csv' ? 'CSV' : 'Markdown'}:{' '}
-            {plural(parsed.rowSet.stats.records, 'record')}, {parsed.rowSet.stats.accepted} can be
+            <strong>{parsed.name}</strong> read as {spec.label}:{' '}
+            {plural(parsed.rowSet.stats.records, spec.unit)}, {parsed.rowSet.stats.accepted} can be
             imported, {parsed.rowSet.stats.duplicates} duplicate
             {parsed.rowSet.stats.duplicates === 1 ? '' : 's'} skipped,{' '}
             {parsed.rowSet.stats.rejected} rejected.
           </p>
 
-          {parsed.rowSet.highlights.length > 0 ? (
+          {parsed.rowSet.warnings && parsed.rowSet.warnings.length > 0 ? (
+            <InlineNotice tone="warning" title="Not everything in the file comes across">
+              <ul className="bk-files" data-testid="backup-external-warnings">
+                {parsed.rowSet.warnings.map((w) => (
+                  <li key={w}>{w}</li>
+                ))}
+              </ul>
+            </InlineNotice>
+          ) : null}
+
+          {rows.length > 0 ? (
             <>
               <div className="sv-field">
                 <label className="sv-label" htmlFor="bk-external-bank">
@@ -144,16 +248,14 @@ export function ExternalImport({ deps }: { deps: BackupDeps }) {
                   Select all
                 </Button>
                 <Button
-                  onClick={() =>
-                    setExcluded(new Set(parsed.rowSet.highlights.map((h) => h.position)))
-                  }
+                  onClick={() => setExcluded(new Set(rows.map((h) => h.position)))}
                   data-testid="backup-external-none"
                 >
                   Select none
                 </Button>
               </div>
               <ul className="bk-candidates" data-testid="backup-external-rows">
-                {parsed.rowSet.highlights.map((h) => (
+                {shown.map((h) => (
                   <li key={h.position}>
                     <div className="sv-check">
                       <input
@@ -172,7 +274,7 @@ export function ExternalImport({ deps }: { deps: BackupDeps }) {
                         <span className="bk-quote">{truncate(h.quote, 240)}</span>
                         <span className="sv-small sv-muted bk-meta">
                           {[
-                            `line ${h.position}`,
+                            h.locator ?? `line ${h.position}`,
                             h.sourceTitle ?? (h.sourceUrl ? h.sourceUrl : 'no source'),
                             h.kind ? KIND_LABELS[h.kind].label : null,
                             h.tags.length > 0 ? h.tags.map((t) => `#${t}`).join(' ') : null,
@@ -191,6 +293,17 @@ export function ExternalImport({ deps }: { deps: BackupDeps }) {
                   </li>
                 ))}
               </ul>
+              {rows.length > shown.length ? (
+                <div className="sv-row">
+                  <p className="sv-small sv-muted" data-testid="backup-external-capped">
+                    Showing the first {shown.length} of {rows.length}. The rest are imported too
+                    unless you press Select none.
+                  </p>
+                  <Button data-testid="backup-external-show-all" onClick={() => setShowAll(true)}>
+                    Show all {rows.length}
+                  </Button>
+                </div>
+              ) : null}
             </>
           ) : (
             <InlineNotice tone="info" title="Nothing new to import">
@@ -204,7 +317,7 @@ export function ExternalImport({ deps }: { deps: BackupDeps }) {
               <ul className="bk-files">
                 {parsed.rowSet.duplicates.slice(0, 20).map((d) => (
                   <li key={`${d.position}:${d.quoteHash}`}>
-                    Line {d.position}:{' '}
+                    {where(d.position, d.locator)}:{' '}
                     {d.of === 'existing'
                       ? 'the same quote is already in your vault'
                       : 'repeats an earlier record in this file'}
@@ -219,7 +332,7 @@ export function ExternalImport({ deps }: { deps: BackupDeps }) {
               <ul className="bk-files">
                 {parsed.rowSet.rejected.slice(0, 20).map((r) => (
                   <li key={`${r.position}:${r.reason}`}>
-                    Line {r.position} {describeRejection(r.reason)}.
+                    {where(r.position, r.locator)} {describeRejection(r.reason)}.
                   </li>
                 ))}
               </ul>
@@ -241,6 +354,7 @@ export function ExternalImport({ deps }: { deps: BackupDeps }) {
               onClick={() => {
                 setParsed(null);
                 setError(null);
+                fileRef.current?.focus();
               }}
             >
               Cancel
@@ -250,14 +364,41 @@ export function ExternalImport({ deps }: { deps: BackupDeps }) {
       ) : null}
 
       {result ? (
-        <InlineNotice tone="success" live title="Import finished">
-          <span data-testid="backup-external-result">
-            {plural(result.created, 'highlight')} added
-            {result.duplicates > 0 ? `, ${plural(result.duplicates, 'duplicate')} skipped` : ''}
-            {result.tagsCreated > 0 ? `, ${plural(result.tagsCreated, 'new tag')}` : ''}. They are
-            marked “imported, needs review” below until you confirm them.
-          </span>
-        </InlineNotice>
+        <div ref={resultRef} tabIndex={-1} data-testid="backup-external-outcome">
+          {undone === null ? (
+            <InlineNotice
+              tone="success"
+              live
+              title="Import finished"
+              action={
+                result.created > 0 ? (
+                  <Button
+                    busy={busy}
+                    data-testid="backup-external-undo"
+                    onClick={() => void undo()}
+                  >
+                    Undo this import
+                  </Button>
+                ) : undefined
+              }
+            >
+              <span data-testid="backup-external-result">
+                {plural(result.created, 'highlight')} added
+                {result.duplicates > 0 ? `, ${plural(result.duplicates, 'duplicate')} skipped` : ''}
+                {result.tagsCreated > 0 ? `, ${plural(result.tagsCreated, 'new tag')}` : ''}. They
+                are marked “imported, needs review” below until you confirm them. Undo moves them to
+                the Trash; they can be restored from there.
+              </span>
+            </InlineNotice>
+          ) : (
+            <InlineNotice tone="success" live title="Import undone">
+              <span data-testid="backup-external-undone">
+                {plural(undone, 'highlight')} moved to the Trash. Restore them from the Trash if you
+                change your mind.
+              </span>
+            </InlineNotice>
+          )}
+        </div>
       ) : null}
 
       <NeedsReview deps={deps} epoch={reviewEpoch} />
@@ -326,7 +467,8 @@ function NeedsReview({ deps, epoch }: { deps: BackupDeps; epoch: number }) {
             <span className="sv-grow">
               <span className="bk-quote">{truncate(item.quote, 200)}</span>
               <span className="sv-small sv-muted bk-meta">
-                from {item.importedFrom === 'csv' ? 'a CSV file' : 'a Markdown file'}
+                from {FORMAT[item.importedFrom as ImportFormat]?.from ?? 'a file'}
+                {item.file ? ` (${item.file}${item.locator ? `, ${item.locator}` : ''})` : ''}
               </span>
             </span>
             <Button

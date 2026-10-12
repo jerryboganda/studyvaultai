@@ -4,7 +4,13 @@
  * share the FakeStore's item list and notify its watchers, so live queries re-run like Dexie's.
  * Never imported by production code.
  */
-import { StudyVaultError, type Note, type SearchDocument } from '@shared';
+import {
+  StudyVaultError,
+  type FilingOutcome,
+  type FilingSuggestion,
+  type Note,
+  type SearchDocument,
+} from '@shared';
 import type { DueSummary, FolderNode, TagLite } from '@storage';
 import { store } from '@ui/testing/fakes';
 
@@ -21,6 +27,10 @@ class PanelExtras {
   /** What the search index is built from. */
   searchDocs: SearchDocument[] = [];
   failNext: Partial<Record<string, Error>> = {};
+  /** The filing rules' pending suggestions (chrome.storage.session in production). */
+  suggestions: FilingSuggestion[] = [];
+  /** What the next acceptFiling answers instead of filing (e.g. the bank was deleted). */
+  acceptAnswer: FilingOutcome | null = null;
   private seq = 0;
 
   reset() {
@@ -31,6 +41,8 @@ class PanelExtras {
     this.due = { total: 0, new: 0, learning: 0, review: 0 };
     this.searchDocs = [];
     this.failNext = {};
+    this.suggestions = [];
+    this.acceptAnswer = null;
     this.seq = 0;
   }
 
@@ -50,6 +62,40 @@ class PanelExtras {
   }
 
   readonly module = {
+    listFilingSuggestions: async () => [...this.suggestions],
+    acceptFiling: async (id: string): Promise<FilingOutcome> => {
+      this.call('acceptFiling', [id]);
+      if (this.acceptAnswer) {
+        this.suggestions = this.suggestions.filter((s) => s.highlightId !== id);
+        store.notify();
+        return this.acceptAnswer;
+      }
+      const found = this.suggestions.find((s) => s.highlightId === id);
+      if (!found) {
+        return {
+          status: 'unavailable',
+          ruleName: '',
+          reason: 'This suggestion is no longer available.',
+        };
+      }
+      this.suggestions = this.suggestions.filter((s) => s.highlightId !== id);
+      store.notify();
+      return {
+        status: 'filed',
+        ruleName: found.ruleName,
+        bank: { id: found.bankId, name: found.bankName, color: 'green', isInbox: false },
+        folderName: found.folderName,
+        addedTags: found.addTagIds.length,
+      };
+    },
+    dismissFiling: async (id: string) => {
+      this.call('dismissFiling', [id]);
+      this.suggestions = this.suggestions.filter((s) => s.highlightId !== id);
+    },
+    undoFiling: async (id: string) => {
+      this.call('undoFiling', [id]);
+      return { restored: true, reason: null as string | null };
+    },
     listTags: async () =>
       this.tags.map((tag) => ({
         tag,

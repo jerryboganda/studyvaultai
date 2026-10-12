@@ -27,15 +27,22 @@ export function PreviewTags({ detail }: { detail: HighlightDetail }) {
   const add = useAction(async () => {
     const wanted = name.trim();
     if (wanted === '') return;
+    // Clear the box now, not after the awaited writes: the new chip can appear (live query) before
+    // this action resolves, and a clear that lands later would wipe what the person typed next.
+    setName('');
     const key = wanted.normalize('NFKC').replace(/\s+/g, ' ').toLowerCase();
     const existing = data.tags.find(
       (t) =>
         t.tag.nameKey === key ||
         t.tag.aliases.some((a) => a.normalize('NFKC').replace(/\s+/g, ' ').toLowerCase() === key),
     );
-    const tagId = existing ? existing.tag.id : (await api.createTag(wanted)).tag.id;
-    await api.attachTags({ highlightIds: [detail.highlight.id], tagIds: [tagId] });
-    setName('');
+    try {
+      const tagId = existing ? existing.tag.id : (await api.createTag(wanted)).tag.id;
+      await api.attachTags({ highlightIds: [detail.highlight.id], tagIds: [tagId] });
+    } catch (err) {
+      setName((current) => (current === '' ? wanted : current)); // keep what was typed, unless replaced
+      throw err;
+    }
     bump();
   });
 
@@ -151,9 +158,19 @@ export function PreviewFields({ detail }: { detail: HighlightDetail }) {
     if (name === '') throw new Error('Give the field a name.');
     const next = parsed();
     if (typeof next === 'object') throw new Error(next.error);
-    await api.setCustomFields(detail.highlight.id, { ...fields, [name]: next });
+    // Clear the form before the awaited write (the field can show up through the live query first,
+    // and a late clear would wipe the next entry); put the text back if the write fails.
+    const sentKey = key;
+    const sentValue = value;
     setKey('');
     setValue('');
+    try {
+      await api.setCustomFields(detail.highlight.id, { ...fields, [name]: next });
+    } catch (err) {
+      setKey((current) => (current === '' ? sentKey : current));
+      setValue((current) => (current === '' ? sentValue : current));
+      throw err;
+    }
     bump();
   });
 

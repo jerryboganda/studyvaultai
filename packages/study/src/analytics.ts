@@ -1,4 +1,5 @@
-import type { Card, Deck, Rating, ReviewLog } from './schema';
+import { flattenSyllabus, type SyllabusNode } from '@shared/schema';
+import type { Card, Deck, FsrsState, Rating, ReviewLog } from './schema';
 import { retrievability } from './scheduler';
 import { MINUTE_MS, studyDayKey, studyDayNumber, studyDayStartMs, toMs } from './time';
 import type { DateInput, DayBoundary } from './time';
@@ -498,5 +499,407 @@ export function syllabusCoverage(
     ratio: covered / unique.length,
     learnedRatio: learned / unique.length,
     nodes,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// Syllabus coverage by topic (ADR-020, part 2)
+// ---------------------------------------------------------------------------------------------
+
+export const COVERAGE_STATES = ['none', 'thin', 'covered'] as const;
+export type CoverageState = (typeof COVERAGE_STATES)[number];
+
+/** What a topic needs before it counts as covered. Both are adjustable by the person. */
+export interface CoverageThresholds {
+  minHighlights: number;
+  minCards: number;
+}
+export const DEFAULT_COVERAGE_THRESHOLDS: Readonly<CoverageThresholds> = {
+  minHighlights: 3,
+  minCards: 1,
+};
+export const MAX_COVERAGE_THRESHOLD = 999;
+/** Mature reviews a topic needs before its retention is shown as a number. */
+export const MIN_TOPIC_RETENTION_REVIEWS = 5;
+
+/** A threshold is a whole number from 0 to 999; anything else falls back to the default. */
+export function normalizeThresholds(input: unknown): CoverageThresholds {
+  const r = (typeof input === 'object' && input !== null ? input : {}) as Record<string, unknown>;
+  const pick = (value: unknown, fallback: number): number =>
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 0 &&
+    value <= MAX_COVERAGE_THRESHOLD
+      ? value
+      : fallback;
+  return {
+    minHighlights: pick(r.minHighlights, DEFAULT_COVERAGE_THRESHOLDS.minHighlights),
+    minCards: pick(r.minCards, DEFAULT_COVERAGE_THRESHOLDS.minCards),
+  };
+}
+
+/** none: no highlight and no card; covered: both thresholds reached; thin: anything in between. */
+export function coverageState(
+  highlights: number,
+  cards: number,
+  thresholds: CoverageThresholds,
+): CoverageState {
+  if (highlights === 0 && cards === 0) return 'none';
+  return highlights >= thresholds.minHighlights && cards >= thresholds.minCards
+    ? 'covered'
+    : 'thin';
+}
+
+/** One topic of a syllabus, flattened in pre-order (a parent comes before its children). */
+export interface CoverageTopic {
+  id: string;
+  title: string;
+  depth: number;
+  parentId: string | null;
+  /** > 0; absent means an equal share among its siblings. */
+  weight?: number;
+  bankIds: readonly string[];
+  tagIds: readonly string[];
+}
+
+export interface CoverageHighlight {
+  id: string;
+  deletedAt: string | null;
+  /** Live banks the highlight is filed in. */
+  bankIds: readonly string[];
+  tagIds: readonly string[];
+}
+
+export interface CoverageCard {
+  id: string;
+  deletedAt: string | null;
+  suspended: boolean;
+  fsrs: Pick<FsrsState, 'state' | 'due' | 'lastReview'>;
+  /** The card's deck's bank and the banks its highlight is filed in. */
+  bankIds: readonly string[];
+  /** The card's own tags and its highlight's, as tag ids. */
+  tagIds: readonly string[];
+}
+
+export interface TopicCoverage {
+  id: string;
+  title: string;
+  depth: number;
+  parentId: string | null;
+  hasChildren: boolean;
+  /** As set by the person; 1 when not set. */
+  weight: number;
+  /** This topic's part of the whole syllabus (0..1); the parts of the top-level topics add up to 1. */
+  share: number;
+  /** The topic itself points at a bank or a tag. */
+  mapped: boolean;
+  /** The topic or one of its subtopics points at a bank or a tag. */
+  subtreeMapped: boolean;
+  /** Live highlights under the topic and its subtopics, each counted once. */
+  highlights: number;
+  /** Active (not suspended, not deleted) cards, each counted once. */
+  cards: number;
+  /** Of those, review cards due by the end of today and learning steps due now. */
+  due: number;
+  /** Retention of mature reviews; `value` stays null below the minimum number of reviews. */
+  retention: { value: number | null; reviews: number };
+  lastStudiedAt: string | null;
+  state: CoverageState;
+  /** 'own': judged by the thresholds. 'subtopics': judged from the subtopics, by weight. */
+  scoredFrom: 'own' | 'subtopics';
+  /** Weighted share of this topic that is covered (0..1). */
+  covered: number;
+  /** Weighted share with at least some material (thin or covered). */
+  started: number;
+}
+
+export interface SyllabusCoverage {
+  status: 'ok' | 'empty';
+  thresholds: CoverageThresholds;
+  topics: TopicCoverage[];
+  /** Weighted share of the syllabus that is covered (0..1); null without topics. */
+  covered: number | null;
+  /** Weighted share with at least some material. */
+  started: number | null;
+  /** Topics that nothing is mapped to, themselves or through a subtopic. */
+  unmapped: number;
+}
+
+/** A stored outline as the flat, pre-order topic list that coverage and exam scopes read. */
+export function coverageTopics(nodes: readonly SyllabusNode[]): CoverageTopic[] {
+  return flattenSyllabus(nodes).map(({ node, depth, parentId }) => ({
+    id: node.id,
+    title: node.title,
+    depth,
+    parentId,
+    ...(node.weight === undefined ? {} : { weight: node.weight }),
+    bankIds: node.bankIds,
+    tagIds: node.tagIds,
+  }));
+}
+
+/**
+ * The shape of a syllabus as coverage and exams read it: the tree (a parent must come before its
+ * child; anything else is treated as a root), what each topic points at, each topic's weight among
+ * its siblings and its part of the whole syllabus, and which topics an item with given banks and
+ * tags belongs to. Pure. `syllabusTopicCoverage` and the exam scope both use it, so "belongs to a
+ * topic" has exactly one definition (ADR-020).
+ */
+export interface SyllabusTopicIndex {
+  /** Index of the parent topic, or -1 for a top-level topic. */
+  parent: number[];
+  children: number[][];
+  roots: number[];
+  /** The topic itself points at a bank or a tag. */
+  ownMapped: boolean[];
+  /** Some topic below it points at a bank or a tag. */
+  descendantMapped: boolean[];
+  /** It or some topic below it points at a bank or a tag. */
+  subtreeMapped: boolean[];
+  /** As set; 1 when absent or not a positive number. */
+  weight: number[];
+  /** Weight relative to its siblings (they add up to 1). */
+  rel: number[];
+  /** Part of the whole syllabus (0..1); the top-level topics add up to 1. */
+  share: number[];
+  /** The topics an item belongs to: those it matches and all their ancestors, each once. */
+  topicsOf(bankIds: readonly string[], tagIds: readonly string[]): Set<number>;
+}
+
+export function syllabusTopicIndex(topics: readonly CoverageTopic[]): SyllabusTopicIndex {
+  const n = topics.length;
+  // Tree shape. A parent must come before its child; anything else is treated as a root.
+  const index = new Map<string, number>();
+  topics.forEach((t, i) => {
+    if (!index.has(t.id)) index.set(t.id, i);
+  });
+  const parent = topics.map((t, i) => {
+    const p = t.parentId === null ? -1 : (index.get(t.parentId) ?? -1);
+    return p < i ? p : -1;
+  });
+  const children: number[][] = topics.map(() => []);
+  const roots: number[] = [];
+  parent.forEach((p, i) => (p < 0 ? roots : (children[p] as number[])).push(i));
+
+  const byBank = new Map<string, number[]>();
+  const byTag = new Map<string, number[]>();
+  const add = (map: Map<string, number[]>, key: string, i: number) => {
+    const list = map.get(key);
+    if (list) list.push(i);
+    else map.set(key, [i]);
+  };
+  const ownMapped = topics.map((t, i) => {
+    for (const id of t.bankIds) add(byBank, id, i);
+    for (const id of t.tagIds) add(byTag, id, i);
+    return t.bankIds.length > 0 || t.tagIds.length > 0;
+  });
+
+  const topicsOf = (bankIds: readonly string[], tagIds: readonly string[]): Set<number> => {
+    const hit = new Set<number>();
+    // An ancestor that is already in the set brought its own ancestors with it.
+    const climb = (from: number) => {
+      for (let at = from; at >= 0 && !hit.has(at); at = parent[at] as number) hit.add(at);
+    };
+    for (const id of bankIds) for (const i of byBank.get(id) ?? []) climb(i);
+    for (const id of tagIds) for (const i of byTag.get(id) ?? []) climb(i);
+    return hit;
+  };
+
+  // Shares: weights are relative among siblings.
+  const weight = topics.map((t) =>
+    typeof t.weight === 'number' && Number.isFinite(t.weight) && t.weight > 0 ? t.weight : 1,
+  );
+  const rel = new Array<number>(n).fill(0);
+  const normalise = (list: readonly number[]) => {
+    const total = list.reduce((sum, i) => sum + (weight[i] as number), 0);
+    for (const i of list) rel[i] = (weight[i] as number) / total;
+  };
+  normalise(roots);
+  for (const list of children) if (list.length > 0) normalise(list);
+  const share = new Array<number>(n).fill(0);
+  for (let i = 0; i < n; i += 1) {
+    const p = parent[i] as number;
+    share[i] = (p < 0 ? 1 : (share[p] as number)) * (rel[i] as number);
+  }
+
+  // Which topics have anything mapped at or below them.
+  const descendantMapped = new Array<boolean>(n).fill(false);
+  const subtreeMapped = new Array<boolean>(n).fill(false);
+  for (let i = n - 1; i >= 0; i -= 1) {
+    subtreeMapped[i] = (ownMapped[i] as boolean) || (descendantMapped[i] as boolean);
+    const p = parent[i] as number;
+    if (p >= 0 && subtreeMapped[i]) descendantMapped[p] = true;
+  }
+
+  return {
+    parent,
+    children,
+    roots,
+    ownMapped,
+    descendantMapped,
+    subtreeMapped,
+    weight,
+    rel,
+    share,
+    topicsOf,
+  };
+}
+
+/**
+ * Coverage of a custom syllabus by what the person actually holds. A highlight or a card belongs to
+ * a topic when one of its banks or tags is one the topic (or a subtopic) points at, and is counted
+ * once however many mappings match. Deleted highlights, deleted and suspended cards count nowhere.
+ *
+ * Judging: a topic without subtopics, or whose subtopics point at nothing, is judged by the
+ * thresholds. A topic with mapped subtopics is judged from them: its covered share is the weighted
+ * share of its subtopics that are covered (weights are relative among siblings; absent = 1).
+ * Everything is derived from the arguments: the clock arrives as `opts.now`.
+ */
+export function syllabusTopicCoverage(
+  topics: readonly CoverageTopic[],
+  facts: {
+    highlights: readonly CoverageHighlight[];
+    cards: readonly CoverageCard[];
+    logs: readonly LogLite[];
+  },
+  opts: {
+    now: DateInput;
+    boundary: DayBoundary;
+    thresholds?: Partial<CoverageThresholds>;
+    minRetentionReviews?: number;
+  },
+): SyllabusCoverage {
+  const thresholds = normalizeThresholds(opts.thresholds);
+  const minReviews = opts.minRetentionReviews ?? MIN_TOPIC_RETENTION_REVIEWS;
+  const n = topics.length;
+  if (n === 0) {
+    return { status: 'empty', thresholds, topics: [], covered: null, started: null, unmapped: 0 };
+  }
+
+  // Tree shape, mapping, weights and membership: one definition, shared with the exam scope.
+  const {
+    children,
+    roots,
+    ownMapped,
+    descendantMapped,
+    subtreeMapped,
+    weight,
+    rel,
+    share,
+    topicsOf,
+  } = syllabusTopicIndex(topics);
+
+  // Highlights.
+  const highlights = new Array<number>(n).fill(0);
+  const seenHighlights = new Set<string>();
+  for (const h of facts.highlights) {
+    if (h.deletedAt !== null || seenHighlights.has(h.id)) continue;
+    seenHighlights.add(h.id);
+    for (const i of topicsOf(h.bankIds, h.tagIds)) (highlights[i] as number) += 1;
+  }
+
+  // Cards: count, due, last studied, and the ids (for retention).
+  const nowMs = toMs(opts.now);
+  const dayEnd = studyDayStartMs(studyDayNumber(nowMs, opts.boundary) + 1, opts.boundary);
+  const cardIds: string[][] = topics.map(() => []);
+  const due = new Array<number>(n).fill(0);
+  const lastMs = new Array<number>(n).fill(-Infinity);
+  const lastIso = new Array<string | null>(n).fill(null);
+  const seenCards = new Set<string>();
+  for (const c of facts.cards) {
+    if (c.deletedAt !== null || c.suspended || seenCards.has(c.id)) continue;
+    seenCards.add(c.id);
+    const dueMs = Date.parse(c.fsrs.due);
+    const isDue =
+      c.fsrs.state === 'review' ? dueMs < dayEnd : c.fsrs.state !== 'new' && dueMs <= nowMs;
+    const last = c.fsrs.lastReview === null ? Number.NaN : Date.parse(c.fsrs.lastReview);
+    for (const i of topicsOf(c.bankIds, c.tagIds)) {
+      (cardIds[i] as string[]).push(c.id);
+      if (isDue) (due[i] as number) += 1;
+      if (last > (lastMs[i] as number)) {
+        lastMs[i] = last;
+        lastIso[i] = c.fsrs.lastReview;
+      }
+    }
+  }
+
+  // Retention of mature reviews, per topic, from the logs of its cards.
+  const logsByCard = new Map<string, LogLite[]>();
+  for (const l of facts.logs) {
+    if (!counted(l)) continue;
+    const list = logsByCard.get(l.cardId);
+    if (list) list.push(l);
+    else logsByCard.set(l.cardId, [l]);
+  }
+
+  // Judging, bottom-up.
+  const state = new Array<CoverageState>(n).fill('none');
+  const covered = new Array<number>(n).fill(0);
+  const started = new Array<number>(n).fill(0);
+  const scoredFrom = new Array<'own' | 'subtopics'>(n).fill('own');
+  for (let i = n - 1; i >= 0; i -= 1) {
+    const kids = children[i] as number[];
+    if (kids.length === 0 || !descendantMapped[i]) {
+      const s = coverageState(highlights[i] as number, (cardIds[i] as string[]).length, thresholds);
+      state[i] = s;
+      covered[i] = s === 'covered' ? 1 : 0;
+      started[i] = s === 'none' ? 0 : 1;
+      continue;
+    }
+    let c = 0;
+    let s = 0;
+    for (const k of kids) {
+      c += (rel[k] as number) * (covered[k] as number);
+      s += (rel[k] as number) * (started[k] as number);
+    }
+    scoredFrom[i] = 'subtopics';
+    covered[i] = c;
+    started[i] = s;
+    state[i] = c >= 1 - 1e-9 ? 'covered' : s <= 1e-9 ? 'none' : 'thin';
+  }
+
+  const rows: TopicCoverage[] = topics.map((t, i) => {
+    const ids = cardIds[i] as string[];
+    const pooled: LogLite[] = [];
+    for (const id of ids) {
+      const list = logsByCard.get(id);
+      if (list) for (const l of list) pooled.push(l);
+    }
+    const retention = trueRetention(pooled, { minSamples: minReviews });
+    return {
+      id: t.id,
+      title: t.title,
+      depth: t.depth,
+      parentId: t.parentId,
+      hasChildren: (children[i] as number[]).length > 0,
+      weight: weight[i] as number,
+      share: share[i] as number,
+      mapped: ownMapped[i] as boolean,
+      subtreeMapped: subtreeMapped[i] as boolean,
+      highlights: highlights[i] as number,
+      cards: ids.length,
+      due: due[i] as number,
+      retention: { value: retention.trueRetention, reviews: retention.matureReviews },
+      lastStudiedAt: lastIso[i] as string | null,
+      state: state[i] as CoverageState,
+      scoredFrom: scoredFrom[i] as 'own' | 'subtopics',
+      covered: covered[i] as number,
+      started: started[i] as number,
+    };
+  });
+
+  let overallCovered = 0;
+  let overallStarted = 0;
+  for (const r of roots) {
+    overallCovered += (rel[r] as number) * (covered[r] as number);
+    overallStarted += (rel[r] as number) * (started[r] as number);
+  }
+  return {
+    status: 'ok',
+    thresholds,
+    topics: rows,
+    covered: overallCovered,
+    started: overallStarted,
+    unmapped: subtreeMapped.filter((m) => !m).length,
   };
 }

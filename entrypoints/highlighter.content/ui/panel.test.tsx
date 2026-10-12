@@ -1,15 +1,18 @@
-import { act, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 import { StudyVaultError, defaultSettings } from '@shared';
 import {
   BIOLOGY,
   INBOX,
+  act,
   cleanupUi,
+  fireEvent,
   focusToolbar,
   makeHighlight,
+  microtasks,
   mountUi,
   rect,
+  within,
 } from './testHarness';
 
 const SELECTION = { text: 'Mitochondria are the powerhouse', rect: rect(100, 200, 120, 20) };
@@ -38,6 +41,16 @@ describe('More options panel', () => {
     expect(m.q.getByRole('button', { name: 'More options' }).getAttribute('aria-expanded')).toBe(
       'true',
     );
+  });
+
+  it('has focus inside before the next frame, so a key pressed right after the click reaches it', async () => {
+    // Not wrapped in act: act flushes the effects Preact defers to the next frame (docs/adr/012).
+    const m = mountUi();
+    show(m.ui);
+    m.q.getByRole('button', { name: 'More options' }).click();
+    await microtasks();
+    const dialog = m.q.getByRole('dialog', { name: 'Save with details' });
+    expect(m.shadow.activeElement).toBe(dialog);
   });
 
   it('lists banks, preselects the last-used one and saves every field', async () => {

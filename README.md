@@ -1,27 +1,77 @@
 # StudyVault AI - Claude Code Development Blueprint
 
-## Current status and documents (2026-10-11)
+## Current status and documents (2026-10-12)
 
 **Pre-release, version 0.1.0, not published.** The repository (<https://github.com/jerryboganda/studyvaultai>)
 holds a Manifest V3 extension. Code exists for each phase of `ROADMAP.md` (Phase 6 covers optional
 sync against a server you operate only: there is no account system and no hosted service), but
-verification is partial. On 2026-10-11 the first fully green GitHub Actions run of `ci.yml` completed
-(https://github.com/jerryboganda/studyvaultai/actions/runs/38139836238, branch `ci/wave-c`, commit `d641515b1154aa46597e7ebb069d2341014c125c`): lint, typecheck,
-format, the unit suite, the production and e2e builds with the release gate, the advisory audit and
-the seeded stress suites all concluded `success`, and the Playwright suite passed on Ubuntu and Windows
-(443 tests per OS; 6 `test.fixme` tests were skipped and are not evidence; none failed or needed its
-retry). That run drove Playwright's bundled Chromium against the e2e build of the extension. It does
-not prove behaviour in branded Chrome or Edge, in a real incognito window, with Chrome's native
-permission prompt, with a hosted OpenID Connect provider, with a screen reader or in the Chrome Web
-Store review. The release workflows (`release.yml`, `reproducible-build.yml`, `stress.yml`) have never
-run and the manual checklist has not been run. Read `docs/PRIVACY_CLAIMS.md` for what each privacy
-and store statement is actually backed by, and treat `PRIVACY_POLICY.md` and `STORE_LISTING.md` as
-drafts.
+verification is partial. The latest fully green GitHub Actions run of `ci.yml` is
+https://github.com/jerryboganda/studyvaultai/actions/runs/38186957997 (branch `feat/finish-all`, commit
+`dadafe3af4576d8be90b8df467cfb91f9d412fc2`, 2026-10-12): lint, typecheck, format, the unit suite (275
+files, 5,268 tests), the production and e2e builds with the release gate (content script 215 KB and
+6,903 KB without the OCR assets, against budgets of 230 KB and 7,000 KB), the advisory audit and the
+seeded stress suites (39 tests) all concluded `success`, and the Playwright suite passed on Ubuntu and
+Windows (564 tests per OS; 6 `test.fixme` tests were skipped and are not evidence; none failed or needed
+its retry). The two earlier green runs were
+https://github.com/jerryboganda/studyvaultai/actions/runs/38173629818 (commit
+`79d8cbc38111bfcde0e621f37d4795fd3f38e736`, 546 tests per OS) and
+https://github.com/jerryboganda/studyvaultai/actions/runs/38139836238 (branch `ci/wave-c`, commit
+`d641515b1154aa46597e7ebb069d2341014c125c`, 443 tests per OS). All three drove Playwright's bundled
+Chromium against the e2e build of the extension (loopback host permissions, an open overlay shadow
+root). They do not prove behaviour in branded Chrome or Edge, in a real incognito window, with Chrome's
+native permission prompt or folder picker, with a hosted OpenID Connect provider, with a live AI
+provider (the AI specs run against local stand-ins that enforce the request shape), with a screen
+reader or in the Chrome Web Store review. The release workflows (`release.yml`, `reproducible-build.yml`,
+`stress.yml`) have never run and the manual checklist has not been run. Read
+`docs/PRIVACY_CLAIMS.md` for what each privacy and store statement is actually backed by, and treat
+`PRIVACY_POLICY.md` and `STORE_LISTING.md` as drafts.
+
+**Finish wave (branch `feat/finish-all`, 2026-10-12).** After the first green run the branch added: schema v4
+(auto-filing rules, syllabi and links; ADR-011), auto-filing rules that suggest and ask first
+(ADR-017), a knowledge graph with a table equivalent (ADR-018), syllabus coverage and an exam
+simulation that can be drawn from a syllabus topic (ADR-020), opt-in study reminders (ADR-019), backups into a folder you choose (ADR-016),
+Word, PowerPoint, EPUB, HTML and Anki text import (ADR-014), an AI provider router with fallbacks,
+three more task kinds and chat with your notes (ADR-013), lexical related highlights, TeX in notes
+typeset to native MathML by a lazily loaded chunk (temml; the source text stays as the fallback and
+is what is stored, searched and exported: ADR-015), the content script on Preact (215 KB in the
+release gate of the latest run, was 405 KB; ADR-012), a JSON readable export and interface polish.
+That run covers the wave: its loaded-extension specs (`rules`, `syllabus`, `graph`, `exam`,
+`reminders`, `import-formats`, `backup-folder`, `ai-extras`, `ai-anthropic`, `backup-secrets`,
+`related`, `polish`, `math`, `math-panel`) passed in Playwright's Chromium on Ubuntu and Windows,
+and `docs/PRIVACY_CLAIMS.md` (P20a to P20d, P26h to P26j, P33 to P48) says, row by row, what each
+asserts and what stays `unit-only` or manual (the fake-backed unit parts, Chrome's own prompts and
+folder picker, a live provider, screen readers on typeset formulas, the exam and the graph;
+inventory in `TEST_PLAN.md`). Owner decisions of 2026-10-11: the licence is proprietary, all rights reserved (`LICENSE`, `package.json`
+`UNLICENSED`; the copyright holder's name is still an owner-supplied marker), and the v0.1 listing is
+the local-first core, with AI and sync as optional advanced features that are off by default and no
+hosted service claimed or implied. Not built, with reasons (`docs/plans/FINISH_BRIEF.md`, `PRD.md`
+"Delivery status"): shared or collaborative banks, calendar and cloud-drive sync, YouTube captions,
+semantic (embedding) search, image occlusion, a reading view, and Edge automation.
+
+**PDF reader, late changes (2026-10-12).** Four more changes to the extension-owned reader, on the
+same branch: links inside a PDF are followed (a place in the document, with Back; a web address only
+after a confirmation that shows it, in a new tab with no opener and no referrer; mail, script and
+file links refused; the refusal notice floats and links are painted before a page renders: ADR-006
+amendment 3); scans stored sideways or upside down are turned to be read (amendment 4); a recognised
+page, or the whole document, can be read again with "Re-recognise", which asks first, replaces a page
+only after its new reading succeeded, carries the person's corrections by where their lines sit and
+keeps one step back on the device only, outside backups and sync (amendment 5); and eleven real
+public-domain United States government PDFs (20.7 MB, `tests/fixtures/pdf/real/SOURCES.md`) are the
+test corpus. Status: the unit and integration files, `pdf-links.spec.ts` (15 tests),
+`pdf-ocr-rerun.spec.ts` (4), `pdf-real.spec.ts` (20) and `pdf-real-memory.spec.ts` (3) passed in the
+latest run on Ubuntu and Windows, and the memory spec's heap bounds held there
+(`docs/PERF_REVIEW.md`); a screen reader, branded Chrome and a document scanned on paper were not tried
+(`docs/PRIVACY_CLAIMS.md` P45 to P48; the re-recognise specs read generated scans). The real files
+cover PDF matrix items 1 to 5, 9 and 10; items 6 (password-protected) and 7 (remote PDF, redirect)
+have only synthetic fixtures. Not supported: PDF actions beyond links and four named actions, pages
+of mixed orientation, and a control that removes recognised text (`RELEASE.md` "Known limitations").
 
 **Stack in use** (exact pins in `package.json`, rationale in ADR-002): WXT 0.21.4, Vite 8.3.4, React
-19.3.0, TypeScript 6.0.3, Dexie 4.4.6 on IndexedDB, Zod 4.6.5, `pdfjs-dist` 6.4.299 (legacy build,
+19.3.0 (extension pages) and Preact 10.29.8 (the content script only, ADR-012), TypeScript 6.0.3,
+Dexie 4.4.6 on IndexedDB, Zod 4.6.5, `pdfjs-dist` 6.4.299 (legacy build,
 bundled), `tesseract.js` 7.0.0 with bundled language data, `ts-fsrs` 5.4.2, MiniSearch 7.2.0,
-`marked` with DOMPurify, Vitest 5.0.3 and Playwright 1.64.0 on pnpm. Styling is plain CSS with custom
+`marked` with DOMPurify, `temml` 0.13.5 (TeX to MathML, a chunk loaded only when a note holds a
+formula: ADR-015), Vitest 5.0.3 and Playwright 1.64.0 on pnpm. Styling is plain CSS with custom
 properties inside a Shadow DOM for the page overlay; **Tailwind was not adopted** (ADR-002).
 
 **Layout.** `entrypoints/` holds the extension surfaces (`background`, `highlighter.content`,
@@ -48,8 +98,9 @@ a single failing Playwright spec with one worker; do not run the full `pnpm test
 | Security and privacy | `SECURITY_PRIVACY.md` (rules), `THREAT_MODEL.md`, `SECURITY.md` (reporting), `PRIVACY_POLICY.md` (draft), `docs/PRIVACY_CLAIMS.md` (evidence ledger) |
 | Release | `RELEASE.md`, `STORE_LISTING.md` (draft), `CHANGELOG.md`, `docs/MANUAL_TEST_CHECKLIST.md` |
 | Reviews | `docs/A11Y_REVIEW.md` (accessibility: findings fixed in code and unit-tested, what needs a real browser), `docs/PERF_REVIEW.md` (measured in Node and jsdom, not Chrome; ranked findings) |
-| Plans | `docs/plans/EXECUTION_BRIEF.md`, `prompts/` |
-| Decisions | `docs/adr/001` module layout; `002` toolchain pins and styling; `003` least-privilege site access and injection; `004` text anchoring and highlight rendering; `005` free text only in extension-origin surfaces; `006` PDF reader; `007` release pipeline and store-document gates; `008` `'wasm-unsafe-eval'`; `009` network egress for AI and sync; `010` module seams |
+| Plans | `docs/plans/EXECUTION_BRIEF.md`, `docs/plans/FINISH_BRIEF.md`, `prompts/` |
+| Licence | `LICENSE` (proprietary, all rights reserved) |
+| Decisions | `docs/adr/001` module layout; `002` toolchain pins and styling; `003` least-privilege site access and injection; `004` text anchoring and highlight rendering; `005` free text only in extension-origin surfaces; `006` PDF reader; `007` release pipeline and store-document gates; `008` `'wasm-unsafe-eval'`; `009` network egress for AI and sync; `010` module seams; `011` schema v4 (rules, syllabi, relations); `012` Preact in the content script; `013` AI router and new task kinds; `014` import formats; `015` math in notes (typeset MathML loaded on first use, source text as the fallback); `016` backups into a folder; `017` auto-filing rules; `018` links and the knowledge graph; `019` reminders; `020` exam simulation and syllabus coverage |
 
 The blueprint below is the original product description of 2026-10-10 and is kept as written. Where
 it differs from this section (creating a new repository, Tailwind), this section is current.

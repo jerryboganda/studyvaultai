@@ -5,6 +5,7 @@ import { useAsync } from '../hooks';
 import { InlineNotice } from '../Notice';
 import type { BackupDeps } from './deps';
 import { explainBackupError, type ErrorExplanation } from './explain';
+import { ExportProgressView } from './ExportProgressView';
 import { formatBytes, formatWhen, tableLabel } from './format';
 import {
   PassphraseSetup,
@@ -19,13 +20,6 @@ type Run =
   | { step: 'working'; progress: ExportProgress | null }
   | { step: 'done'; result: ExportResult; sha: string }
   | { step: 'failed'; error: ErrorExplanation };
-
-const PHASE: Record<ExportProgress['phase'], string> = {
-  reading: 'Reading',
-  compressing: 'Compressing',
-  encrypting: 'Encrypting',
-  done: 'Finishing',
-};
 
 /**
  * Full, lossless backup of the vault's tables (the file the Restore wizard reads). Settings are not
@@ -138,28 +132,7 @@ export function ExportPanel({ deps }: { deps: BackupDeps }) {
         </p>
       ) : null}
 
-      {working ? (
-        <div
-          className="sv-stack sv-stack--tight"
-          role="status"
-          data-testid="backup-export-progress"
-        >
-          <progress
-            aria-label="Backup progress"
-            className="bk-progress"
-            {...(progress && progress.rowsTotal > 0
-              ? { value: progress.rowsDone, max: progress.rowsTotal }
-              : {})}
-          />
-          <p className="sv-small">
-            {progress
-              ? `${PHASE[progress.phase]}${
-                  progress.table ? ` ${tableLabel(progress.table).toLowerCase()}` : ''
-                }… ${progress.rowsDone} of ${progress.rowsTotal} items`
-              : 'Starting…'}
-          </p>
-        </div>
-      ) : null}
+      {working ? <ExportProgressView progress={progress} testId="backup-export-progress" /> : null}
 
       {run.step === 'failed' ? (
         <InlineNotice

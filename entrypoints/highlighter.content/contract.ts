@@ -2,6 +2,7 @@ import type {
   BankLite,
   CaptureResult,
   ColorId,
+  FilingOutcome,
   HighlightKind,
   HighlightPatch,
   HighlightView,
@@ -41,6 +42,14 @@ export interface CaptureHost {
   createBank(name: string): Promise<BankLite>;
   /** Undo of a save = soft delete (recoverable). */
   undo(highlightId: string): Promise<void>;
+  /**
+   * A filing rule's suggestion for a highlight just saved (docs/adr/017-filing-rules.md). The worker
+   * holds the placement: the page names only the highlight, so it can never choose a bank.
+   */
+  acceptFiling(highlightId: string): Promise<FilingOutcome>;
+  dismissFiling(highlightId: string): Promise<void>;
+  /** Puts a highlight a rule filed back where it was; `reason` says why it could not. */
+  undoFiling(highlightId: string): Promise<{ restored: boolean; reason: string | null }>;
   update(id: string, patch: HighlightPatch): Promise<HighlightView>;
   remove(id: string): Promise<void>;
   restore(id: string): Promise<HighlightView>;
@@ -66,11 +75,12 @@ export interface CaptureUi {
    * opened with; an undefined answer leaves it as it is. Never opens, moves or focuses anything.
    */
   refreshHighlightPopover(latest: (id: string) => HighlightView | undefined): void;
-  /** Transient, accessible notice. `action` renders an Undo-style button. */
+  /** Transient, accessible notice. `action` renders an Undo-style button, `secondary` a second one. */
   toast(notice: {
     text: string;
     tone?: 'info' | 'success' | 'error';
     action?: { label: string; run: () => void };
+    secondary?: { label: string; run: () => void };
   }): void;
   /** Re-apply theme / palette when settings change. */
   applySettings(settings: Settings): void;

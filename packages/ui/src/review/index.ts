@@ -7,6 +7,8 @@
 // The full review page itself is entrypoints/review (review.html); `reviewPageUrl` links to it.
 
 export { ReviewTab } from './ReviewTab';
+export { ReminderNotice, useReminderRaised } from './ReminderNotice';
+export { useNow } from './useNow';
 export { ReviewSettingsSection, StudyDaySettings, DeckOptions } from './ReviewSettingsSection';
 export { DeckSettingsForm } from './DeckSettingsForm';
 export { CardFace, type CardFaceProps, type FaceCard } from './CardFace';
@@ -65,6 +67,7 @@ export {
   parseReviewSearch,
   reviewPageUrl,
   reviewSearch,
+  type ExamTarget,
   type ReviewLink,
   type ReviewView,
 } from './links';

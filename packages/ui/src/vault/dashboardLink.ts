@@ -7,6 +7,7 @@ import { browser } from 'wxt/browser';
  *   await openDashboard({ highlight: id });      // preview that highlight
  *   await openDashboard({ bank: bankId });       // scoped to a bank
  *   await openDashboard({ q: 'tag:neuro' });     // with a search
+ *   await openDashboard({ bank: id, view: 'chat' }); // chat with the notes of a bank (AI, opt-in)
  *
  * The page is `dashboard.html` (an unlisted extension page: no manifest entry, no extra permission).
  */
@@ -17,6 +18,10 @@ export interface DashboardTarget {
   highlight?: string | null;
   bank?: string | null;
   q?: string | null;
+  /** A view other than the highlight list. */
+  view?: 'chat' | 'graph' | 'syllabus' | 'rules' | null;
+  /** With `view: 'syllabus'`: open on this syllabus. */
+  syllabus?: string | null;
 }
 
 /** Extension-relative path (`dashboard.html?highlight=...`). Pass it to `runtime.getURL`. */
@@ -25,6 +30,15 @@ export function dashboardPath(target: DashboardTarget = {}): string {
   if (target.highlight) params.set('highlight', target.highlight);
   if (target.bank) params.set('bank', target.bank);
   if (target.q) params.set('q', target.q);
+  if (
+    target.view === 'chat' ||
+    target.view === 'graph' ||
+    target.view === 'syllabus' ||
+    target.view === 'rules'
+  ) {
+    params.set('view', target.view);
+    if (target.view === 'syllabus' && target.syllabus) params.set('syllabus', target.syllabus);
+  }
   const query = params.toString();
   return query ? `${DASHBOARD_PAGE}?${query}` : DASHBOARD_PAGE;
 }

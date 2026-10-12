@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { Suspense, lazy, useMemo } from 'react';
 import { RATINGS, RATING_LABELS } from '@study';
 import { getAnalyticsInput } from '@storage';
 import { Button, EmptyState, InlineNotice, plural, useDataEpoch, useAsync } from '@ui';
@@ -13,17 +13,42 @@ import {
   percent,
   toClock,
   useTick,
+  type ExamTarget,
   type StudySettings,
 } from '@ui/review';
 import { BarChart, ShareBars } from './Charts';
 
 const HISTORY_DAYS = 365;
 
+// The syllabus coverage table is only needed on this tab, and only its own chunk carries it.
+const SyllabusCoverage = lazy(() => import('./SyllabusCoverage'));
+
+function Coverage({
+  settings,
+  onExamOnTopic,
+}: {
+  settings: StudySettings;
+  onExamOnTopic?: ((target: ExamTarget) => void) | undefined;
+}) {
+  return (
+    <Suspense fallback={<p className="sv-muted">Loading syllabus coverage…</p>}>
+      <SyllabusCoverage settings={settings} onExamOnTopic={onExamOnTopic} />
+    </Suspense>
+  );
+}
+
 /**
  * Review analytics from the real database rows. A number that cannot be derived is shown as
  * "not enough data" with the reason, never as an invented value.
  */
-export function Analytics({ settings }: { settings: StudySettings }) {
+export function Analytics({
+  settings,
+  onExamOnTopic,
+}: {
+  settings: StudySettings;
+  /** Opens the exam setup on a syllabus topic; without it the table has no such button. */
+  onExamOnTopic?: ((target: ExamTarget) => void) | undefined;
+}) {
   const epoch = useDataEpoch();
   const tick = useTick();
   const key = clockKey(settings);
@@ -57,6 +82,7 @@ export function Analytics({ settings }: { settings: StudySettings }) {
             filled in before then.
           </span>
         </EmptyState>
+        <Coverage settings={settings} onExamOnTopic={onExamOnTopic} />
       </div>
     );
   }
@@ -253,6 +279,8 @@ export function Analytics({ settings }: { settings: StudySettings }) {
           </p>
         ) : null}
       </section>
+
+      <Coverage settings={settings} onExamOnTopic={onExamOnTopic} />
     </div>
   );
 }

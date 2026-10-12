@@ -34,6 +34,8 @@ export function Toolbar({
   onToggleCompanion,
   onToggleSidePane,
   onOpenAnother,
+  backTo,
+  onBack,
 }: {
   page: number;
   pageCount: number;
@@ -53,6 +55,10 @@ export function Toolbar({
   onToggleCompanion(): void;
   onToggleSidePane(): void;
   onOpenAnother(): void;
+  /** The page Back returns to after a link was followed; null: no link has been followed yet. */
+  backTo?: number | null;
+  /** Back (Alt+Left). Without it the button is not offered. */
+  onBack?(): void;
 }) {
   // null = follow the current page; a string = what was typed and not yet committed.
   const [typed, setTyped] = useState<string | null>(null);
@@ -116,7 +122,11 @@ export function Toolbar({
             value={draft}
             data-testid="pdf-page-input"
             onChange={(e) => setTyped(e.target.value)}
-            onBlur={commitPage}
+            // Leaving the box commits what was typed; with nothing typed it must not jump back to the
+            // top of the current page (a click into the document would undo the person's scrolling).
+            onBlur={() => {
+              if (typed !== null) commitPage();
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 e.preventDefault();
@@ -135,6 +145,16 @@ export function Toolbar({
         >
           <span aria-hidden="true">↓</span>
         </Button>
+        {onBack ? (
+          <Button
+            title="Back to where the last link was followed (Alt+Left)"
+            disabledReason={backTo == null ? 'No link has been followed yet.' : undefined}
+            onClick={onBack}
+            data-testid="pdf-back"
+          >
+            {backTo == null ? 'Back' : `Back to page ${backTo}`}
+          </Button>
+        ) : null}
       </div>
 
       <div className="sv-toolbar__group" role="group" aria-label="Zoom and rotation">

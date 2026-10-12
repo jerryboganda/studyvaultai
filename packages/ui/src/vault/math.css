@@ -1,0 +1,153 @@
+/*
+ * Typeset TeX (mathTypeset.ts, ADR-015). Loaded together with the lazy mathTypeset chunk, so pages
+ * without a formula never fetch it. Chromium's MathML Core does the layout; this is the part of
+ * temml's Chromium stylesheet that its output relies on, in `.sv-md` scope. No colour of its own
+ * (everything is currentColor), so dark mode, high contrast and forced colours follow the text.
+ */
+.sv-md math {
+  font-family: math;
+  /* a formula reads left to right whatever the note's direction */
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+.sv-md math[display='block'] {
+  display: block math;
+  max-width: 100%;
+  margin-block: var(--sv-space-2);
+  /* a long formula scrolls inside its own box instead of widening the page */
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* Array cells and rows (matrices, cases, aligned) */
+.sv-md math .tml-left {
+  text-align: -webkit-left;
+}
+.sv-md math .tml-right {
+  text-align: -webkit-right;
+}
+.sv-md math mtable.tml-jot > mtr > mtd {
+  padding-top: 0.7ex;
+  padding-bottom: 0.7ex;
+}
+.sv-md math mtable.tml-small mtd {
+  padding-top: 0.35ex;
+  padding-bottom: 0.35ex;
+}
+
+/* Italic correction on superscripts and accents */
+.sv-md math .tml-sml-pad {
+  padding-left: 0.05em;
+}
+.sv-md math .tml-med-pad {
+  padding-left: 0.1em;
+}
+.sv-md math .tml-lrg-pad {
+  padding-left: 0.15em;
+}
+.sv-md math .chr-sml {
+  transform: translate(0.07em, 0);
+}
+.sv-md math .chr-sml-vec {
+  transform: scale(0.75) translate(0.07em, 0);
+}
+.sv-md math .chr-med {
+  transform: translate(0.14em, 0);
+}
+.sv-md math .chr-med-vec {
+  transform: scale(0.75) translate(0.14em, 0);
+}
+.sv-md math .chr-lrg {
+  transform: translate(0.21em, 0);
+}
+.sv-md math .chr-lrg-vec {
+  transform: scale(0.75) translate(0.21em, 0);
+}
+
+/* Stretched \widehat and \widetilde */
+.sv-md math .tml-hat-1 {
+  transform: scale(1.9, 1);
+}
+.sv-md math .tml-hat-2 {
+  transform: scale(3.9, 1);
+}
+.sv-md math .tml-hat-3 {
+  transform: scale(5.8, 1);
+}
+.sv-md math .tml-hat-4 {
+  transform: scale(7.8, 1);
+}
+.sv-md math .tml-tilde-2 {
+  transform: scale(2, 1.1);
+}
+.sv-md math .tml-tilde-3 {
+  transform: scale(3, 1.1);
+}
+.sv-md math .tml-tilde-4 {
+  transform: scale(4, 1.1);
+}
+
+/* \overline, \underline, \fbox, \cancel, \bcancel, \xcancel, \sout: Chromium has no <menclose> */
+.sv-md math menclose {
+  position: relative;
+  padding: 0.5ex 0;
+}
+.sv-md math .tml-overline {
+  padding: 0.1em 0 0;
+  border-top: 0.065em solid;
+}
+.sv-md math .tml-underline {
+  padding: 0 0 0.1em;
+  border-bottom: 0.065em solid;
+}
+.sv-md math .tml-fbox {
+  padding: 3pt;
+  border: 1px solid;
+}
+.sv-md math .tml-cancel {
+  display: inline-block;
+  position: absolute;
+  left: 0.5px;
+  bottom: 0;
+  width: 100%;
+  height: 100%;
+  background-color: currentcolor;
+}
+.sv-md math .upstrike {
+  clip-path: polygon(0.05em 100%, 0 calc(100% - 0.05em), calc(100% - 0.05em) 0, 100% 0.05em);
+}
+.sv-md math .downstrike {
+  clip-path: polygon(0 0.05em, 0.05em 0, 100% calc(100% - 0.05em), calc(100% - 0.05em) 100%);
+}
+.sv-md math .sout {
+  clip-path: polygon(
+    0 calc(55% + 0.0333em),
+    0 calc(55% - 0.0333em),
+    100% calc(55% - 0.0333em),
+    100% calc(55% + 0.0333em)
+  );
+}
+.sv-md math .tml-xcancel {
+  clip-path: polygon(
+    0.05em 0,
+    0 0.05em,
+    calc(50% - 0.05em) 50%,
+    0 calc(100% - 0.05em),
+    0.05em 100%,
+    50% calc(50% + 0.05em),
+    calc(100% - 0.05em) 100%,
+    100% calc(100% - 0.05em),
+    calc(50% + 0.05em) 50%,
+    100% 0.05em,
+    calc(100% - 0.05em) 0,
+    50% calc(50% - 0.05em)
+  );
+}
+
+@media (forced-colors: active) {
+  /* the strike is a filled shape: forced colours would paint it with the page background */
+  .sv-md math .tml-cancel {
+    forced-color-adjust: none;
+    background-color: CanvasText;
+  }
+}

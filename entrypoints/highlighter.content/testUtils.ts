@@ -5,6 +5,7 @@ import {
   defaultSettings,
   type BankLite,
   type CaptureResult,
+  type FilingOutcome,
   type HighlightView,
   type Settings,
   type TabRpc,
@@ -175,6 +176,7 @@ export interface Notice {
   text: string;
   tone?: 'info' | 'success' | 'error';
   action?: { label: string; run: () => void };
+  secondary?: { label: string; run: () => void };
 }
 
 export class FakeUi implements CaptureUi {
@@ -246,6 +248,18 @@ export class FakeBackground {
    */
   bumpOnResolution = false;
   banks: BankLite[] = [{ id: 'inbox-default', name: 'Inbox', color: 'amber', isInbox: true }];
+  /** What a new capture reports as the result of the filing rules (none by default). */
+  filing: FilingOutcome | null = null;
+  /** What `filing.accept` answers. */
+  accepted: FilingOutcome = {
+    status: 'filed',
+    ruleName: 'Rule',
+    bank: { id: 'bank-bio00001', name: 'Biology', color: 'green', isInbox: false },
+    folderName: null,
+    addedTags: 0,
+  };
+  /** What `filing.undo` answers. */
+  undone: { restored: boolean; reason: string | null } = { restored: true, reason: null };
 
   callsOf(type: string): Call[] {
     return this.calls.filter((c) => c.type === type);
@@ -323,7 +337,13 @@ export class FakeBackground {
         };
         this.rows.set(highlight.id, highlight);
         this.bump();
-        const result: CaptureResult = { status: 'created', highlight, bank, addedToBank: true };
+        const result: CaptureResult = {
+          status: 'created',
+          highlight,
+          bank,
+          addedToBank: true,
+          ...(this.filing ? { filing: this.filing } : {}),
+        };
         return result;
       }
       case 'highlight.reportResolution': {
@@ -377,6 +397,12 @@ export class FakeBackground {
         this.bump();
         return next;
       }
+      case 'filing.accept':
+        return this.accepted;
+      case 'filing.dismiss':
+        return { ok: true };
+      case 'filing.undo':
+        return this.undone;
       case 'sidepanel.open':
         return { opened: this.sidePanelOpens };
       case 'banks.list':

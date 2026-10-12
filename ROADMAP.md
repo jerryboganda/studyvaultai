@@ -52,3 +52,32 @@ Work in independently deployable vertical slices. Phases are gates, not promises
 - Data integrity and rollback are tested; known issues logged by severity.
 - Screenshots of actual running UI included in CI artifacts or review notes.
 - Next phase begins only after blockers addressed and user-intent features are present.
+
+## Status by phase (2026-10-12)
+
+Words follow `CLAUDE.md`: **COMPLETE** only when the user flow works in an actual loaded extension,
+offline behaviour succeeds, data persists across restart and reload, and the phase's acceptance tests
+pass with evidence; otherwise **PARTIAL** or **BLOCKED**, honestly. No phase is COMPLETE, for the
+reasons in each row: the latest green Actions run (38186957997, 2026-10-12, commit `dadafe3`; the two
+before it, 38173629818 and 38139836238, were green too) drove Playwright's bundled Chromium against the
+e2e build and covers the finish wave (`docs/plans/FINISH_BRIEF.md`, ADR-011 to ADR-020) and the changes
+after it, and branded Chrome, Edge, a live AI provider, a screen reader and the manual checklist have
+not been used (`docs/MANUAL_TEST_CHECKLIST.md`). No row below says "CI pending" any more: where a
+spec ran, the row says so, and what no spec can drive is in the last column. The evidence per statement
+is in `docs/PRIVACY_CLAIMS.md`, the test inventory in `TEST_PLAN.md`.
+
+| Phase | Status | Evidence that exists | What is missing |
+| --- | --- | --- | --- |
+| 0 Foundation | PARTIAL | WXT, React, TypeScript, Vitest, Playwright, ADRs 001 to 010; production build gated by `scripts/check-build.mjs` (runs 38139836238 to 38186957997; the budgets of 230 KB for the content script, 450 KB for the worker and 7,000 KB for the non-OCR total held in run 38186957997: "content script 215 KB; total 6903 KB") | The gate "in stable Chrome" (branded Chrome ignores `--load-extension`: manual, MT-01 to MT-04); the margin is 97 KB (1.4%) |
+| 1 Capture to bank | PARTIAL | `capture`, `compat`, `gate10`, `lifecycle`, `overlay`, `permissions`, `resilience` specs passed in Playwright's Chromium (run 38139836238). The overlay is now on Preact (ADR-012: the overlay specs passed against it in runs 38173629818 and 38186957997) and a selection made before activation shows the toolbar (unit-only) | Real sites (MT-13a to MT-13k); the Preact overlay in real Chrome (MT-61); a real private window (MT-21) |
+| 2 Knowledge manager and storage | PARTIAL | Dashboard, search, trash, backup and restore, 10,000-highlight specs (run 38139836238). Finish wave: schema v4 (ADR-011), auto-filing rules (ADR-017), syllabi (ADR-020), links, folders to depth 32, JSON export, Word, PowerPoint, EPUB, HTML and Anki import (ADR-014), backups into a folder (ADR-016) and typeset math in notes (ADR-015 amendment 1; `math.spec.ts`, `math-panel.spec.ts`): unit files and e2e specs passed in run 38186957997 | A real Chrome upgrade of a v3 profile (O17); the folder prompt on a real disk (MT-54); real office files (MT-59) |
+| 3 PDF reader | PARTIAL | Synthetic fixtures, web open, OCR, private-tab specs passed (run 38139836238). Finish wave: eleven real public-domain PDFs (20.7 MB; `tests/fixtures/pdf/real/SOURCES.md`), open, outline, search, highlight and reopen, one OCR page, windowing and heap (`pdf-real*.spec.ts`, `real.integration.test.ts`): passed in run 38186957997; links followed safely (`pdf-links.spec.ts`, ADR-006 amendment 3), scans stored sideways read by turning them (amendment 4) and a recognised page read again with one step back (`pdf-ocr-rerun.spec.ts`, amendment 5): passed in the same run; reader keyboard route to the save bar: passed (`polish.spec.ts`). **Gate "minimum 10 representative PDF fixtures":** met in number (11 real files) and covers PDF matrix items 1 to 5, 9 and 10; items 6 (password) and 7 (remote PDF, redirect) have synthetic fixtures only | A real incognito window (MT-45); Chrome's prompt and grant hand-back (MT-39); caret browsing (MT-53); links with a screen reader, the pop-up blocker, a physically sideways scan and forced colours (MT-62 to MT-65); PDF actions beyond links and four named actions are unsupported |
+| 4 Retention | PARTIAL | Review, FSRS, study day, analytics, offline specs passed (run 38139836238). Finish wave: opt-in reminders (ADR-019), exam simulation, syllabus coverage and an exam drawn from a syllabus topic (ADR-020): passed in run 38186957997 | Reminders across a real browser restart and wall-clock time (MT-55); the exam with a screen reader (MT-57) |
+| 5 AI enhancement | PARTIAL | Single provider, consent, failure paths, key containment passed against a local fake provider (run 38139836238). Finish wave: provider router with fallbacks, three more task kinds, chat with your notes (ADR-013), and an Anthropic provider kind (`ai-anthropic.spec.ts`; every adapter against a local stand-in): passed in run 38186957997 | A live OpenAI-compatible and Anthropic provider (MT-67); two real providers and Chrome's prompt for a second origin (MT-60); a real https provider (MT-47) |
+| 6 Sync and integrations | PARTIAL | Sync against the reference server and a stand-in sign-in provider, two profiles, worker suspension (run 38139836238); Anki and Obsidian-compatible exports. There is no account system and no hosted service (README) | A real OIDC provider over https and the native prompts (MT-46, MT-47); production-complete server is out of scope |
+| 7 Release hardening | PARTIAL | THREAT_MODEL, A11Y_REVIEW, PERF_REVIEW, release gates, privacy and store drafts, claims ledger | `release.yml`, `reproducible-build.yml` and `stress.yml` have never run; the manual checklist (MT-01 to MT-68) has not been run; the privacy policy and listing carry owner markers; screenshots are not composed |
+
+Items of the PRD that were deliberately not built, with reasons, are in `PRD.md` "Delivery status"
+(shared banks, calendar and cloud-drive sync, YouTube captions, semantic search, image occlusion, a
+reading view). Edge automation is not part of any phase: Edge ignores `--load-extension`, so it stays
+a manual item.

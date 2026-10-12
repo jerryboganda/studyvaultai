@@ -26,7 +26,8 @@ import {
  * packages/storage; these are only the validated shapes. Same record envelope as schema.ts.
  */
 
-export const MAX_FOLDER_DEPTH = 8;
+/** Most levels of nested folders in one bank (the tree view caps its visual indent separately). */
+export const MAX_FOLDER_DEPTH = 32;
 export const MAX_FOLDER_NAME_CHARS = 80;
 export const MAX_TAG_NAME_CHARS = 50;
 export const MAX_TAG_ALIASES = 20;
@@ -51,7 +52,7 @@ export const BankIcon = z.string().trim().min(1).max(MAX_BANK_ICON_CHARS);
 export const BankRecord = Bank.extend({ icon: BankIcon.nullable().optional() });
 export type BankRecord = z.infer<typeof BankRecord>;
 
-/** One node of the Bank > Folder > Topic > Subtopic tree (ONE nested table, depth <= 8). */
+/** One node of the Bank > Folder > Topic > Subtopic tree (ONE nested table, depth <= MAX_FOLDER_DEPTH). */
 export const Folder = z.object({
   id: Id,
   ...recordMeta,
@@ -157,6 +158,35 @@ export const OcrWord = PdfRect.extend({
 });
 export type OcrWord = z.infer<typeof OcrWord>;
 
+/**
+ * Extra clockwise turn, in degrees, the recogniser applied to a scanned page that is stored sideways
+ * or upside down. Informational: the words' boxes are already in the page's own frame.
+ */
+export const OcrOrientation = z.union([
+  z.literal(0),
+  z.literal(90),
+  z.literal(180),
+  z.literal(270),
+]);
+export type OcrOrientation = z.infer<typeof OcrOrientation>;
+
+/**
+ * The one reading a re-recognition (or a restore) replaced, kept on the page's row so it can be put
+ * back (ADR-006 Amendment 5). Device-local: never synchronised and never written to a backup.
+ */
+export const PreviousOcrReading = z.object({
+  text: z.string().max(MAX_OCR_TEXT_CHARS),
+  correctedText: z.string().max(MAX_OCR_TEXT_CHARS).nullable(),
+  words: z.array(OcrWord).max(MAX_OCR_WORDS),
+  language: z.string().max(32),
+  engine: z.string().max(64),
+  confidence: z.number().min(0).max(1).nullable(),
+  orientation: OcrOrientation.optional(),
+  /** When this reading stopped being the page's current one. */
+  replacedAt: IsoDate,
+});
+export type PreviousOcrReading = z.infer<typeof PreviousOcrReading>;
+
 /** Recognised text of one page, keyed by [documentId+pageNumber]. `correctedText` is the user's fix. */
 export const OcrPage = z.object({
   documentId: Id,
@@ -170,6 +200,13 @@ export const OcrPage = z.object({
   language: z.string().max(32),
   engine: z.string().max(64),
   confidence: z.number().min(0).max(1).nullable(),
+  /** Absent on pages recognised before orientation checks: read as 0 (the page as it is shown). */
+  orientation: OcrOrientation.optional(),
+  /**
+   * The reading this one replaced (one step back). A damaged slot reads as absent, so it can never
+   * make the page's own text unreadable.
+   */
+  previousReading: PreviousOcrReading.optional().catch(undefined),
 });
 export type OcrPage = z.infer<typeof OcrPage>;
 

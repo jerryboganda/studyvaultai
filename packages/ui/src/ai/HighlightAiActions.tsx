@@ -8,6 +8,7 @@ import { AiResultsList } from './AiResultsList';
 import { ConsentPreviewDialog, type AiHighlightInput } from './ConsentPreviewDialog';
 import { useAiConfig, useAiFlag } from './hooks';
 import { AI_ACTION_KINDS, AI_KIND_INFO } from './labels';
+import { routeFor } from './runtime';
 
 export interface HighlightAiActionsProps {
   /** The highlights the actions apply to (their saved quotes are the only text that can be sent). */
@@ -47,7 +48,13 @@ export function HighlightAiActions({
     }
     if (highlights.length > MAX) return `Select at most ${MAX} highlights.`;
     if (!cfg.data) return 'Reading the AI settings…';
-    if (cfg.data.problem) return cfg.data.problem;
+    // The provider this task starts with (the primary one unless the settings route it elsewhere).
+    const first = routeFor(cfg.data, kind).first;
+    if (first.problem) {
+      return first.id === cfg.data.profiles[0]?.id
+        ? first.problem
+        : `${first.label}: ${first.problem}`;
+    }
     return undefined;
   };
 

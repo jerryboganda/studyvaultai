@@ -5,6 +5,7 @@ import {
   dueForecast,
   estimatedRetention,
   formatInterval,
+  hashSeed,
   seededRandom,
   streak,
   studyLog,
@@ -106,15 +107,8 @@ export function isFieldTarget(target: EventTarget | null): boolean {
 // Multiple choice display order
 // ---------------------------------------------------------------------------------------------
 
-/** FNV-1a: a stable 32-bit seed from text. */
-export function hashSeed(text: string): number {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < text.length; i += 1) {
-    h ^= text.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return h >>> 0;
-}
+// The seed hash lives in @study (the exam module needs it too); kept exported from here.
+export { hashSeed };
 
 /** Same card and same repetition always show the options in the same order (no reshuffle on render). */
 export const choiceRandom = (card: Pick<Card, 'id' | 'fsrs'>): ReturnType<typeof seededRandom> =>

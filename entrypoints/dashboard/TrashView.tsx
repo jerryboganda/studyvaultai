@@ -158,7 +158,7 @@ export function TrashView() {
             </Button>
           </div>
 
-          <div className="sv-row dash-bulk" role="toolbar" aria-label="Trash actions">
+          <div className="sv-row dash-bulk" role="group" aria-label="Trash actions">
             <Button
               variant="primary"
               busy={busy}

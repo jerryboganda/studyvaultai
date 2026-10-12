@@ -10,8 +10,11 @@ import {
   FactCheckModelOutput,
   FlashcardsOutput,
   McqOutput,
+  MnemonicModelOutput,
   NOT_STATED,
+  ShortVivaOutput,
   StructuredNotesOutput,
+  StudyOutlineOutput,
   SummaryOutput,
 } from './schema';
 import type { ANSWER_STATES, AiSelection, AiTaskKind, Evidence, Grounding } from './schema';
@@ -197,11 +200,15 @@ const mcq = defineTask({
 const explain = defineTask({
   kind: 'explain',
   maxOutputTokens: 1_000,
-  instructions: () =>
+  instructions: (ctx) =>
     'Answer the question in the data block with kind="question", using ONLY the other data blocks. If ' +
     'the data does not answer it, set answerState to "insufficient_sources" and say what is missing. Use ' +
     '"partially_answered" when only part is covered. Cite every passage you rely on. Never answer from ' +
-    'outside knowledge.',
+    'outside knowledge.' +
+    (ctx.selection.history
+      ? ' Data blocks with kind="history" are earlier turns of this conversation, given for context ' +
+        'only: they are not evidence, an earlier answer is not a source, and they are never cited.'
+      : ''),
   shape:
     `{"answer": "<=2000", "answerState": "answered"|"partially_answered"|"insufficient_sources", ` +
     `"uncertainty": "<=300, what the sources do not settle (may be empty)", "evidence": [${EVIDENCE_SHAPE}]}`,
@@ -353,6 +360,66 @@ const factCheck = defineTask({
   conflicts: (o) => o.checks.some((c) => c.label === 'conflicting'),
 });
 
+const mnemonic = defineTask({
+  kind: 'mnemonic',
+  maxOutputTokens: 1_200,
+  instructions: () =>
+    'Write 1 to 5 memory aids (mnemonics) for facts that are stated in the data. Each aid is an acronym, ' +
+    'rhyme, image, short story or chunking scheme that helps recall ONE fact. For each aid give the fact ' +
+    'it anchors, the aid itself and how it maps onto the fact, and cite the data block the fact comes ' +
+    'from with a verbatim quote. An aid is a device for memory, not a statement of fact: never add facts ' +
+    'that are not in the data.',
+  shape:
+    `{"aids": [{"type": "acronym"|"rhyme"|"image"|"story"|"chunking"|"other", "fact": "<=300", ` +
+    `"mnemonic": "<=300", "howItWorks": "<=300", "evidence": [${EVIDENCE_SHAPE}]}]}`,
+  modelSchema: MnemonicModelOutput,
+  // Pipeline-owned: the model cannot present its aid as anything but an aid.
+  normalize: (d) => ({ ...d, aidNotFact: true as const }),
+  claims: (o) => o.aids.flatMap((a, i) => ev(`/aids/${i}/evidence`, a.evidence)),
+});
+
+const shortViva = defineTask({
+  kind: 'short_viva',
+  maxOutputTokens: 1_800,
+  instructions: () =>
+    'Write 3 to 5 short oral-exam (viva) questions an examiner could ask about the data, each with a ' +
+    'concise model answer that could be said aloud in a few sentences. Answer only from the data and ' +
+    'cite, for every question, the passages the model answer rests on, with verbatim quotes. If the ' +
+    'data cannot support three distinct questions, write fewer; never pad with outside knowledge.',
+  shape:
+    `{"questions": [{"question": "<=300", "modelAnswer": "<=800", ` +
+    `"evidence": [${EVIDENCE_SHAPE}]}]}`,
+  modelSchema: ShortVivaOutput,
+  claims: (o) => o.questions.flatMap((q, i) => ev(`/questions/${i}/evidence`, q.evidence)),
+});
+
+const studyOutline = defineTask({
+  kind: 'study_outline',
+  maxOutputTokens: 1_800,
+  instructions: () =>
+    'Build a hierarchical study outline of the data: a title, then a flat list of outline items in ' +
+    'reading order, each with a level of 1 (main topic), 2 (sub-topic) or 3 (detail). The first item is ' +
+    'level 1 and a level never goes more than one step deeper than the item before it. Every item cites ' +
+    'the data block it comes from with a verbatim quote. Organise the passages; do not add facts that ' +
+    'are not in the data.',
+  shape:
+    `{"title": "<=120", "items": [{"level": 1|2|3, "text": "<=240", ` +
+    `"evidence": [${EVIDENCE_SHAPE}]}]}`,
+  modelSchema: StudyOutlineOutput,
+  semanticIssues: (d) => {
+    const issues: string[] = [];
+    if (d.items[0]?.level !== 1) issues.push('the first outline item must be level 1');
+    d.items.forEach((it, i) => {
+      const before = d.items[i - 1];
+      if (before && it.level > before.level + 1) {
+        issues.push(`item ${i} skips from level ${before.level} to ${it.level}`);
+      }
+    });
+    return issues;
+  },
+  claims: (o) => o.items.flatMap((it, i) => ev(`/items/${i}/evidence`, it.evidence)),
+});
+
 export const TASKS: Readonly<Record<AiTaskKind, TaskDef>> = {
   exam_pearl: examPearl,
   summary,
@@ -363,4 +430,7 @@ export const TASKS: Readonly<Record<AiTaskKind, TaskDef>> = {
   compare_topics: compareTopics,
   contradictions,
   fact_check: factCheck,
+  mnemonic,
+  short_viva: shortViva,
+  study_outline: studyOutline,
 };

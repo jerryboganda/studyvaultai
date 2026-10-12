@@ -22,6 +22,25 @@ export const DEFAULT_IMPORT_LIMITS: ImportLimits = {
   maxTags: 32,
 };
 
+/** Largest document file (DOCX, PPTX, EPUB, HTML) the importer reads; see importDocs.ts. */
+export const MAX_DOCUMENT_BYTES = 64 * 1024 * 1024;
+
+/** What a candidate was read from. The last five are the document importers (importDocs.ts). */
+export type ImportFormat = 'markdown' | 'csv' | 'anki' | 'html' | 'epub' | 'docx' | 'pptx';
+
+/** One `#name:value` header line of an Anki "Notes in Plain Text" export. */
+export const ANKI_DIRECTIVE =
+  /^#(separator|html|columns|tags column|deck column|notetype column|guid column|tags|deck|notetype|guid)\s*:\s*(.*)$/i;
+
+/** Whether a text file is an Anki plain-text export: its first line is one of those directives. */
+export const looksLikeAnkiText = (text: string): boolean =>
+  ANKI_DIRECTIVE.test(
+    text
+      .slice(0, 300)
+      .replace(/^\uFEFF/, '')
+      .split(/\r?\n/, 1)[0] ?? '',
+  );
+
 export interface ImportOptions {
   limits?: Partial<ImportLimits>;
   /** quoteHash values already in the vault: matching candidates are reported as duplicates. */
@@ -37,8 +56,11 @@ export interface ImportOptions {
 export interface ImportedHighlight {
   origin: 'imported';
   needsReview: true;
-  format: 'markdown' | 'csv';
-  /** 1-based line (Markdown) or record number (CSV, header = 1) in the input. */
+  format: ImportFormat;
+  /**
+   * 1-based line (Markdown), record number (CSV, header = 1), note (Anki), paragraph or slide
+   * number (documents) in the input. Unique within one file.
+   */
   position: number;
   quote: string;
   normalizedQuote: string;
@@ -55,6 +77,10 @@ export interface ImportedHighlight {
   sourceUrl: string | null;
   /** Valid ISO timestamp or null. */
   capturedAt: string | null;
+  /** Documents and Anki: the name of the file it came from (a locator, never a source address). */
+  file?: string | null;
+  /** Documents and Anki: where in that file ("Slide 3", "Chapter 2, paragraph 14", "Note 7"). */
+  locator?: string | null;
 }
 
 export type ImportRejection =
@@ -62,12 +88,21 @@ export type ImportRejection =
 
 export interface ImportRowSet {
   highlights: ImportedHighlight[];
-  duplicates: { position: number; quoteHash: string; of: 'import' | 'existing' }[];
-  rejected: { position: number; reason: ImportRejection }[];
+  duplicates: {
+    position: number;
+    quoteHash: string;
+    of: 'import' | 'existing';
+    locator?: string;
+  }[];
+  rejected: { position: number; reason: ImportRejection; locator?: string }[];
   stats: { records: number; accepted: number; duplicates: number; rejected: number };
+  /** What the file was read as. Absent on rows made before this field existed. */
+  format?: ImportFormat;
+  /** Things the person should know before confirming (skipped images, notes, empty slides ...). */
+  warnings?: string[];
 }
 
-interface Raw {
+export interface Raw {
   position: number;
   quote: string;
   comment: string;
@@ -78,11 +113,16 @@ interface Raw {
   sourceTitle: string | null;
   sourceUrl: string | null;
   capturedAt: string | null;
+  file?: string | null;
+  locator?: string | null;
 }
 
-const limitsOf = (o: ImportOptions): ImportLimits => ({ ...DEFAULT_IMPORT_LIMITS, ...o.limits });
+export const limitsOf = (o: ImportOptions): ImportLimits => ({
+  ...DEFAULT_IMPORT_LIMITS,
+  ...o.limits,
+});
 
-function checkSize(input: string, limits: ImportLimits): void {
+export function checkSize(input: string, limits: ImportLimits): void {
   // UTF-8 length without allocating: BMP chars <= 3 bytes, so length*3 is an upper bound.
   if (input.length * 3 <= limits.maxBytes) return;
   const bytes = new TextEncoder().encode(input).length;
@@ -104,9 +144,9 @@ function isoOrNull(v: string | null): string | null {
   return year >= 1990 && year <= 2100 ? new Date(t).toISOString() : null;
 }
 
-async function finalize(
+export async function finalize(
   raws: Raw[],
-  format: 'markdown' | 'csv',
+  format: ImportFormat,
   options: ImportOptions,
   limits: ImportLimits,
 ): Promise<ImportRowSet> {
@@ -116,37 +156,43 @@ async function finalize(
     duplicates: [],
     rejected: [],
     stats: { records: raws.length, accepted: 0, duplicates: 0, rejected: 0 },
+    format,
   };
   const seen = new Set<string>();
-  const reject = (position: number, reason: ImportRejection) => {
-    out.rejected.push({ position, reason });
+  const reject = (r: Raw, reason: ImportRejection) => {
+    out.rejected.push({
+      position: r.position,
+      reason,
+      ...(r.locator ? { locator: r.locator } : {}),
+    });
   };
   for (const r of raws) {
+    const where = r.locator ? { locator: r.locator } : {};
     const quote = r.quote.trim();
     if (quote === '') {
-      reject(r.position, 'empty_quote');
+      reject(r, 'empty_quote');
       continue;
     }
     if (quote.length > limits.maxQuoteChars) {
-      reject(r.position, 'quote_too_long');
+      reject(r, 'quote_too_long');
       continue;
     }
     if (r.comment.length > limits.maxCommentChars) {
-      reject(r.position, 'comment_too_long');
+      reject(r, 'comment_too_long');
       continue;
     }
     if (r.tags.length > limits.maxTags) {
-      reject(r.position, 'too_many_tags');
+      reject(r, 'too_many_tags');
       continue;
     }
     const normalizedQuote = normalizeQuote(quote);
     const hash = await quoteHash(subtle, normalizedQuote);
     if (options.existingQuoteHashes?.has(hash)) {
-      out.duplicates.push({ position: r.position, quoteHash: hash, of: 'existing' });
+      out.duplicates.push({ position: r.position, quoteHash: hash, of: 'existing', ...where });
       continue;
     }
     if (seen.has(hash)) {
-      out.duplicates.push({ position: r.position, quoteHash: hash, of: 'import' });
+      out.duplicates.push({ position: r.position, quoteHash: hash, of: 'import', ...where });
       continue;
     }
     seen.add(hash);
@@ -166,6 +212,8 @@ async function finalize(
       sourceTitle: r.sourceTitle ? r.sourceTitle.slice(0, MAX_TITLE_CHARS) : null,
       sourceUrl: safeHttpUrl(r.sourceUrl),
       capturedAt: isoOrNull(r.capturedAt),
+      ...(r.file ? { file: r.file.slice(0, MAX_TITLE_CHARS) } : {}),
+      ...(r.locator ? { locator: r.locator.slice(0, MAX_TITLE_CHARS) } : {}),
     });
   }
   out.stats.accepted = out.highlights.length;
@@ -367,7 +415,7 @@ export async function importMarkdownHighlights(
 // CSV
 // ---------------------------------------------------------------------------------------------
 
-const ALIASES: Record<keyof Omit<Raw, 'position'>, string[]> = {
+const ALIASES: Record<keyof Omit<Raw, 'position' | 'file' | 'locator'>, string[]> = {
   quote: ['quote', 'exactquote', 'text', 'highlight', 'excerpt', 'passage'],
   comment: ['comment', 'comments', 'note', 'notes', 'usercomment', 'annotation'],
   sourceTitle: ['sourcetitle', 'title', 'source', 'pagetitle'],

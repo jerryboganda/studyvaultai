@@ -54,7 +54,7 @@ const BY_CODE: Record<BackupErrorCode, Entry> = {
   },
   not_a_backup: {
     title: 'This is not a StudyVault backup',
-    body: `The file does not have the structure of a StudyVault backup. If it is a Markdown or CSV file of highlights, use "Import highlights from a Markdown or CSV file" instead. ${UNCHANGED}`,
+    body: `The file does not have the structure of a StudyVault backup. If it is a Markdown, CSV, Anki, Word, PowerPoint, EPUB or HTML file, use "Import highlights from a file" instead. ${UNCHANGED}`,
     retryable: false,
   },
   corrupt_archive: {
@@ -159,6 +159,31 @@ const BY_CODE: Record<BackupErrorCode, Entry> = {
     body: `The final step was refused and rolled back, so your data was left exactly as it was before. ${UNCHANGED}`,
     retryable: true,
   },
+  folder_permission: {
+    title: 'StudyVault is not allowed to write to the backup folder',
+    body: `Chrome asks again each time the permission has lapsed (for example after a restart). Choose “Allow” when it asks, then press the button again. If you said no, nothing was written. ${UNCHANGED}`,
+    retryable: true,
+  },
+  folder_missing: {
+    title: 'The backup folder cannot be found',
+    body: `It may have been moved, renamed or deleted, or its drive is not connected. Reconnect the drive, or choose a folder again. ${UNCHANGED}`,
+    retryable: false,
+  },
+  disk_full: {
+    title: 'There is not enough free space for the backup',
+    body: `Nothing was left in the folder, and older backups there were not removed. Free some space on that drive, or choose another folder, then try again. ${UNCHANGED}`,
+    retryable: true,
+  },
+  folder_write_failed: {
+    title: 'The backup could not be saved to the folder',
+    body: `The file was not kept, and older backups there were not removed. ${UNCHANGED}`,
+    retryable: true,
+  },
+  folder_verify_failed: {
+    title: 'The saved file did not pass the check, so it was removed',
+    body: `StudyVault reads the file back after writing it and compares it with what it wrote; this one differed (the drive may be failing or be disconnected). Older backups in the folder were not removed. ${UNCHANGED}`,
+    retryable: true,
+  },
 };
 
 const INVALID_REASONS: Record<InvalidRowInfo['reason'], string> = {
@@ -204,6 +229,7 @@ const INTEGRITY_ISSUES: Record<string, string> = {
   duplicate_id: 'shares an identity with a different kind of item',
   duplicate_tag_name: 'has the same name as another tag (merge them in the tag manager)',
   multiple_inbox: 'is one of several banks marked as the Inbox',
+  duplicate_relation: 'is the same link as another one',
 };
 
 export const describeIntegrityIssue = (code: string): string =>
@@ -236,7 +262,13 @@ export function explainBackupError(err: unknown): ErrorExplanation {
         ? cappedLines(err.details, 'invalidRows')
         : err.code === 'integrity_violation'
           ? cappedLines(err.details, 'orphans')
-          : [];
+          : err.code === 'folder_write_failed' ||
+              err.code === 'folder_verify_failed' ||
+              // an import refusal's own sentence: which format, what is missing, what to do instead
+              err.code === 'import_invalid' ||
+              err.code === 'limit_exceeded'
+            ? [err.message] // the specific cause, for a bug report
+            : [];
     const action: ErrorAction | undefined =
       err.code === 'passphrase_required' || err.code === 'wrong_passphrase'
         ? 'enter_passphrase'

@@ -5,7 +5,8 @@ import userEvent from '@testing-library/user-event';
 import { ConfirmDialog } from './ConfirmDialog';
 import { ErrorBoundary } from './ErrorBoundary';
 import { Kbd } from './Kbd';
-import { ToastProvider, useToast } from './Toast';
+import { LOCAL_PREF_KEYS } from './localPrefs';
+import { ToastProvider, readKeepToasts, useToast, writeKeepToasts } from './Toast';
 
 afterEach(() => {
   cleanup();
@@ -94,6 +95,123 @@ describe('Toast: announcements, errors and focus', () => {
 
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Undo' })).toBeNull());
     expect(document.activeElement).toBe(document.getElementById('stable'));
+  });
+});
+
+describe('Toast: time limits (WCAG 2.2.1)', () => {
+  function Controls() {
+    const toast = useToast();
+    return (
+      <>
+        <button onClick={() => toast.push({ message: 'Saved.' })}>plain</button>
+        <button onClick={() => toast.push({ tone: 'error', message: 'Disk is full' })}>fail</button>
+        <button
+          onClick={() =>
+            toast.push({
+              message: 'Deleted.',
+              action: { label: 'Undo', onClick: () => undefined },
+            })
+          }
+        >
+          undoable
+        </button>
+      </>
+    );
+  }
+  const mount = () =>
+    render(
+      <ToastProvider>
+        <Controls />
+      </ToastProvider>,
+    );
+  const toastText = () => document.querySelector('.sv-toast')?.textContent ?? null;
+
+  afterEach(() => {
+    window.localStorage.removeItem(LOCAL_PREF_KEYS.toastsKeep);
+  });
+
+  it('closes by itself after a few seconds', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mount();
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await user.click(screen.getByText('plain'));
+    expect(toastText()).toContain('Saved.');
+    await act(async () => {
+      vi.advanceTimersByTime(5_100);
+    });
+    expect(toastText()).toBeNull();
+  });
+
+  it('waits while the pointer is over it, and starts counting again when it leaves', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mount();
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await user.click(screen.getByText('plain'));
+    const toast = document.querySelector('.sv-toast') as HTMLElement;
+    await user.hover(toast);
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+    });
+    expect(toastText()).toContain('Saved.');
+    await user.unhover(toast);
+    await act(async () => {
+      vi.advanceTimersByTime(5_100);
+    });
+    expect(toastText()).toBeNull();
+  });
+
+  it('waits while focus is inside it even after the pointer left', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mount();
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await user.click(screen.getByText('undoable'));
+    const toast = document.querySelector('.sv-toast') as HTMLElement;
+    await user.hover(toast);
+    act(() => screen.getByRole('button', { name: 'Undo' }).focus());
+    expect(toast.contains(document.activeElement)).toBe(true);
+    await user.unhover(toast);
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    expect(toastText()).toContain('Deleted.');
+  });
+
+  it('Escape closes the toast the pointer is over, with focus elsewhere', async () => {
+    mount();
+    const user = userEvent.setup();
+    await user.click(screen.getByText('plain'));
+    const toast = document.querySelector('.sv-toast') as HTMLElement;
+    await user.keyboard('{Escape}'); // not over it, nothing focused in it: nothing happens
+    expect(toastText()).toContain('Saved.');
+    await user.hover(toast);
+    await user.keyboard('{Escape}');
+    expect(toastText()).toBeNull();
+  });
+
+  it('stays until dismissed when the viewer asked for that, errors always do', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    writeKeepToasts(true);
+    expect(readKeepToasts()).toBe(true);
+    mount();
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await user.click(screen.getByText('undoable'));
+    await user.click(screen.getByText('fail'));
+    await act(async () => {
+      vi.advanceTimersByTime(10 * 60_000);
+    });
+    expect(screen.getAllByRole('button', { name: 'Dismiss notification' })).toHaveLength(2);
+    await user.click(screen.getAllByRole('button', { name: 'Dismiss notification' })[0]!);
+    expect(document.querySelectorAll('.sv-toast')).toHaveLength(1);
+    writeKeepToasts(false);
+    expect(readKeepToasts()).toBe(false);
+  });
+
+  it('a blocked storage means "not kept", never a crash', () => {
+    const spy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    expect(readKeepToasts()).toBe(false);
+    spy.mockRestore();
   });
 });
 

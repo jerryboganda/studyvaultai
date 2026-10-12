@@ -24,6 +24,10 @@
   border-bottom: 1px solid var(--sv-border);
   cursor: default;
 }
+/* The measured box: it takes the content's own height, which the list reads to size the rows. */
+.sv-vrow__content {
+  display: flow-root;
+}
 .sv-vrow[aria-selected='true'] {
   background: var(--sv-info-bg);
   box-shadow: inset 4px 0 0 var(--sv-accent);
@@ -236,6 +240,32 @@
   padding: 0;
   background: transparent;
 }
+/* TeX as written (markdownMath.ts): what shows while the typesetter loads and for a formula it refuses
+   (typeset formulas are <math>, styled by the lazy math.css). Left-to-right whatever the note's direction. */
+.sv-md code.math {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+.sv-md code.math-display {
+  display: block;
+  box-sizing: border-box;
+  max-width: 100%;
+  padding: var(--sv-space-2);
+  /* Wraps (overflow-wrap: anywhere comes from .sv-md) instead of scrolling: no focusable scroller. */
+  white-space: pre-wrap;
+}
+/* Text that was too complex to format (markdownBudget.ts): the words as typed, wrapped, no scroller. */
+.sv-md .md-fallback-note {
+  color: var(--sv-text-muted);
+  font-size: var(--sv-text-sm);
+}
+.sv-md pre.md-fallback {
+  box-sizing: border-box;
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow: visible;
+  font-family: inherit;
+}
 .sv-md table {
   border-collapse: collapse;
 }
@@ -245,7 +275,37 @@
   border: 1px solid var(--sv-border-strong);
 }
 
+/* Links (LinksSection) reuses the Related item card; its type picker is only as wide as it needs. */
+.sv-links__type {
+  width: auto;
+  min-width: 8rem;
+  max-width: 100%;
+}
+
+/* Related highlights (RelatedSection) ------------------------------------------------------ */
+.sv-related__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.sv-related__item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-1);
+  min-width: 0;
+  padding: var(--sv-space-2);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface);
+}
+
 @media (forced-colors: active) {
+  .sv-related__item {
+    border-color: CanvasText;
+  }
   .sv-vrow[aria-selected='true'],
   .sv-treeitem[aria-selected='true'],
   .sv-palette__item[aria-selected='true'] {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_QUERY_LENGTH } from '@search';
-import { dashboardPath, parseDeepLink } from './deepLink';
+import { dashboardPath, parseDeepLink, parseViewLink } from './deepLink';
 import { textFragment, webSourceHref } from './links';
 
 describe('parseDeepLink', () => {
@@ -31,6 +31,30 @@ describe('parseDeepLink', () => {
     expect(dashboardPath({ highlight: '0192abcd-ef01', q: 'a b' })).toBe(
       'dashboard.html?highlight=0192abcd-ef01&q=a+b',
     );
+  });
+});
+
+describe('parseViewLink', () => {
+  it('opens the chat view for view=chat and the highlight list for anything else', () => {
+    expect(parseViewLink('?view=chat&bank=inbox-default')).toBe('chat');
+    expect(parseViewLink('?view=trash')).toBeNull();
+    expect(parseViewLink('?view=<script>')).toBeNull();
+    expect(parseViewLink('')).toBeNull();
+  });
+
+  it('opens the graph for view=graph, around the highlight of the link', () => {
+    expect(parseViewLink('?view=graph&highlight=0192abcd-ef01')).toBe('graph');
+    expect(parseDeepLink('?view=graph&highlight=0192abcd-ef01').highlight).toBe('0192abcd-ef01');
+    expect(dashboardPath({ highlight: '0192abcd-ef01', view: 'graph' })).toBe(
+      'dashboard.html?highlight=0192abcd-ef01&view=graph',
+    );
+  });
+
+  it('is part of the link other surfaces build', () => {
+    expect(dashboardPath({ bank: 'inbox-default', view: 'chat' })).toBe(
+      'dashboard.html?bank=inbox-default&view=chat',
+    );
+    expect(dashboardPath({ view: null })).toBe('dashboard.html');
   });
 });
 

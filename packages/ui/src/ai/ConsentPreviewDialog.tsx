@@ -13,15 +13,18 @@ import { Button } from '../Button';
 import { useAction, useLatest } from '../hooks';
 import { InlineNotice } from '../Notice';
 import { AiResultCard } from './AiResultCard';
+import type { AiChatInput } from './chat';
 import { useAiEnv } from './context';
 import { AI_KIND_INFO, describeAiError, type AiErrorView } from './labels';
 import { hasEndpointAccess, requestEndpointAccess } from './permission';
 import {
   configSecrets,
   previewAiTask,
+  routeFor,
   runAiTask,
   sendBlocker,
   type AiConfig,
+  type AiProfileConfig,
   type AiRunDone,
 } from './runtime';
 
@@ -51,13 +54,36 @@ interface Built {
   blocker?: string;
 }
 
+/** What the person unticked in a chat request: passage ids and indexes of earlier turns. */
+interface ChatDrops {
+  passages: readonly string[];
+  turns: readonly number[];
+}
+
 function buildSelection(
   kind: AiTaskKind,
   highlights: readonly AiHighlightInput[],
   question: string,
   topicsText: string,
   config: AiConfig,
+  chat: { input: AiChatInput; drops: ChatDrops } | null,
 ): Built {
+  if (chat) {
+    const passages = chat.input.passages.filter((p) => !chat.drops.passages.includes(p.id));
+    if (passages.length === 0) {
+      return {
+        blocker: 'Tick at least one passage: nothing is sent without a passage to answer from.',
+      };
+    }
+    const history = chat.input.history.filter((_, i) => !chat.drops.turns.includes(i));
+    return {
+      selection: {
+        chunks: passages.map((p) => ({ id: p.id, kind: p.kind, text: p.text })),
+        question: chat.input.question,
+        ...(history.length > 0 ? { history: history.map((h) => ({ ...h })) } : {}),
+      },
+    };
+  }
   if (highlights.length === 0) return { blocker: 'Select at least one highlight.' };
   if (highlights.length > MAX_CHUNKS) {
     return { blocker: `Select at most ${MAX_CHUNKS} highlights for one request.` };
@@ -96,6 +122,8 @@ function progressText(e: LogEvent): string | null {
       return `The provider did not accept the request yet; trying again (${e.detail ?? ''}).`;
     case 'repair':
       return 'The answer did not match the required format; asking once more.';
+    case 'fallback':
+      return `That provider is not answering; trying the next one you confirmed (${e.detail ?? ''}).`;
     case 'cache_hit':
       return 'An identical earlier answer was reused; nothing was sent.';
     case 'cache_put_failed':
@@ -108,6 +136,11 @@ function progressText(e: LogEvent): string | null {
 export interface ConsentPreviewDialogProps {
   kind: AiTaskKind;
   highlights: readonly AiHighlightInput[];
+  /**
+   * A chat request (kind `explain`): the question, the passages found on this device and the earlier
+   * turns. They are listed in the dialog, each with a checkbox; only ticked ones are sent.
+   */
+  chat?: AiChatInput;
   /** A configuration read while the feature flag is on (see useAiConfig). */
   config: AiConfig;
   onClose(): void;
@@ -123,6 +156,7 @@ export interface ConsentPreviewDialogProps {
 export function ConsentPreviewDialog({
   kind,
   highlights,
+  chat,
   config,
   onClose,
   onResult,
@@ -138,6 +172,11 @@ export function ConsentPreviewDialog({
   const [question, setQuestion] = useState('');
   const [topicsText, setTopicsText] = useState('');
   const [keep, setKeep] = useState<string[]>([]);
+  // Chat: passages and earlier turns the person unticked. Only the two newest turns start ticked.
+  const [dropPassages, setDropPassages] = useState<string[]>([]);
+  const [dropTurns, setDropTurns] = useState<number[]>(() =>
+    (chat?.history ?? []).map((_, i) => i).filter((i) => i < (chat?.history.length ?? 0) - 4),
+  );
   const [add, setAdd] = useState<{ chunkId: string; start: number; end: number }[]>([]);
   const [phrase, setPhrase] = useState('');
   const [phraseMsg, setPhraseMsg] = useState<string | null>(null);
@@ -157,7 +196,17 @@ export function ConsentPreviewDialog({
   const [accessRec, setAccessRec] = useState<{ pattern: string; value: boolean } | null>(null);
   const abort = useRef<AbortController | null>(null);
 
-  const built = buildSelection(kind, highlights, question, topicsText, config);
+  const built = buildSelection(
+    kind,
+    highlights,
+    question,
+    topicsText,
+    config,
+    chat ? { input: chat, drops: { passages: dropPassages, turns: dropTurns } } : null,
+  );
+  const route = routeFor(config, kind);
+  const first: AiProfileConfig = route.first;
+  const backups = route.targets.slice(1);
   const edits = useMemo<RedactionEdits>(() => ({ keep, add }), [keep, add]);
   const previewKey = JSON.stringify([built, edits]);
   const latest = useLatest({ built, highlights });
@@ -196,7 +245,15 @@ export function ConsentPreviewDialog({
   const preview = shown?.preview ?? null;
   const previewError = shown?.error ?? null;
 
-  const pattern = config.endpoint.ok ? config.endpoint.pattern : null;
+  // Every origin that may receive the text. Chrome's grant is per origin, so one request lists them
+  // all; origins that are already granted are not asked again.
+  const origins = [
+    ...new Set(route.targets.flatMap((t) => (t.endpoint.ok ? [t.endpoint.origin] : []))),
+  ];
+  const patterns = [
+    ...new Set(route.targets.flatMap((t) => (t.endpoint.ok ? [t.endpoint.pattern] : []))),
+  ];
+  const pattern = patterns.length > 0 ? patterns.join(' ') : null;
   const access = pattern && accessRec?.pattern === pattern ? accessRec.value : null;
   const setAccess = (value: boolean) => {
     if (pattern) setAccessRec({ pattern, value });
@@ -204,7 +261,9 @@ export function ConsentPreviewDialog({
   useEffect(() => {
     if (!pattern) return undefined;
     let live = true;
-    void hasEndpointAccess(pattern).then((v) => live && setAccessRec({ pattern, value: v }));
+    void hasEndpointAccess(pattern.split(' ')).then(
+      (v) => live && setAccessRec({ pattern, value: v }),
+    );
     return () => {
       live = false;
     };
@@ -241,17 +300,20 @@ export function ConsentPreviewDialog({
     setPhase('sending');
     try {
       // First await of the click: Chrome only shows the permission prompt for a user gesture.
-      if (pattern && preview.willSend && !(await requestEndpointAccess(pattern))) {
+      if (pattern && preview.willSend && !(await requestEndpointAccess(pattern.split(' ')))) {
         setAccess(false);
         setFailure({
           code: 'permission_denied',
           title: 'Access to the provider was not granted',
           message: `Chrome did not allow StudyVault to contact ${
-            config.endpoint.ok ? config.endpoint.origin : 'the provider'
+            origins.length > 0 ? origins.join(', ') : 'the provider'
           }, so nothing was sent.`,
           details: [],
           retryAfterSec: null,
-          hint: 'Choose Send again and allow the access in Chrome’s prompt, or cancel.',
+          hint:
+            origins.length > 1
+              ? 'Choose Send again and allow every address in Chrome’s prompt, turn the fallback providers off in the AI settings, or cancel.'
+              : 'Choose Send again and allow the access in Chrome’s prompt, or cancel.',
         });
         setPhase('review');
         return;
@@ -326,7 +388,7 @@ export function ConsentPreviewDialog({
     if (previewError) return `The preview could not be built: ${previewError.message}`;
     if (!preview) return 'Preparing the preview…';
     if (!upToDate) return 'Updating the preview…';
-    const blocked = sendBlocker(config, env);
+    const blocked = sendBlocker(config, env, kind);
     if (blocked) return blocked;
     const d = checkBudget(config.budget, config.settings.limits, env.clock.now(), {
       requests: preview.willSend ? 1 : 0,
@@ -342,10 +404,19 @@ export function ConsentPreviewDialog({
     return 'A daily cost limit is set but no pricing is configured. Add pricing or clear the limit in the AI settings.';
   })();
 
-  const host = config.endpoint.ok ? config.endpoint.host : 'the provider';
-  const origin = config.endpoint.ok ? config.endpoint.origin : 'an address that is not set up';
+  const host = first.endpoint.ok ? first.endpoint.host : 'the provider';
+  const origin = first.endpoint.ok ? first.endpoint.origin : 'an address that is not set up';
   const local = preview !== null && !preview.willSend;
   const sending = phase === 'sending';
+  const keyLine = (t: AiProfileConfig): string =>
+    t.key.state === 'present'
+      ? `API key saved (${t.key.mask ?? 'hidden'}), sent only to this address`
+      : t.key.state === 'not_needed'
+        ? 'no API key needed for this local address'
+        : 'no usable API key saved';
+  // Who answered, from the provider id the result records ("openai-compatible:host:port").
+  const answeredHost = done ? done.saved.provider.slice(done.saved.provider.indexOf(':') + 1) : '';
+  const answeredByBackup = done !== null && done.attempts > 0 && answeredHost !== host;
 
   return (
     <dialog
@@ -367,7 +438,10 @@ export function ConsentPreviewDialog({
             <InlineNotice tone="success" live title="Done">
               {done.attempts === 0
                 ? 'Nothing was sent: the result was computed or reused on this device.'
-                : `Answer received from ${host} in ${done.attempts} request${done.attempts === 1 ? '' : 's'}.`}{' '}
+                : `Answer received from ${answeredHost} in ${done.attempts} request${done.attempts === 1 ? '' : 's'}.`}{' '}
+              {answeredByBackup
+                ? `The first provider (${host}) did not answer, so the fallback you confirmed did. `
+                : ''}
               It is stored as an unverified draft; nothing has been added to your vault yet.
             </InlineNotice>
             <AiResultCard result={done.saved} />
@@ -390,23 +464,126 @@ export function ConsentPreviewDialog({
                 </p>
               )}
               <p className="sv-small">
-                Provider: {config.provider?.id ?? 'not set up'} · Model:{' '}
-                {config.settings.model || 'not set'} ·{' '}
-                {config.key.state === 'present'
-                  ? `API key saved (${config.key.mask ?? 'hidden'}), sent only to this address`
-                  : config.key.state === 'not_needed'
-                    ? 'no API key needed for this local address'
-                    : 'no usable API key saved'}
+                Provider: {first.provider?.id ?? 'not set up'} · Model:{' '}
+                {first.settings.model || 'not set'} · {keyLine(first)}
               </p>
+              {!local && backups.length > 0 ? (
+                <div className="sv-stack sv-stack--tight" data-testid="ai-fallbacks">
+                  <p>
+                    <strong>
+                      Only if {host} is not answering (a network error, a server error or no answer
+                      in time), the same text is sent to, one at a time and in this order:
+                    </strong>
+                  </p>
+                  <ul className="ai-list">
+                    {backups.map((t) => (
+                      <li key={t.id} data-testid="ai-fallback-target">
+                        <strong>{t.endpoint.ok ? t.endpoint.origin : t.label}</strong>{' '}
+                        <span className="sv-small">
+                          · {t.label} · Model: {t.settings.model} · {keyLine(t)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="sv-small">
+                    Any other failure (a rejected key, no quota, a rate limit, a refusal or an
+                    answer that does not fit the format) stops here and nothing is sent on.
+                  </p>
+                </div>
+              ) : null}
+              {!local && route.skipped.length > 0 ? (
+                <p className="sv-small" data-testid="ai-fallbacks-skipped">
+                  Not used, because they are not set up:{' '}
+                  {route.skipped.map((t) => t.label).join(', ')}.
+                </p>
+              ) : null}
               {!local && access === false ? (
                 <p className="sv-small">
-                  Chrome will first ask you to let StudyVault contact {host}. The permission applies
-                  to that address only and you can remove it in the AI settings.
+                  Chrome will first ask you to let StudyVault contact{' '}
+                  {origins.length > 1 ? origins.join(' and ') : host}. The permission applies to
+                  {origins.length > 1 ? ' those addresses' : ' that address'} only and you can
+                  remove it in the AI settings.
                 </p>
               ) : null}
             </div>
 
-            {kind === 'explain' ? (
+            {chat ? (
+              <>
+                <p data-testid="ai-chat-question">
+                  <strong>Your question:</strong> <span className="ai-pre">{chat.question}</span>
+                </p>
+                <section
+                  className="sv-stack sv-stack--tight"
+                  aria-label="Passages that will be sent"
+                  data-testid="ai-chat-passages"
+                >
+                  <h3>Passages found on this device</h3>
+                  <p className="sv-muted sv-small">
+                    Found by searching your own highlights and notes, on this device. Only the
+                    ticked passages are sent with your question, word for word as shown below.
+                  </p>
+                  <ul className="ai-list">
+                    {chat.passages.map((p) => (
+                      <li key={p.id} className="sv-check">
+                        <input
+                          id={`${titleId}-p-${p.id}`}
+                          type="checkbox"
+                          data-testid="ai-chat-passage"
+                          disabled={sending}
+                          checked={!dropPassages.includes(p.id)}
+                          onChange={(e) =>
+                            setDropPassages((list) =>
+                              e.target.checked ? list.filter((x) => x !== p.id) : [...list, p.id],
+                            )
+                          }
+                        />
+                        <label htmlFor={`${titleId}-p-${p.id}`}>
+                          <span className="ai-pre">{clip(p.text, 240)}</span>{' '}
+                          <span className="sv-muted sv-small">({p.label})</span>
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+                {chat.history.length > 0 ? (
+                  <section
+                    className="sv-stack sv-stack--tight"
+                    aria-label="Earlier turns that will be sent"
+                    data-testid="ai-chat-history"
+                  >
+                    <h3>Earlier turns of this chat</h3>
+                    <p className="sv-muted sv-small">
+                      Kept on this device only. A turn is sent only when it is ticked, and then it
+                      appears in the text below.
+                    </p>
+                    <ul className="ai-list">
+                      {chat.history.map((h, i) => (
+                        <li key={i} className="sv-check">
+                          <input
+                            id={`${titleId}-h-${i}`}
+                            type="checkbox"
+                            data-testid="ai-chat-turn"
+                            disabled={sending}
+                            checked={!dropTurns.includes(i)}
+                            onChange={(e) =>
+                              setDropTurns((list) =>
+                                e.target.checked ? list.filter((x) => x !== i) : [...list, i],
+                              )
+                            }
+                          />
+                          <label htmlFor={`${titleId}-h-${i}`}>
+                            <strong>{h.role === 'user' ? 'You asked' : 'Answer'}:</strong>{' '}
+                            <span className="ai-pre">{clip(h.text, 240)}</span>
+                          </label>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                ) : null}
+              </>
+            ) : null}
+
+            {kind === 'explain' && !chat ? (
               <div className="sv-field">
                 <label className="sv-label" htmlFor={questionId}>
                   Your question (sent with the passages)
@@ -593,7 +770,9 @@ export function ConsentPreviewDialog({
                 {...(reason && !sending ? { disabledReason: reason } : {})}
                 onClick={() => void send.run()}
               >
-                {local ? 'Run on this device' : `Send to ${host}`}
+                {local
+                  ? 'Run on this device'
+                  : `Send to ${host}${backups.length > 0 ? ` (and ${backups.length} fallback${backups.length === 1 ? '' : 's'} if it is not answering)` : ''}`}
               </Button>
               <Button
                 data-testid="ai-cancel"

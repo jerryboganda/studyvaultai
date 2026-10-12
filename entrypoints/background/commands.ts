@@ -2,6 +2,7 @@ import {
   INCOGNITO_CAPTURE_REFUSAL,
   type CaptureMethod,
   type CaptureSelectionResult,
+  type SearchFocusTarget,
 } from '@shared';
 
 /**
@@ -22,6 +23,8 @@ export interface TabRef {
   id?: number;
   windowId?: number;
   incognito?: boolean;
+  /** Present for the tab a command was run in (the command grants activeTab). */
+  url?: string;
 }
 
 export type StepDirection = 'next' | 'previous';
@@ -37,6 +40,13 @@ export interface CommandDeps {
   focusToolbar(tabId: number): Promise<{ focused: boolean }>;
   /** Scroll to the next / previous visible highlight of the tab. */
   stepHighlight(tabId: number, direction: StepDirection): Promise<{ found: boolean }>;
+  /** The address is the dashboard page of this extension. */
+  isDashboardUrl(url: string | undefined): boolean;
+  /**
+   * Ask a surface to put the keyboard in its search box: written to chrome.storage.session, read by
+   * the side panel (on mount and on change) or the dashboard.
+   */
+  requestSearchFocus(target: SearchFocusTarget): Promise<void>;
   /** Shows the badge on the tab and clears it again shortly after (best effort). */
   showBadge(tabId: number, badge: Badge): Promise<void>;
 }
@@ -158,6 +168,27 @@ export function createCommandHandlers(deps: CommandDeps) {
             ? null
             : failure('no highlights are visible on this page.'),
         );
+      }
+      if (command === 'focus-search') {
+        // The dashboard in front has its own search box: no panel to open.
+        if (deps.isDashboardUrl(tab?.url)) {
+          return deps.requestSearchFocus('dashboard').catch(async (err: unknown) => {
+            if (tab?.id !== undefined) {
+              await deps.showBadge(tab.id, badgeForError(err)).catch(() => undefined);
+            }
+          });
+        }
+        if (tab?.windowId === undefined) return Promise.resolve();
+        // No await before open(): sidePanel.open needs the user gesture of the command. The request
+        // is written once the panel is open, so a panel that mounts later still finds it.
+        return deps
+          .openSidePanel(tab.windowId)
+          .then(() => deps.requestSearchFocus('panel'))
+          .catch(async (err: unknown) => {
+            if (tab.id !== undefined) {
+              await deps.showBadge(tab.id, badgeForError(err)).catch(() => undefined);
+            }
+          });
       }
       if (command === 'open-side-panel') {
         // No await before open(): sidePanel.open needs the user gesture of the command.

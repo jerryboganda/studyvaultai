@@ -1,5 +1,11 @@
 import { useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react';
-import { COLOR_IDS, COLOR_SWATCH, MAX_BANK_ICON_CHARS, type ColorId } from '@shared';
+import {
+  COLOR_IDS,
+  COLOR_SWATCH,
+  MAX_BANK_ICON_CHARS,
+  MAX_FOLDER_DEPTH,
+  type ColorId,
+} from '@shared';
 import { Button, LOCAL_PREF_KEYS, errorMessage, plural, useToast } from '@ui';
 import { PopupMenu, Tree, type MenuItem, type TreeHandle, type TreeKeyResult } from '@ui/vault';
 import type { DashboardApi } from './api';
@@ -201,8 +207,8 @@ export function BankPane({
       id: 'new-folder',
       label: node.kind === 'bank' ? 'New folder here…' : 'New subfolder…',
       disabledReason:
-        node.kind === 'folder' && node.depth >= 8
-          ? 'Folders can be nested at most 8 levels deep.'
+        node.kind === 'folder' && node.depth >= MAX_FOLDER_DEPTH
+          ? `Folders can be nested at most ${MAX_FOLDER_DEPTH} levels deep.`
           : undefined,
       onSelect: () => setDialog({ type: 'new-folder', parent: node }),
     };
@@ -360,7 +366,7 @@ export function BankPane({
           label="Folder name"
           confirmLabel="Create folder"
           maxLength={NAME_LIMITS.folder}
-          hint="Folders can hold topics and subtopics: nest them up to 8 levels."
+          hint={`Folders can hold topics and subtopics: nest them up to ${MAX_FOLDER_DEPTH} levels.`}
           onCancel={() => setDialog(null)}
           onSubmit={async (name) => {
             const parent = dialog.parent;

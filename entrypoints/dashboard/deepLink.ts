@@ -32,4 +32,18 @@ export function parseDeepLink(search: string): DeepLink {
   };
 }
 
+/** `?view=chat` opens the chat view, `?view=graph` the graph; anything else is the highlight list. */
+export function parseViewLink(search: string): 'chat' | 'graph' | 'syllabus' | 'rules' | null {
+  const view = new URLSearchParams(search).get('view');
+  return view === 'chat' || view === 'graph' || view === 'syllabus' || view === 'rules'
+    ? view
+    : null;
+}
+
+/** `?view=syllabus&syllabus=<id>`: which syllabus the editor opens on (an id-shaped value only). */
+export function parseSyllabusLink(search: string): string | null {
+  const id = new URLSearchParams(search).get('syllabus');
+  return id !== null && ID.test(id) ? id : null;
+}
+
 export { dashboardPath } from '@ui/vault/dashboardLink';

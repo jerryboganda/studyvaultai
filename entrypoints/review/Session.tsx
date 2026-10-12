@@ -76,6 +76,9 @@ export function Session({
   const [editing, setEditing] = useState(false);
   const [explaining, setExplaining] = useState(false);
   const [jump, setJump] = useState<JumpResult | null>(null);
+  /** What "Jump to source" is doing right now ("Opening the page…"), while it runs. */
+  const [jumpNote, setJumpNote] = useState<string | null>(null);
+  const jumping = useRef(false);
   const cardId = current?.card.id ?? null;
   const [lastCardId, setLastCardId] = useState<string | null>(null);
 
@@ -86,6 +89,7 @@ export function Session({
     setEditing(false);
     setExplaining(false);
     setJump(null);
+    setJumpNote(null);
   }
 
   const [keysOn, setKeysOn] = useState(readKeysPref);
@@ -117,9 +121,25 @@ export function Session({
   }, [controller, phase, waitUntil]);
 
   const openSourceAction = useAction(async () => {
-    if (!cardId) return;
-    const ctx = await getCardSourceContext(cardId);
-    setJump(await openSource(ctx));
+    // One jump at a time: the page can take many seconds to load, and a second key press must not
+    // open a second tab.
+    if (!cardId || jumping.current) return;
+    jumping.current = true;
+    setJump(null);
+    try {
+      const ctx = await getCardSourceContext(cardId);
+      setJump(
+        await openSource(ctx, undefined, {
+          onProgress: (message) => {
+            // Only for the card that asked: the learner may have moved on while the tab loaded.
+            if (latest.current.state.current?.card.id === cardId) setJumpNote(message);
+          },
+        }),
+      );
+    } finally {
+      jumping.current = false;
+      setJumpNote(null);
+    }
   });
 
   // Keyboard: one listener for the whole session surface.
@@ -460,6 +480,11 @@ export function Session({
           ) : null}
           {openSourceAction.error ? (
             <InlineNotice tone="error">{openSourceAction.error}</InlineNotice>
+          ) : null}
+          {jumpNote ? (
+            <InlineNotice tone="info" live>
+              {jumpNote}
+            </InlineNotice>
           ) : null}
           {jump ? (
             <InlineNotice

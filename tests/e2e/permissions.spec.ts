@@ -848,6 +848,7 @@ prodTest.describe('production build', () => {
       'form-action': ["'none'"],
     });
     expect(Object.keys(manifest.commands ?? {}).sort()).toEqual([
+      'focus-search',
       'focus-toolbar',
       'next-highlight',
       'open-side-panel',

@@ -7,9 +7,9 @@ import {
   useMemo,
   useRef,
   useState,
-  type KeyboardEvent,
   type ReactNode,
 } from 'react';
+import { LOCAL_PREF_KEYS } from './localPrefs';
 
 export interface ToastInput {
   message: string;
@@ -42,6 +42,23 @@ export function useToast(): ToastApi {
   const api = useContext(ToastContext);
   if (!api) throw new Error('useToast must be used inside <ToastProvider>');
   return api;
+}
+
+/** Whether this viewer asked for toasts to stay until dismissed (per viewer; blocked storage = no). */
+export function readKeepToasts(): boolean {
+  try {
+    return window.localStorage.getItem(LOCAL_PREF_KEYS.toastsKeep) === 'on';
+  } catch {
+    return false;
+  }
+}
+
+export function writeKeepToasts(keep: boolean): void {
+  try {
+    window.localStorage.setItem(LOCAL_PREF_KEYS.toastsKeep, keep ? 'on' : 'off');
+  } catch {
+    /* a convenience, not a requirement */
+  }
 }
 
 const MAX_TOASTS = 4;
@@ -115,8 +132,14 @@ function ToastView({
   dismiss(id: number): void;
   returnFocus: (() => HTMLElement | null) | undefined;
 }) {
-  // Hover/focus pauses the timer so the action can be reached without racing it.
-  const [paused, setPaused] = useState(false);
+  // Pointer over the toast or focus inside it pauses the timer, so the action can be reached
+  // without racing it (WCAG 2.2.1); the two are tracked apart so leaving with the pointer does not
+  // restart the clock under a focused button.
+  const [hover, setHover] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const paused = hover || focused;
+  // Read once per toast: a person who asked for toasts to stay gets no timer at all.
+  const [keep] = useState(readKeepToasts);
   const root = useRef<HTMLDivElement>(null);
   const textId = useId();
   const { id, durationMs, action, focusAction } = toast;
@@ -134,29 +157,34 @@ function ToastView({
   );
 
   useEffect(() => {
-    if (paused || error) return undefined;
+    if (paused || error || keep) return undefined;
     const timer = setTimeout(() => close(), durationMs ?? (action ? 10_000 : 5_000));
     return () => clearTimeout(timer);
-  }, [paused, error, durationMs, action, close]);
+  }, [paused, error, keep, durationMs, action, close]);
+
+  // Escape dismisses the toast the pointer is over or that holds focus, from wherever focus is.
+  useEffect(() => {
+    if (!paused) return undefined;
+    const onKey = (e: globalThis.KeyboardEvent) => {
+      if (e.key === 'Escape' && !e.defaultPrevented) close();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [paused, close]);
 
   useEffect(() => {
     if (focusAction) root.current?.querySelector<HTMLElement>('[data-toast-action]')?.focus();
   }, [focusAction]);
-
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') close();
-  };
 
   return (
     <div
       ref={root}
       className={`sv-toast${error ? ' sv-toast--error' : ''}`}
       role={error ? 'alert' : undefined}
-      onPointerEnter={() => setPaused(true)}
-      onPointerLeave={() => setPaused(false)}
-      onFocus={() => setPaused(true)}
-      onBlur={() => setPaused(false)}
-      onKeyDown={onKeyDown}
+      onPointerEnter={() => setHover(true)}
+      onPointerLeave={() => setHover(false)}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
     >
       {error ? (
         <>

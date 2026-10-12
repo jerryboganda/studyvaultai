@@ -3,6 +3,7 @@ import type {
   CaptureMethod,
   CaptureResult,
   ColorId,
+  FilingOutcome,
   HighlightKind,
   HighlightPatch,
   HighlightView,
@@ -65,6 +66,24 @@ export interface SaveOcrPageInput {
    * Omitted: an existing correction is kept; null: cleared. The recognised text is never edited.
    */
   correctedText?: string | null;
+  /**
+   * Clockwise turn the recogniser applied to a scan stored sideways or upside down. Informational: the
+   * words' boxes are already in the page's own frame. Omitted: the stored value is kept.
+   */
+  orientation?: 0 | 90 | 180 | 270;
+}
+
+/** The one reading a re-recognition replaced, kept on the page for a single step back. */
+export interface StoredPreviousReading {
+  text: string;
+  correctedText: string | null;
+  words: OcrStoredWord[];
+  language: string;
+  engine: string;
+  confidence: number | null;
+  orientation?: 0 | 90 | 180 | 270;
+  /** ISO time the reading stopped being the page's current one. */
+  replacedAt: string;
 }
 
 export interface StoredOcrPage {
@@ -72,6 +91,10 @@ export interface StoredOcrPage {
   text: string;
   correctedText: string | null;
   words: OcrStoredWord[];
+  /** Absent for pages recognised before orientation checks: 0. */
+  orientation?: 0 | 90 | 180 | 270;
+  /** Absent when the page was never re-recognised (or the slot was used up). */
+  previousReading?: StoredPreviousReading;
 }
 
 /** A document whose bytes StudyVault keeps (user-approved), for the stored-copy manager. */
@@ -82,6 +105,16 @@ export interface StoredCopy {
   /** Size of the kept copy. */
   byteLength: number;
   originalUrl: string | null;
+}
+
+/**
+ * What the reader may do with a filing rule's result (docs/adr/017-filing-rules.md). The result
+ * itself comes back on `savePdfHighlight`'s CaptureResult (`filing`); these act on it later.
+ */
+export interface PdfFilingPort {
+  accept(highlightId: string): Promise<FilingOutcome>;
+  dismiss(highlightId: string): Promise<void>;
+  undo(highlightId: string): Promise<{ restored: boolean; reason: string | null }>;
 }
 
 export interface PdfStore {
@@ -103,6 +136,16 @@ export interface PdfStore {
   /** Recognised text of scanned pages (see ocr.ts). Present only when OCR results can be kept. */
   saveOcrPage?(input: SaveOcrPageInput): Promise<unknown>;
   getOcrPages?(documentId: string): Promise<StoredOcrPage[]>;
+  /**
+   * A NEW reading of a page in place of the stored one, in one transaction: the stored reading moves
+   * to `previousReading` (one step back) and `correctedText` is the corrections carried over.
+   * Absent: a re-recognition falls back to `saveOcrPage` and the step back lasts this session.
+   */
+  replaceOcrPage?(input: SaveOcrPageInput): Promise<StoredOcrPage>;
+  /** Swap the page's current reading with its `previousReading` (so the swap can be swapped back). */
+  swapOcrReading?(documentId: string, pageNumber: number): Promise<StoredOcrPage>;
   listBanks(): Promise<BankLite[]>;
   createBank(name: string): Promise<BankLite>;
+  /** Absent: the reader never mentions filing rules. */
+  filing?: PdfFilingPort;
 }

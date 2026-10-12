@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useId, useLayoutEffect, useRef, useState } from 'react';
 import {
   COLOR_SWATCH,
   HIGHLIGHT_KINDS,
@@ -80,7 +80,11 @@ export function HighlightPopover({
     [host, id, store],
   );
 
-  useEffect(() => {
+  // Both are layout effects, in this order, on purpose (docs/adr/012). Preact runs passive effects
+  // after the next frame, so focus arrived 16-100 ms late and an Escape pressed in between (CI saw
+  // 13 ms) went to the page and left the popover open. A layout effect runs in the commit that
+  // placed the dialog. The page element must be remembered before focus moves in.
+  useLayoutEffect(() => {
     alive.current = true;
     ui.rememberFocus();
     return () => {
@@ -90,7 +94,7 @@ export function HighlightPopover({
 
   // The dialog is visibility:hidden until useFloating has measured it, and a hidden element cannot
   // take focus: focusing at mount was a silent no-op in a real browser (jsdom does not check).
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (placed) dialogRef.current?.focus({ preventScroll: true });
   }, [placed]);
 

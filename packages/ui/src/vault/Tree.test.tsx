@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import { Tree, type TreeProps } from './Tree';
+import { MAX_INDENT_LEVELS, Tree, indentFor, type TreeProps } from './Tree';
 import type { TreeItem } from './treeModel';
 
 afterEach(cleanup);
@@ -165,5 +165,34 @@ describe('Tree', () => {
     fireEvent.keyDown(input, { key: 'Delete' });
     fireEvent.keyDown(input, { key: 'F2' });
     expect(onCommand).not.toHaveBeenCalled();
+  });
+
+  it('stops indenting after a few levels while aria-level keeps the real depth', () => {
+    // 32 nested folders: the deepest label must not be pushed off a narrow panel.
+    let node: TreeItem = leaf('n32', 'Level 32');
+    for (let i = 31; i >= 1; i--) node = { id: `n${i}`, label: `Level ${i}`, children: [node] };
+    render(
+      <Tree
+        label="Banks"
+        items={[node]}
+        expanded={new Set(Array.from({ length: 32 }, (_, i) => `n${i + 1}`))}
+        onExpandedChange={() => undefined}
+        selectedId={null}
+        renderItem={(n) => <span>{n.item.label}</span>}
+        onActivate={() => undefined}
+        onCommand={() => undefined}
+        onContextMenu={() => undefined}
+      />,
+    );
+    const deepest = screen.getByRole('treeitem', { name: 'Level 32' });
+    expect(deepest.getAttribute('aria-level')).toBe('32');
+    const capped = `calc(var(--sv-space-2) + ${MAX_INDENT_LEVELS * 16}px)`;
+    expect(deepest.style.paddingInlineStart).toBe(capped);
+    expect(screen.getByRole('treeitem', { name: 'Level 9' }).style.paddingInlineStart).toBe(capped);
+    expect(screen.getByRole('treeitem', { name: 'Level 3' }).style.paddingInlineStart).toBe(
+      'calc(var(--sv-space-2) + 32px)',
+    );
+    expect(indentFor(1)).toBe(0);
+    expect(indentFor(0)).toBe(0);
   });
 });

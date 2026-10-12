@@ -8,10 +8,11 @@ import {
   sameSite,
   trustedCanonical,
   type BackgroundRpc,
+  type FilingOutcome,
   type Settings,
 } from '@shared';
 import type { Handlers } from '@runtime';
-import type { RepoApi } from '@storage';
+import type { FilingCapture, RepoApi } from '@storage';
 import type { SiteAccess } from './siteAccess';
 
 /**
@@ -23,7 +24,8 @@ import type { SiteAccess } from './siteAccess';
  *  - "page": a content script. The only data it can trust is `sender.url`, which Chrome sets.
  *
  * Page callers may use only: capture.save, page.highlights, highlight.update/delete/restore/
- * reportResolution, banks.list, bank.create, sidepanel.open (for the sender's own tab only; the
+ * reportResolution, filing.accept/dismiss/undo (own-site highlights; the page names a highlight and
+ * never a bank), banks.list, bank.create, sidepanel.open (for the sender's own tab only; the
  * focus request is honoured only for a highlight of the sender's site). site.* and tab.activate
  * are extension-only.
  *
@@ -56,8 +58,20 @@ type PageCaller = { kind: 'page'; tabId: number; url: URL };
 type Caller = { kind: 'extension' } | PageCaller;
 type SourceKeys = { urlKey: string; visitedKey: string };
 
+/**
+ * Auto-filing rules (docs/adr/017-filing-rules.md): the storage functions of @storage, behind a port
+ * so the handlers stay testable. `afterCapture` never throws.
+ */
+export interface FilingPort {
+  afterCapture(input: FilingCapture): Promise<FilingOutcome | null>;
+  accept(highlightId: string): Promise<FilingOutcome>;
+  dismiss(highlightId: string): Promise<void>;
+  undo(highlightId: string): Promise<{ restored: boolean; reason: string | null }>;
+}
+
 export interface HandlerDeps {
   repo: RepoApi;
+  filing: FilingPort;
   getSettings(): Promise<Settings>;
   updateSettings(mutate: (current: Settings) => Settings): Promise<Settings>;
   site: SiteAccess;
@@ -149,6 +163,26 @@ export function createHandlers(deps: HandlerDeps): Handlers<BackgroundRpc> {
           .updateSettings((s) => ({ ...s, lastBankId: result.bank.id }))
           .catch((err: unknown) => console.warn('[StudyVault] could not store lastBankId', err));
       }
+      // Post-commit: a rule may move the highlight that was just created. Whatever happens here
+      // the save stands (afterCapture never throws), and a bank the person named is never overridden
+      // (storage checks that, with the requested bank and the last-used one).
+      if (result.status === 'created' && settings.useFilingRules) {
+        const filing = await deps.filing.afterCapture({
+          highlightId: result.highlight.id,
+          placed: { bankId: result.bank.id, folderId: null },
+          requestedBankId: input.bankId,
+          lastBankId: settings.lastBankId,
+          candidate: {
+            url: page.url,
+            title: page.title,
+            quote: result.highlight.exactQuote,
+            kind: result.highlight.kind,
+            tagIds: [],
+            sourceType: 'web',
+          },
+        });
+        if (filing) return { ...result, filing };
+      }
       return result;
     },
 
@@ -183,6 +217,26 @@ export function createHandlers(deps: HandlerDeps): Handlers<BackgroundRpc> {
         for (const source of sources) if (source) assertOwns(caller, source);
       }
       return { updated: await deps.repo.reportResolutions(items) };
+    },
+
+    'filing.accept': async ({ highlightId }, sender) => {
+      await authorize(sender, highlightId);
+      // Same rule as capture.save: a private window files only where capture is allowed.
+      if (sender.tab?.incognito === true && !(await deps.getSettings()).allowIncognitoCapture) {
+        throw forbidden(INCOGNITO_CAPTURE_REFUSAL);
+      }
+      return deps.filing.accept(highlightId);
+    },
+
+    'filing.dismiss': async ({ highlightId }, sender) => {
+      await authorize(sender, highlightId, true);
+      await deps.filing.dismiss(highlightId);
+      return { ok: true };
+    },
+
+    'filing.undo': async ({ highlightId }, sender) => {
+      await authorize(sender, highlightId);
+      return deps.filing.undo(highlightId);
     },
 
     'banks.list': async () => {

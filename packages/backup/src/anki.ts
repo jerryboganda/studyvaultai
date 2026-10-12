@@ -148,6 +148,13 @@ export function toAnkiCloze(markup: string, activeIndex: number | null): string 
   return render(parseClozeMarkup(markup), false);
 }
 
+/** The sentence a cloze note reads as: every deletion filled in, hints dropped (Anki import). */
+export function clozeToText(markup: string): string {
+  const flat = (nodes: (string | ClozeNode)[]): string =>
+    nodes.map((n) => (typeof n === 'string' ? n : flat(n.kids))).join('');
+  return flat(parseClozeMarkup(markup));
+}
+
 // ---------------------------------------------------------------------------------------------
 
 const sanitizeTag = (t: string): string =>

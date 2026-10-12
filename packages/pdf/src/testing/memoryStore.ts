@@ -8,7 +8,21 @@ import type {
   SavePdfHighlightInput,
   StoredCopy,
   StoredOcrPage,
+  StoredPreviousReading,
 } from '../store';
+
+type OcrRow = StoredOcrPage & { language: string; engine: string; confidence?: number | null };
+
+const readingOf = (row: OcrRow): StoredPreviousReading => ({
+  text: row.text,
+  correctedText: row.correctedText,
+  words: row.words,
+  language: row.language,
+  engine: row.engine,
+  confidence: row.confidence ?? null,
+  ...(row.orientation === undefined ? {} : { orientation: row.orientation }),
+  replacedAt: new Date().toISOString(),
+});
 
 /** In-memory PdfStore for tests and for previewing the reader without extension storage. */
 export function createMemoryPdfStore(): PdfStore & {
@@ -17,12 +31,12 @@ export function createMemoryPdfStore(): PdfStore & {
   /** documentId -> kept bytes (user-approved copy). */
   copies: Map<string, Blob>;
   /** documentId -> page number -> stored OCR page. */
-  ocr: Map<string, Map<number, StoredOcrPage & { language: string; engine: string }>>;
+  ocr: Map<string, Map<number, OcrRow>>;
 } {
   const documents = new Map<string, PdfDocumentRecord>();
   const highlights = new Map<string, HighlightView & { documentId: string; deleted: boolean }>();
   const copies = new Map<string, Blob>();
-  const ocr = new Map<string, Map<number, StoredOcrPage & { language: string; engine: string }>>();
+  const ocr = new Map<string, Map<number, OcrRow>>();
   const banks: BankLite[] = [
     { id: INBOX_BANK_ID, name: INBOX_BANK_NAME, color: 'blue', isInbox: true },
   ];
@@ -62,16 +76,56 @@ export function createMemoryPdfStore(): PdfStore & {
     async saveOcrPage(input: SaveOcrPageInput) {
       const pages = ocr.get(input.documentId) ?? new Map();
       const prev = pages.get(input.pageNumber);
-      pages.set(input.pageNumber, {
+      const row: OcrRow = {
         pageNumber: input.pageNumber,
         text: input.text,
         words: input.words,
         language: input.language,
         engine: input.engine,
+        confidence: input.confidence,
         correctedText:
           input.correctedText === undefined ? (prev?.correctedText ?? null) : input.correctedText,
-      });
+        orientation: input.orientation ?? prev?.orientation,
+      };
+      if (prev?.previousReading) row.previousReading = prev.previousReading;
+      pages.set(input.pageNumber, row);
       ocr.set(input.documentId, pages);
+    },
+    async replaceOcrPage(input: SaveOcrPageInput) {
+      const pages = ocr.get(input.documentId) ?? new Map<number, OcrRow>();
+      const prev = pages.get(input.pageNumber);
+      const row: OcrRow = {
+        pageNumber: input.pageNumber,
+        text: input.text,
+        words: input.words,
+        language: input.language,
+        engine: input.engine,
+        confidence: input.confidence,
+        correctedText: input.correctedText ?? null,
+        orientation: input.orientation,
+      };
+      if (prev) row.previousReading = readingOf(prev);
+      pages.set(input.pageNumber, row);
+      ocr.set(input.documentId, pages);
+      return row;
+    },
+    async swapOcrReading(documentId: string, pageNumber: number) {
+      const row = ocr.get(documentId)?.get(pageNumber);
+      const was = row?.previousReading;
+      if (!row || !was) throw new Error('not_found');
+      const next: OcrRow = {
+        ...row,
+        text: was.text,
+        correctedText: was.correctedText,
+        words: was.words,
+        language: was.language,
+        engine: was.engine,
+        confidence: was.confidence,
+        orientation: was.orientation,
+        previousReading: readingOf(row),
+      };
+      ocr.get(documentId)!.set(pageNumber, next);
+      return next;
     },
     async getOcrPages(documentId: string): Promise<StoredOcrPage[]> {
       return [...(ocr.get(documentId)?.values() ?? [])].sort((a, b) => a.pageNumber - b.pageNumber);

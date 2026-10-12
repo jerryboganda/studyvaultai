@@ -26,3 +26,13 @@ export {
 } from './runtime';
 export { describeAiError, AI_ACTION_KINDS, AI_KIND_INFO, type AiErrorView } from './labels';
 export { buildAccept, initialDraft, toMarkdown, type AiDraft } from './accept';
+export {
+  CHAT_MAX_CHARS,
+  CHAT_TOP_K,
+  retrieveForChat,
+  type AiChatInput,
+  type AiChatPassage,
+  type AiChatTurn,
+  type ChatRetrieval,
+} from './chat';
+export { routeFor, type AiProfileConfig, type AiRoute } from './runtime';

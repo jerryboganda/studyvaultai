@@ -10,6 +10,7 @@ import {
 import {
   CSS_UNITS,
   LazyPages,
+  NO_LINKS,
   pageHasText,
   paintOverlay,
   paintRects,
@@ -20,8 +21,10 @@ import {
   rotateRect,
   type FindMatch,
   type OverlayItem,
+  type PageLink,
   type PdfDocument,
   type RenderedPage,
+  type ViewPosition,
 } from '@pdf';
 import type { PdfRect } from '@shared';
 import {
@@ -39,8 +42,23 @@ export interface ViewerHandle {
   /** Scroll to a rectangle of a page (raw frame) so it sits in the upper third of the view. */
   reveal(pageNumber: number, rect: PdfRect | null): void;
   focus(): void;
+  /**
+   * Evaluate the browser's current selection now (the keyboard path: the save bar must not wait for
+   * the gate's pause) and report whether there is a selection in the pages to save. False: nothing
+   * is selected, or a drag is still in progress.
+   */
+  flushSelection(): boolean;
   /** Draw pages again (their text source changed): one page, or every kept page. */
   redraw(pageNumber?: number): void;
+  /** The current page and how far the top edge of the view is into it (what Back returns to). */
+  position(): ViewPosition;
+  /** Scroll back to a position taken with `position()`, and move focus to its page. */
+  restore(position: ViewPosition): void;
+  /**
+   * Scroll a link's destination to the top of the view and move keyboard focus to its page. `point` is
+   * the destination in the raw page frame (0..1, top-left origin); null: the page's top.
+   */
+  goToDestination(pageNumber: number, point: { x: number; y: number } | null): void;
 }
 
 export type ViewerShortcut =
@@ -77,6 +95,8 @@ interface Props {
   onSelection(selection: PdfSelection | null): void;
   onPageText(pageNumber: number, info: { hasText: boolean; source: 'embedded' | 'ocr' }): void;
   onSelectHighlight(id: string): void;
+  /** A link on a page was clicked or activated from the keyboard (the caller decides what it does). */
+  onFollowLink(link: PageLink): void;
   onShortcut(action: ViewerShortcut): void;
   onError(pageNumber: number, message: string): void;
   /** Zoom factor the latest drawn page used (fit modes depend on the window and the page). */
@@ -97,6 +117,7 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
   const observer = useRef<IntersectionObserver | null>(null);
   const currentPage = useRef(0);
   const evaluateSelection = useRef<(() => void) | null>(null);
+  const flushGate = useRef<(() => boolean) | null>(null);
 
   const latest = useRef(props);
   latest.current = props;
@@ -191,11 +212,13 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
       render: async (n: number, signal: AbortSignal): Promise<RenderedPage> => {
         const host = hosts.current.get(n);
         if (!host) throw new DOMException('Page slot is gone.', 'AbortError');
-        const [pdfPage, pageText, content, source] = await Promise.all([
+        const [pdfPage, pageText, content, source, links] = await Promise.all([
           doc.getPage(n),
           doc.pageText(n),
           doc.textContent(n),
           doc.textSource(n),
+          // Links are an extra: a page whose annotations cannot be read is still drawn.
+          doc.getLinks(n).catch(() => NO_LINKS),
         ]);
         if (signal.aborted) throw new DOMException('Render cancelled.', 'AbortError');
         const p = latest.current;
@@ -213,6 +236,8 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
           scale,
           rotation: rot,
           signal,
+          links,
+          onLink: (link) => latest.current.onFollowLink(link),
         });
         rendered.current.set(n, page);
         setInfos((prev) => {
@@ -293,8 +318,14 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
   }, [doc]);
 
   // Zoom, rotation or (in fit modes) window size changed: redraw what is kept.
+  // Fit width does not depend on the height of the scroll area: a notice or a banner that makes the
+  // viewer shorter must not draw every page again.
   const fitKey =
-    props.zoom.kind === 'custom' ? props.zoom.zoom : `${props.zoom.kind}:${area.w}x${area.h}`;
+    props.zoom.kind === 'custom'
+      ? props.zoom.zoom
+      : props.zoom.kind === 'fit-width'
+        ? `fit-width:${area.w}`
+        : `fit-page:${area.w}x${area.h}`;
   useLayoutEffect(() => {
     const el = scroller.current;
     const anchor = topAnchor.current;
@@ -424,10 +455,12 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
     const gate = createSelectionGate(document, evaluate);
     const soon = gate.notify;
     evaluateSelection.current = soon;
+    flushGate.current = gate.flush;
     document.addEventListener('selectionchange', soon);
     return () => {
       gate.dispose();
       evaluateSelection.current = null;
+      flushGate.current = null;
       document.removeEventListener('selectionchange', soon);
     };
   }, []);
@@ -454,8 +487,46 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
         el.scrollTop = Math.max(0, slot.offsetTop + r.y * h - el.clientHeight / 3);
       },
       focus: () => scroller.current?.focus(),
+      flushSelection: () => {
+        const sel = document.getSelection();
+        if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return false;
+        return flushGate.current?.() ?? false;
+      },
       redraw: (n) =>
         n === undefined ? lazy.current?.invalidate() : lazy.current?.invalidatePage(n),
+      position: () => {
+        // The page the toolbar says is current, and how far the top edge of the view is into it (above
+        // its top edge is negative), so Back names the page the person was on and lands exactly.
+        const el = scroller.current;
+        const n = Math.max(1, currentPage.current);
+        const slot = slots.current.get(n);
+        const host = hosts.current.get(n);
+        if (!el || !slot || !host || host.offsetHeight <= 0) return { page: n, frac: 0 };
+        return { page: n, frac: (el.scrollTop - slot.offsetTop) / host.offsetHeight };
+      },
+      restore: (position) => {
+        const el = scroller.current;
+        const slot = slots.current.get(position.page);
+        const host = hosts.current.get(position.page);
+        if (!el || !slot || !host) return;
+        el.scrollTop = Math.max(0, slot.offsetTop + position.frac * host.offsetHeight);
+        slot.focus({ preventScroll: true });
+      },
+      goToDestination: (n, point) => {
+        const el = scroller.current;
+        const slot = slots.current.get(n);
+        const host = hosts.current.get(n);
+        if (!el || !slot || !host) return;
+        // The point is in the raw page frame: rotate it into the frame the page is shown in. A
+        // destination names a baseline, so some room is left above it for the line it belongs to.
+        const shown = point ? rotateRect({ ...point, w: 0, h: 0 }, rotationOf(infoFor(n))) : null;
+        const room = point ? Math.max(24, el.clientHeight / 10) : 8;
+        el.scrollTop = Math.max(
+          0,
+          slot.offsetTop + (shown ? shown.y * host.offsetHeight : 0) - room,
+        );
+        slot.focus({ preventScroll: true });
+      },
     }),
     // cssSize/rotationOf/infoFor close over the latest render; the handle is re-created each time.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -463,7 +534,9 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
   );
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
-    if (e.target !== e.currentTarget || e.ctrlKey || e.metaKey || e.altKey) return;
+    // Focus sits on the viewer itself or, after a link or Back moved the view, on a page.
+    const onPage = e.target instanceof HTMLElement && e.target.classList.contains('sv-slot');
+    if ((e.target !== e.currentTarget && !onPage) || e.ctrlKey || e.metaKey || e.altKey) return;
     const map: Record<string, ViewerShortcut> = {
       ']': 'next-page',
       '[': 'previous-page',
@@ -477,8 +550,16 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
       '/': 'search',
       g: 'go-to-page',
       h: 'save-selection',
+      s: 'save-selection',
     };
-    const action = map[e.key];
+    let action = map[e.key];
+    // Enter on a selection made with the keyboard (caret browsing, F7) saves it too.
+    if (e.key === 'Enter') {
+      const sel = document.getSelection();
+      if (sel && !sel.isCollapsed && scroller.current?.contains(sel.anchorNode)) {
+        action = 'save-selection';
+      }
+    }
     if (action) {
       e.preventDefault();
       props.onShortcut(action);
@@ -492,7 +573,7 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
       className="sv-viewer"
       tabIndex={0}
       role="region"
-      aria-label={`PDF pages. ${doc.pageCount} pages. Press ] and [ to change page, + and - to zoom, R to rotate, slash to search, H to save a selection.`}
+      aria-label={`PDF pages. ${doc.pageCount} pages. Press ] and [ to change page, + and - to zoom, R to rotate, slash to search, S or H to save the selected text.`}
       onKeyDown={onKeyDown}
       data-testid="pdf-viewer"
     >
@@ -508,6 +589,8 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
               data-page-number={n}
               data-testid={`pdf-page-${n}`}
               aria-label={`Page ${n} of ${doc.pageCount}`}
+              // Focus lands here after a link or Back moves the view; it is not a tab stop.
+              tabIndex={-1}
               style={{ width: size.w }}
             >
               <div ref={hostRef(n)} className="sv-page" style={{ width: size.w, height: size.h }} />

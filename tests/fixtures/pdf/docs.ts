@@ -173,3 +173,106 @@ export function repeatedDoc(): Buffer {
     ),
   );
 }
+
+// ---------------------------------------------------------------------------------------------
+// Links (pdf-links.spec.ts)
+// ---------------------------------------------------------------------------------------------
+
+/** What each link of `linkedDoc` page 1 says, in the order they sit on the page (top to bottom). */
+export const LINK_TEXTS = {
+  internal: 'Internal link: go to page three',
+  named: 'Named destination: the glossary',
+  external: 'External link: example.org',
+  script: 'Script link: do not open',
+  mail: 'Mail link: not a web address',
+  plain: 'A plain line of text with no link on it',
+} as const;
+export const LINK_EXTERNAL_URL = 'https://example.org/path?a=1';
+export const GLOSSARY_HEADING = 'Glossary: the named destination points here.';
+export const PAGE_THREE_HEADING = 'Page three: the internal link points here.';
+
+/**
+ * Four pages. Page 1 has one link per line: a GoTo to page 3, a named destination (page 2), an
+ * https address, a `javascript:` address and a `mailto:` address, and a line with no link. Pages 2 and
+ * 3 hold the targets, page 4 is filler so that page 3 is not the last.
+ */
+export function linkedDoc(title = 'Linked notes'): Buffer {
+  const line = (y: number, text: string) => ({ x: 72, y, text });
+  const pages: FixturePage[] = [
+    {
+      texts: [
+        line(700, LINK_TEXTS.internal),
+        line(660, LINK_TEXTS.named),
+        line(620, LINK_TEXTS.external),
+        line(580, LINK_TEXTS.script),
+        line(540, LINK_TEXTS.mail),
+        line(500, LINK_TEXTS.plain),
+        line(460, 'A link that wraps'),
+        line(446, 'over two lines'),
+      ],
+      links: [
+        { rect: [72, 696, 262, 712], goTo: { page: 3, fromTop: 100 } },
+        { rect: [72, 656, 262, 672], named: 'glossary' },
+        { rect: [72, 616, 232, 632], uri: LINK_EXTERNAL_URL },
+        { rect: [72, 576, 200, 592], uri: 'javascript:alert(1)' },
+        { rect: [72, 536, 236, 552], uri: 'mailto:someone@example.org' },
+        {
+          rect: [72, 442, 180, 472],
+          quads: [
+            [72, 456, 180, 472],
+            [72, 442, 160, 458],
+          ],
+          uri: 'https://example.org/wrapped',
+        },
+      ],
+    },
+    {
+      texts: [
+        line(720, 'Second page heading'),
+        line(592, GLOSSARY_HEADING),
+        line(560, 'Back to the first page'),
+      ],
+      links: [{ rect: [72, 556, 200, 572], goTo: 1 }],
+    },
+    { texts: [line(720, 'Third page heading'), line(692, PAGE_THREE_HEADING)] },
+    { texts: [line(720, 'Fourth page heading'), line(692, 'Filler text on the last page.')] },
+  ];
+  return Buffer.from(buildPdf(pages, { title, namedDests: { glossary: { page: 2, fromTop: 200 } } }));
+}
+
+/** One page with /Rotate 90 and a link over the first words of its (sideways-written) line. */
+export const ROTATED_LINK_TEXT = 'Rotated page text with a link on its first words';
+export function linkedRotatedDoc(): Buffer {
+  return Buffer.from(
+    buildPdf(
+      [
+        {
+          rotate: 90,
+          texts: [{ x: 120, y: 72, text: ROTATED_LINK_TEXT, angle: 90 }],
+          links: [{ rect: [108, 72, 128, 230], uri: 'https://example.org/rotated' }],
+        },
+      ],
+      { title: 'Rotated link' },
+    ),
+  );
+}
+
+/**
+ * A page of 45 links (more than the reader puts in the tab order), 5 per row, laid out in a grid; the
+ * even ones go to page 2, the odd ones are https addresses. Page 2 is the target.
+ */
+export const DENSE_LINK_COUNT = 45;
+export function denseLinksDoc(): Buffer {
+  const links = Array.from({ length: DENSE_LINK_COUNT }, (_, i) => {
+    const x = 72 + (i % 5) * 100;
+    const y = 700 - Math.floor(i / 5) * 40;
+    return {
+      rect: [x, y - 4, x + 60, y + 12] as [number, number, number, number],
+      ...(i % 2 === 0 ? { goTo: 2 } : { uri: `https://example.org/item-${i + 1}` }),
+    };
+  });
+  const texts = links.map((l, i) => ({ x: l.rect[0], y: l.rect[1] + 4, text: `Item ${i + 1}` }));
+  return Buffer.from(
+    buildPdf([{ texts, links }, ...proseFixture(1)], { title: 'Many links' }),
+  );
+}

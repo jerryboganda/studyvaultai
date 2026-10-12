@@ -15,8 +15,10 @@ import {
   SCHEMA_V1,
   SCHEMA_V2,
   SCHEMA_V3,
+  SCHEMA_V4,
   StudyVaultDb,
   upgradeV1ToV2,
+  upgradeV3ToV4,
 } from './db';
 import { getPageHighlights, listBanks, listBanksWithCounts, saveCapture } from './repo';
 import { cap } from './test-fixtures';
@@ -58,15 +60,15 @@ describe('schema version 1 (frozen strings)', () => {
   });
 });
 
-describe('schema version 3 (current)', () => {
+describe('schema version 4 (current)', () => {
   it('declares every planned table with exactly the planned indexes', async () => {
     const db = new StudyVaultDb('studyvault-fresh');
     try {
       await db.open();
       expect(db.verno).toBe(DB_VERSION);
-      expect(DB_VERSION).toBe(3);
-      expect(db.tables.map((t) => t.name).sort()).toEqual(Object.keys(SCHEMA_V3).sort());
-      for (const [table, spec] of Object.entries(SCHEMA_V3)) {
+      expect(DB_VERSION).toBe(4);
+      expect(db.tables.map((t) => t.name).sort()).toEqual(Object.keys(SCHEMA_V4).sort());
+      for (const [table, spec] of Object.entries(SCHEMA_V4)) {
         expect(indexNames(db, table), table).toEqual(declared(spec));
         expect(db.table(table).schema.primKey.name, table).toBe(spec.split(',')[0]!.trim());
       }
@@ -90,6 +92,32 @@ describe('schema version 3 (current)', () => {
       expect(SCHEMA_V3[table as keyof typeof SCHEMA_V3], table).toBe(spec);
     }
     expect(SCHEMA_V3.syncOps.startsWith(SCHEMA_V2.syncOps)).toBe(true);
+  });
+
+  it('v4 only adds to v3: every v3 table keeps its exact definition, three tables appear', () => {
+    for (const [table, spec] of Object.entries(SCHEMA_V3)) {
+      expect(SCHEMA_V4[table as keyof typeof SCHEMA_V4], table).toBe(spec);
+    }
+    expect(
+      Object.keys(SCHEMA_V4)
+        .filter((t) => !(t in SCHEMA_V3))
+        .sort(),
+    ).toEqual(['filingRules', 'relations', 'syllabi']);
+  });
+
+  it('declares the indexes the organisation queries use', async () => {
+    const db = new StudyVaultDb('studyvault-v4-shape');
+    try {
+      await db.open();
+      expect(indexNames(db, 'filingRules')).toEqual(['deletedAt', 'order', 'updatedAt']);
+      expect(indexNames(db, 'syllabi')).toEqual(['deletedAt', 'updatedAt']);
+      expect(indexNames(db, 'relations')).toEqual(
+        expect.arrayContaining(['[fromKind+fromId]', '[toKind+toId]', 'fromId', 'toId']),
+      );
+    } finally {
+      db.close();
+      await Dexie.delete('studyvault-v4-shape');
+    }
   });
 
   it('can be opened by two connections at once and by a second connection later', async () => {
@@ -125,14 +153,14 @@ const FIXTURES: Array<[string, FixtureName]> = [
 
 describe('upgrading frozen version-1 fixtures through the real repo', () => {
   it.each(FIXTURES)(
-    '%s: opens at v3, keeps every row byte for byte, adds a meta marker',
+    '%s: opens at the current version, keeps every row byte for byte, adds a meta marker',
     async (_label, name) => {
       const v1 = loadFixture(name);
       await seedV1(v1);
 
       // First contact with the database is a normal repo call: it performs the upgrade.
       await listBanks();
-      expect(getDb().verno).toBe(3);
+      expect(getDb().verno).toBe(DB_VERSION);
 
       const after = await dump();
       for (const table of ['banks', 'sources', 'highlights', 'highlightBanks'] as const) {
@@ -144,7 +172,7 @@ describe('upgrading frozen version-1 fixtures through the real repo', () => {
         expect(sorted(after[table]!), table).toEqual(sorted(v1[table]));
       }
       // Everything new starts empty, except the marker.
-      for (const table of Object.keys(SCHEMA_V3)) {
+      for (const table of Object.keys(SCHEMA_V4)) {
         if (table in SCHEMA_V1 || table === 'meta') continue;
         expect(after[table], table).toEqual([]);
       }
@@ -152,7 +180,7 @@ describe('upgrading frozen version-1 fixtures through the real repo', () => {
       expect(after.meta![0]).toMatchObject({
         key: META_SCHEMA_KEY,
         value: {
-          dbVersion: 3,
+          dbVersion: DB_VERSION,
           recordSchemaVersion: 1,
           migratedFrom: 1,
           highlightBanksFixed: 0,
@@ -177,7 +205,7 @@ describe('upgrading frozen version-1 fixtures through the real repo', () => {
     },
   );
 
-  it('two connections opening a v1 database at the same time both end up on v3, upgraded once', async () => {
+  it('two connections opening a v1 database at the same time both end up on the current version, upgraded once', async () => {
     const v1 = loadFixture('schema-v1.json');
     await seedV1(v1);
     closeDb();
@@ -185,8 +213,8 @@ describe('upgrading frozen version-1 fixtures through the real repo', () => {
     const b = new StudyVaultDb();
     try {
       await Promise.all([a.open(), b.open()]);
-      expect(a.verno).toBe(3);
-      expect(b.verno).toBe(3);
+      expect(a.verno).toBe(DB_VERSION);
+      expect(b.verno).toBe(DB_VERSION);
       expect(await a.table('highlights').count()).toBe(v1.highlights.length);
       expect(await b.table('meta').count()).toBe(1);
     } finally {
@@ -202,7 +230,7 @@ describe('upgrading frozen version-1 fixtures through the real repo', () => {
     ]);
     const saved = await saveCapture(cap());
     expect(saved.status).toBe('created');
-    expect(getDb().verno).toBe(3);
+    expect(getDb().verno).toBe(DB_VERSION);
   });
 
   it('the trash fixture keeps its trash, its bank-less highlight and its deleted bank', async () => {
@@ -294,7 +322,7 @@ describe('the upgrade is transactional', () => {
     }
     // And the real build can still upgrade it afterwards.
     expect((await listBanks()).map((b) => b.id)).toContain('bank-cardiology-01');
-    expect(getDb().verno).toBe(3);
+    expect(getDb().verno).toBe(DB_VERSION);
   });
 });
 
@@ -318,8 +346,10 @@ describe('onBeforeMigrate', () => {
         listBanks(),
         getPageHighlights('https://example.com/x', null),
       ]);
-      expect(seen).toEqual([{ from: 1, to: 3, highlights: v1.highlights.length, hasMeta: false }]);
-      expect(getDb().verno).toBe(3);
+      expect(seen).toEqual([
+        { from: 1, to: DB_VERSION, highlights: v1.highlights.length, hasMeta: false },
+      ]);
+      expect(getDb().verno).toBe(DB_VERSION);
 
       // Already current: nothing to protect, the hook stays quiet.
       closeDb();
@@ -348,7 +378,7 @@ describe('onBeforeMigrate', () => {
     });
     try {
       expect((await listBanks()).length).toBeGreaterThan(0);
-      expect(getDb().verno).toBe(3);
+      expect(getDb().verno).toBe(DB_VERSION);
     } finally {
       off();
     }
@@ -388,7 +418,8 @@ describe('a database written by a newer build', () => {
     newer.version(1).stores(SCHEMA_V1);
     newer.version(2).stores(SCHEMA_V2);
     newer.version(3).stores(SCHEMA_V3);
-    newer.version(4).stores({ somethingNew: 'id' });
+    newer.version(4).stores(SCHEMA_V4);
+    newer.version(5).stores({ somethingNew: 'id' });
     await newer.open();
     newer.close();
 
@@ -452,7 +483,7 @@ describe('upgrading a version-2 database to version 3', () => {
     const v1 = await seedV2();
     await listBanks(); // performs the upgrade
     const db = getDb();
-    expect(db.verno).toBe(3);
+    expect(db.verno).toBe(DB_VERSION);
     const after = await dump();
     for (const table of ['banks', 'sources', 'highlights', 'highlightBanks'] as const) {
       const key =
@@ -472,7 +503,7 @@ describe('upgrading a version-2 database to version 3', () => {
       ['op-legacy-0002', 2, 1],
     ]);
     expect(after.meta!.find((m) => m.key === META_SCHEMA_KEY)).toMatchObject({
-      value: { dbVersion: 3, migratedFrom: 1, v3OpsFixed: 2 },
+      value: { dbVersion: DB_VERSION, migratedFrom: 1, v3OpsFixed: 2 },
     });
   });
 
@@ -511,6 +542,285 @@ describe('upgrading a version-2 database to version 3', () => {
       probe.close();
     }
     expect((await listBanks()).length).toBeGreaterThan(0); // the real build still upgrades it
-    expect(getDb().verno).toBe(3);
+    expect(getDb().verno).toBe(DB_VERSION);
+  });
+});
+
+describe('upgrading a version-3 database to version 4', () => {
+  const TS = '2026-10-05T10:00:00.000Z';
+  const envelope = { schemaVersion: 1, createdAt: TS, updatedAt: TS, deletedAt: null };
+
+  /**
+   * A database exactly as the v3 build left it: the real v1, v2 and v3 store strings, a row in every
+   * v3 table (the sync bookkeeping ones included) and the marker the earlier upgrades write. Returns
+   * what is stored, read back from that connection, so "untouched" means byte for byte.
+   */
+  async function seedV3(): Promise<Record<string, Row[]>> {
+    const v1 = loadFixture('schema-v1.json');
+    await resetDbForTests();
+    const legacy = new Dexie(DB_NAME);
+    legacy.version(1).stores(SCHEMA_V1);
+    legacy.version(2).stores(SCHEMA_V2);
+    legacy.version(3).stores(SCHEMA_V3);
+    const rows: Record<string, Row[]> = {
+      banks: v1.banks,
+      sources: v1.sources,
+      highlights: v1.highlights,
+      highlightBanks: v1.highlightBanks,
+      folders: [
+        {
+          id: 'folder-v3-0001',
+          ...envelope,
+          bankId: 'bank-cardiology-01',
+          parentFolderId: null,
+          name: 'Drugs',
+          position: 1,
+        },
+      ],
+      tags: [
+        {
+          id: 'tag-v3-000001',
+          ...envelope,
+          name: 'High yield',
+          nameKey: 'high yield',
+          color: null,
+          aliases: [],
+        },
+      ],
+      highlightTags: [{ highlightId: 'hl-aspirin-0001', tagId: 'tag-v3-000001', addedAt: TS }],
+      notes: [
+        {
+          id: 'note-v3-00001',
+          ...envelope,
+          highlightId: 'hl-aspirin-0001',
+          sourceId: null,
+          title: 't',
+          body: 'b',
+          pinned: false,
+        },
+      ],
+      knowledgePoints: [
+        {
+          id: 'kp-v3-0000001',
+          ...envelope,
+          highlightId: 'hl-aspirin-0001',
+          shortOneLiner: 'COX inhibitor',
+        },
+      ],
+      decks: [{ id: 'deck-v3-00001', ...envelope, bankId: null, name: 'General', settings: {} }],
+      cards: [
+        {
+          id: 'card-v3-00001',
+          ...envelope,
+          deckId: 'deck-v3-00001',
+          knowledgePointId: 'kp-v3-0000001',
+          highlightId: 'hl-aspirin-0001',
+          dueAt: TS,
+          fsrs: { state: 'new', due: TS },
+          suspended: false,
+          front: 'Q',
+          back: 'A',
+        },
+      ],
+      reviewLogs: [
+        { id: 'log-v3-000001', cardId: 'card-v3-00001', reviewedAt: TS, sessionId: 's-1' },
+      ],
+      aiResults: [
+        {
+          id: 'ai-v3-0000001',
+          inputFingerprint: 'f'.repeat(16),
+          highlightId: 'hl-aspirin-0001',
+          kind: 'summary',
+          createdAt: TS,
+          acceptedAt: null,
+        },
+      ],
+      documents: [
+        { id: 'doc-v3-0000001', ...envelope, title: 'Notes.pdf', pageCount: 3, textStatus: 'text' },
+      ],
+      ocrPages: [{ documentId: 'doc-v3-0000001', pageNumber: 1, text: 'page one' }],
+      syncOps: [
+        {
+          id: 'op-v3-00000001',
+          entityType: 'notes',
+          entityId: 'note-v3-00001',
+          clientId: 'c-1',
+          createdAt: TS,
+          sentAt: null,
+          seq: 1,
+          pending: 1,
+          attempts: 0,
+        },
+      ],
+      syncEntityMeta: [
+        { entityType: 'notes', entityId: 'note-v3-00001', clocks: {}, tombstoneAt: null },
+      ],
+      syncConflicts: [
+        {
+          id: 'conf-v3-00001',
+          entityType: 'notes',
+          entityId: 'note-v3-00001',
+          kind: 'text',
+          detectedAt: TS,
+        },
+      ],
+      syncQuarantine: [
+        { id: 'quar-v3-00001', entityType: 'notes', entityId: 'x', reason: 'row_invalid', at: TS },
+      ],
+      meta: [
+        {
+          key: META_SCHEMA_KEY,
+          value: {
+            dbVersion: 3,
+            recordSchemaVersion: 1,
+            migratedFrom: 1,
+            v3MigratedAt: TS,
+            v3OpsFixed: 0,
+            skipped: 0,
+          },
+          updatedAt: TS,
+        },
+        { key: 'aiSettings', value: { provider: 'none' }, updatedAt: TS },
+        { key: 'lastPurgeAt', value: TS, updatedAt: TS },
+      ],
+    };
+    try {
+      await legacy.open();
+      for (const [table, list] of Object.entries(rows)) await legacy.table(table).bulkPut(list);
+      const stored: Record<string, Row[]> = {};
+      for (const table of legacy.tables) stored[table.name] = (await table.toArray()) as Row[];
+      return stored;
+    } finally {
+      legacy.close();
+    }
+  }
+
+  it('keeps every row of every v3 table exactly as stored and starts the new tables empty', async () => {
+    const before = await seedV3();
+    expect(Object.keys(before).sort()).toEqual(Object.keys(SCHEMA_V3).sort());
+    await listBanks(); // performs the upgrade
+    expect(getDb().verno).toBe(4);
+    const after = await dump();
+    for (const [table, rows] of Object.entries(before)) {
+      if (table === 'meta') continue;
+      expect(after[table], table).toEqual(rows);
+    }
+    for (const table of ['filingRules', 'syllabi', 'relations']) {
+      expect(after[table], table).toEqual([]);
+    }
+    // meta: the marker moved on, every other key is untouched
+    expect(after.meta!.filter((m) => m.key !== META_SCHEMA_KEY)).toEqual(
+      before.meta!.filter((m) => m.key !== META_SCHEMA_KEY),
+    );
+    expect(after.meta!.find((m) => m.key === META_SCHEMA_KEY)!.value).toMatchObject({
+      dbVersion: 4,
+      migratedFrom: 1,
+      v3MigratedAt: TS,
+      v3OpsFixed: 0,
+      v4MigratedAt: expect.any(String),
+    });
+  });
+
+  it('the three new tables work straight after the upgrade, and the old data is still readable', async () => {
+    await seedV3();
+    const { createFilingRule } = await import('./rules');
+    const { createSyllabus } = await import('./syllabi');
+    const { createRelation } = await import('./relations');
+    const rule = await createFilingRule({
+      name: 'Cardiology sites',
+      match: { hosts: ['example.com'] },
+      action: { bankId: 'bank-cardiology-01' },
+    });
+    const syllabus = await createSyllabus({ name: 'Exam', nodes: [{ title: 'Drugs' }] });
+    const link = await createRelation({
+      fromKind: 'highlight',
+      fromId: 'hl-aspirin-0001',
+      toKind: 'knowledgePoint',
+      toId: 'kp-v3-0000001',
+      type: 'supports',
+    });
+    expect(link.status).toBe('created');
+    const after = await dump();
+    expect(after.filingRules!.map((r) => r.id)).toEqual([rule.id]);
+    expect(after.syllabi!.map((r) => r.id)).toEqual([syllabus.id]);
+    expect(after.relations).toHaveLength(1);
+    expect((await listBanks()).map((b) => b.id)).toContain('bank-cardiology-01');
+  });
+
+  it('re-opening after the upgrade changes nothing', async () => {
+    await seedV3();
+    await listBanks();
+    const first = await dump();
+    closeDb();
+    await listBanks();
+    expect(await dump()).toEqual(first);
+  });
+
+  it('the step itself is idempotent: running it again keeps the marker and every row', async () => {
+    await seedV3();
+    await listBanks();
+    const db = getDb();
+    const before = await dump();
+    await db.transaction('rw', db.meta, async (tx) => {
+      await upgradeV3ToV4(tx);
+      await upgradeV3ToV4(tx);
+    });
+    const after = await dump();
+    const marker = (rows: Record<string, Row[]>) =>
+      rows.meta!.find((m) => m.key === META_SCHEMA_KEY)!.value;
+    expect(marker(after)).toEqual(marker(before));
+    for (const table of Object.keys(before)) {
+      if (table !== 'meta') expect(after[table], table).toEqual(before[table]);
+    }
+  });
+
+  it('a failure inside the v4 step leaves the v3 database untouched', async () => {
+    const before = await seedV3();
+    const failing = new Dexie(DB_NAME);
+    failing.version(1).stores(SCHEMA_V1);
+    failing.version(2).stores(SCHEMA_V2);
+    failing.version(3).stores(SCHEMA_V3);
+    failing
+      .version(4)
+      .stores(SCHEMA_V4)
+      .upgrade(async (tx) => {
+        await upgradeV3ToV4(tx);
+        throw new Error('injected v4 failure');
+      });
+    await expect(failing.open()).rejects.toThrow(/injected v4 failure/);
+    failing.close();
+    const probe = new Dexie(DB_NAME);
+    await probe.open();
+    try {
+      expect(probe.verno).toBe(3);
+      expect(probe.tables.map((t) => t.name).sort()).toEqual(Object.keys(SCHEMA_V3).sort());
+      for (const [table, rows] of Object.entries(before)) {
+        expect(await probe.table(table).toArray(), table).toEqual(rows);
+      }
+    } finally {
+      probe.close();
+    }
+    expect((await listBanks()).length).toBeGreaterThan(0); // the real build still upgrades it
+    expect(getDb().verno).toBe(4);
+  });
+
+  it('hands the old data to the pre-update hook once, at version 3', async () => {
+    await seedV3();
+    const seen: Array<{ from: number; to: number; tables: string[] }> = [];
+    const off = onBeforeMigrate(async (ctx) => {
+      seen.push({
+        from: ctx.fromVersion,
+        to: ctx.toVersion,
+        tables: Object.keys(await ctx.counts()),
+      });
+    });
+    try {
+      await Promise.all([listBanks(), listBanks()]);
+    } finally {
+      off();
+    }
+    expect(seen).toEqual([
+      { from: 3, to: DB_VERSION, tables: expect.not.arrayContaining(['filingRules']) },
+    ]);
   });
 });

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   Attachment,
   BankRecord,
+  FilingRule,
   Folder,
   Highlight,
   HighlightBank,
@@ -11,10 +12,15 @@ import {
   Note,
   OcrPage,
   PdfDocument,
+  Relation,
   SCHEMA_VERSION,
   Source,
   StudyVaultError,
+  Syllabus,
   Tag,
+  flattenSyllabus,
+  type RelationEntityKind,
+  type SyllabusNode,
   type TableRegistry,
   type TableSpec,
 } from '@shared';
@@ -153,10 +159,99 @@ const SPECS: readonly Spec[] = [
     schema: OcrPage,
     softDelete: false,
     references: [{ field: 'documentId', table: 'documents' }],
+    // The reading a re-run replaced (one undo step): device-local, so not synchronised, not in the
+    // checksums, and left out of a backup file (`BACKUP_LOCAL_FIELDS` in backupTarget.ts).
+    derivedFields: ['previousReading'],
   },
   { name: 'syncOps', primaryKey: 'id', schema: keyedRow, softDelete: false, localOnly: true },
   { name: 'meta', primaryKey: 'key', schema: MetaRowSchema, softDelete: false, localOnly: true },
+  // Organisation records (schema v4, ADR-011). Their schemas live in @shared, so they are never a
+  // placeholder. What they point at sits inside a nested object, a list or a kind/id pair, which
+  // `references` cannot express: `NESTED_REFERENCES` below is what `checkIntegrity` reads instead.
+  { name: 'filingRules', primaryKey: 'id', schema: FilingRule, softDelete: true },
+  { name: 'syllabi', primaryKey: 'id', schema: Syllabus, softDelete: true },
+  { name: 'relations', primaryKey: 'id', schema: Relation, softDelete: true },
 ];
+
+interface NestedReference {
+  /** Where in the row, for the message. */
+  path: string;
+  table: string;
+  id: string;
+}
+
+const RELATION_TABLE: Record<RelationEntityKind, string> = {
+  highlight: 'highlights',
+  knowledgePoint: 'knowledgePoints',
+  note: 'notes',
+};
+
+const texts = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
+
+/**
+ * References that live inside a row's own structure. Called only for rows that passed their schema
+ * and are not deleted. A reference to a row that is merely in the trash is intact: only a row that
+ * does not exist at all is dangling.
+ */
+const NESTED_REFERENCES: Readonly<
+  Record<string, (row: Record<string, unknown>) => NestedReference[]>
+> = {
+  filingRules: (row) => {
+    const action = (row.action ?? {}) as Record<string, unknown>;
+    const match = (row.match ?? {}) as Record<string, unknown>;
+    const out: NestedReference[] = [];
+    if (typeof action.bankId === 'string') {
+      out.push({ path: 'action.bankId', table: 'banks', id: action.bankId });
+    }
+    if (typeof action.folderId === 'string') {
+      out.push({ path: 'action.folderId', table: 'folders', id: action.folderId });
+    }
+    for (const id of texts(action.addTagIds)) {
+      out.push({ path: 'action.addTagIds', table: 'tags', id });
+    }
+    for (const id of texts(match.tagIds)) out.push({ path: 'match.tagIds', table: 'tags', id });
+    return out;
+  },
+  syllabi: (row) => {
+    const out: NestedReference[] = [];
+    const nodes = Array.isArray(row.nodes) ? (row.nodes as SyllabusNode[]) : [];
+    for (const { node } of flattenSyllabus(nodes)) {
+      for (const id of texts(node.bankIds)) {
+        out.push({ path: `topic ${node.id} bankIds`, table: 'banks', id });
+      }
+      for (const id of texts(node.tagIds)) {
+        out.push({ path: `topic ${node.id} tagIds`, table: 'tags', id });
+      }
+    }
+    return out;
+  },
+  relations: (row) => {
+    const out: NestedReference[] = [];
+    for (const side of ['from', 'to'] as const) {
+      const table = RELATION_TABLE[row[`${side}Kind`] as RelationEntityKind];
+      const id = row[`${side}Id`];
+      if (table !== undefined && typeof id === 'string') {
+        out.push({ path: `${side}Id`, table, id });
+      }
+    }
+    return out;
+  },
+};
+
+/** The same relation spelled once: "related" has no direction, so both orders are one link. */
+export function relationKey(row: {
+  fromKind: string;
+  fromId: string;
+  toKind: string;
+  toId: string;
+  type: string;
+}): string {
+  const from = `${row.fromKind}:${row.fromId}`;
+  const to = `${row.toKind}:${row.toId}`;
+  const [a, b] = row.type === 'related' && to < from ? [to, from] : [from, to];
+  return `${a}|${b}|${row.type}`;
+}
 
 const registered = new Map<string, z.ZodType>();
 
@@ -205,7 +300,8 @@ export type IntegrityIssueCode =
   | 'orphan_reference'
   | 'duplicate_id'
   | 'duplicate_tag_name'
-  | 'multiple_inbox';
+  | 'multiple_inbox'
+  | 'duplicate_relation';
 
 export interface IntegrityIssue {
   table: string;
@@ -279,6 +375,7 @@ export async function checkIntegrity(db?: StudyVaultDb): Promise<IntegrityReport
       // Pass 2: every row.
       let inboxes = 0;
       const tagKeys = new Map<string, string>();
+      const relationKeys = new Map<string, string>();
       for (const spec of registry.tables) {
         const stats = { rows: 0, invalid: 0, newer: 0 };
         perTable[spec.name] = stats;
@@ -344,6 +441,32 @@ export async function checkIntegrity(db?: StudyVaultDb): Promise<IntegrityReport
                 message: `${ref.field} references a missing ${ref.table} row`,
               });
             }
+          }
+          if (raw.deletedAt == null) {
+            for (const ref of NESTED_REFERENCES[spec.name]?.(raw) ?? []) {
+              // The Inbox exists even before its row is first written.
+              if (ref.table === 'banks' && ref.id === INBOX_BANK_ID) continue;
+              if (!keys.get(ref.table)?.has(ref.id)) {
+                push({
+                  table: spec.name,
+                  key,
+                  code: 'orphan_reference',
+                  message: `${ref.path} references a missing ${ref.table} row`,
+                });
+              }
+            }
+          }
+          if (spec.name === 'relations' && raw.deletedAt == null) {
+            const same = relationKey(raw as Parameters<typeof relationKey>[0]);
+            const first = relationKeys.get(same);
+            if (first !== undefined) {
+              push({
+                table: 'relations',
+                key,
+                code: 'duplicate_relation',
+                message: `same link as relation ${first}`,
+              });
+            } else relationKeys.set(same, key);
           }
           if (spec.name === 'banks' && raw.isInbox === true && raw.deletedAt == null) {
             inboxes++;

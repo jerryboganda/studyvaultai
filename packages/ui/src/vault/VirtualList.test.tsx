@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { VirtualList, type VirtualListProps } from './VirtualList';
 
 afterEach(cleanup);
@@ -152,5 +152,86 @@ describe('VirtualList keyboard', () => {
     const [index, event] = (props.onRowClick as ReturnType<typeof vi.fn>).mock.calls[0]!;
     expect(index).toBe(2);
     expect((event as MouseEvent).shiftKey).toBe(true);
+  });
+});
+
+describe('VirtualList row height under text-spacing overrides (WCAG 1.4.12)', () => {
+  /** A ResizeObserver that records what it watches and lets a test report sizes. */
+  class FakeObserver {
+    static all: FakeObserver[] = [];
+    targets = new Set<Element>();
+    constructor(readonly callback: ResizeObserverCallback) {
+      FakeObserver.all.push(this);
+    }
+    observe(el: Element) {
+      this.targets.add(el);
+    }
+    unobserve(el: Element) {
+      this.targets.delete(el);
+    }
+    disconnect() {
+      this.targets.clear();
+    }
+  }
+
+  /** Report that every row's content box is now `height` px tall. */
+  function reportContentHeight(height: number) {
+    const watcher = FakeObserver.all.find((o) =>
+      [...o.targets].some((t) => t.classList.contains('sv-vrow__content')),
+    )!;
+    const entries = [...watcher.targets].map(
+      (target) => ({ target, contentRect: { height } }) as unknown as ResizeObserverEntry,
+    );
+    act(() => watcher.callback(entries, watcher as unknown as ResizeObserver));
+  }
+
+  beforeEach(() => {
+    FakeObserver.all = [];
+    vi.stubGlobal('ResizeObserver', FakeObserver);
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const heights = () => screen.getAllByRole('option').map((o) => (o as HTMLElement).style.height);
+
+  it('keeps the given height while the content fits', () => {
+    setup({ count: 100 });
+    reportContentHeight(40);
+    expect(new Set(heights())).toEqual(new Set(['50px']));
+  });
+
+  it('grows every row to the tallest content instead of clipping it, and never shrinks back', () => {
+    const { list } = setup({ count: 100 });
+    reportContentHeight(180); // plus the row's 1 px border
+    expect(new Set(heights())).toEqual(new Set(['181px']));
+    expect((list.firstElementChild as HTMLElement).style.height).toBe('18100px');
+    const options = screen.getAllByRole('option') as HTMLElement[];
+    expect(options[1]?.style.top).toBe('181px');
+
+    reportContentHeight(120); // a shorter row scrolled into view: no jump back
+    expect(new Set(heights())).toEqual(new Set(['181px']));
+  });
+
+  it('stays on the same first row when the height changes under a scrolled list', () => {
+    const { list } = setup({ count: 1_000 });
+    list.scrollTop = 5_000; // row 100
+    fireEvent.scroll(list);
+    reportContentHeight(150);
+    expect(list.scrollTop).toBe(100 * 151);
+    expect(screen.getAllByRole('option')[0]?.textContent).toContain('Row 95'); // 5 rows of overscan
+  });
+
+  it('watches each row, not the list, and stops watching a row that leaves', () => {
+    const { list } = setup({ count: 1_000 });
+    const watcher = FakeObserver.all.find((o) =>
+      [...o.targets].some((t) => t.classList.contains('sv-vrow__content')),
+    )!;
+    const before = watcher.targets.size;
+    expect(before).toBe(screen.getAllByRole('option').length);
+    list.scrollTop = 40_000;
+    fireEvent.scroll(list);
+    expect(watcher.targets.size).toBe(screen.getAllByRole('option').length);
+    expect([...watcher.targets].every((t) => t.isConnected)).toBe(true);
   });
 });

@@ -78,6 +78,35 @@ describe('save bar placement', () => {
     expect(p.top + bar.h).toBeLessThanOrEqual(viewport.h);
     expect(p.top).toBeGreaterThanOrEqual(0);
   });
+
+  // A selection that is not on screen (a keyboard selection that ran on, a long drag that
+  // auto-scrolled, a script) used to put the bar beside it, outside the viewport: unreachable. It was
+  // seen on CI with a 150 s timeout, "element is outside of the viewport", on real documents.
+  it('is reachable when the selection lies wholly below the viewport', () => {
+    const p = placeBar({ left: 200, top: 1400, right: 700, bottom: 1440 }, bar, viewport);
+    expect(p.top).toBe(viewport.h - bar.h);
+    expect(p.top + bar.h).toBeLessThanOrEqual(viewport.h);
+  });
+
+  it('is reachable when the selection lies wholly above the viewport', () => {
+    const p = placeBar({ left: 200, top: -900, right: 700, bottom: -860 }, bar, viewport);
+    expect(p.top).toBe(0);
+  });
+
+  it('is reachable when the selection starts above and ends below the viewport', () => {
+    const p = placeBar({ left: 200, top: -300, right: 700, bottom: 1300 }, bar, viewport);
+    expect(p.top).toBeGreaterThanOrEqual(0);
+    expect(p.top + bar.h).toBeLessThanOrEqual(viewport.h);
+  });
+
+  it('is reachable on a viewport shorter than the bar and far to the right', () => {
+    const p = placeBar({ left: 5000, top: 2000, right: 5100, bottom: 2020 }, bar, {
+      w: 320,
+      h: 200,
+    });
+    expect(p.top).toBe(0);
+    expect(p.left).toBeGreaterThanOrEqual(8);
+  });
 });
 
 const view = (

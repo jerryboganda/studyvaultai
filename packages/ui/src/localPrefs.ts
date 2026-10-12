@@ -11,6 +11,8 @@ export const LOCAL_PREF_KEYS = {
   dashboardContrast: 'sv.dashboard.contrast',
   dashboardSingleKeys: 'sv.dashboard.singleKeys',
   reviewKeys: 'sv.review.keys',
+  /** 'on': a toast stays until it is dismissed (WCAG 2.2.1). Settings > Appearance. */
+  toastsKeep: 'sv.toasts.keep',
 } as const;
 
 /**

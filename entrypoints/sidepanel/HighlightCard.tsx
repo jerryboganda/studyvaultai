@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useId, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
 import {
   HIGHLIGHT_KINDS,
@@ -6,10 +6,11 @@ import {
   MAX_COMMENT_CHARS,
   isPlaceholderSourceUrl,
   type ColorId,
+  type FilingSuggestion,
   type HighlightKind,
   type HighlightPatch,
 } from '@shared';
-import type { HighlightDetail, HighlightListItem } from '@storage';
+import type { HighlightDetail, HighlightListItem, RelationRef } from '@storage';
 import {
   Badge,
   Button,
@@ -24,15 +25,27 @@ import {
   useLatest,
   useToast,
 } from '@ui';
-import { HighlightAiActions } from '@ui/ai';
+import {
+  LinksSection,
+  RelatedSection,
+  type LinkSearchPort,
+  type LinksPort,
+  type RelatedPort,
+} from '@ui/vault';
 import { CardNotes } from './CardNotes';
 import { CardTags } from './CardTags';
+import { FilingChip } from './FilingChip';
 import { extensionPageUrl, optionsUrl } from './links';
 import type { RevealAvailability } from './model';
 import { REVEAL_NOT_FOUND, sourceLinkFor } from './model';
 
 export const COMMENT_DEBOUNCE_MS = 600;
 const QUOTE_PREVIEW_CHARS = 280;
+
+// The AI engine and its screens are fetched when a card's AI drafts are opened, not with the panel.
+const HighlightAiActions = lazy(() =>
+  import('@ui/ai').then((m) => ({ default: m.HighlightAiActions })),
+);
 
 export interface CardActions {
   update(id: string, patch: HighlightPatch): Promise<void>;
@@ -50,6 +63,9 @@ export interface CardActions {
     noteId: string | null;
     body: string;
   }): Promise<void>;
+  /** File / dismiss a filing rule's pending suggestion (docs/adr/017-filing-rules.md). */
+  fileSuggestion?(highlightId: string): Promise<void>;
+  dismissSuggestion?(highlightId: string): Promise<void>;
 }
 
 /** What is the same for every card of a list. */
@@ -60,6 +76,17 @@ export interface CardContext {
   aiOn: boolean | null;
   /** id of the panel's shared tag <datalist>. */
   tagListId: string;
+  /** Pending filing suggestions by highlight id; a card shows its own until filed or dismissed. */
+  suggestions?: ReadonlyMap<string, FilingSuggestion>;
+  /** The search index behind each card's Related section; the section is left out without it. */
+  related?: RelatedPort;
+  /** The links of each card; the section is left out without it. */
+  links?: {
+    port: LinksPort;
+    search: LinkSearchPort;
+    /** Open the dashboard's graph around an item. */
+    onShowGraph(item: RelationRef): void;
+  };
 }
 
 /** The part of a highlight's detail the card shows. */
@@ -94,11 +121,12 @@ export function HighlightCard({
 }) {
   const { highlight, source, banks } = item;
   const uid = useId();
-  const { announce } = useToast();
+  const { announce, push } = useToast();
   const [expanded, setExpanded] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
   const [revealNote, setRevealNote] = useState<{ ok: boolean; text: string } | null>(null);
   const state = describeResolveState(highlight.resolveStatus);
+  const suggestion = context.suggestions?.get(highlight.id);
 
   const act = useAction(async (op: Op) => {
     setRevealNote(null);
@@ -203,6 +231,14 @@ export function HighlightCard({
         )}
       </div>
 
+      {suggestion && actions.fileSuggestion && actions.dismissSuggestion ? (
+        <FilingChip
+          suggestion={suggestion}
+          onFile={() => actions.fileSuggestion!(highlight.id)}
+          onDismiss={() => actions.dismissSuggestion!(highlight.id)}
+        />
+      ) : null}
+
       <CardTags
         highlightId={highlight.id}
         tags={detail === undefined ? undefined : (detail?.tags ?? null)}
@@ -301,6 +337,53 @@ export function HighlightCard({
       {revealNote ? (
         <InlineNotice tone={revealNote.ok ? 'success' : 'warning'}>{revealNote.text}</InlineNotice>
       ) : null}
+      {context.links ? (
+        <LinksSection
+          item={{ kind: 'highlight', id: highlight.id }}
+          port={context.links.port}
+          search={context.links.search}
+          openLabel="Open in dashboard"
+          onOpen={(id) => actions.openDashboard(id)}
+          onShowGraph={context.links.onShowGraph}
+        />
+      ) : null}
+      {context.related ? (
+        <RelatedSection
+          id={highlight.id}
+          port={context.related}
+          openLabel="Open in dashboard"
+          onOpen={(id) => actions.openDashboard(id)}
+          onLink={
+            context.links
+              ? async (otherId) => {
+                  const links = context.links!.port;
+                  const made = await links.create({
+                    fromKind: 'highlight',
+                    fromId: highlight.id,
+                    toKind: 'highlight',
+                    toId: otherId,
+                    type: 'related',
+                  });
+                  push({
+                    message:
+                      made.status === 'existing'
+                        ? 'These are already linked.'
+                        : 'Linked as Related.',
+                    action:
+                      made.status === 'existing'
+                        ? undefined
+                        : {
+                            label: 'Undo',
+                            onClick: () => {
+                              void links.remove(made.relation.id).catch(() => undefined);
+                            },
+                          },
+                  });
+                }
+              : undefined
+          }
+        />
+      ) : null}
       {context.aiOn === true ? (
         <div className="sv-stack sv-stack--tight">
           <div>
@@ -313,10 +396,12 @@ export function HighlightCard({
             </Button>
           </div>
           {aiOpen ? (
-            <HighlightAiActions
-              highlights={[{ id: highlight.id, exactQuote: highlight.exactQuote }]}
-              onOpenSettings={() => void browser.tabs.create({ url: optionsUrl('ai') })}
-            />
+            <Suspense fallback={<p className="sv-small sv-muted">Loading the AI actions…</p>}>
+              <HighlightAiActions
+                highlights={[{ id: highlight.id, exactQuote: highlight.exactQuote }]}
+                onOpenSettings={() => void browser.tabs.create({ url: optionsUrl('ai') })}
+              />
+            </Suspense>
           ) : null}
         </div>
       ) : context.aiOn === false ? (

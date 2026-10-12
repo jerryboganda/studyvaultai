@@ -28,6 +28,13 @@ html {
   flex: 1 1 auto;
   min-width: 0;
 }
+.panel__reminder {
+  /* The daily review notice sits above the tabs; empty (and then not even a gap) when not raised. */
+  padding: var(--sv-space-3) var(--sv-space-3) 0;
+}
+.panel__reminder:empty {
+  display: none;
+}
 .panel__body {
   /* Bottom room so the last card can scroll clear of the fixed toast stack. */
   padding: var(--sv-space-3) var(--sv-space-3) 6rem;
@@ -247,4 +254,12 @@ html {
   .sp-chip[aria-pressed='true'] {
     outline: 2px solid Highlight;
   }
+}
+
+/* A filing rule's pending suggestion on a card (docs/adr/017-filing-rules.md). */
+.hl-suggest {
+  padding: var(--sv-space-2);
+  border: 1px solid var(--sv-border-strong);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface);
 }

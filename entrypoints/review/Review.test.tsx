@@ -210,7 +210,7 @@ describe('review page: navigation', () => {
       within(nav)
         .getAllByRole('tab')
         .map((t) => t.textContent),
-    ).toEqual(['Study', 'Create cards', 'Cards', 'Analytics', 'Settings']);
+    ).toEqual(['Study', 'Exam', 'Create cards', 'Cards', 'Analytics', 'Settings']);
   });
 });
 

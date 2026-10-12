@@ -13,11 +13,13 @@ export type { OcrErrorCode } from './errors';
 export { OCR_ASSET_FILES, OCR_LANGUAGE, resolveAssetUrls } from './assets';
 export type { OcrAssetUrls } from './assets';
 export {
+  composeRotation,
   fitToPixelBudget,
   normalizeRotation,
   pageRectToPixelBox,
   pageRectToViewRect,
   pixelBoxToPageRect,
+  turnedSize,
   unionBoxes,
 } from './geometry';
 export type { ImageSize, PixelBudget } from './geometry';
@@ -34,6 +36,14 @@ export {
 export type { CorrectedWord, OcrCorrections } from './corrections';
 export { OCR_TEXT_ALGORITHM, buildPageTextStream, rectsForStreamRange } from './stream';
 export type { OcrTextItem, PageTextStream } from './stream';
+export {
+  ORIENTATION_BUDGET_MS,
+  attemptOrder,
+  chooseReading,
+  lineDirectionFromProfiles,
+  recognizeUpright,
+} from './orientation';
+export type { LineDirection, Reading, UprightOptions, UprightResult } from './orientation';
 export { createOcrPort, runOcrJob } from './runner';
 export type {
   OcrJobPageFailure,

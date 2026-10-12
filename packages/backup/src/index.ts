@@ -38,6 +38,21 @@ export {
   type RestoreLimits,
 } from './format';
 export { DEFAULT_KDF_ITERATIONS, isEncryptedContainer, type Subtle } from './crypto';
+// Backups written into a folder the person chose (File System Access port)
+export {
+  FOLDER_ORIGIN,
+  ensureFolderPermission,
+  folderError,
+  hasFolderMarker,
+  isFolderBackupName,
+  writeFolderBackup,
+  type FolderDirectory,
+  type FolderEntry,
+  type FolderFileHandle,
+  type FolderPermissionState,
+  type FolderWritable,
+  type FolderWriteResult,
+} from './folder';
 export { buildMigrationChain, migrateRow } from './migrate';
 export { canonicalJson } from './canonical';
 export { ALL_FIELDS, decide, type MergeDecision, type RowMeta } from './merge';
@@ -73,14 +88,20 @@ export { normalizeQuote, quoteHash, safeHttpUrl } from './text';
 // Import of external (untrusted) formats
 export {
   DEFAULT_IMPORT_LIMITS,
+  MAX_DOCUMENT_BYTES,
   importCsvHighlights,
   importMarkdownHighlights,
+  looksLikeAnkiText,
+  type ImportFormat,
   type ImportLimits,
   type ImportOptions,
   type ImportRejection,
   type ImportRowSet,
   type ImportedHighlight,
 } from './importExternal';
+// DOCX, PPTX, EPUB, HTML and Anki text: the implementation (`@backup/importDocs`) is loaded with
+// import() by the import screen so it stays out of the page's first chunk; only types are here.
+export type { DocumentFile, DocumentImportOptions, DocumentLimits } from './importDocs';
 
 /** Zip a set of export files (e.g. Markdown per bank) into one archive. */
 export { zipFiles } from './zipFiles';

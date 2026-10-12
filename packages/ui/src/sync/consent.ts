@@ -19,6 +19,9 @@ export const TABLE_GROUP: Readonly<Record<string, SyncedGroupId>> = {
   tags: 'organisation',
   highlightBanks: 'organisation',
   highlightTags: 'organisation',
+  filingRules: 'organisation',
+  syllabi: 'organisation',
+  relations: 'organisation',
   notes: 'notes',
   knowledgePoints: 'flashcards',
   decks: 'flashcards',
@@ -41,7 +44,8 @@ export const GROUP_TEXT: Readonly<Record<SyncedGroupId, { label: string; detail:
   },
   organisation: {
     label: 'Banks, folders and tags',
-    detail: 'their names and structure, and which highlights are in which bank or carry which tag.',
+    detail:
+      'their names and structure, which highlights are in which bank or carry which tag, your auto-filing rules (their conditions and targets), your syllabus outlines and the links you drew between highlights, notes and knowledge points.',
   },
   notes: { label: 'Notes', detail: 'the title and text of every note.' },
   flashcards: {

@@ -55,6 +55,8 @@ interface EncHeader {
   iv: string;
   alg: 'AES-256-GCM';
   check: string;
+  /** Plain-text label of the feature that wrote the file (see Manifest.origin); authenticated. */
+  origin?: string;
 }
 
 export function isEncryptedContainer(bytes: Uint8Array): boolean {
@@ -91,6 +93,7 @@ export async function encryptContainer(
   plain: Uint8Array,
   passphrase: string,
   iterations: number,
+  origin?: string,
 ): Promise<Uint8Array> {
   if (passphrase.length === 0) {
     throw new BackupError('invalid_options', 'The passphrase must not be empty.');
@@ -112,6 +115,7 @@ export async function encryptContainer(
     iv: toBase64(iv),
     alg: 'AES-256-GCM',
     check: toBase64(check),
+    ...(origin ? { origin } : {}),
   };
   const headerBytes = new TextEncoder().encode(JSON.stringify(header));
   const prefix = new Uint8Array(MAGIC.length + 4 + headerBytes.length);
@@ -164,6 +168,18 @@ function parseHeader(bytes: Uint8Array): { header: EncHeader; prefixLength: numb
     throw bad('unsupported or invalid parameters');
   }
   return { header: h as EncHeader, prefixLength: MAGIC.length + 4 + len };
+}
+
+/**
+ * The plain-text `origin` label in the header of an encrypted container, or null (no label, or not a
+ * container). Reads only the header, so `bytes` may be just the first ~1 KiB of the file.
+ */
+export function containerOrigin(bytes: Uint8Array): string | null {
+  try {
+    return parseHeader(bytes).header.origin ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export async function decryptContainer(

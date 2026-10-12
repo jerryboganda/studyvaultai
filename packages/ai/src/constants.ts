@@ -1,5 +1,5 @@
 /** Bump whenever a prompt, output schema or grounding rule changes: it is part of the cache key. */
-export const TEMPLATE_VERSION = 'sv-ai/2026-10-11.1';
+export const TEMPLATE_VERSION = 'sv-ai/2026-10-11.2';
 
 export const AI_TASK_KINDS = [
   'exam_pearl',
@@ -11,6 +11,9 @@ export const AI_TASK_KINDS = [
   'compare_topics',
   'contradictions',
   'fact_check',
+  'mnemonic',
+  'short_viva',
+  'study_outline',
 ] as const;
 
 /** Fixed notice attached to every result whose input looks clinical (SECURITY_PRIVACY: AI). */
@@ -21,6 +24,9 @@ export const UNSUPPORTED_NOTICE =
   'Some citations were not found verbatim in the cited source and are marked unsupported. Do not rely on them.';
 export const FACT_CHECK_SCOPE_NOTICE =
   'Checked only against your selected sources. No external verification was performed; "externally_verified" is never produced here.';
+
+export const MNEMONIC_NOTICE =
+  'Memory aid, not a fact. It helps you recall the cited quote; it is not a statement from your sources and it is not verified.';
 
 export const DEFAULT_LIMITS = {
   /** A single captured passage is cut here (visibly: the preview shows the truncated text). */

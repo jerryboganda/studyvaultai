@@ -46,7 +46,12 @@ export interface OtherGrant {
 export function otherGrants(
   granted: readonly string[],
   listed: { persistentOrigins: readonly string[]; manifestHosts: readonly string[] },
-  known: { ai: string | null; syncServer: string | null; syncIssuer: string | null },
+  // `ai` is every address an AI request can go to: the provider and its fallbacks.
+  known: {
+    ai: string | readonly string[] | null;
+    syncServer: string | null;
+    syncIssuer: string | null;
+  },
 ): OtherGrant[] {
   const hidden = new Set([...listed.persistentOrigins, ...listed.manifestHosts]);
   return [...new Set(granted)]
@@ -55,7 +60,9 @@ export function otherGrants(
     .map((pattern) => {
       const key = originKey(pattern);
       const purposes = [
-        key !== null && key === known.ai ? 'AI provider' : null,
+        key !== null && (typeof known.ai === 'string' ? key === known.ai : known.ai?.includes(key))
+          ? 'AI provider'
+          : null,
         key !== null && key === known.syncServer ? 'Sync server' : null,
         key !== null && key === known.syncIssuer ? 'Sync sign-in provider' : null,
       ].filter((p): p is string => p !== null);
@@ -98,7 +105,8 @@ export const PERMISSION_PURPOSES: Record<string, string> = {
   activeTab: 'Lets StudyVault work in the current tab only when you ask it to.',
   scripting: 'Starts StudyVault on pages you enabled: this tab, this site or all sites.',
   identity: 'Opens the sign-in window for sync. Asked for only when you turn sync on.',
-  alarms: 'Lets sync run on a timer in the background. Asked for only when you turn sync on.',
+  alarms:
+    'Lets sync run on a timer, and lets a daily study reminder come at its time. Asked for only when you turn sync on or save a daily reminder time.',
 };
 
 // ---------------------------------------------------------------------------------------------

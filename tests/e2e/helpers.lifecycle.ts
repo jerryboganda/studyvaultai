@@ -176,6 +176,18 @@ export async function activate(ext: Page, page: Page): Promise<number> {
   const tabId = await tabIdOf(ext, page);
   const result = await rpc(ext, 'tab.activate', { tabId });
   if (!result.ok) throw new Error(`tab.activate failed: ${JSON.stringify(result)}`);
+  // tab.activate returns as soon as the script answers a ping, which it does BEFORE the overlay is
+  // built and its selection listeners exist. `content.pageStatus` waits for the start-up to finish,
+  // so any answer from it (even a refusal) means the page really is ready for a selection.
+  await expect
+    .poll(
+      async () => {
+        const reply = await tabRpc(ext, tabId, 'content.pageStatus');
+        return reply.ok || reply.error.code !== 'no_receiver';
+      },
+      { timeout: 30_000, message: 'the content script should finish starting after activation' },
+    )
+    .toBe(true);
   return tabId;
 }
 

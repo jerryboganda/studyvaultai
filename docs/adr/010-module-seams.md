@@ -394,7 +394,7 @@ is linear on hostile lines"), `packages/storage/src/backupHardening.test.ts`,
 `packages/storage/src/bulk-trash.test.ts` ("derived text"), `packages/storage/src/sync.test.ts`
 ("purge and the sync bookkeeping"), `packages/ui/src/vault/searchHost.test.ts` and
 `searchHost.vault.test.ts`, `packages/shared/src/urls.test.ts`. All are unit or integration tests
-(fake IndexedDB, `fakeBrowser`); none has been run by CI.
+(fake IndexedDB, `fakeBrowser`); all ran and passed in the `unit` job of Actions run 38173629818 (its log lists each file as passed with no test skipped). That is not evidence of real Chrome behaviour: the fakes stand in for the browser (see the next section).
 
 ### Not verified here
 Real Chrome behaviour of Web Locks across extension pages, of a queued IndexedDB delete with a frozen

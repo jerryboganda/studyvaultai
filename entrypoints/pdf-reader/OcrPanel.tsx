@@ -1,16 +1,40 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { Suspense, lazy, useEffect, useId, useRef, useState } from 'react';
 import { Button, InlineNotice, errorMessage, plural } from '@ui';
 import {
   BAND_TEXT,
   HIGH_CONFIDENCE,
   MEDIUM_CONFIDENCE,
+  ORIENTATION_TEXT,
   confidenceBand,
   correctedLines,
   type PageOcr,
 } from './ocrModel';
 
+// The "read again" actions are not needed until a document has recognised text: their own chunk.
+const RerunSection = lazy(() =>
+  import('./OcrRerunSection').then((m) => ({ default: m.RerunSection })),
+);
+
 /** What the reader knows about the text of the page that is in view. */
 export type PageTextState = 'embedded' | 'none' | 'ocr' | 'unknown';
+
+/** What the "read again" actions need to know about the whole document. */
+export interface RerunInfo {
+  /** Pages of the document that have recognised text. */
+  recognisedPages: number;
+  /** What the person corrected, over the whole document. */
+  corrected: { pages: number; lines: number };
+  /** Pages that already keep an earlier reading (reading again replaces it). */
+  withEarlier: number;
+  /** Time one page took in the last run on this device (ms), or null before one was timed. */
+  msPerPage: number | null;
+  /** Nothing is saved in this window: the new reading lasts this session only. */
+  sessionOnly: boolean;
+  onRerecognisePage(): void;
+  onRerecogniseAll(): void;
+  /** Put the page's kept earlier reading back. */
+  onRestore(): Promise<void>;
+}
 
 export interface OcrPanelProps {
   pageNumber: number;
@@ -25,6 +49,8 @@ export interface OcrPanelProps {
   onSetLine(line: number, text: string): Promise<void>;
   onRevertLine(line: number): Promise<void>;
   onRevertPage(): Promise<void>;
+  /** Absent: the panel offers no "read again" action. */
+  rerun?: RerunInfo;
 }
 
 const MACHINE_NOTICE = 'This text is machine-recognised and may be wrong.';
@@ -92,6 +118,18 @@ export function OcrPanel(props: OcrPanelProps) {
           onRevertLine={(line) => report(() => props.onRevertLine(line))}
           onRevertPage={() => report(() => props.onRevertPage())}
         />
+      ) : null}
+
+      {props.rerun && (state === 'ocr' || props.rerun.recognisedPages > 0) ? (
+        <Suspense fallback={null}>
+          <RerunSection
+            pageNumber={pageNumber}
+            ocr={state === 'ocr' ? ocr : undefined}
+            info={props.rerun}
+            busy={props.busy}
+            unavailableReason={props.unavailableReason}
+          />
+        </Suspense>
       ) : null}
     </section>
   );
@@ -170,6 +208,13 @@ function RecognisedLines({
         {' · '}
         {changed === 0 ? 'no corrections' : plural(changed, 'corrected line')}
       </p>
+
+      {ocr.page.orientation ? (
+        <p className="sv-small" data-testid="pdf-ocr-orientation">
+          This scan is stored {ORIENTATION_TEXT[ocr.page.orientation as 90 | 180 | 270]}. It was
+          turned to be read; the words sit where they are on the page as it is shown.
+        </p>
+      ) : null}
 
       {error ? (
         <InlineNotice tone="error" title="Not saved">
