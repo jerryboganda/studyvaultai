@@ -50,5 +50,5 @@ Dependency upgrades are deliberate; Dependabot/Renovate are out of scope until r
   7,000 KB). The first integration pinned 0.14.0 (published four days earlier), which is younger than
   the two-week age the pins above respect; the pin was moved to 0.13.5 on 2026-10-12 so the rule holds
   without an exception, and the math unit and e2e specs were re-run on it (279 unit tests and 10 e2e
-  tests passed locally; the next Actions run is the evidence of record). The package ships
+  tests passed locally, and Actions run 38192496180 on commit 2eabec2 passed every job with 0.13.5). The package ships
   `dist/temml.mjs` (with the `\ce` extension); nothing else was added for the change.
