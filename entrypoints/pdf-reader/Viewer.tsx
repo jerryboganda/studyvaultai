@@ -318,8 +318,14 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
   }, [doc]);
 
   // Zoom, rotation or (in fit modes) window size changed: redraw what is kept.
+  // Fit width does not depend on the height of the scroll area: a notice or a banner that makes the
+  // viewer shorter must not draw every page again.
   const fitKey =
-    props.zoom.kind === 'custom' ? props.zoom.zoom : `${props.zoom.kind}:${area.w}x${area.h}`;
+    props.zoom.kind === 'custom'
+      ? props.zoom.zoom
+      : props.zoom.kind === 'fit-width'
+        ? `fit-width:${area.w}`
+        : `fit-page:${area.w}x${area.h}`;
   useLayoutEffect(() => {
     const el = scroller.current;
     const anchor = topAnchor.current;

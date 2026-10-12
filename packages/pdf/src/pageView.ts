@@ -229,6 +229,10 @@ export async function renderPageInto(args: RenderArgs): Promise<RenderedPage> {
     layers.highlights,
   );
 
+  // The links do not wait for the canvas: a page that is drawn again (zoom, rotation, a resize) must
+  // not have a moment in which a click on a link goes nowhere.
+  linkLayer.paint(args.links ?? NO_LINKS, rotation, args.pageNumber);
+
   const renderTask = pdfPage.render({
     canvas,
     viewport: pdfPage.getViewport({ scale: scale * outputScale, rotation }),
@@ -269,7 +273,6 @@ export async function renderPageInto(args: RenderArgs): Promise<RenderedPage> {
   textLayer.addEventListener('mousedown', () => textLayer.classList.add('selecting'), {
     signal: listener.signal,
   });
-  linkLayer.paint(args.links ?? NO_LINKS, rotation, args.pageNumber);
 
   return {
     dom: {

@@ -347,6 +347,24 @@ body,
 .sv-linkallow {
   min-height: 24px;
 }
+/* The "link not opened" notice floats over the top of the pages: it takes no room, so the pages do not
+   move under the pointer and the viewer is not resized (which would draw every page again). */
+.sv-doc__main {
+  position: relative;
+}
+.sv-linknotice {
+  position: absolute;
+  z-index: 30;
+  top: var(--sv-space-2);
+  inset-inline: 0;
+  width: min(40rem, calc(100% - 2 * var(--sv-space-4)));
+  margin-inline: auto;
+  pointer-events: none;
+}
+.sv-linknotice > * {
+  pointer-events: auto;
+  box-shadow: var(--sv-shadow);
+}
 @media (prefers-contrast: more) {
   .sv-pdf-hl__rule {
     border-bottom-width: calc(var(--sv-hl-w) + 1px);

@@ -219,12 +219,18 @@ test.describe('links in a generated PDF', () => {
     await expect(anchorsOf(page, 1)).toHaveCount(6);
     const tabs = env.context.pages().length;
     const notice = page.getByTestId('pdf-link-notice');
+    const viewer = page.getByTestId('pdf-viewer');
+    const viewerBefore = await viewer.boundingBox();
 
     await clickLink(page, anchorsOf(page, 1).nth(3)); // javascript:alert(1)
     await expect(notice).toContainText('"javascript:"');
     await expect(notice).toContainText('only web addresses');
     await expect(dialogOf(page)).toHaveCount(0);
+    // The notice floats over the pages: nothing moves under the pointer and the viewer keeps its size
+    // (a viewer that is resized draws every page again, and a click in that gap used to be lost).
+    expect(await viewer.boundingBox()).toEqual(viewerBefore);
 
+    // A second refusal straight away: a different link, a different sentence.
     await clickLink(page, anchorsOf(page, 1).nth(4)); // mailto:
     await expect(notice).toContainText('"mailto:"');
     await expect(dialogOf(page)).toHaveCount(0);
@@ -234,6 +240,40 @@ test.describe('links in a generated PDF', () => {
     await page.getByRole('button', { name: 'Dismiss' }).click();
     await expect(notice).toHaveCount(0);
     expect(errors).toEqual([]);
+  });
+
+  test('a page that is drawn again is never without its links: zooming leaves no moment in which a click goes nowhere', async ({
+    env,
+  }) => {
+    const { page } = await openBytes(env, 'linked.pdf', linkedDoc());
+    await expect(anchorsOf(page, 1)).toHaveCount(6);
+    await page.evaluate(() => {
+      const w = window as unknown as { __links: number[]; __layer: Element | null };
+      w.__links = [];
+      const host = document.querySelector('[data-testid="pdf-page-1"] .sv-page')!;
+      w.__layer = host.querySelector('.sv-pdf-layer--links');
+      // Every time the page's children change: how many link anchors the link layer holds (-1: none).
+      new MutationObserver(() => {
+        const layer = host.querySelector('.sv-pdf-layer--links');
+        w.__links.push(layer ? layer.querySelectorAll('a').length : -1);
+      }).observe(host, { childList: true });
+    });
+    await page.getByTestId('pdf-zoom').selectOption('2');
+    await expect
+      .poll(() =>
+        page.evaluate(() => (window as unknown as { __links: number[] }).__links.includes(6)),
+      )
+      .toBe(true);
+    const seen = await page.evaluate(() => (window as unknown as { __links: number[] }).__links);
+    // The page was drawn again (a new layer), and that layer was never there without its links.
+    const redrawn = await page.evaluate(
+      () =>
+        (window as unknown as { __layer: Element | null }).__layer !==
+        document.querySelector('[data-testid="pdf-page-1"] .sv-pdf-layer--links'),
+    );
+    expect(redrawn).toBe(true);
+    expect(seen.filter((n) => n === 0)).toEqual([]);
+    await expect(anchorsOf(page, 1)).toHaveCount(6);
   });
 
   test('a drag across a link selects its text and does not follow it; a plain click still does', async ({

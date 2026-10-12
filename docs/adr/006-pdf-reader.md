@@ -460,7 +460,8 @@ forced-colors.
   status region says "Opening {host} in a new tab." (the reader cannot know whether the browser's popup
   blocker allowed it: `noopener` makes `window.open` return null).
 - **A refused link** shows an `InlineNotice` (`role="status"`, "Link not opened", Dismiss) with the
-  reason. Nothing runs and nothing is requested.
+  reason, floating over the top of the pages (`.sv-linknotice`, out of flow). Nothing runs and nothing is
+  requested.
 
 ### Limits, stated exactly
 - pdf.js folds URI, GoToR and Launch actions into one `url`, so they cannot be told apart unless the action
@@ -477,8 +478,20 @@ forced-colors.
   exist), touch, and what Chrome's pop-up blocker does with the new tab (`window.open` from the dialog's
   click: the reader cannot tell). Manual rows: `docs/MANUAL_TEST_CHECKLIST.md` MT-62, MT-63 and MT-65.
 
-### A defect found on the way
-The toolbar's page box committed on blur even when nothing had been typed. After "go to page", scrolling
+### Defects found on the way
+**A click lost after a refusal (CI, once).** The notice used to sit above the pages: it pushed them down
+by its own height and shortened the viewer, and a viewer that changes size draws every page again, with a
+link layer that existed but held no links until the canvas had been drawn. A second click straight after
+the first landed in that gap and did nothing (the notice kept the first sentence). Three changes, each
+enough to remove the symptom and kept together: the notice is out of flow (nothing moves, the viewer keeps
+its size; `tests/e2e/pdf-links.spec.ts` asserts the viewer's box is unchanged); fit-width no longer depends
+on the height of the scroll area, so a banner or notice never redraws every page (`fit-page` still does,
+its zoom depends on the height); and a page's links are painted as soon as its layers exist, before the
+canvas (the zoom test asserts that the link layer is never present without its links). Before the fix a
+synthetic click delivered in the gap was dropped every time; after it, `--repeat-each=10` on the flaky test
+passed 10 of 10.
+
+**The page box.** The toolbar's page box committed on blur even when nothing had been typed. After "go to page", scrolling
 within the page and clicking into the document, the view jumped back to the top of the page between the
 press and the release, and the click landed on a different link. It now commits on blur only what was
 typed (`Toolbar.tsx`; covered in `links.test.tsx`).

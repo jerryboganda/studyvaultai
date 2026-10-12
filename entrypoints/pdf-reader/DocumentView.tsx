@@ -922,11 +922,13 @@ export function DocumentView({
           ) : null}
         </InlineNotice>
       ) : null}
-      {links.notice}
 
       <div
         className={`sv-doc__main${sidePaneOpen ? ' sv-doc__main--side' : ''}${companionOpen ? ' sv-doc__main--split' : ''}`}
       >
+        {/* Over the pages, not above them: a notice that pushes the pages down moves the link the person
+            meant to click next, and shortens the viewer (which draws every page again). */}
+        {links.notice ? <div className="sv-linknotice">{links.notice}</div> : null}
         {sidePaneOpen ? (
           <SidePane
             doc={doc}
