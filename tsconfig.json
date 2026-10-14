@@ -12,5 +12,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": [".wxt/wxt.d.ts", "entrypoints", "packages", "tests", "server", "modules", "*.ts"]
+  "include": [".wxt/wxt.d.ts", "entrypoints", "packages", "tests", "server", "modules", "gallery", "*.ts"]
 }

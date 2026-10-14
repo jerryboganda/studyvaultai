@@ -1,0 +1,164 @@
+/* Gallery shell only (not part of the design system): header, theme switch, framed screens. */
+
+html,
+body {
+  margin: 0;
+}
+body {
+  min-height: 100vh;
+  background: var(--sv-sunk);
+  color: var(--sv-ink);
+  font-family: var(--sv-font);
+}
+.g-head {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  padding: 12px 24px;
+  border-bottom: 2px solid var(--sv-border);
+  background: var(--sv-surface);
+}
+.g-head h1 {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 900;
+}
+.g-head p {
+  margin: 0;
+  color: var(--sv-ink-2);
+  font-size: 13px;
+  font-weight: 700;
+}
+.g-seg {
+  display: inline-flex;
+  gap: 4px;
+  margin: 0;
+  padding: 4px;
+  border: 0;
+  border-radius: 14px;
+  background: var(--sv-sunk);
+}
+.g-seg label {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  color: var(--sv-ink-2);
+  font-size: 14px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.g-seg label svg {
+  width: 16px;
+  height: 16px;
+}
+.g-seg input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.g-seg label:has(input:checked) {
+  background: var(--sv-surface);
+  box-shadow: 0 2px 0 var(--sv-border);
+  color: var(--sv-ink);
+}
+.g-seg label:has(input:focus-visible) {
+  outline: 3px solid var(--sv-focus);
+  outline-offset: 2px;
+}
+.g-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 36px 28px;
+  padding: 24px;
+}
+.g-frame {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 100%;
+}
+.g-cap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+}
+.g-num {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--sv-primary);
+  color: var(--sv-on-primary);
+  font-size: 14px;
+  font-weight: 900;
+}
+.g-cap h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 800;
+}
+.g-size {
+  color: var(--sv-ink-2);
+  font-size: 13px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.g-tools {
+  margin-left: auto;
+}
+.g-scroll {
+  max-width: 100%;
+  overflow: auto;
+  padding: 4px 6px 12px;
+}
+.g-box {
+  position: relative;
+  flex: none;
+  overflow: hidden;
+  border-radius: 18px;
+  background: var(--sv-canvas);
+  box-shadow:
+    0 0 0 2px var(--sv-border),
+    0 18px 40px rgb(24 33 59 / 0.16);
+}
+.g-box > .sv-screen {
+  width: 100%;
+  height: 100%;
+}
+.g-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--sv-ink);
+  font-size: 14px;
+  font-weight: 800;
+}
+.g-mascots {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  align-items: center;
+  padding: 16px;
+}
+.g-mascot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  font-weight: 800;
+}
+.g-mascotSmall {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}

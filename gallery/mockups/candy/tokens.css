@@ -1,0 +1,312 @@
+/* Candy Garden design tokens (--sv-*). Light by default; dark follows the system unless
+   [data-theme] on <html> overrides it. Pastels are for surfaces; text and meaningful marks use the
+   deep tones so every pair passes WCAG 2.2 AA (text >= 4.5:1, UI marks >= 3:1) in both themes. */
+:root {
+  color-scheme: light;
+
+  /* Type */
+  --sv-font: 'Nunito Variable', ui-rounded, 'SF Pro Rounded', system-ui, sans-serif;
+  --sv-fs-xs: 0.75rem;
+  --sv-fs-sm: 0.8125rem;
+  --sv-fs-md: 0.9375rem;
+  --sv-fs-lg: 1.125rem;
+  --sv-fs-xl: 1.375rem;
+  --sv-fs-2xl: 1.75rem;
+  --sv-fs-3xl: 2.25rem;
+  --sv-fw-body: 600;
+  --sv-fw-bold: 800;
+  --sv-fw-black: 900;
+
+  /* Shape: everything is round; blobs for decoration and icon wells */
+  --sv-r-sm: 10px;
+  --sv-r-md: 16px;
+  --sv-r-lg: 24px;
+  --sv-r-xl: 32px;
+  --sv-r-pill: 999px;
+  --sv-blob: 58% 42% 54% 46% / 48% 56% 44% 52%;
+  --sv-blob-2: 44% 56% 40% 60% / 58% 44% 56% 42%;
+
+  /* Space */
+  --sv-s1: 4px;
+  --sv-s2: 8px;
+  --sv-s3: 12px;
+  --sv-s4: 16px;
+  --sv-s5: 20px;
+  --sv-s6: 24px;
+  --sv-s8: 32px;
+
+  /* Motion */
+  --sv-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --sv-ease-pop: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --sv-dur: 180ms;
+
+  /* Neutrals */
+  --sv-bg: #fbf8ff;
+  --sv-surface: #ffffff;
+  --sv-surface-2: #f6f1ff;
+  --sv-surface-3: #ece4ff;
+  --sv-line: #ebe3fb;
+  --sv-line-strong: #8e83ad;
+  --sv-ink: #2e2547;
+  --sv-ink-2: #5b5175;
+  --sv-ink-3: #6b6187;
+  --sv-inverse: #2e2547;
+  --sv-on-inverse: #ffffff;
+
+  /* Lavender: primary */
+  --sv-primary: #6343d2;
+  --sv-primary-hi: #7457e2;
+  --sv-on-primary: #ffffff;
+  --sv-primary-soft: #eee7ff;
+  --sv-primary-soft-2: #ddd0ff;
+  --sv-primary-ink: #4a2fb0;
+  --sv-focus: #6343d2;
+
+  /* Tones: soft surface, deep ink for text on it, solid mid-tone for marks (>= 3:1 on both) */
+  --sv-lavender-soft: #eee7ff;
+  --sv-lavender-ink: #4a2fb0;
+  --sv-lavender-solid: #8a6cf0;
+  --sv-mint-soft: #dcf7ea;
+  --sv-mint-ink: #116b47;
+  --sv-mint-solid: #1a9563;
+  --sv-peach-soft: #ffe6dc;
+  --sv-peach-ink: #a2391f;
+  --sv-peach-solid: #d4532f;
+  --sv-butter-soft: #fff4c4;
+  --sv-butter-ink: #7a5a00;
+  --sv-butter-solid: #a87d00;
+  --sv-sky-soft: #e0eeff;
+  --sv-sky-ink: #1f4e8c;
+  --sv-sky-solid: #3d7fd6;
+  --sv-rose-soft: #ffe3ea;
+  --sv-rose-ink: #a3213f;
+  --sv-rose-solid: #d9466b;
+
+  /* "Go" button (mint, white text 4.7:1) and the streak flame */
+  --sv-go-hi: #12835a;
+  --sv-go: #0d7550;
+  --sv-on-go: #ffffff;
+  --sv-flame: #e8623f;
+  --sv-flame-core: #ffc94d;
+
+  /* Heatmap scale (table fallback carries the numbers) */
+  --sv-heat-0: #efe9fb;
+  --sv-heat-1: #d6c8fb;
+  --sv-heat-2: #b29bf6;
+  --sv-heat-3: #8a6cf0;
+  --sv-heat-4: #5d3fcb;
+
+  /* Highlight paints on web pages */
+  --sv-hl-butter: #ffe98f;
+  --sv-hl-mint: #bdf0d5;
+  --sv-hl-rose: #ffc9d6;
+  --sv-hl-lavender: #ddd0ff;
+  --sv-hl-sky: #c9e2ff;
+
+  /* Soft layered shadows, tinted lavender */
+  --sv-shadow-1: 0 1px 2px rgb(76 52 150 / 0.06), 0 2px 6px rgb(76 52 150 / 0.06);
+  --sv-shadow-2: 0 1px 2px rgb(76 52 150 / 0.06), 0 10px 24px -8px rgb(76 52 150 / 0.18);
+  --sv-shadow-3: 0 2px 6px rgb(76 52 150 / 0.08), 0 24px 56px -18px rgb(76 52 150 / 0.34);
+  --sv-glow-primary: 0 8px 18px -6px rgb(99 67 210 / 0.55);
+  --sv-glow-go: 0 8px 18px -6px rgb(13 117 80 / 0.45);
+  --sv-scrim: rgb(46 37 71 / 0.38);
+
+  /* Decorative blobs */
+  --sv-deco-a: #efe6ff;
+  --sv-deco-b: #ddf6ea;
+  --sv-deco-c: #ffeadf;
+  --sv-deco-d: #fff4cf;
+  --sv-hero: linear-gradient(135deg, #f1e9ff 0%, #ffeef3 55%, #fff6dc 100%);
+
+  /* Vault buddy */
+  --vb-body: #c3adff;
+  --vb-body-2: #a88cf6;
+  --vb-line: #3b2d6b;
+  --vb-plate: #f8f4ff;
+  --vb-ring: #ddd0ff;
+  --vb-cheek: #ffb3a1;
+  --vb-leaf: #8be0b5;
+  --vb-leaf-line: #1f7a52;
+  --vb-spark: #f2b705;
+  --vb-shadow: rgb(46 37 71 / 0.14);
+  --sv-gloss: rgb(255 255 255 / 0.7);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --sv-bg: #17122a;
+    --sv-surface: #221b3b;
+    --sv-surface-2: #2a2247;
+    --sv-surface-3: #352c57;
+    --sv-line: #3b3260;
+    --sv-line-strong: #8d82b8;
+    --sv-ink: #f4f0ff;
+    --sv-ink-2: #cdc4ea;
+    --sv-ink-3: #ada3cf;
+    --sv-inverse: #f4f0ff;
+    --sv-on-inverse: #1d1538;
+    --sv-primary: #b9a5ff;
+    --sv-primary-hi: #c8b8ff;
+    --sv-on-primary: #1d1538;
+    --sv-primary-soft: #3a2f66;
+    --sv-primary-soft-2: #4a3d80;
+    --sv-primary-ink: #d6caff;
+    --sv-focus: #c8b8ff;
+    --sv-lavender-soft: #3a2f66;
+    --sv-lavender-ink: #d6caff;
+    --sv-lavender-solid: #a58bfa;
+    --sv-mint-soft: #173d31;
+    --sv-mint-ink: #92e6c0;
+    --sv-mint-solid: #4fd197;
+    --sv-peach-soft: #46261e;
+    --sv-peach-ink: #ffb8a0;
+    --sv-peach-solid: #ff9470;
+    --sv-butter-soft: #3d3418;
+    --sv-butter-ink: #f7d978;
+    --sv-butter-solid: #f2c230;
+    --sv-sky-soft: #1c3150;
+    --sv-sky-ink: #a9cdff;
+    --sv-sky-solid: #7cb4f5;
+    --sv-rose-soft: #4a1f2c;
+    --sv-rose-ink: #ffb0c2;
+    --sv-rose-solid: #ff7d9c;
+    --sv-go-hi: #7ee6b6;
+    --sv-go: #5fd9a3;
+    --sv-on-go: #0f2a20;
+    --sv-flame: #ff8a66;
+    --sv-flame-core: #ffd66b;
+    --sv-heat-0: #2c2449;
+    --sv-heat-1: #45397a;
+    --sv-heat-2: #6650a8;
+    --sv-heat-3: #9077e0;
+    --sv-heat-4: #c8b8ff;
+    --sv-hl-butter: #5c4a10;
+    --sv-hl-mint: #1d4d3a;
+    --sv-hl-rose: #5a2338;
+    --sv-hl-lavender: #3f3375;
+    --sv-hl-sky: #1e3d63;
+    --sv-shadow-1: 0 1px 2px rgb(0 0 0 / 0.3), 0 2px 6px rgb(0 0 0 / 0.2);
+    --sv-shadow-2: 0 1px 2px rgb(0 0 0 / 0.3), 0 10px 24px -8px rgb(0 0 0 / 0.5);
+    --sv-shadow-3: 0 2px 6px rgb(0 0 0 / 0.3), 0 24px 56px -18px rgb(0 0 0 / 0.7);
+    --sv-glow-primary: 0 8px 18px -6px rgb(185 165 255 / 0.45);
+    --sv-glow-go: 0 8px 18px -6px rgb(95 217 163 / 0.35);
+    --sv-scrim: rgb(8 5 20 / 0.6);
+    --sv-deco-a: #251d45;
+    --sv-deco-b: #19302b;
+    --sv-deco-c: #33221f;
+    --sv-deco-d: #2e291a;
+    --sv-hero: linear-gradient(135deg, #2c2352 0%, #3a2440 55%, #3a3220 100%);
+    --vb-line: #241a4d;
+    --vb-plate: #f3eeff;
+    --vb-shadow: rgb(0 0 0 / 0.35);
+    --sv-gloss: rgb(255 255 255 / 0.14);
+  }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --sv-bg: #17122a;
+  --sv-surface: #221b3b;
+  --sv-surface-2: #2a2247;
+  --sv-surface-3: #352c57;
+  --sv-line: #3b3260;
+  --sv-line-strong: #8d82b8;
+  --sv-ink: #f4f0ff;
+  --sv-ink-2: #cdc4ea;
+  --sv-ink-3: #ada3cf;
+  --sv-inverse: #f4f0ff;
+  --sv-on-inverse: #1d1538;
+  --sv-primary: #b9a5ff;
+  --sv-primary-hi: #c8b8ff;
+  --sv-on-primary: #1d1538;
+  --sv-primary-soft: #3a2f66;
+  --sv-primary-soft-2: #4a3d80;
+  --sv-primary-ink: #d6caff;
+  --sv-focus: #c8b8ff;
+  --sv-lavender-soft: #3a2f66;
+  --sv-lavender-ink: #d6caff;
+  --sv-lavender-solid: #a58bfa;
+  --sv-mint-soft: #173d31;
+  --sv-mint-ink: #92e6c0;
+  --sv-mint-solid: #4fd197;
+  --sv-peach-soft: #46261e;
+  --sv-peach-ink: #ffb8a0;
+  --sv-peach-solid: #ff9470;
+  --sv-butter-soft: #3d3418;
+  --sv-butter-ink: #f7d978;
+  --sv-butter-solid: #f2c230;
+  --sv-sky-soft: #1c3150;
+  --sv-sky-ink: #a9cdff;
+  --sv-sky-solid: #7cb4f5;
+  --sv-rose-soft: #4a1f2c;
+  --sv-rose-ink: #ffb0c2;
+  --sv-rose-solid: #ff7d9c;
+  --sv-go-hi: #7ee6b6;
+  --sv-go: #5fd9a3;
+  --sv-on-go: #0f2a20;
+  --sv-flame: #ff8a66;
+  --sv-flame-core: #ffd66b;
+  --sv-heat-0: #2c2449;
+  --sv-heat-1: #45397a;
+  --sv-heat-2: #6650a8;
+  --sv-heat-3: #9077e0;
+  --sv-heat-4: #c8b8ff;
+  --sv-hl-butter: #5c4a10;
+  --sv-hl-mint: #1d4d3a;
+  --sv-hl-rose: #5a2338;
+  --sv-hl-lavender: #3f3375;
+  --sv-hl-sky: #1e3d63;
+  --sv-shadow-1: 0 1px 2px rgb(0 0 0 / 0.3), 0 2px 6px rgb(0 0 0 / 0.2);
+  --sv-shadow-2: 0 1px 2px rgb(0 0 0 / 0.3), 0 10px 24px -8px rgb(0 0 0 / 0.5);
+  --sv-shadow-3: 0 2px 6px rgb(0 0 0 / 0.3), 0 24px 56px -18px rgb(0 0 0 / 0.7);
+  --sv-glow-primary: 0 8px 18px -6px rgb(185 165 255 / 0.45);
+  --sv-glow-go: 0 8px 18px -6px rgb(95 217 163 / 0.35);
+  --sv-scrim: rgb(8 5 20 / 0.6);
+  --sv-deco-a: #251d45;
+  --sv-deco-b: #19302b;
+  --sv-deco-c: #33221f;
+  --sv-deco-d: #2e291a;
+  --sv-hero: linear-gradient(135deg, #2c2352 0%, #3a2440 55%, #3a3220 100%);
+  --vb-line: #241a4d;
+  --vb-plate: #f3eeff;
+  --vb-shadow: rgb(0 0 0 / 0.35);
+  --sv-gloss: rgb(255 255 255 / 0.14);
+}
+
+/* Tone hook: any element with data-tone exposes --t-soft / --t-ink / --t-solid to its children. */
+[data-tone='lavender'] {
+  --t-soft: var(--sv-lavender-soft);
+  --t-ink: var(--sv-lavender-ink);
+  --t-solid: var(--sv-lavender-solid);
+}
+[data-tone='mint'] {
+  --t-soft: var(--sv-mint-soft);
+  --t-ink: var(--sv-mint-ink);
+  --t-solid: var(--sv-mint-solid);
+}
+[data-tone='peach'] {
+  --t-soft: var(--sv-peach-soft);
+  --t-ink: var(--sv-peach-ink);
+  --t-solid: var(--sv-peach-solid);
+}
+[data-tone='butter'] {
+  --t-soft: var(--sv-butter-soft);
+  --t-ink: var(--sv-butter-ink);
+  --t-solid: var(--sv-butter-solid);
+}
+[data-tone='sky'] {
+  --t-soft: var(--sv-sky-soft);
+  --t-ink: var(--sv-sky-ink);
+  --t-solid: var(--sv-sky-solid);
+}
+[data-tone='rose'] {
+  --t-soft: var(--sv-rose-soft);
+  --t-ink: var(--sv-rose-ink);
+  --t-solid: var(--sv-rose-solid);
+}
+[data-tone='plain'] {
+  --t-soft: var(--sv-surface-2);
+  --t-ink: var(--sv-ink-2);
+  --t-solid: var(--sv-line-strong);
+}

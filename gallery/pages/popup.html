@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>StudyVault AI</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!-- Gallery: the real entrypoints/popup/main.tsx, after the fake chrome and seeded data (../boot.ts). -->
+    <script type="module">
+      import { boot } from '../boot.ts';
+      boot('popup');
+    </script>
+  </body>
+</html>

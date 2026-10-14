@@ -23,6 +23,7 @@ const OSI_ALLOWED = [
   'MIT',
   'MIT-0',
   'MPL-2.0', // file-level copyleft: fine while the files are used unmodified
+  'OFL-1.1', // fonts (Nunito): may be bundled with software if the licence text ships with them
   'PSF-2.0',
   'Python-2.0',
   'Unlicense',
