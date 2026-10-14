@@ -83,7 +83,8 @@ export function CardTags({
         </ul>
       )}
       <form className="sv-stack sv-stack--tight" onSubmit={submit} noValidate>
-        <label className="sv-label" htmlFor={`${uid}-add`}>
+        {/* "Tags" above already names the group; the field's own name stays for screen readers. */}
+        <label className="sv-sr" htmlFor={`${uid}-add`}>
           Add a tag
         </label>
         <div className="sv-row">
@@ -95,6 +96,7 @@ export function CardTags({
             autoComplete="off"
             spellCheck={false}
             maxLength={MAX_TAG_NAME_CHARS + 20}
+            placeholder="Add a tag"
             dir="auto"
             value={name}
             aria-invalid={problem ? true : undefined}

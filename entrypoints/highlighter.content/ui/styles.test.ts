@@ -48,6 +48,10 @@ const TEXT: Array<[fg: string, on: string[]]> = [
   ['--sv-danger', SURFACES],
   // Toast tick; the toast sits on the raised surface.
   ['--sv-success', SURFACES],
+  // The caption row is an ink tooltip (UX_DESIGN 6.3).
+  ['--sv-surface-raised', ['--sv-ink']],
+  // "+2 XP" on its sunshine chip.
+  ['--sv-on-sun', ['--sv-sun']],
 ];
 
 /** Non-text (>= 3:1): control edges, state bars, focus indicator, swatch edge. */
@@ -64,6 +68,13 @@ const UI: Array<[fg: string, on: string[]]> = [
   ['--sv-focus', [...SURFACES, '--sv-focus-halo']],
   // The halo touches the control: the filled buttons are the ones with a fill of their own.
   ['--sv-focus-halo', ['--sv-primary', '--sv-danger-fill']],
+  // Toast tone icons on their tinted discs (the shape tells the tone; the tint repeats it).
+  ['--sv-success', ['--sv-success-bg']],
+  ['--sv-danger', ['--sv-danger-bg']],
+  ['--sv-info', ['--sv-info-bg']],
+  // The ring of a kind dot and of the checked dot.
+  ['--sv-text-muted', [RAISED]],
+  ['--sv-text', [RAISED]],
 ];
 
 describe('overlay colours reach WCAG AA in every theme', () => {
@@ -147,6 +158,16 @@ describe('overlay colours reach WCAG AA in every theme', () => {
     expect(unaudited, 'add the new colour token to TEXT or UI above').toEqual([]);
   });
 
+  it('the kind glyph sits on the audited surface; the palette colour is only its rim', () => {
+    // The glyph is the non-colour cue of a kind dot (1.4.1); e2e audits every overlay text at 4.5:1
+    // (--sv-text on --sv-surface-raised is in TEXT above). A tint of the palette colour would not
+    // reach it for every colour in both themes.
+    const dot = declsFor(styles, '.sv-swatch');
+    expect(dot.get('color')).toBe('var(--sv-text)');
+    expect(dot.get('background')).toBe('var(--sv-surface-raised)');
+    expect(dot.get('border')).toBe('5px solid var(--dot)');
+  });
+
   it('styles.css has no raw colour values that would bypass the audit', () => {
     const code = stripComments(readCss(STYLES_CSS));
     expect(code).not.toMatch(/#[0-9a-f]{3,8}\b/i);
@@ -194,10 +215,12 @@ describe('focus indicator', () => {
     }
   });
 
-  it('keeps the drop shadow of a dialog while it is focused', () => {
+  it('keeps the elevation of a dialog while it is focused', () => {
     for (const d of DIALOGS) {
+      const own = declsFor(styles, d).get('box-shadow');
+      expect(own, d).toBe('var(--sv-raise)');
       for (const sel of [`${d}:focus`, `${d}:focus-visible`]) {
-        expect(declsFor(styles, sel).get('box-shadow'), sel).toBe('var(--sv-shadow)');
+        expect(declsFor(styles, sel).get('box-shadow'), sel).toBe(own);
       }
     }
   });
@@ -246,6 +269,12 @@ describe('reflow', () => {
     expect(declsFor(styles, '.sv-panel').get('max-width')).toBe('100%');
   });
 
+  it('scrolls rather than squashing a child: the clipped quote kept collapsing to half a line', () => {
+    for (const sel of ['.sv-panel > *', '.sv-popover > *']) {
+      expect(declsFor(styles, sel).get('flex-shrink'), sel).toBe('0');
+    }
+  });
+
   it('keeps the action row pinned to the bottom of the scrolling surface', () => {
     const actions = declsFor(styles, '.sv-actions');
     expect(actions.get('position')).toBe('sticky');
@@ -276,6 +305,10 @@ describe('reflow', () => {
     expect(declsFor(styles, '.sv-toasts').get('max-width')).toBe('calc(100vw - 32px)');
     expect(declsFor(styles, '.sv-toast').get('max-width')).toBe('100%');
     expect(declsFor(styles, '.sv-toast-text').get('overflow-wrap')).toBe('anywhere');
+    // The buttons wrap as one right-aligned group, so the dismiss button never strands alone.
+    const actions = declsFor(styles, '.sv-toast-actions');
+    expect(actions.get('margin-left')).toBe('auto');
+    expect(actions.get('flex-wrap')).toBe('wrap');
   });
 });
 
@@ -379,11 +412,12 @@ describe('caption row', () => {
     expect(caption.has('position')).toBe(false);
   });
 
-  it('paints on the audited raised surface and sits on the side away from the selection', () => {
+  it('is an ink tooltip (audited pair) and sits on the side away from the selection', () => {
     const surface = styles.find(
       (r) => r.media === '' && r.selectors.includes('.sv-caption') && r.decls.has('background'),
     );
-    expect(surface?.decls.get('background')).toBe('var(--sv-surface-raised)');
+    expect(surface?.decls.get('background')).toBe('var(--sv-ink)');
+    expect(surface?.decls.get('color')).toBe('var(--sv-surface-raised)');
     expect(
       declsFor(styles, ".sv-unit[data-placement='above'] > .sv-bar-group").get('flex-direction'),
     ).toBe('column-reverse');
@@ -395,5 +429,14 @@ describe('caption row', () => {
       (r) => r.media === '(forced-colors: active)' && r.selectors.includes('.sv-caption'),
     );
     expect(forced?.decls.get('border')).toBe('1px solid CanvasText');
+  });
+});
+
+describe('forced colours', () => {
+  it("paints the quote's transparent spacing border in the canvas colour, not as black bars", () => {
+    expect(declsFor(styles, '.sv-quote').get('border-block')).toBe('8px solid transparent');
+    expect(declsFor(styles, '.sv-quote', '(forced-colors: active)').get('border-block-color')).toBe(
+      'Canvas',
+    );
   });
 });

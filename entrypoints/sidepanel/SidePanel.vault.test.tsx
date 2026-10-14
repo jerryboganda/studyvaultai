@@ -20,6 +20,7 @@ import { freshDatabase, save } from '@storage/test-vault';
 import { STUDY_SETTINGS_KEY, defaultStudySettings } from '@ui/review';
 import { makeChromeFakes, rpc } from '@ui/testing/fakes';
 import { SidePanel } from './SidePanel';
+import { openCard, showRecent } from './testing';
 
 /**
  * The panel against the REAL vault (Dexie on fake-indexeddb): search index, tags, notes, folders,
@@ -194,6 +195,7 @@ describe('Tags and notes on a card, in the real vault', () => {
   it('adds and removes a tag; the tag is stored once and suggested next time', async () => {
     const hl = await save('Aspirin irreversibly inhibits cyclooxygenase.');
     await open();
+    await openCard();
     await userEvent.type(await screen.findByLabelText('Add a tag'), 'antiplatelet{Enter}');
     const chips = await screen.findByRole('list', { name: 'Tags' });
     expect(within(chips).getByText('antiplatelet')).toBeTruthy();
@@ -216,6 +218,7 @@ describe('Tags and notes on a card, in the real vault', () => {
   it('writes a Markdown note that is stored, rendered safely, and editable', async () => {
     const hl = await save('Aspirin irreversibly inhibits cyclooxygenase.');
     const { container } = await open();
+    await openCard();
     await userEvent.click(await screen.findByRole('button', { name: 'Add a note' }));
     await userEvent.type(
       screen.getByLabelText('New study note (Markdown)'),
@@ -254,6 +257,7 @@ describe('Banks, folders and the bank filter in the real vault', () => {
     const folder = await createFolder({ bankId: bank.id, name: 'Antiplatelets' });
     await addToBank({ highlightId: inFolder.id, bankId: bank.id, folderId: folder.id });
     await open('#banks');
+    await userEvent.click(await screen.findByRole('button', { name: /^Cardiology/ }));
 
     await userEvent.click(
       await screen.findByRole('button', { name: 'Show folders of Cardiology' }),
@@ -264,9 +268,9 @@ describe('Banks, folders and the bank filter in the real vault', () => {
     await userEvent.click(
       within(tree).getByRole('button', { name: 'Show Antiplatelets in Recent and Search' }),
     );
-    expect(screen.getByTestId('bank-scope').textContent).toContain('Cardiology › Antiplatelets');
+    expect(screen.getByTestId('folder-scope').textContent).toContain('Only Antiplatelets');
 
-    await userEvent.click(screen.getByRole('tab', { name: 'Recent' }));
+    await showRecent();
     await waitFor(() => expect(screen.getAllByRole('article')).toHaveLength(1));
     expect(screen.getByRole('article').getAttribute('data-highlight-id')).toBe(inFolder.id);
 
@@ -287,8 +291,8 @@ describe('Review in the real vault', () => {
     await open('#review');
 
     expect(await screen.findByRole('tab', { name: /^Review.*1/ })).toBeTruthy();
-    expect(await screen.findByText('card to study now')).toBeTruthy();
-    await userEvent.click(screen.getByRole('button', { name: 'Start reviewing' }));
+    expect((await screen.findByTestId('rv-tab-count')).textContent).toBe('1');
+    await userEvent.click(screen.getByRole('button', { name: 'Start review' }));
     await waitFor(() => expect(created).toHaveLength(1));
     expect(new URL(created[0]!).searchParams.get('start')).toBe('1');
   });
@@ -315,7 +319,7 @@ describe('the focus-search command', () => {
   it('moves an open panel from another tab to Search and focuses the box', async () => {
     await save('Aspirin irreversibly inhibits cyclooxygenase.');
     await open();
-    await userEvent.click(await screen.findByRole('tab', { name: 'Recent' }));
+    await userEvent.click(await screen.findByRole('tab', { name: 'Banks' }));
     expect(screen.queryByRole('searchbox')).toBeNull();
 
     await request({ target: 'panel', at: Date.now() });

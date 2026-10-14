@@ -14,6 +14,8 @@ export interface FilingNotice {
   secondary?: { label: string; run: () => void };
   /** Overrides how long the notice stays (ms). Only the toolbar overlay uses it. */
   ttl?: number;
+  /** XP the save earned (CaptureResult.xp); the overlay shows it as a chip. */
+  xp?: number;
 }
 
 export type FilingOps = Pick<CaptureHost, 'acceptFiling' | 'dismissFiling' | 'undoFiling'>;
@@ -104,7 +106,8 @@ export function pushSaved(
     : null;
   const withTtl = (n: FilingNotice): FilingNotice => ({ ...n, ttl: n.ttl ?? saved.ttl });
   if (filing && result.filing?.status === 'filed') {
-    push(withTtl(filing));
+    // "Filed in ..." stands in for "Saved to ...", so it carries the save's XP.
+    push(saved.xp ? { ...withTtl(filing), xp: saved.xp } : withTtl(filing));
     return;
   }
   push(saved);

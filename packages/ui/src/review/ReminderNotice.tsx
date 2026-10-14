@@ -85,11 +85,8 @@ export function ReminderNotice({
         </div>
       }
     >
-      {close.error ? (
-        <p>Could not dismiss it: {close.error}</p>
-      ) : (
-        <p>Your daily reminder time came.</p>
-      )}
+      {/* The title says it all (UX_DESIGN 8: one line); only a failure adds one. */}
+      {close.error ? <p>Could not dismiss it: {close.error}</p> : null}
     </InlineNotice>
   );
 }

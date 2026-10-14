@@ -116,7 +116,7 @@ export function revealAvailability(opts: {
 }
 
 export const REVEAL_NOT_FOUND =
-  'StudyVault could not find this highlight on the page right now. The page text may have changed or has not finished loading; your saved quote is unchanged.';
+  'StudyVault could not find this highlight on the page right now. Your saved quote is unchanged.';
 
 /** What is wrong with a bank name the user typed, or null when it can be created. */
 export function validateBankName(input: string): string | null {
@@ -132,8 +132,13 @@ export function validateBankName(input: string): string | null {
 // Tabs and the bank filter
 // ---------------------------------------------------------------------------------------------
 
-export const VIEWS = ['page', 'recent', 'search', 'banks', 'review'] as const;
+/** What the panel can show; `recent` is a page under More (its tab is `more`). */
+export const VIEWS = ['page', 'banks', 'review', 'search', 'more', 'recent'] as const;
 export type View = (typeof VIEWS)[number];
+export type TabId = Exclude<View, 'recent'>;
+
+/** The tab that is selected while `view` is shown. */
+export const tabOf = (view: View): TabId => (view === 'recent' ? 'more' : view);
 
 /** `#search` -> 'search'. Anything else (including the empty hash) is not a view. */
 export function viewFromHash(hash: string): View | null {

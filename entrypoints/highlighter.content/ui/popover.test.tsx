@@ -259,9 +259,9 @@ describe('editing', () => {
     settings.palette = { ...settings.palette, question: 'purple' };
     const m = mountUi({ settings });
     const { dialog } = open(m);
-    fireEvent.change(m.q.getByRole('combobox', { name: 'Type' }), {
-      target: { value: 'question' },
-    });
+    fireEvent.click(m.q.getByRole('radio', { name: 'Question' }));
+    // The picker and the chip answer at once, before the write has finished.
+    expect(m.q.getByRole('radio', { name: 'Question' }).getAttribute('aria-checked')).toBe('true');
     await vi.waitFor(() =>
       expect(m.host.update).toHaveBeenCalledWith('hl-00000001', {
         kind: 'question',
@@ -277,9 +277,50 @@ describe('editing', () => {
   it('changing the priority sends only the priority', async () => {
     const m = mountUi();
     open(m);
-    fireEvent.change(m.q.getByRole('combobox', { name: 'Priority' }), { target: { value: '5' } });
+    fireEvent.click(m.q.getByRole('radio', { name: '5 (highest)' }));
     await vi.waitFor(() =>
       expect(m.host.update).toHaveBeenCalledWith('hl-00000001', { priority: 5 }),
+    );
+  });
+
+  it('choosing the value already stored writes nothing', () => {
+    const m = mountUi();
+    open(m, { kind: 'essential', priority: 3 });
+    fireEvent.click(m.q.getByRole('radio', { name: 'Essential fact' }));
+    fireEvent.click(m.q.getByRole('radio', { name: '3' }));
+    expect(m.host.update).not.toHaveBeenCalled();
+  });
+
+  it('the kind and priority pickers are radio groups driven by the arrow keys', async () => {
+    const m = mountUi();
+    open(m, { kind: 'essential', priority: 3 });
+    const kinds = m.q.getByRole('radiogroup', { name: 'Kind' });
+    const essential = m.q.getByRole('radio', { name: 'Essential fact' });
+    // One tab stop per group, on the checked option.
+    expect(
+      Array.from(kinds.querySelectorAll('[role="radio"]')).filter(
+        (r) => r.getAttribute('tabindex') === '0',
+      ),
+    ).toEqual([essential]);
+    act(() => essential.focus());
+    const user = userEvent.setup();
+    await user.keyboard('{ArrowRight}');
+    const formula = m.q.getByRole('radio', { name: 'Formula' });
+    expect(m.shadow.activeElement).toBe(formula);
+    expect(formula.getAttribute('aria-checked')).toBe('true');
+    await vi.waitFor(() =>
+      expect(m.host.update).toHaveBeenCalledWith(
+        'hl-00000001',
+        expect.objectContaining({ kind: 'formula' }),
+      ),
+    );
+    await user.keyboard('{ArrowLeft}{ArrowLeft}');
+    expect(m.shadow.activeElement).toBe(m.q.getByRole('radio', { name: 'Question' }));
+
+    act(() => m.q.getByRole('radio', { name: '3' }).focus());
+    await user.keyboard('{End}');
+    expect(m.q.getByRole('radio', { name: '5 (highest)' }).getAttribute('aria-checked')).toBe(
+      'true',
     );
   });
 
@@ -289,7 +330,7 @@ describe('editing', () => {
       makeHighlight({ priority: 5, userComment: 'edited elsewhere' }),
     );
     open(m, { userComment: 'old note' });
-    fireEvent.change(m.q.getByRole('combobox', { name: 'Priority' }), { target: { value: '5' } });
+    fireEvent.click(m.q.getByRole('radio', { name: '5 (highest)' }));
     expect(await m.q.findByText('edited elsewhere')).toBeTruthy();
   });
 
@@ -297,9 +338,12 @@ describe('editing', () => {
     const m = mountUi();
     m.host.update.mockRejectedValueOnce(new Error('Service worker is restarting'));
     open(m, { priority: 2 });
-    fireEvent.change(m.q.getByRole('combobox', { name: 'Priority' }), { target: { value: '5' } });
+    fireEvent.click(m.q.getByRole('radio', { name: '5 (highest)' }));
     expect(await m.q.findByText(/Could not save: Service worker is restarting/)).toBeTruthy();
-    expect((m.q.getByRole('combobox', { name: 'Priority' }) as HTMLSelectElement).value).toBe('2');
+    expect(m.q.getByRole('radio', { name: '2' }).getAttribute('aria-checked')).toBe('true');
+    expect(m.q.getByRole('radio', { name: '5 (highest)' }).getAttribute('aria-checked')).toBe(
+      'false',
+    );
   });
 
   it('a change that fails after the popover closed is reported through a toast', async () => {
@@ -312,7 +356,7 @@ describe('editing', () => {
         }),
     );
     const { dialog } = open(m);
-    fireEvent.change(m.q.getByRole('combobox', { name: 'Priority' }), { target: { value: '4' } });
+    fireEvent.click(m.q.getByRole('radio', { name: '4' }));
     await vi.waitFor(() => expect(m.host.update).toHaveBeenCalledTimes(1));
     fireEvent.keyDown(dialog, { key: 'Escape' });
     expect(m.q.queryByRole('dialog')).toBeNull();
@@ -357,7 +401,7 @@ describe('deleting', () => {
         }),
     );
     open(m);
-    fireEvent.change(m.q.getByRole('combobox', { name: 'Priority' }), { target: { value: '5' } });
+    fireEvent.click(m.q.getByRole('radio', { name: '5 (highest)' }));
     act(() => {
       fireEvent.click(m.q.getByRole('button', { name: 'Delete' }));
     });

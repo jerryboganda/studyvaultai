@@ -57,3 +57,10 @@ export async function openSidePanel(ui: UiContext, highlightId: string | null): 
   }
   return opened;
 }
+
+/** The index a roving-focus key moves to (wrapping), or -1 for any other key. */
+export function rove(key: string, i: number, n: number, back: string[], fwd: string[]): number {
+  if (fwd.includes(key)) return (i + 1) % n;
+  if (back.includes(key)) return (i + n - 1) % n;
+  return key === 'Home' ? 0 : key === 'End' ? n - 1 : -1;
+}

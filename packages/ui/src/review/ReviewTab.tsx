@@ -1,7 +1,9 @@
 import { browser } from 'wxt/browser';
-import { NO_BANK, listBanks, type DueSummary } from '@storage';
+import { ExternalLink, Layers, Play, Plus } from 'lucide-react';
+import { NO_BANK, listBankInfos, type DueSummary } from '@storage';
 import { Button } from '../Button';
-import { EmptyState, InlineNotice } from '../Notice';
+import { ChunkyButton, InfoTip, VaultBuddy } from '../design';
+import { InlineNotice } from '../Notice';
 import { useAction, useObserved } from '../hooks';
 import { plural } from '../text';
 import './review.css';
@@ -9,13 +11,15 @@ import { useDueCount } from './hooks';
 import { reviewPageUrl, type ReviewLink } from './links';
 import { untilLabel } from './model';
 import { TID, bankRowId } from './testids';
+import { useNow } from './useNow';
 
 const TOP_BANKS = 5;
 
 /**
- * Compact review entry for the side panel: what is due today, start or continue, and a way into the
- * full review page. A session is not run in a 320 px panel: distraction-free study needs room, so
- * the buttons open the review page in a tab.
+ * Compact review entry for the side panel (UX_DESIGN 7.2): the due count big, the new / learning /
+ * review mix as chips, one yellow Start, and the banks with the most due. A session is not run in a
+ * 320 px panel: distraction-free study needs room, so the buttons open the review page in a tab.
+ * Styles: `.rt-*` in entrypoints/sidepanel/sidepanel.css (the panel is the only host).
  */
 export function ReviewTab({
   open,
@@ -23,11 +27,13 @@ export function ReviewTab({
 }: {
   /** How to open the full page. Default: a new tab on `review.html`. Injected for tests. */
   open?: (link: ReviewLink) => Promise<void> | void;
-  /** Epoch ms for the "next step in" label. Default: the device clock. */
+  /** Epoch ms for the "next step in" label. Default: the device clock, read every minute. */
   nowMs?: number;
 }) {
   const due = useDueCount();
-  const banks = useObserved(() => listBanks(), []);
+  const clock = useNow();
+  const now = nowMs ?? clock;
+  const banks = useObserved(() => listBankInfos(), []);
   const go = useAction(async (link: ReviewLink) => {
     if (open) {
       await open(link);
@@ -59,13 +65,18 @@ export function ReviewTab({
   const summary: DueSummary = due.summary;
   const total = summary.total;
   const deferred = summary.deferred.review + summary.deferred.new;
-  const bankName = new Map((banks.data ?? []).map((b) => [b.id, b.name]));
+  const bankById = new Map((banks.data ?? []).map((b) => [b.id, b]));
   const rows = Object.entries(summary.byBank)
     .filter(([, g]) => g.total > 0)
     .sort((a, b) => b[1].total - a[1].total)
     .slice(0, TOP_BANKS);
 
   const nothingAtAll = total.total === 0 && deferred === 0 && summary.nextLearningAt === null;
+  // aria-busy buttons still click: one tab per press.
+  const run = (link: ReviewLink) => {
+    if (!go.busy) void go.run(link);
+  };
+  const start = () => run({ view: 'study', start: true });
 
   return (
     <div className="sv-stack" data-testid={TID.tab}>
@@ -75,96 +86,130 @@ export function ReviewTab({
         </InlineNotice>
       ) : null}
 
-      {total.total > 0 ? (
-        <section className="sv-stack sv-stack--tight" aria-label="Due today">
-          <p>
-            <span className="rv-count" data-testid={TID.tabCount}>
-              {total.total}
-            </span>{' '}
-            <span>{total.total === 1 ? 'card' : 'cards'} to study now</span>
+      {total.total > 0 || due.resumable ? (
+        <section className="rt-hero" aria-label="Due today">
+          <VaultBuddy pose="think" size={72} />
+          <p className="rt-num">
+            <span data-testid={TID.tabCount}>{total.total}</span>{' '}
+            <span className="rt-num__unit">due</span>
           </p>
-          <p className="sv-small sv-muted">
-            {plural(total.new, 'new card')}, {plural(total.learning, 'learning step')},{' '}
-            {plural(total.review, 'review')}
-          </p>
+          <ul className="rt-mix" aria-label="Due mix">
+            <li className="rt-chip rt-chip--new">{total.new} new</li>
+            <li className="rt-chip rt-chip--learn">{total.learning} learning</li>
+            <li className="rt-chip rt-chip--review">{total.review} review</li>
+          </ul>
+          {deferred > 0 ? (
+            <p className="rt-deferred" data-testid={TID.deferredNote}>
+              <span>+{plural(deferred, 'more card')} over today&rsquo;s limit</span>
+              <InfoTip label="About cards over the limit" side="top">
+                {`${summary.deferred.review} reviews and ${summary.deferred.new} new stay due for later days. None are skipped.`}
+              </InfoTip>
+            </p>
+          ) : null}
+          {due.resumable ? (
+            <ChunkyButton
+              variant="sun"
+              size="lg"
+              block
+              icon={Play}
+              data-testid={TID.tabContinue}
+              aria-busy={go.busy || undefined}
+              onClick={start}
+            >
+              Continue session ({due.resumable.remaining} left)
+            </ChunkyButton>
+          ) : (
+            <ChunkyButton
+              variant="sun"
+              size="lg"
+              block
+              icon={Layers}
+              data-testid={TID.tabStart}
+              aria-busy={go.busy || undefined}
+              onClick={start}
+            >
+              Start review
+            </ChunkyButton>
+          )}
         </section>
       ) : nothingAtAll ? (
-        <EmptyState
-          title="No cards to review yet"
-          action={
-            <Button
-              data-testid={TID.tabCreate}
-              onClick={() => void go.run({ view: 'create' })}
-              busy={go.busy}
-            >
-              Create cards
-            </Button>
-          }
-        >
-          <span data-testid={TID.tabEmpty}>
-            Turn a saved highlight into a flashcard to start spaced review.
-          </span>
-        </EmptyState>
+        <section className="rt-hero rt-hero--quiet" aria-labelledby="rt-empty-title">
+          <VaultBuddy pose="sleep" size={112} />
+          <h3 id="rt-empty-title" className="rt-title">
+            No cards yet
+          </h3>
+          <p className="rt-line" data-testid={TID.tabEmpty}>
+            Turn a highlight into a flashcard.
+          </p>
+          <ChunkyButton
+            variant="primary"
+            icon={Plus}
+            data-testid={TID.tabCreate}
+            aria-busy={go.busy || undefined}
+            onClick={() => run({ view: 'create' })}
+          >
+            Create cards
+          </ChunkyButton>
+        </section>
       ) : (
-        <InlineNotice tone="success" title="Nothing is due right now">
-          {summary.nextLearningAt && nowMs !== undefined
-            ? `The next learning step comes back ${untilLabel(summary.nextLearningAt, nowMs)}.`
-            : summary.nextLearningAt
-              ? 'A learning step comes back later today.'
-              : 'You are caught up for today.'}
-        </InlineNotice>
+        <section className="rt-hero rt-hero--quiet" aria-labelledby="rt-done-title">
+          <VaultBuddy pose="cheer" size={112} />
+          <h3 id="rt-done-title" className="rt-title">
+            All caught up
+          </h3>
+          <p className="rt-line" data-testid={TID.nextLearning}>
+            {summary.nextLearningAt
+              ? `Next step ${untilLabel(summary.nextLearningAt, now)}.`
+              : 'Nothing is due right now.'}
+          </p>
+          {deferred > 0 ? (
+            <p className="rt-deferred" data-testid={TID.deferredNote}>
+              +{plural(deferred, 'more card')} over today&rsquo;s limit
+            </p>
+          ) : null}
+        </section>
       )}
 
-      {deferred > 0 ? (
-        <p className="sv-small sv-muted" data-testid={TID.deferredNote}>
-          {plural(deferred, 'more card')} due but beyond today&rsquo;s limits (
-          {summary.deferred.review} reviews, {summary.deferred.new} new). They stay due and are not
-          skipped.
-        </p>
-      ) : null}
-
-      {due.resumable ? (
-        <Button
-          variant="primary"
-          data-testid={TID.tabContinue}
-          busy={go.busy}
-          onClick={() => void go.run({ view: 'study', start: true })}
-        >
-          Continue session ({due.resumable.remaining} left)
-        </Button>
-      ) : total.total > 0 ? (
-        <Button
-          variant="primary"
-          data-testid={TID.tabStart}
-          busy={go.busy}
-          onClick={() => void go.run({ view: 'study', start: true })}
-        >
-          Start reviewing
-        </Button>
-      ) : null}
-
       {rows.length > 0 ? (
-        <ul className="sv-stack sv-stack--tight" aria-label="Due by bank">
-          {rows.map(([key, g]) => (
-            <li key={key} className="rv-row" data-testid={bankRowId(key === NO_BANK ? null : key)}>
-              <span className="sv-grow sv-wrap">
-                {key === NO_BANK ? 'No bank' : (bankName.get(key) ?? 'Bank')}
-              </span>
-              <span>{g.total}</span>
-            </li>
-          ))}
-        </ul>
+        <section className="sv-stack sv-stack--tight" aria-labelledby="rt-banks">
+          <h3 id="rt-banks" className="rt-h">
+            By bank
+          </h3>
+          <ul className="rt-banks" aria-label="Due by bank">
+            {rows.map(([key, g]) => {
+              const bank = key === NO_BANK ? undefined : bankById.get(key);
+              const name = key === NO_BANK ? 'No bank' : (bank?.name ?? 'Bank');
+              return (
+                <li
+                  key={key}
+                  className="rt-row"
+                  data-testid={bankRowId(key === NO_BANK ? null : key)}
+                >
+                  <span className={`rt-tile sp-sw--${bank?.color ?? 'none'}`} aria-hidden="true">
+                    {bank?.icon ?? (Array.from(name.trim())[0] ?? '?').toUpperCase()}
+                  </span>
+                  <span className="rt-row__name sv-wrap" dir="auto">
+                    {name}
+                  </span>
+                  <span className="rt-row__n">{g.total}</span>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
       ) : null}
 
-      <div className="sv-row">
-        <Button
+      <div>
+        <ChunkyButton
           variant="ghost"
+          size="sm"
+          iconEnd={ExternalLink}
           data-testid={TID.tabOpen}
-          busy={go.busy}
-          onClick={() => void go.run({ view: 'study' })}
+          aria-busy={go.busy || undefined}
+          onClick={() => run({ view: 'study' })}
         >
-          Open full review page
-        </Button>
+          Open review page
+        </ChunkyButton>
       </div>
     </div>
   );

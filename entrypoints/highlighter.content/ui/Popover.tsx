@@ -1,14 +1,9 @@
 import { useCallback, useId, useLayoutEffect, useRef, useState } from 'react';
-import {
-  COLOR_SWATCH,
-  HIGHLIGHT_KINDS,
-  KIND_LABELS,
-  type HighlightKind,
-  type HighlightPatch,
-  type HighlightView,
-} from '@shared';
+import { COLOR_SWATCH, KIND_LABELS, type HighlightPatch, type HighlightView } from '@shared';
+import { KindChoice, PriorityChoice } from './Choice';
 import { errorMessage, openSidePanel, truncate, useUi } from './context';
-import { pushToast } from './store';
+import { Icon } from './icons';
+import { pushToast, useStore } from './store';
 import { floatingStyle, useFloating } from './useFloating';
 
 const QUOTE_PREVIEW_CHARS = 400;
@@ -41,14 +36,19 @@ export function HighlightPopover({
   const { host, store } = ui;
   const uid = useId();
   const id = highlight.id;
+  const palette = useStore(store, (s) => s.settings.palette);
 
-  const [view, setView] = useState(highlight);
+  /** The last value the host confirmed. */
+  const [stored, setStored] = useState(highlight);
+  /** Kind or priority changes still being written: a picker answers at once, before the write. */
+  const [pending, setPending] = useState<HighlightPatch | null>(null);
   // An edit made elsewhere (a note typed in the side panel) arrives as a new `highlight`: follow it.
   const [seen, setSeen] = useState(highlight);
   if (seen !== highlight) {
     setSeen(highlight);
-    setView(highlight);
+    setStored(highlight);
   }
+  const view: HighlightView = pending ? { ...stored, ...pending } : stored;
   const [status, setStatus] = useState<Status>({ state: 'idle' });
   const [deleting, setDeleting] = useState(false);
 
@@ -56,22 +56,33 @@ export function HighlightPopover({
   const alive = useRef(true);
   /** Writes are serialised so a slow earlier response can never overwrite a newer one. */
   const queue = useRef<Promise<void>>(Promise.resolve());
+  /** Counts changes, so only the newest one decides what is shown when its write settles. */
+  const changes = useRef(0);
   const placement = useFloating(dialogRef, anchor);
   const placed = placement !== null;
 
   const commit = useCallback(
     (patch: HighlightPatch): Promise<void> => {
+      const mine = ++changes.current;
+      setPending((p) => ({ ...p, ...patch }));
       const run = async (): Promise<void> => {
         if (alive.current) setStatus({ state: 'saving' });
         try {
           const next = await host.update(id, patch);
           if (!alive.current) return;
-          setView(next);
+          setStored(next);
+          // A newer change is still on its way: keep showing it until its own write settles.
+          if (mine === changes.current) setPending(null);
           setStatus({ state: 'saved' });
         } catch (err) {
           const message = errorMessage(err, 'Could not save the change.');
-          if (!alive.current) pushToast(store, { text: message, tone: 'error' });
-          else setStatus({ state: 'error', message });
+          if (!alive.current) {
+            pushToast(store, { text: message, tone: 'error' });
+            return;
+          }
+          // Back to the stored value (a newer change that is still on its way settles it instead).
+          if (mine === changes.current) setPending(null);
+          setStatus({ state: 'error', message });
         }
       };
       queue.current = queue.current.then(run);
@@ -173,11 +184,11 @@ export function HighlightPopover({
           aria-label="Close highlight details"
           onClick={() => ui.closePopover(true)}
         >
-          <span aria-hidden="true">×</span>
+          <Icon name="x" />
         </button>
       </div>
 
-      <p className="sv-quote sv-quote-block">
+      <p className="sv-quote sv-quote-block" style={{ borderLeftColor: swatch }}>
         <span className="sv-sr">Saved quote: </span>
         {truncate(view.exactQuote, QUOTE_PREVIEW_CHARS)}
       </p>
@@ -194,52 +205,44 @@ export function HighlightPopover({
         ) : (
           <p className="sv-muted">No note yet.</p>
         )}
-        <button type="button" className="sv-btn sv-btn-text sv-btn-start" onClick={editNote}>
-          Edit note in side panel
+        <button
+          type="button"
+          className="sv-btn sv-btn-soft sv-btn-start"
+          aria-label="Edit note in side panel"
+          onClick={editNote}
+        >
+          <Icon name="note" size={16} />
+          Edit note
         </button>
       </div>
 
-      <div className="sv-row sv-row-split">
-        <div className="sv-field">
-          <label htmlFor={`${uid}-kind`}>Type</label>
-          <select
-            id={`${uid}-kind`}
-            className="sv-control"
-            value={view.kind}
-            onChange={(e) => {
-              const kind = e.target.value as HighlightKind;
-              void commit({ kind, color: host.settings().palette[kind] });
-            }}
-          >
-            {HIGHLIGHT_KINDS.map((k) => (
-              <option key={k} value={k}>
-                {`${KIND_LABELS[k].glyph} ${KIND_LABELS[k].label}`}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="sv-field">
-          <label htmlFor={`${uid}-priority`}>Priority</label>
-          <select
-            id={`${uid}-priority`}
-            className="sv-control"
-            value={view.priority}
-            onChange={(e) => void commit({ priority: Number(e.target.value) })}
-          >
-            <option value={1}>1 (lowest)</option>
-            <option value={2}>2</option>
-            <option value={3}>3</option>
-            <option value={4}>4</option>
-            <option value={5}>5 (highest)</option>
-          </select>
-        </div>
-      </div>
+      <KindChoice
+        value={view.kind}
+        palette={palette}
+        onChange={(kind) => {
+          if (kind !== view.kind) void commit({ kind, color: host.settings().palette[kind] });
+        }}
+      />
+      <PriorityChoice
+        value={view.priority}
+        onChange={(priority) => {
+          if (priority !== view.priority) void commit({ priority });
+        }}
+      />
 
       <div className="sv-status" role="status" aria-live="polite">
         {status.state === 'saving' ? 'Saving…' : null}
-        {status.state === 'saved' ? 'Saved' : null}
+        {status.state === 'saved' ? (
+          <>
+            <Icon name="check" size={16} />
+            Saved
+          </>
+        ) : null}
         {status.state === 'error' ? (
-          <span className="sv-inline-error">{`Could not save: ${status.message}`}</span>
+          <span className="sv-inline-error">
+            <Icon name="alert" size={16} />
+            <span>{`Could not save: ${status.message}`}</span>
+          </span>
         ) : null}
       </div>
 
@@ -250,6 +253,7 @@ export function HighlightPopover({
           aria-disabled={deleting}
           onClick={() => void onDelete()}
         >
+          <Icon name="trash" size={16} />
           {deleting ? 'Deleting…' : 'Delete'}
         </button>
         <button type="button" className="sv-btn sv-btn-text" onClick={() => ui.closePopover(true)}>

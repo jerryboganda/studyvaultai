@@ -1,5 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { browser } from 'wxt/browser';
+import {
+  ArrowLeft,
+  BookOpen,
+  Check,
+  FileText,
+  Globe,
+  Layers,
+  Library,
+  Power,
+  RefreshCw,
+  Search,
+  ShieldOff,
+  TriangleAlert,
+} from 'lucide-react';
 import { parseSrc, pdfReaderPath } from '@pdf/readerUrl';
 import type { ColorId, HighlightKind } from '@shared';
 import { callBackground, callTab } from '@runtime';
@@ -24,15 +38,17 @@ import {
 } from '@storage';
 import {
   Button,
+  BuddyEmptyState,
   COMMAND,
-  EmptyState,
+  ChunkyButton,
+  IconTabBar,
+  InfoTip,
   InlineNotice,
-  ShortcutHints,
-  Tabs,
+  Kbd,
   ToastProvider,
+  VaultBuddy,
   errorMessage,
   pickCommands,
-  plural,
   useAction,
   useActiveTab,
   useApplyTheme,
@@ -46,6 +62,7 @@ import {
   useToast,
   type Loadable,
 } from '@ui';
+import { useGame } from '@ui/game';
 import { useSearchHost } from '@ui/panel';
 import { ReminderNotice, ReviewTab, useDueCount } from '@ui/review';
 import { openDashboard, storageLinks, type RelatedPort } from '@ui/vault';
@@ -58,22 +75,27 @@ import {
 } from './HighlightCard';
 import { extensionPageUrl, openFlashcardAuthor, openInTab, optionsUrl } from './links';
 import {
-  VIEWS,
   derivePageState,
   groupPageItems,
   revealAvailability,
   scopeLabel,
+  tabOf,
   viewFromHash,
   type BankScope,
   type PageIdentity,
   type PageState,
+  type TabId,
   type View,
 } from './model';
+import { MoreTab } from './MoreTab';
+import { PanelHeader } from './PanelHeader';
 import { SearchTab } from './Search';
 import { useFilingSuggestions } from './useFilingSuggestions';
 import { usePendingFocus } from './usePendingFocus';
 
 const RECENT_LIMIT = 50;
+/** Newest saves shown under the empty Search box. */
+const SEARCH_RECENT = 3;
 
 /** Where focus goes when a toast that held it closes: the panel content, never <body>. */
 const panelContent = () => document.querySelector<HTMLElement>('[role="tabpanel"]');
@@ -99,6 +121,7 @@ function Panel() {
   const { tab, loading: tabLoading, error: tabError } = tabState;
   const epoch = useDataEpoch();
   const toast = useToast();
+  const game = useGame();
   // A removed tag chip or a deleted card takes its focused button with it: focus stays on the card/tab.
   const rescueRef = useFocusRescue();
   const [view, setViewState] = useState<View>(initialView);
@@ -209,11 +232,10 @@ function Panel() {
       remove: async (id) => {
         await softDeleteHighlight(id);
         await repaint();
-        // Deletion is soft (the row stays so Undo works); say so instead of implying it is gone.
-        // The card that held focus is gone: Undo takes it, so the keyboard is not dropped on <body>.
+        // Deletion is soft (the row stays so Undo works). The card that held focus is gone: Undo
+        // takes it, so the keyboard is not dropped on <body>.
         toast.push({
-          message:
-            'Highlight deleted. It stays in Trash until you delete it forever there or delete all data in Settings.',
+          message: 'Highlight deleted. It stays in Trash.',
           action: { label: 'Undo', onClick: () => void restore(id) },
           focusAction: true,
         });
@@ -323,170 +345,154 @@ function Panel() {
   const count = pageItems.data?.length;
   const fatal = settingsError ?? tabError;
   const dueCount = reviewOn && due.count !== null && due.count > 0 ? due.count : undefined;
+  const reveal = (id: string) => revealAvailability({ live, onActivePage: pageIds.has(id) });
+  const cards = { paletteFor, actions, context };
 
   return (
     <div ref={rescueRef} className="panel">
-      <header className="panel__head">
-        <div className="panel__bar">
-          <h1>StudyVault</h1>
-          <div className="sv-row">
-            <Button variant="ghost" busy={dashboard.busy} onClick={() => void dashboard.run()}>
-              Open dashboard
-            </Button>
-            <Button
-              variant="ghost"
-              busy={openSettings.busy}
-              onClick={() => void openSettings.run()}
-            >
-              Settings
-            </Button>
-          </div>
-        </div>
-        {/* Title and count appear together: a count line that pops in later shifts the layout. */}
-        {identity && (pageItems.data !== undefined || pageItems.error !== null) ? (
-          <PageContext identity={identity} list={pageItems.data} />
-        ) : null}
-      </header>
+      <PanelHeader
+        game={game.data}
+        onRetryGame={() => void game.retryBackfill()}
+        onDashboard={() => void dashboard.run()}
+        onSettings={() => void openSettings.run()}
+      />
       {openSettings.error ? (
         <InlineNotice tone="error">Could not open settings: {openSettings.error}</InlineNotice>
       ) : null}
       {dashboard.error ? (
         <InlineNotice tone="error">Could not open the dashboard: {dashboard.error}</InlineNotice>
       ) : null}
-      <main className="panel__main">
-        {reviewOn && !fatal ? (
-          <div className="panel__reminder">
-            <ReminderNotice
-              count={due.count}
-              action={
-                <Button variant="primary" onClick={() => setView('review')}>
-                  Show review
-                </Button>
-              }
-              onDismissed={() => panelContent()?.focus()}
-            />
-          </div>
-        ) : null}
-        {fatal ? (
-          <div className="panel__body">
-            <InlineNotice
-              tone="error"
-              title="StudyVault could not start"
-              action={
-                <Button
-                  onClick={() => {
-                    if (settingsError) settingsState.retry();
-                    if (tabError) tabState.retry();
-                  }}
-                >
-                  Retry
-                </Button>
-              }
-            >
-              {fatal}
-            </InlineNotice>
-          </div>
-        ) : (
-          <Tabs
-            label="Highlights"
-            tabs={[
-              { id: 'page', label: 'This page', count },
-              { id: 'recent', label: 'Recent' },
-              { id: 'search', label: 'Search' },
-              { id: 'banks', label: 'Banks' },
-              { id: 'review', label: 'Review', count: dueCount },
-            ]}
-            value={view}
-            onChange={(id) => {
-              if ((VIEWS as readonly string[]).includes(id)) setView(id as View);
+      {fatal ? (
+        <main className="panel__body">
+          <BuddyEmptyState
+            pose="think"
+            title="Could not start"
+            text={fatal}
+            heading="h2"
+            action={{
+              label: 'Retry',
+              icon: RefreshCw,
+              onClick: () => {
+                if (settingsError) settingsState.retry();
+                if (tabError) tabState.retry();
+              },
             }}
-          >
-            <div className="panel__body">
-              {/* One suggestion list for every tag field of every card (see CardTags). */}
-              <datalist id={TAG_LIST_ID}>
-                {(tags.data ?? []).map(({ tag }) => (
-                  <option key={tag.id} value={tag.name} />
-                ))}
-              </datalist>
-              {view === 'page' ? (
-                <ThisPage
-                  state={pageState}
-                  items={pageItems}
-                  tabId={tabId}
-                  tabUrl={tab?.url}
-                  pdfReaderOn={settings?.features.pdfReader ?? true}
-                  statusError={status.error}
-                  onActivated={status.refresh}
-                  paletteFor={paletteFor}
-                  actions={actions}
-                  context={context}
-                  pageIds={pageIds}
+          />
+        </main>
+      ) : (
+        <IconTabBar<TabId>
+          label="Side panel"
+          className="panel__tabs"
+          tabs={[
+            { id: 'page', label: 'This page', icon: FileText, count },
+            { id: 'banks', label: 'Banks', icon: Library },
+            { id: 'review', label: 'Review', icon: Layers, count: dueCount },
+            { id: 'search', label: 'Search', icon: Search },
+          ]}
+          more={{ id: 'more' }}
+          active={tabOf(view)}
+          onChange={setView}
+        >
+          <main className="panel__body">
+            {reviewOn ? (
+              <div className="panel__reminder">
+                <ReminderNotice
+                  count={due.count}
+                  action={
+                    // On the Review tab Start is right below: a "Show review" there would do nothing.
+                    view === 'review' ? undefined : (
+                      <Button variant="primary" onClick={() => setView('review')}>
+                        Show review
+                      </Button>
+                    )
+                  }
+                  onDismissed={() => panelContent()?.focus()}
                 />
-              ) : view === 'recent' ? (
-                <Recent
-                  items={recent}
-                  live={live}
-                  scope={scope}
-                  onClearScope={() => setScope(null)}
-                  pageIds={pageIds}
-                  paletteFor={paletteFor}
-                  actions={actions}
-                  context={context}
-                />
-              ) : view === 'search' ? (
-                <SearchTab
-                  search={search}
-                  text={searchText}
-                  onText={setSearchText}
-                  scope={scope}
-                  onClearScope={() => setScope(null)}
-                  live={live}
-                  pageIds={pageIds}
-                  paletteFor={paletteFor}
-                  actions={actions}
-                  reviewOn={reviewOn}
-                  focusRequested={focusSearch}
-                  onFocused={() => setFocusSearch(false)}
-                />
-              ) : view === 'banks' ? (
-                <Banks scope={scope} onScope={setScope} />
-              ) : (
-                <ReviewPanel enabled={settings ? settings.features.review : null} />
-              )}
-            </div>
-          </Tabs>
-        )}
-      </main>
+              </div>
+            ) : null}
+            {/* One suggestion list for every tag field of every card (see CardTags). */}
+            <datalist id={TAG_LIST_ID}>
+              {(tags.data ?? []).map(({ tag }) => (
+                <option key={tag.id} value={tag.name} />
+              ))}
+            </datalist>
+            {view === 'page' ? (
+              <ThisPage
+                state={pageState}
+                items={pageItems}
+                tabId={tabId}
+                tabUrl={tab?.url}
+                pdfReaderOn={settings?.features.pdfReader ?? true}
+                statusError={status.error}
+                onActivated={status.refresh}
+                reveal={reveal}
+                {...cards}
+              />
+            ) : view === 'recent' ? (
+              <Recent
+                items={recent}
+                scope={scope}
+                onClearScope={() => setScope(null)}
+                onBack={() => setView('more')}
+                reveal={reveal}
+                {...cards}
+              />
+            ) : view === 'search' ? (
+              <SearchTab
+                search={search}
+                text={searchText}
+                onText={setSearchText}
+                scope={scope}
+                onClearScope={() => setScope(null)}
+                live={live}
+                pageIds={pageIds}
+                paletteFor={paletteFor}
+                actions={actions}
+                reviewOn={reviewOn}
+                focusRequested={focusSearch}
+                onFocused={() => setFocusSearch(false)}
+                recent={
+                  recent.data && recent.data.length > 0 ? (
+                    <section className="sv-stack" aria-labelledby="search-recent">
+                      <div className="sp-titlerow">
+                        <h3 id="search-recent" className="sp-h">
+                          Recent
+                        </h3>
+                        <button type="button" className="sp-link" onClick={() => setView('recent')}>
+                          See all
+                        </button>
+                      </div>
+                      <CardList
+                        items={recent.data.slice(0, SEARCH_RECENT)}
+                        showSource
+                        reveal={reveal}
+                        {...cards}
+                      />
+                    </section>
+                  ) : null
+                }
+              />
+            ) : view === 'banks' ? (
+              <Banks
+                scope={scope}
+                onScope={setScope}
+                due={reviewOn ? (due.summary?.byBank ?? null) : null}
+                onSearch={() => setView('search')}
+                list={<Recent items={recent} scope={scope} inBank reveal={reveal} {...cards} />}
+              />
+            ) : view === 'more' ? (
+              <MoreTab features={settings?.features ?? null} onRecent={() => setView('recent')} />
+            ) : (
+              <ReviewPanel enabled={settings ? settings.features.review : null} />
+            )}
+          </main>
+        </IconTabBar>
+      )}
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------------------------
-
-/** The page in the active tab: title, site and how many highlights are saved on it. */
-function PageContext({
-  identity,
-  list,
-}: {
-  identity: PageIdentity;
-  list: HighlightListItem[] | undefined;
-}) {
-  const attention = list ? groupPageItems(list).attention.length : 0;
-  return (
-    <div className="sv-stack sv-stack--tight panel__context" data-testid="page-context">
-      <h2 className="panel__title sv-wrap" dir="auto">
-        {identity.title || identity.host}
-      </h2>
-      <p className="sv-muted sv-wrap">{identity.host}</p>
-      {list ? (
-        <p>
-          <strong>{plural(list.length, 'highlight')}</strong> saved
-          {attention > 0 ? ` · ${attention} need${attention === 1 ? 's' : ''} attention` : ''}
-        </p>
-      ) : null}
-    </div>
-  );
-}
 
 function ReviewPanel({ enabled }: { enabled: boolean | null }) {
   const open = useAction(() => openInTab(optionsUrl('review')));
@@ -495,19 +501,12 @@ function ReviewPanel({ enabled }: { enabled: boolean | null }) {
     return (
       <div className="sv-stack">
         <h2 className="sv-sr">Review</h2>
-        <EmptyState
-          title="Review is turned off"
-          action={
-            <Button busy={open.busy} onClick={() => void open.run()}>
-              Open settings
-            </Button>
-          }
-        >
-          <p>
-            Flashcards and spaced review are switched off in Settings. Your highlights and notes are
-            unaffected, and nothing is scheduled.
-          </p>
-        </EmptyState>
+        <BuddyEmptyState
+          pose="sleep"
+          title="Review is off"
+          text="Turn it on in Settings."
+          action={{ label: 'Open settings', icon: Power, onClick: () => void open.run() }}
+        />
         {open.error ? (
           <InlineNotice tone="error">Could not open settings: {open.error}</InlineNotice>
         ) : null}
@@ -524,6 +523,23 @@ function ReviewPanel({ enabled }: { enabled: boolean | null }) {
 
 // ---------------------------------------------------------------------------------------------
 
+interface CardsProps {
+  paletteFor(kind: HighlightKind): ColorId;
+  actions: CardActions;
+  context: CardContext;
+  reveal(id: string): ReturnType<typeof revealAvailability>;
+}
+
+/** Loading over a second shows the thinking mascot, never a fake number (UX_DESIGN 12). */
+function Waiting({ label }: { label: string }) {
+  return (
+    <p className="panel__wait">
+      <VaultBuddy pose="think" size={48} />
+      <span>{label}</span>
+    </p>
+  );
+}
+
 function ThisPage({
   state,
   items,
@@ -532,10 +548,7 @@ function ThisPage({
   pdfReaderOn,
   statusError,
   onActivated,
-  paletteFor,
-  actions,
-  context,
-  pageIds,
+  ...cards
 }: {
   state: PageState;
   items: Loadable<HighlightListItem[]>;
@@ -545,65 +558,69 @@ function ThisPage({
   /** Why the page did not answer; shown as a detail when StudyVault is not running here. */
   statusError: string | null;
   onActivated(): void;
-  paletteFor(kind: HighlightKind): ColorId;
-  actions: CardActions;
-  context: CardContext;
-  pageIds: ReadonlySet<string>;
-}) {
+} & CardsProps) {
   const activate = useAction(async () => {
     if (tabId === null) throw new Error('There is no active tab.');
     await callBackground('tab.activate', { tabId });
     onActivated();
   });
-  const openSettings = useAction(async () => {
-    await browser.runtime.openOptionsPage();
-  });
 
-  if (state.kind === 'loading') return <p className="sv-muted">Loading this page…</p>;
+  if (state.kind === 'loading') return <Waiting label="Loading this page…" />;
   if (state.kind === 'no-tab') {
     return (
-      <EmptyState title="No page to show">
-        Open a web page in this window to see its highlights here.
-      </EmptyState>
+      <BuddyEmptyState
+        pose="sleep"
+        title="No page to show"
+        text="Open a web page in this window."
+        heading="h2"
+      />
     );
   }
   if (state.kind === 'unavailable') {
-    return (
-      <Unavailable
-        state={state}
-        settings={openSettings}
-        tabUrl={tabUrl}
-        pdfReaderOn={pdfReaderOn}
-      />
-    );
+    return <Unavailable state={state} tabUrl={tabUrl} pdfReaderOn={pdfReaderOn} />;
   }
 
   const live = state.kind === 'live';
   const list = items.data;
   const groups = list ? groupPageItems(list) : null;
-  const reveal = (id: string) => revealAvailability({ live, onActivePage: pageIds.has(id) });
 
   return (
     <div className="sv-stack">
-      <h2 className="sv-sr">This page</h2>
+      {state.identity ? (
+        <SiteCard
+          identity={state.identity}
+          live={live}
+          denied={live && state.status.blocked === 'denied-site'}
+        />
+      ) : (
+        <h2 className="sv-sr">This page</h2>
+      )}
 
       {state.kind === 'inactive' ? (
-        <InlineNotice
-          tone="info"
-          title="StudyVault is not running on this tab"
-          action={
-            <Button variant="primary" busy={activate.busy} onClick={() => void activate.run()}>
+        <section className="sp-callout" aria-labelledby="inactive-title">
+          <Power className="sp-callout__icon" aria-hidden="true" strokeWidth={2.4} />
+          <div className="sp-callout__body">
+            <p id="inactive-title" className="sp-callout__title">
+              StudyVault is not running on this tab
+            </p>
+            <ChunkyButton
+              variant="primary"
+              size="sm"
+              aria-busy={activate.busy || undefined}
+              onClick={() => {
+                if (!activate.busy) void activate.run();
+              }}
+            >
               Activate on this tab
-            </Button>
-          }
-        >
-          <p>
+            </ChunkyButton>
+          </div>
+          <InfoTip label="About activating" align="end">
             {state.identity
-              ? 'Saved highlights for this page are listed below, but they are not painted on the page until you activate StudyVault here. Activating lasts until you navigate or reload.'
-              : 'Chrome has not shared this tab with StudyVault. Activating works for this tab until you navigate or reload.'}
-          </p>
-          {statusError ? <p className="sv-small sv-muted">Chrome reported: {statusError}</p> : null}
-        </InlineNotice>
+              ? 'Saved highlights are listed, but not painted until you activate. It lasts until you navigate or reload.'
+              : 'Chrome has not shared this tab with StudyVault. Activating lasts until you navigate or reload.'}
+            {statusError ? ` Chrome reported: ${statusError}` : ''}
+          </InfoTip>
+        </section>
       ) : null}
       {activate.error ? (
         <InlineNotice
@@ -616,21 +633,17 @@ function ThisPage({
       ) : null}
 
       {state.kind === 'live' && !state.status.paintingSupported ? (
-        <InlineNotice tone="warning" title="Highlights cannot be painted in this browser">
-          <p>Your saved quotes are listed here, but they will not be coloured on the page.</p>
+        <InlineNotice tone="warning" title="Cannot paint here">
+          Your quotes are listed, but this browser cannot colour them on the page.
         </InlineNotice>
       ) : null}
       {state.kind === 'live' && state.status.blocked === 'toolbar-disabled' ? (
         <InlineNotice tone="info">
-          The floating toolbar is turned off in Settings. The keyboard shortcut and the context menu
-          still save a selection.
+          Toolbar off. The shortcut and right-click still save.
         </InlineNotice>
       ) : null}
       {state.kind === 'live' && state.status.blocked === 'denied-site' ? (
-        <InlineNotice tone="warning">
-          StudyVault is turned off on this site, so nothing new can be saved here. Your existing
-          highlights are listed below.
-        </InlineNotice>
+        <InlineNotice tone="warning">Off on this site: nothing new can be saved here.</InlineNotice>
       ) : null}
 
       {items.error ? (
@@ -648,44 +661,45 @@ function ThisPage({
           {items.error}
         </InlineNotice>
       ) : !groups ? (
-        <p className="sv-muted">Loading highlights…</p>
+        <Waiting label="Loading highlights…" />
       ) : groups.attention.length + groups.rest.length === 0 ? (
-        <EmptyState title="No highlights on this page yet">
-          <p>Select text on the page and use the StudyVault toolbar to save it to a bank.</p>
-          <KeyHints />
-        </EmptyState>
+        <div className="sp-empty">
+          <BuddyEmptyState pose="sleep" title="Nothing saved yet" heading="h3" />
+          <SaveHint />
+        </div>
       ) : (
         <>
           {groups.attention.length > 0 ? (
             <section className="sv-stack" aria-labelledby="attention-heading">
-              <h3 id="attention-heading">Needs attention ({groups.attention.length})</h3>
-              <p className="sv-muted">
-                These could not be placed on the page, so they are not painted. Your saved quotes
-                and notes are unchanged.
-              </p>
-              <CardList
-                items={groups.attention}
-                showSource={false}
-                paletteFor={paletteFor}
-                reveal={reveal}
-                actions={actions}
-                context={context}
-              />
+              <div className="sp-titlerow sp-titlerow--start">
+                <h3 id="attention-heading" className="sp-h sp-h--warn">
+                  <TriangleAlert aria-hidden="true" strokeWidth={2.4} />
+                  Needs a look{' '}
+                  <span className="sp-count">
+                    <span className="sv-sr">(</span>
+                    {groups.attention.length}
+                    <span className="sv-sr">)</span>
+                  </span>
+                </h3>
+                <InfoTip label="About Needs a look" align="start">
+                  These could not be placed on the page, so they are not painted. Your quotes and
+                  notes are unchanged.
+                </InfoTip>
+              </div>
+              <CardList items={groups.attention} showSource={false} {...cards} />
             </section>
           ) : null}
           {groups.rest.length > 0 ? (
             <section className="sv-stack" aria-labelledby="page-heading">
-              <h3 id="page-heading" className={groups.attention.length ? undefined : 'sv-sr'}>
-                {groups.attention.length ? 'On this page' : 'Highlights on this page'}
+              <h3 id="page-heading" className="sp-h">
+                On this page{' '}
+                <span className="sp-count">
+                  <span className="sv-sr">(</span>
+                  {groups.rest.length}
+                  <span className="sv-sr">)</span>
+                </span>
               </h3>
-              <CardList
-                items={groups.rest}
-                showSource={false}
-                paletteFor={paletteFor}
-                reveal={reveal}
-                actions={actions}
-                context={context}
-              />
+              <CardList items={groups.rest} showSource={false} {...cards} />
             </section>
           ) : null}
         </>
@@ -694,26 +708,64 @@ function ThisPage({
   );
 }
 
-/** The keys that save and move between highlights, as Chrome has them now (never hard-coded). */
-function KeyHints() {
+/** The page in the active tab: its title, site and whether StudyVault runs on it. */
+function SiteCard({
+  identity,
+  live,
+  denied,
+}: {
+  identity: PageIdentity;
+  live: boolean;
+  denied: boolean;
+}) {
+  return (
+    <div className="sp-site" data-testid="page-context">
+      <Globe className="sp-site__icon" aria-hidden="true" strokeWidth={2.4} />
+      <div className="sp-site__text">
+        <h2 className="sp-site__title sv-wrap" dir="auto">
+          {identity.title || identity.host}
+        </h2>
+        {identity.title ? <p className="sp-site__host">{identity.host}</p> : null}
+      </div>
+      {denied ? (
+        <span className="sp-badge sp-badge--warn">
+          <ShieldOff aria-hidden="true" strokeWidth={2.4} />
+          Off
+        </span>
+      ) : live ? (
+        <span className="sp-badge sp-badge--on">
+          <Check aria-hidden="true" strokeWidth={3} />
+          On
+        </span>
+      ) : (
+        <span className="sp-badge">
+          <Power aria-hidden="true" strokeWidth={2.4} />
+          Not running
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** "Select text, then <the real quick-save keys>", as Chrome has them now (never hard-coded). */
+function SaveHint() {
   const { commands } = useShortcuts();
   if (!commands) return null;
-  const shown = pickCommands(commands, [
-    COMMAND.quickSave,
-    COMMAND.focusToolbar,
-    COMMAND.nextHighlight,
-  ]);
-  return <ShortcutHints commands={shown} />;
+  const [save] = pickCommands(commands, [COMMAND.quickSave]);
+  return (
+    <p className="sp-keys">
+      <span>Select text, then</span>
+      {save?.shortcut ? <Kbd shortcut={save.shortcut} /> : <span>use the toolbar</span>}
+    </p>
+  );
 }
 
 function Unavailable({
   state,
-  settings,
   tabUrl,
   pdfReaderOn,
 }: {
   state: Extract<PageState, { kind: 'unavailable' }>;
-  settings: { busy: boolean; run(): Promise<void> };
   tabUrl: string | undefined;
   pdfReaderOn: boolean;
 }) {
@@ -722,43 +774,69 @@ function Unavailable({
     if (!tabUrl) throw new Error('Chrome did not share the address of this tab.');
     await openInTab(extensionPageUrl(pdfReaderPath({ src: tabUrl })));
   });
+  // The deny list lives in Settings > Site access.
+  const editDeny = useAction(() => openInTab(optionsUrl('site-access')));
   if (a.kind === 'denied') {
     return (
       <div className="sv-stack">
-        <InlineNotice tone="warning" title={`StudyVault is off on ${a.host}`}>
-          <p>
-            This site is on your deny list ({a.entries.join(', ')}), so capture and highlights stay
-            off here.
-          </p>
-        </InlineNotice>
-        <Button busy={settings.busy} onClick={() => void settings.run()}>
-          Edit the deny list in Settings
-        </Button>
+        <BuddyEmptyState
+          pose="sleep"
+          title="Off on this site"
+          text={a.host}
+          heading="h2"
+          action={{
+            label: 'Edit the deny list',
+            icon: ShieldOff,
+            onClick: () => void editDeny.run(),
+          }}
+        />
+        <p className="sp-why">
+          <span aria-hidden="true">Why?</span>
+          <InfoTip label="Why it is off" align="center">
+            {`This site is on your deny list (${a.entries.join(', ')}), so capture and highlights stay off here.`}
+          </InfoTip>
+        </p>
+        {editDeny.error ? (
+          <InlineNotice tone="error">Could not open settings: {editDeny.error}</InlineNotice>
+        ) : null}
       </div>
     );
   }
   if (a.kind === 'pdf') {
     const check = tabUrl ? parseSrc(tabUrl) : null;
+    const canOpen = pdfReaderOn && check?.ok === true;
     return (
       <div className="sv-stack">
-        <InlineNotice tone="info" title="PDFs open in Chrome's built-in viewer">
-          <p>
+        <BuddyEmptyState
+          pose="think"
+          title="PDF in Chrome"
+          text={
+            !pdfReaderOn
+              ? 'The PDF reader is off in Settings.'
+              : check && !check.ok
+                ? `It cannot open there: ${check.message}`
+                : 'Open it in the StudyVault reader to highlight.'
+          }
+          heading="h2"
+          action={
+            canOpen
+              ? {
+                  label: 'Open in StudyVault',
+                  icon: BookOpen,
+                  onClick: () => {
+                    if (!reader.busy) void reader.run(); // one tab per press
+                  },
+                }
+              : undefined
+          }
+        />
+        <p className="sp-why">
+          <span aria-hidden="true">Why?</span>
+          <InfoTip label="Why not here" align="center">
             Chrome does not let extensions read or mark up its built-in PDF viewer. StudyVault has
-            its own PDF reader, where you can highlight and take notes.
-          </p>
-          {!pdfReaderOn ? (
-            <p>The StudyVault PDF reader is turned off in Settings.</p>
-          ) : check && !check.ok ? (
-            <p>This PDF cannot be opened there: {check.message}</p>
-          ) : null}
-        </InlineNotice>
-        {pdfReaderOn && check?.ok ? (
-          <div>
-            <Button variant="primary" busy={reader.busy} onClick={() => void reader.run()}>
-              Open in StudyVault
-            </Button>
-          </div>
-        ) : null}
+            its own PDF reader.
+          </InfoTip>
+        </p>
         {reader.error ? (
           <InlineNotice tone="error" title="Could not open the PDF reader">
             {reader.error}
@@ -768,13 +846,23 @@ function Unavailable({
     );
   }
   return (
-    <InlineNotice tone="info" title="StudyVault cannot run on this page">
-      <p>
-        {a.kind === 'unsupported' ? `This tab uses the "${a.scheme}" address type. ` : ''}
-        StudyVault works on http and https pages only. Chrome blocks extensions on its own pages and
-        the Chrome Web Store, and local files (file://) are not supported.
+    <div className="sv-stack">
+      <BuddyEmptyState
+        pose="sleep"
+        title="Can't run here"
+        text={
+          a.kind === 'unsupported' ? `"${a.scheme}" pages are not supported.` : 'A browser page.'
+        }
+        heading="h2"
+      />
+      <p className="sp-why">
+        <span aria-hidden="true">Why?</span>
+        <InfoTip label="Where StudyVault runs" align="center">
+          StudyVault works on http and https pages only. Chrome blocks extensions on its own pages
+          and the Chrome Web Store, and local files are not supported.
+        </InfoTip>
       </p>
-    </InlineNotice>
+    </div>
   );
 }
 
@@ -782,39 +870,48 @@ function Unavailable({
 
 function Recent({
   items,
-  live,
   scope,
   onClearScope,
-  pageIds,
-  paletteFor,
-  actions,
-  context,
+  onBack,
+  inBank = false,
+  ...cards
 }: {
   items: Loadable<HighlightListItem[]>;
-  live: boolean;
   scope: BankScope | null;
-  onClearScope(): void;
-  pageIds: ReadonlySet<string>;
-  paletteFor(kind: HighlightKind): ColorId;
-  actions: CardActions;
-  context: CardContext;
-}) {
+  onClearScope?(): void;
+  /** Back to the More grid (Recent is one of its pages). */
+  onBack?(): void;
+  /** Shown inside an open bank: the bank header already names the scope. */
+  inBank?: boolean;
+} & CardsProps) {
   const dashboard = useAction(() => openDashboard(scope ? { bank: scope.bankId } : {}));
-  const scopeBar = scope ? (
-    <div className="sv-row" data-testid="recent-scope">
-      <span className="sv-small sv-wrap" dir="auto">
-        Only {scopeLabel(scope)}
-      </span>
-      <Button variant="ghost" onClick={onClearScope}>
-        Show everything
-      </Button>
-    </div>
-  ) : null;
+  const top = inBank ? null : (
+    <>
+      {onBack ? (
+        <div>
+          <ChunkyButton size="sm" variant="ghost" icon={ArrowLeft} onClick={onBack}>
+            More
+          </ChunkyButton>
+        </div>
+      ) : null}
+      <h2 className="sp-h">Recent</h2>
+      {scope && onClearScope ? (
+        <p className="sp-pill sp-pill--on" data-testid="recent-scope">
+          <span className="sv-wrap" dir="auto">
+            Only {scopeLabel(scope)}
+          </span>
+          <button type="button" className="sp-link" onClick={onClearScope}>
+            Show everything
+          </button>
+        </p>
+      ) : null}
+    </>
+  );
 
   if (items.error) {
     return (
       <div className="sv-stack">
-        {scopeBar}
+        {top}
         <InlineNotice
           tone="error"
           title="Could not load recent highlights"
@@ -831,43 +928,34 @@ function Recent({
       </div>
     );
   }
-  if (!items.data) return <p className="sv-muted">Loading recent highlights…</p>;
+  if (!items.data) {
+    return (
+      <div className="sv-stack">
+        {top}
+        <Waiting label="Loading recent highlights…" />
+      </div>
+    );
+  }
   if (items.data.length === 0) {
     return (
       <div className="sv-stack">
-        {scopeBar}
-        <EmptyState title={scope ? 'Nothing here yet' : 'Nothing saved yet'}>
-          {scope
-            ? `No highlights are filed in ${scopeLabel(scope)}.`
-            : 'Highlights you save on any page appear here, newest first.'}
-        </EmptyState>
+        {top}
+        <BuddyEmptyState
+          pose="sleep"
+          title={scope ? 'Nothing here yet' : 'Nothing saved yet'}
+          text={scope ? `Nothing is filed in ${scopeLabel(scope)}.` : 'Your saves show up here.'}
+        />
       </div>
     );
   }
   const capped = items.data.length >= RECENT_LIMIT;
   return (
     <div className="sv-stack">
-      <h2 className="sv-sr">Recent highlights</h2>
-      {scopeBar}
-      <p className="sv-muted sv-small">
-        {scope
-          ? `Your ${items.data.length} newest ${scopeLabel(scope)} saves from all pages.`
-          : `Your ${items.data.length} most recent saves from all pages.`}{' '}
-        A badge shows how a highlight was last found on its page.
-      </p>
-      <CardList
-        items={items.data}
-        showSource
-        paletteFor={paletteFor}
-        reveal={(id) => revealAvailability({ live, onActivePage: pageIds.has(id) })}
-        actions={actions}
-        context={context}
-      />
+      {top}
+      <CardList items={items.data} showSource {...cards} />
       {capped ? (
         <div className="sv-stack sv-stack--tight">
-          <p className="sv-small sv-muted">
-            Showing the newest {RECENT_LIMIT}. The dashboard has the rest.
-          </p>
+          <p className="sv-small sv-muted">Showing the newest {RECENT_LIMIT}.</p>
           <div>
             <Button busy={dashboard.busy} onClick={() => void dashboard.run()}>
               Open in dashboard
@@ -916,11 +1004,7 @@ function CardList({
 }: {
   items: HighlightListItem[];
   showSource: boolean;
-  paletteFor(kind: HighlightKind): ColorId;
-  reveal(id: string): ReturnType<typeof revealAvailability>;
-  actions: CardActions;
-  context: CardContext;
-}) {
+} & CardsProps) {
   const details = useCardDetails(items);
   return (
     <ul className="hl-list">

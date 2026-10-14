@@ -6,7 +6,7 @@ import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { defaultSettings, type PageStatus, type SearchDocument } from '@shared';
 import { makeChromeFakes, makeItem, rpc, store } from '@ui/testing/fakes';
 import { SidePanel } from './SidePanel';
-import { extras } from './testing';
+import { extras, openCard } from './testing';
 
 /**
  * Related highlights under a card of the side panel: closed and free until asked, then computed by
@@ -107,6 +107,8 @@ async function openPanel(quotes: string[]) {
           },
         ]) as never);
   render(<SidePanel />);
+  // Related sits in the card's "More actions".
+  await openCard();
   return items;
 }
 

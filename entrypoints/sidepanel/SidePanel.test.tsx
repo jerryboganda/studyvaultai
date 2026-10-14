@@ -12,7 +12,7 @@ import {
 } from '@shared';
 import { COMMANDS, INBOX, BIOLOGY, makeChromeFakes, makeItem, rpc, store } from '@ui/testing/fakes';
 import { SidePanel } from './SidePanel';
-import { extras } from './testing';
+import { description, extras, openCard, showRecent } from './testing';
 
 // The real module underneath (review's session port binds to it at import time); the panel's
 // reads and writes are the in-memory fakes, which share one item list and one change signal.
@@ -89,10 +89,12 @@ describe('This page', () => {
 
     expect(await screen.findByText('Mitochondria make ATP.')).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Cell biology notes' })).toBeTruthy();
-    expect(screen.getByText('1 highlight')).toBeTruthy();
+    // The count is the tab's badge (read with the tab name).
+    expect(screen.getByRole('tab', { name: /^This page\s?\(1\)$/ })).toBeTruthy();
     const card = screen.getByRole('article');
     expect(within(card).getByText('Formula')).toBeTruthy();
-    expect(within(card).getByText('Found on page')).toBeTruthy();
+    // Only a state that needs a look gets a badge; "found" is the quiet default.
+    expect(within(card).queryByText('Found on page')).toBeNull();
     expect(within(card).getByText('Inbox')).toBeTruthy();
     expect(within(card).getByText('Biology')).toBeTruthy();
     expect(rpc.called('content.pageStatus')[0]?.tabId).toBe(11);
@@ -111,20 +113,24 @@ describe('This page', () => {
     ]);
     await open();
 
-    const heading = await screen.findByRole('heading', { name: 'Needs attention (2)' });
+    const heading = await screen.findByRole('heading', { name: 'Needs a look (2)' });
     expect(screen.getByText(/could not be placed on the page/)).toBeTruthy();
     const attention = heading.closest('section')!;
     expect(within(attention).getAllByRole('article')).toHaveLength(2);
-    expect(within(attention).getByText('Ambiguous · not painted')).toBeTruthy();
-    expect(within(attention).getByText('Orphaned · not found on page')).toBeTruthy();
+    // Plain words on the badge; the full reason is behind each card's (i).
+    expect(within(attention).getByText('Many matches')).toBeTruthy();
+    expect(within(attention).getByText('Not found')).toBeTruthy();
+    expect(within(attention).getAllByRole('button', { name: 'Why it needs a look' })).toHaveLength(
+      2,
+    );
 
     const all = screen.getAllByRole('article').map((a) => a.textContent ?? '');
     expect(all[0]).toContain('Twice quote.');
     expect(all[1]).toContain('Lost quote.');
     expect(all[2]).toContain('Fine quote.'); // reading order: offset 5 before offset 10
     expect(all[3]).toContain('Edited quote.');
-    expect(screen.getByText('4 highlights')).toBeTruthy();
-    expect(screen.getByText(/2 need attention/)).toBeTruthy();
+    expect(screen.getByRole('tab', { name: /^This page\s?\(4\)$/ })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'On this page (2)' })).toBeTruthy();
     expect(screen.getByText('Source changed')).toBeTruthy();
   });
 
@@ -136,11 +142,11 @@ describe('This page', () => {
     );
     Object.assign(browser, fakes);
     await open();
-    expect(await screen.findByText('No highlights on this page yet')).toBeTruthy();
-    const empty = screen.getByText('No highlights on this page yet').parentElement!;
+    expect(await screen.findByText('Nothing saved yet')).toBeTruthy();
+    const empty = screen.getByText('Nothing saved yet').closest<HTMLElement>('.sp-empty')!;
     expect(await within(empty).findByText('Ctrl+Shift+8')).toBeTruthy();
     expect(within(empty).queryByText('Alt+Shift+H')).toBeNull(); // read from Chrome, not hard-coded
-    expect(within(empty).getByText('Alt+Shift+Y')).toBeTruthy();
+    expect(empty.textContent).toContain('Select text, then');
   });
 
   it('lets the browser pick the direction of quotes, notes and titles (Arabic, Hebrew)', async () => {
@@ -219,7 +225,10 @@ describe('This page', () => {
     await open();
     const note = await screen.findByLabelText('Your note');
 
-    await userEvent.type(note, 'Oops');
+    // One input event: per-key typing on a loaded runner can let the 600 ms autosave fire
+    // mid-word and take the one injected failure.
+    await userEvent.click(note);
+    await userEvent.paste('Oops');
     await userEvent.tab();
 
     expect(await screen.findByText(/Not saved: Disk hiccup/)).toBeTruthy();
@@ -238,7 +247,10 @@ describe('This page', () => {
     await open();
     const note = await screen.findByLabelText('Your note');
 
-    await userEvent.type(note, 'Stuck');
+    // One input event: per-key typing on a loaded runner can let the 600 ms autosave fire
+    // mid-word and take the one injected failure.
+    await userEvent.click(note);
+    await userEvent.paste('Stuck');
     await userEvent.tab();
 
     expect(
@@ -251,15 +263,17 @@ describe('This page', () => {
     live();
     store.reset([makeItem()]);
     await open({ palette: { ...defaultSettings().palette, formula: 'teal' } });
+    await openCard();
 
-    await userEvent.selectOptions(await screen.findByLabelText('Kind'), 'formula');
+    // Kinds are dots in the user's palette, each a radio named after its kind.
+    await userEvent.click(await screen.findByRole('radio', { name: 'Formula' }));
     await waitFor(() =>
       expect(store.calls.find((c) => c.fn === 'updateHighlight')?.args[1]).toEqual({
         kind: 'formula',
         color: 'teal',
       }),
     );
-    await userEvent.selectOptions(screen.getByLabelText('Priority'), '5');
+    await userEvent.click(screen.getByRole('radio', { name: '5 (highest)' }));
     await waitFor(() =>
       expect(store.calls.filter((c) => c.fn === 'updateHighlight').at(-1)?.args[1]).toEqual({
         priority: 5,
@@ -272,18 +286,15 @@ describe('This page', () => {
     store.reset([makeItem({ highlight: { exactQuote: 'Delete me.' } })]);
     const id = store.items[0]!.highlight.id;
     await open();
+    await openCard();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Delete' }));
 
     await waitFor(() => expect(screen.queryByText('Delete me.')).toBeNull());
     expect(store.calls.some((c) => c.fn === 'softDeleteHighlight' && c.args[0] === id)).toBe(true);
     expect(rpc.called('content.refresh').length).toBeGreaterThan(0);
-    // Honest about soft delete: it is in Trash until deleted forever there, or everything is wiped.
-    expect(
-      await screen.findByText(
-        'Highlight deleted. It stays in Trash until you delete it forever there or delete all data in Settings.',
-      ),
-    ).toBeTruthy();
+    // Honest about soft delete: it is in Trash.
+    expect(await screen.findByText('Highlight deleted. It stays in Trash.')).toBeTruthy();
     // The card that had focus is gone: Undo takes it instead of <body>.
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Undo' }));
 
@@ -311,6 +322,7 @@ describe('This page', () => {
     live();
     store.reset([makeItem({ highlight: { exactQuote: 'Restore me.' } })]);
     await open();
+    await openCard();
     await userEvent.click(await screen.findByRole('button', { name: 'Delete' }));
     store.failNext.restoreHighlight = new StudyVaultError('storage_unavailable', 'Disk is full');
     await userEvent.click(await screen.findByRole('button', { name: 'Undo' }));
@@ -363,7 +375,7 @@ describe('This page', () => {
     expect(await screen.findByText('Saved earlier.')).toBeTruthy();
     const reveal = screen.getByRole('button', { name: 'Show on page' });
     expect(reveal.getAttribute('aria-disabled')).toBe('true');
-    expect(reveal.getAttribute('title')).toMatch(/not running in the current tab/);
+    expect(description(reveal)).toMatch(/not running in the current tab/);
     expect(store.calls.find((c) => c.fn === 'listPageHighlights')?.args).toEqual([
       'https://example.com/notes',
       null,
@@ -393,7 +405,7 @@ describe('This page', () => {
 
   it('explains unsupported pages instead of showing an empty list', async () => {
     await open({}, { url: 'chrome://extensions', title: 'Extensions' });
-    expect(await screen.findByText('StudyVault cannot run on this page')).toBeTruthy();
+    expect(await screen.findByText("Can't run here")).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Activate on this tab' })).toBeNull();
   });
 
@@ -452,7 +464,7 @@ describe('Recent', () => {
     });
     store.reset([here, elsewhere], [here.highlight.id]);
     await open();
-    await userEvent.click(await screen.findByRole('tab', { name: 'Recent' }));
+    await showRecent();
 
     expect(await screen.findByText('From another site.')).toBeTruthy();
     const card = screen.getByText('From another site.').closest('article')!;
@@ -474,7 +486,8 @@ describe('Recent', () => {
   it('shows an empty state', async () => {
     live();
     await open();
-    await userEvent.click(await screen.findByRole('tab', { name: 'Recent' }));
+    await showRecent();
+    expect(await screen.findByRole('heading', { name: 'Recent' })).toBeTruthy();
     expect(await screen.findByText('Nothing saved yet')).toBeTruthy();
   });
 
@@ -490,7 +503,7 @@ describe('Recent', () => {
       [],
     );
     await open();
-    await userEvent.click(await screen.findByRole('tab', { name: 'Recent' }));
+    await showRecent();
     await screen.findByText('Sneaky.');
     expect(screen.queryByRole('link', { name: 'Open page' })).toBeNull();
   });
@@ -544,7 +557,7 @@ describe('Note hand-over from the page overlay', () => {
     store.reset([]);
     await sessionEntry({ highlightId: 'hl-late0001', at: Date.now() });
     await open();
-    await screen.findByText('No highlights on this page yet');
+    await screen.findByText('Nothing saved yet');
     expect(document.activeElement).toBe(document.body);
     expect(await storedEntry()).toBeDefined(); // still waiting
 
@@ -622,67 +635,132 @@ describe('Banks tab', () => {
     const list = await screen.findByRole('list', { name: 'Your banks' });
     const rows = within(list).getAllByRole('listitem');
     expect(rows[0]!.textContent).toContain('Inbox');
-    expect(rows[0]!.textContent).toContain('2 highlights');
+    expect(rows[0]!.textContent).toContain('2 saved');
     expect(rows[1]!.textContent).toContain('Biology');
-    expect(rows[1]!.textContent).toContain('1 highlight');
+    expect(rows[1]!.textContent).toContain('1 saved');
   });
 
-  it('creates a bank from a labelled field, shows it in the list and clears the field', async () => {
+  it('opens a bank on its heading and gives focus back to its card on the way back', async () => {
+    store.reset([makeItem({ banks: [INBOX, BIOLOGY] })]);
+    store.banks = [INBOX, BIOLOGY];
     await openBanks();
-    const field = await screen.findByLabelText('New bank');
+    await userEvent.click(await screen.findByRole('button', { name: /^Biology/ }));
+    const heading = await screen.findByRole('heading', { level: 2, name: 'Biology' });
+    await waitFor(() => expect(document.activeElement).toBe(heading));
 
-    await userEvent.type(field, '  Cardiology  ');
+    await userEvent.click(screen.getByRole('button', { name: 'All banks' }));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: /^Biology/ })),
+    );
+  });
+
+  /** "New bank" opens the four-step wizard (UX_DESIGN 10): Name, Icon, Colour, Looks good? */
+  async function newBank() {
+    await userEvent.click(await screen.findByRole('button', { name: 'New bank' }));
+    expect(screen.getByRole('dialog', { name: 'New bank' })).toBeTruthy();
+    // Every step change puts focus on the step title.
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Name it' })),
+    );
+    return screen.getByLabelText('Bank name');
+  }
+  const next = () => userEvent.click(screen.getByRole('button', { name: 'Next' }));
+
+  it('makes a bank in four steps, saves its icon and colour, then opens it', async () => {
+    await openBanks();
+    await userEvent.type(await newBank(), '  Cardiology  ');
+    await next();
+    expect(screen.getByRole('heading', { name: 'Pick an icon' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('radio', { name: 'Heart' }));
+    await next();
+    expect(screen.getByRole('heading', { name: 'Pick a colour' })).toBeTruthy();
+    await userEvent.click(screen.getByRole('radio', { name: 'Green' }));
+    await next();
+    expect(screen.getByRole('heading', { name: 'Looks good?' })).toBeTruthy();
+    expect(screen.getByTestId('new-bank-preview').textContent).toContain('Cardiology');
+    // Back keeps every answer.
+    await userEvent.click(screen.getByRole('button', { name: 'Back' }));
+    expect((screen.getByRole('radio', { name: 'Green' }) as HTMLInputElement).checked).toBe(true);
+    await next();
+
     await userEvent.click(screen.getByRole('button', { name: 'Create bank' }));
-
     expect(await screen.findByText('Bank "Cardiology" created.')).toBeTruthy();
     expect(store.calls.filter((c) => c.fn === 'createBank').map((c) => c.args)).toEqual([
       ['Cardiology'],
     ]);
-    const list = screen.getByRole('list', { name: 'Your banks' });
+    const made = store.banks.find((b) => b.name === 'Cardiology')!;
+    expect(store.calls.find((c) => c.fn === 'setBankIcon')?.args).toEqual([made.id, '🫀']);
+    expect(made.color).toBe('green');
+
+    // Done screen: the cheering title, then "Open bank" opens it.
+    const done = await screen.findByTestId('new-bank-done');
+    expect(within(done).getByRole('heading', { name: 'Bank ready!' })).toBeTruthy();
+    await userEvent.click(within(done).getByRole('button', { name: 'Open bank' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    const open = screen.getByTestId('bank-scope');
+    expect(within(open).getByRole('heading', { name: 'Cardiology' })).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId('bank-scope').textContent).toContain('🫀'));
+    await userEvent.click(screen.getByRole('button', { name: 'All banks' }));
+    const list = await screen.findByRole('list', { name: 'Your banks' });
     expect(within(list).getByText('Cardiology')).toBeTruthy();
-    expect((field as HTMLInputElement).value).toBe('');
   });
 
-  it('submits with Enter', async () => {
+  it('closes untouched without asking, creates nothing and gives focus back to New bank', async () => {
     await openBanks();
-    await userEvent.type(await screen.findByLabelText('New bank'), 'Renal{Enter}');
-    await waitFor(() => expect(store.calls.some((c) => c.fn === 'createBank')).toBe(true));
+    await newBank();
+    await userEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'New bank' }));
+    expect(store.calls.some((c) => c.fn === 'createBank')).toBe(false);
   });
 
-  it('explains an empty or over-long name and creates nothing', async () => {
+  it('moves on with Enter in the name field', async () => {
     await openBanks();
-    const field = await screen.findByLabelText('New bank');
+    await userEvent.type(await newBank(), 'Renal{Enter}');
+    expect(await screen.findByRole('heading', { name: 'Pick an icon' })).toBeTruthy();
+    expect(store.calls.some((c) => c.fn === 'createBank')).toBe(false);
+  });
+
+  it('explains an empty or over-long name on Next and stays on the step', async () => {
+    await openBanks();
+    const field = await newBank();
 
     await userEvent.type(field, '   ');
-    await userEvent.click(screen.getByRole('button', { name: 'Create bank' }));
+    await next();
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('Enter a name for the bank.');
     expect(field.getAttribute('aria-invalid')).toBe('true');
     expect(field.getAttribute('aria-describedby')).toBe(alert.id);
+    expect(document.activeElement).toBe(field);
 
     await userEvent.clear(field);
     await userEvent.click(field);
     await userEvent.paste('x'.repeat(81));
-    await userEvent.click(screen.getByRole('button', { name: 'Create bank' }));
+    await next();
     expect((await screen.findByRole('alert')).textContent).toContain('80 characters or fewer');
 
-    await userEvent.type(field, 'y'); // typing clears the message
+    await userEvent.clear(field);
+    await userEvent.type(field, 'Renal'); // a good name clears the message
     expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Name it' })).toBeTruthy();
     expect(store.calls.some((c) => c.fn === 'createBank')).toBe(false);
   });
 
-  it('shows the real storage error, keeps the name and retries', async () => {
+  it('shows the real storage error on the last step and creates on the next try', async () => {
     store.failNext.createBank = new StudyVaultError('internal', 'IndexedDB hiccup');
     await openBanks();
-    const field = await screen.findByLabelText('New bank');
-    await userEvent.type(field, 'Neurology');
+    await userEvent.type(await newBank(), 'Neurology');
+    await next();
+    await next();
+    await next();
     await userEvent.click(screen.getByRole('button', { name: 'Create bank' }));
 
-    expect(await screen.findByText('IndexedDB hiccup')).toBeTruthy();
-    expect((field as HTMLInputElement).value).toBe('Neurology');
+    expect((await screen.findByRole('alert')).textContent).toContain('IndexedDB hiccup');
+    expect(screen.getByTestId('new-bank-preview').textContent).toContain('Neurology');
 
-    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Create bank' }));
     expect(await screen.findByText('Bank "Neurology" created.')).toBeTruthy();
+    expect(await screen.findByTestId('new-bank-done')).toBeTruthy();
   });
 });
 
@@ -691,20 +769,28 @@ describe('Tabs and safety', () => {
     live();
     await open();
     const pageTab = await screen.findByRole('tab', { name: /This page/ });
-    const recentTab = screen.getByRole('tab', { name: 'Recent' });
+    // The four core tabs, then More (UX_DESIGN 9).
+    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual([
+      'This page',
+      'Banks',
+      'Review',
+      'Search',
+      'More',
+    ]);
+    const banksTab = screen.getByRole('tab', { name: 'Banks' });
     expect(pageTab.getAttribute('tabindex')).toBe('0');
-    expect(recentTab.getAttribute('tabindex')).toBe('-1');
+    expect(banksTab.getAttribute('tabindex')).toBe('-1');
 
     pageTab.focus();
     await userEvent.keyboard('{ArrowRight}');
-    expect(recentTab.getAttribute('aria-selected')).toBe('true');
-    expect(document.activeElement).toBe(recentTab);
+    expect(banksTab.getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(banksTab);
     await userEvent.keyboard('{Home}');
     expect(pageTab.getAttribute('aria-selected')).toBe('true');
     await userEvent.keyboard('{End}');
-    expect(screen.getByRole('tab', { name: 'Review' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tab', { name: 'More' }).getAttribute('aria-selected')).toBe('true');
     await userEvent.keyboard('{ArrowLeft}');
-    expect(screen.getByRole('tab', { name: 'Banks' }).getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByRole('tab', { name: 'Search' }).getAttribute('aria-selected')).toBe('true');
   });
 
   it('renders every page-derived string as text', async () => {
@@ -725,6 +811,11 @@ describe('Tabs and safety', () => {
     expect(await screen.findByText('<script>window.__x=1</script><b>q</b>')).toBeTruthy();
     expect(screen.getByText('<svg onload=1>')).toBeTruthy();
     expect((screen.getByLabelText('Your note') as HTMLTextAreaElement).value).toBe('<i>note</i>');
-    expect(container.querySelector('script, img, b, i, u, svg')).toBeNull();
+    expect(container.querySelector('script, img, b, i, u')).toBeNull();
+    // The only SVGs are the panel's own decorative icons and mascot, never page data.
+    for (const svg of container.querySelectorAll('svg')) {
+      expect(svg.getAttribute('aria-hidden')).toBe('true');
+      expect(svg.getAttribute('onload')).toBeNull();
+    }
   });
 });

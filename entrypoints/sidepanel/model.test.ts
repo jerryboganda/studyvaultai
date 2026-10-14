@@ -8,6 +8,7 @@ import {
   revealAvailability,
   scopeLabel,
   sourceLinkFor,
+  tabOf,
   validateBankName,
   validateNoteBody,
   viewFromHash,
@@ -144,6 +145,15 @@ describe('viewFromHash', () => {
     expect(viewFromHash('')).toBeNull();
     expect(viewFromHash('#inbox')).toBeNull();
     expect(viewFromHash('#__proto__')).toBeNull();
+    // Recent moved under More but keeps its deep link.
+    expect(viewFromHash('#recent')).toBe('recent');
+    expect(viewFromHash('#more')).toBe('more');
+  });
+
+  it('selects the More tab while Recent is shown', () => {
+    expect(tabOf('recent')).toBe('more');
+    expect(tabOf('more')).toBe('more');
+    expect(tabOf('banks')).toBe('banks');
   });
 });
 

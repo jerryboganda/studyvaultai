@@ -316,6 +316,7 @@ export function startController(deps: ControllerDeps): Controller {
       {
         text,
         tone: 'success',
+        ...(result.xp ? { xp: result.xp } : {}),
         action: undoable
           ? {
               label: 'Undo',

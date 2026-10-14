@@ -9,6 +9,7 @@ import { freshDatabase, save } from '@storage/test-vault';
 import { STUDY_SETTINGS_KEY, defaultStudySettings } from '@ui/review';
 import { makeChromeFakes, rpc } from '@ui/testing/fakes';
 import { SidePanel } from './SidePanel';
+import { openCard } from './testing';
 
 /**
  * Links under a card of the side panel, against the REAL vault: closed and free until asked, the
@@ -80,9 +81,12 @@ afterEach(cleanup);
 const A = 'Aspirin irreversibly inhibits cyclooxygenase in platelets.';
 const B = 'Clopidogrel blocks the P2Y12 receptor on platelets.';
 
+/** The card of a highlight, with its "More actions" (where Links lives) open. */
 const cardOf = async (id: string) => {
   await waitFor(() => expect(document.querySelector(`[data-highlight-id="${id}"]`)).toBeTruthy());
-  return document.querySelector<HTMLElement>(`article[data-highlight-id="${id}"]`)!;
+  const card = document.querySelector<HTMLElement>(`article[data-highlight-id="${id}"]`)!;
+  await openCard(card);
+  return card;
 };
 
 describe('Links on a card', () => {
@@ -150,8 +154,18 @@ describe('Links on a card', () => {
     await open();
     const card = await cardOf(a.id);
     await userEvent.click(within(card).getByTestId('related-toggle'));
-    const suggestion = await within(card).findByTestId('related-item');
-    expect(suggestion.getAttribute('data-highlight-id')).toBe(b.id);
+    // The row for b. ponytail: on a slow runner the search index of the previous test can be
+    // persisted (3 s timer) and reloaded here with its stale rows; pick b's row instead of "the one".
+    await waitFor(async () =>
+      expect(
+        (await within(card).findAllByTestId('related-item')).map((r) =>
+          r.getAttribute('data-highlight-id'),
+        ),
+      ).toContain(b.id),
+    );
+    const suggestion = within(card)
+      .getAllByTestId('related-item')
+      .find((r) => r.getAttribute('data-highlight-id') === b.id)!;
     await userEvent.click(within(suggestion).getByTestId('related-link'));
     expect((await within(suggestion).findByTestId('related-linked')).textContent).toBe(
       'Linked as Related',
