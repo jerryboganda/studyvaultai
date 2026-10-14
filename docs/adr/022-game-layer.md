@@ -29,11 +29,13 @@ These facts of the codebase shape the decision:
      `rv_<logId>`, `hs_<highlightId>`, `cd_<cardId>`. Each row is a pure function of its source row,
      and its `at` is the source row's own timestamp. The table is backed up but not synced: every
      device derives the same rows from synced source rows.
-   - `gameFacts` (`id, at, [kind+at]`) holds what cannot be re-derived:
-     - review undo `ru_<logId>` and save undo `hu_<highlightId>`;
+   - `gameFacts` (`id, at, [kind+at], schemaVersion`) holds what cannot be re-derived:
+     - review undo `ru_<logId>` and save undo `hu_<highlightId>`, and the card cancel `cu_<cardId>`
+       (with `ru_`/`hu_`, written by a merge restore for the rows it adds, so a merge earns nothing);
      - the session bonus `sb_<sessionId>`;
      - goal `gs_<uuid>`, Game mode `gm_<uuid>` and game start `gx_<uuid>`;
-     - a copy of any `gameEvents` row whose source a purge removes.
+     - a copy of any `gameEvents` row whose source a purge (or a remote delete) removes; the purge
+       derives the rows first, so a purge that runs before the backfill keeps its XP.
 
      `gameFacts` is backed up, and it is synced (append-only) when sync is on.
 2. **Rows are only ever added.** An undo is a cancelling fact, never an edit. A row's id and content
