@@ -150,13 +150,15 @@ export function SetupDialog() {
               id: 'goal',
               title: 'Your daily goal',
               validate: () => (goal ? null : 'Pick a goal'),
-              content: (
+              content: ({ error, errorId }) => (
                 <ChoiceCards
                   label="Daily goal"
                   value={goal}
                   onChange={setGoal}
                   options={GOALS}
                   columns={2}
+                  invalid={Boolean(error)}
+                  describedBy={error ? errorId : undefined}
                 />
               ),
             },
@@ -164,8 +166,15 @@ export function SetupDialog() {
               id: 'site',
               title: 'Turn on a site',
               validate: () => (site ? null : 'Pick one'),
-              content: (
-                <ChoiceCards label="Site access" value={site} onChange={setSite} options={SITES} />
+              content: ({ error, errorId }) => (
+                <ChoiceCards
+                  label="Site access"
+                  value={site}
+                  onChange={setSite}
+                  options={SITES}
+                  invalid={Boolean(error)}
+                  describedBy={error ? errorId : undefined}
+                />
               ),
             },
             {

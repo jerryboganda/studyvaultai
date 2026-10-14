@@ -1,0 +1,349 @@
+/*
+ * Sunny Vault design tokens (owner-approved direction, gallery/mockups/sunny).
+ *
+ * Scopes: extension pages theme <html> (:root); the in-page overlay themes .sv-root inside its
+ * shadow root (:host carries the light defaults, never a theme). [data-theme] also works on any
+ * element, so a subtree (or the preview page) can pin a theme. Dark follows the system unless
+ * data-theme="light". [data-contrast="more"|"high"] and prefers-contrast: more raise contrast;
+ * [data-density="compact"] tightens spacing. Plain CSS custom properties only (ADR-002).
+ *
+ * Every legacy --sv-* name from packages/ui/src/tokens.css (and the status tones that
+ * components.css adds) is kept, mapped to its Sunny value, so the next phase can swap files.
+ * Pairs are checked by design/contrast.test.ts (text >= 4.5:1, non-text >= 3:1).
+ */
+
+:root,
+:host {
+  /* Type: Nunito on extension pages (bundled, @fontsource-variable/nunito); system rounded in pages. */
+  --sv-font:
+    'Nunito Variable', ui-rounded, 'SF Pro Rounded', system-ui, -apple-system, 'Segoe UI', Roboto,
+    sans-serif;
+  --sv-font-page-overlay:
+    ui-rounded, 'SF Pro Rounded', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --sv-font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, monospace;
+  --sv-serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Times New Roman', serif;
+  --sv-text-xs: 0.75rem;
+  --sv-text-sm: 0.875rem;
+  --sv-text-md: 1rem;
+  --sv-text-lg: 1.25rem;
+  --sv-text-xl: 1.625rem;
+  --sv-text-2xl: 2.25rem;
+  --sv-leading: 1.4;
+
+  /* Space and shape */
+  --sv-space-1: 4px;
+  --sv-space-2: 8px;
+  --sv-space-3: 12px;
+  --sv-space-4: 16px;
+  --sv-space-5: 24px;
+  --sv-space-6: 32px;
+  --sv-radius-sm: 10px;
+  --sv-radius-md: 16px;
+  --sv-radius-lg: 20px;
+  --sv-radius-xl: 28px;
+  --sv-radius-pill: 999px;
+  --sv-press: 4px;
+  --sv-control-h: 44px;
+  /* Picture-card art tile (56px under compact density). */
+  --sv-art: 72px;
+  --sv-focus-width: 3px;
+
+  /* Stacking (UX_DESIGN 2.9); modal dialogs use the top layer instead. */
+  --sv-z-raised: 1;
+  --sv-z-sticky: 10;
+  --sv-z-menu: 30;
+  --sv-z-tip: 40;
+  --sv-z-popover: 50;
+  --sv-z-celebrate: 55;
+  --sv-z-toast: 60;
+
+  /* Mascot: fixed brand colours that read on both canvases. */
+  --sv-buddy-navy: #16337f;
+  --sv-buddy-body: #2a62e5;
+  --sv-buddy-shine: #6f97ff;
+  --sv-buddy-door: #e3ecff;
+  --sv-buddy-hinge: #ffc83d;
+  --sv-buddy-ink: #18213b;
+  --sv-buddy-cheek: #ff8fb1;
+
+  /* Highlight palette: mirrors COLOR_SWATCH in @shared (stored highlight colours), not re-themed. */
+  --sv-hl-amber: rgba(251, 191, 36, 0.45);
+  --sv-hl-blue: rgba(96, 165, 250, 0.4);
+  --sv-hl-red: rgba(248, 113, 113, 0.4);
+  --sv-hl-purple: rgba(167, 139, 250, 0.4);
+  --sv-hl-orange: rgba(251, 146, 60, 0.42);
+  --sv-hl-green: rgba(74, 222, 128, 0.4);
+  --sv-hl-teal: rgba(45, 212, 191, 0.4);
+  --sv-solid-amber: #f59e0b;
+  --sv-solid-blue: #3b82f6;
+  --sv-solid-red: #ef4444;
+  --sv-solid-purple: #8b5cf6;
+  --sv-solid-orange: #f97316;
+  --sv-solid-green: #22c55e;
+  --sv-solid-teal: #14b8a6;
+
+  /* Motion: --sv-motion stays a bare duration (legacy CSS appends its own easing). */
+  --sv-motion: 140ms;
+  --sv-motion-slow: 500ms;
+  --sv-ease-spring: cubic-bezier(0.3, 0.7, 0.4, 1.4);
+}
+
+:root,
+:host,
+[data-theme='light'] {
+  color-scheme: light;
+
+  /* Brand. Fills carry white (or on-sun) text; *-ink colours are the text-safe versions. */
+  --sv-primary: #2a62e5;
+  --sv-primary-edge: #1b44a8;
+  --sv-on-primary: #ffffff;
+  --sv-primary-soft: #e6eeff;
+  --sv-primary-soft-ink: #1e4fc4;
+  --sv-sun: #ffc83d;
+  --sv-sun-edge: #d99a00;
+  --sv-on-sun: #3a2a00;
+  --sv-sun-soft: #fff4d1;
+  --sv-sun-soft-ink: #7a5300;
+  /* Outline around yellow progress (goal ring, level bar): yellow alone is 1.3:1 on its track. */
+  --sv-sun-line: #9a6c00;
+
+  /* Neutrals */
+  --sv-canvas: #edf1f8;
+  --sv-surface: #ffffff;
+  --sv-surface-2: #f4f6fb;
+  --sv-surface-raised: #ffffff;
+  --sv-sunk: #e3e9f4;
+  --sv-border: #d5ddeb;
+  /* Boundary that identifies a control (inputs, switch track, choice ring): >= 3:1. */
+  --sv-line-strong: #75829f;
+  --sv-ink: #18213b;
+  --sv-ink-2: #4a5672;
+  --sv-scrim: rgb(22 44 110 / 0.42);
+  --sv-shadow: 0 10px 30px rgb(24 33 59 / 0.12);
+
+  /* 3D edge: the darker bottom lip that presses down on click. */
+  --sv-edge: #c6d0e2;
+
+  /* Game layer: XP and goal (sun), streak (flame), freezes (ice). */
+  --sv-flame: #ff7a1a;
+  --sv-flame-ink: #b54a00;
+  --sv-ice: #1f7fd6;
+
+  /* Status tones: fill (white text), edge (3D), soft background, ink (text on soft or surface). */
+  --sv-success-fill: #0a8060;
+  --sv-success-edge: #065c45;
+  --sv-success-soft: #ddf6ec;
+  --sv-success-ink: #0a6e50;
+  --sv-danger-fill: #d7373f;
+  --sv-danger-edge: #9e2229;
+  --sv-danger-soft: #fde5e6;
+  --sv-danger-ink: #b3262d;
+  --sv-warning-fill: #b35600;
+  --sv-warning-edge: #7f3d00;
+  --sv-warning-soft: #ffebd6;
+  --sv-warning-ink: #9a4c00;
+  --sv-violet-fill: #6a4be0;
+  --sv-violet-edge: #4a2fb3;
+  --sv-violet-soft: #eee9ff;
+  --sv-violet-ink: #5b3fd6;
+
+  /* Chart scale: bar fills (>= 3:1 on --sv-sunk) and the streak heatmap (0 = no activity). */
+  --sv-bar-primary: #2a62e5;
+  --sv-bar-success: #0a8060;
+  --sv-bar-violet: #6a4be0;
+  --sv-heat-0: #e3e9f4;
+  --sv-heat-1: #c9d9ff;
+  --sv-heat-2: #8fb0ff;
+  --sv-heat-3: #4c7ff0;
+  --sv-heat-4: #1f4fc7;
+  --sv-glow: #fff4d1;
+
+  /* Focus ring (two-tone: ring plus the halo between it and the control). */
+  --sv-focus: #1d4fd8;
+  --sv-focus-halo: #ffffff;
+
+  /* Legacy names whose Sunny value differs by theme. */
+  --sv-accent: #2a62e5;
+  --sv-accent-hover: #1b44a8;
+  --sv-accent-text: #ffffff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']),
+  .sv-root:not([data-theme='light']) {
+    color-scheme: dark;
+    --sv-primary: #3268ea;
+    --sv-primary-edge: #1d3f99;
+    --sv-primary-soft: #1e2d57;
+    --sv-primary-soft-ink: #a9c2ff;
+    --sv-sun-edge: #b37e00;
+    --sv-on-sun: #2a1e00;
+    --sv-sun-soft: #3a3014;
+    --sv-sun-soft-ink: #ffd873;
+    --sv-sun-line: #b37e00;
+    --sv-canvas: #0e1527;
+    --sv-surface: #172038;
+    --sv-surface-2: #1d2843;
+    --sv-surface-raised: #1d2843;
+    --sv-sunk: #26324f;
+    --sv-border: #2e3b5c;
+    --sv-line-strong: #7e8bb0;
+    --sv-ink: #ecf1ff;
+    --sv-ink-2: #a9b5d3;
+    --sv-scrim: rgb(3 6 14 / 0.7);
+    --sv-shadow: 0 10px 30px rgb(0 0 0 / 0.4);
+    --sv-edge: #0a0f1d;
+    --sv-flame: #ff8a33;
+    --sv-flame-ink: #ff9a4d;
+    --sv-ice: #4aa8ff;
+    --sv-success-soft: #163a33;
+    --sv-success-ink: #6ee7b7;
+    --sv-danger-soft: #3d1f27;
+    --sv-danger-ink: #ff9aa0;
+    --sv-warning-soft: #3b2a17;
+    --sv-warning-ink: #ffb870;
+    --sv-violet-soft: #2a2350;
+    --sv-violet-ink: #c4b5ff;
+    --sv-bar-primary: #a9c2ff;
+    --sv-bar-success: #6ee7b7;
+    --sv-bar-violet: #c4b5ff;
+    --sv-heat-0: #26324f;
+    --sv-heat-1: #233c75;
+    --sv-heat-2: #2f5bc4;
+    --sv-heat-3: #5b8cff;
+    --sv-heat-4: #a9c2ff;
+    --sv-glow: #1e2d57;
+    --sv-focus: #ffd15c;
+    --sv-focus-halo: #0e1527;
+    --sv-accent: #a9c2ff;
+    --sv-accent-hover: #c4d5ff;
+    --sv-accent-text: #0e1527;
+  }
+}
+
+/* Same values as the media block above (contrast.test.ts keeps the two in step). */
+[data-theme='dark'] {
+  color-scheme: dark;
+  --sv-primary: #3268ea;
+  --sv-primary-edge: #1d3f99;
+  --sv-primary-soft: #1e2d57;
+  --sv-primary-soft-ink: #a9c2ff;
+  --sv-sun-edge: #b37e00;
+  --sv-on-sun: #2a1e00;
+  --sv-sun-soft: #3a3014;
+  --sv-sun-soft-ink: #ffd873;
+  --sv-sun-line: #b37e00;
+  --sv-canvas: #0e1527;
+  --sv-surface: #172038;
+  --sv-surface-2: #1d2843;
+  --sv-surface-raised: #1d2843;
+  --sv-sunk: #26324f;
+  --sv-border: #2e3b5c;
+  --sv-line-strong: #7e8bb0;
+  --sv-ink: #ecf1ff;
+  --sv-ink-2: #a9b5d3;
+  --sv-scrim: rgb(3 6 14 / 0.7);
+  --sv-shadow: 0 10px 30px rgb(0 0 0 / 0.4);
+  --sv-edge: #0a0f1d;
+  --sv-flame: #ff8a33;
+  --sv-flame-ink: #ff9a4d;
+  --sv-ice: #4aa8ff;
+  --sv-success-soft: #163a33;
+  --sv-success-ink: #6ee7b7;
+  --sv-danger-soft: #3d1f27;
+  --sv-danger-ink: #ff9aa0;
+  --sv-warning-soft: #3b2a17;
+  --sv-warning-ink: #ffb870;
+  --sv-violet-soft: #2a2350;
+  --sv-violet-ink: #c4b5ff;
+  --sv-bar-primary: #a9c2ff;
+  --sv-bar-success: #6ee7b7;
+  --sv-bar-violet: #c4b5ff;
+  --sv-heat-0: #26324f;
+  --sv-heat-1: #233c75;
+  --sv-heat-2: #2f5bc4;
+  --sv-heat-3: #5b8cff;
+  --sv-heat-4: #a9c2ff;
+  --sv-glow: #1e2d57;
+  --sv-focus: #ffd15c;
+  --sv-focus-halo: #0e1527;
+  --sv-accent: #a9c2ff;
+  --sv-accent-hover: #c4d5ff;
+  --sv-accent-text: #0e1527;
+}
+
+/*
+ * More contrast: muted text becomes body text and every boundary becomes a strong line. The
+ * system preference must repeat the dark selectors (they are more specific than a bare :root);
+ * the manual switch accepts the legacy dashboard value "high" too.
+ */
+@media (prefers-contrast: more) {
+  :root,
+  :root:not([data-theme='light']),
+  :host,
+  .sv-root:not([data-theme='light']),
+  [data-theme] {
+    --sv-ink-2: var(--sv-ink);
+    --sv-line-strong: var(--sv-ink);
+    --sv-border: var(--sv-ink);
+    --sv-focus-width: 4px;
+  }
+}
+[data-contrast='more'],
+[data-contrast='high'],
+:root:is([data-contrast='more'], [data-contrast='high']),
+.sv-root:is([data-contrast='more'], [data-contrast='high']) {
+  --sv-ink-2: var(--sv-ink);
+  --sv-line-strong: var(--sv-ink);
+  --sv-border: var(--sv-ink);
+  --sv-focus-width: 4px;
+}
+
+/*
+ * Theme-independent tokens and the legacy aliases. A var() resolves on the element that declares
+ * it, so this block repeats on every element that can change a theme or contrast value; otherwise
+ * a dark .sv-root would inherit aliases already resolved to light.
+ */
+:root,
+:host,
+.sv-root,
+[data-theme],
+[data-contrast] {
+  --sv-bg: var(--sv-canvas);
+  --sv-text: var(--sv-ink);
+  --sv-text-muted: var(--sv-ink-2);
+  --sv-border-strong: var(--sv-line-strong);
+  --sv-danger: var(--sv-danger-ink);
+  --sv-danger-bg: var(--sv-danger-soft);
+  --sv-success: var(--sv-success-ink);
+  --sv-success-bg: var(--sv-success-soft);
+  --sv-warning: var(--sv-warning-ink);
+  --sv-warning-bg: var(--sv-warning-soft);
+  --sv-info: var(--sv-primary-soft-ink);
+  --sv-info-bg: var(--sv-primary-soft);
+}
+
+/* Pages are not extension pages: the overlay never asks the host page for Nunito. */
+:host {
+  --sv-font: var(--sv-font-page-overlay);
+}
+
+[data-density='compact'] {
+  --sv-space-2: 6px;
+  --sv-space-3: 8px;
+  --sv-space-4: 12px;
+  --sv-space-5: 16px;
+  --sv-space-6: 24px;
+  --sv-press: 3px;
+  --sv-control-h: 36px;
+  --sv-art: 56px;
+}
+
+/* Must come after the defaults above: equal specificity, so source order decides. */
+@media (prefers-reduced-motion: reduce) {
+  :root,
+  :host {
+    --sv-motion: 0ms;
+    --sv-motion-slow: 0ms;
+  }
+}

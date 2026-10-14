@@ -52,6 +52,8 @@ const DAYS = Array.from({ length: 80 }, (_, i) =>
   i % 9 === 4 || i % 13 === 7 ? 0 : (i * 53 + 17) % 58,
 );
 const END = new Date(2026, 9, 14);
+// Two missed days a streak freeze saved.
+const FROZEN = DAYS.flatMap((xp, i) => (xp === 0 && i > 60 ? [i] : [])).slice(0, 2);
 
 function Card({
   title,
@@ -390,7 +392,14 @@ export function Showcase() {
       <Buttons />
       <Game />
       <Card title="Streak calendar" info="Arrow keys move by day and week. Escape hides the tip.">
-        <Heatmap days={DAYS} goal={30} title="Streak calendar" end={END} locale="en-US" />
+        <Heatmap
+          days={DAYS}
+          goal={30}
+          title="Streak calendar"
+          end={END}
+          locale="en-US"
+          frozen={FROZEN}
+        />
       </Card>
       <Choices />
       <NewBankWizard />
