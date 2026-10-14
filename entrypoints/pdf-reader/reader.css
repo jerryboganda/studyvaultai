@@ -192,6 +192,11 @@ body,
   z-index: 1;
   overflow: clip;
   opacity: 1;
+  /* pdf.js sizes each span from a canvas measure at normal weight; the page's 600 body weight
+     would make every span wider than its words. */
+  font-weight: 400;
+  font-style: normal;
+  overflow-wrap: normal;
   text-align: initial;
   line-height: 1;
   letter-spacing: normal;
