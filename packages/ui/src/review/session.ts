@@ -39,7 +39,7 @@ export type StudyPort = Pick<
   | 'startStudySession'
   | 'resumeStudySession'
   | 'saveStudySession'
-  | 'clearStudySession'
+  | 'completeStudySession'
   | 'getCard'
   | 'getDeck'
   | 'reviewCard'
@@ -55,7 +55,7 @@ export const defaultPort: StudyPort = {
   startStudySession: repo.startStudySession,
   resumeStudySession: repo.resumeStudySession,
   saveStudySession: repo.saveStudySession,
-  clearStudySession: repo.clearStudySession,
+  completeStudySession: repo.completeStudySession,
   getCard: repo.getCard,
   getDeck: repo.getDeck,
   reviewCard: repo.reviewCard,
@@ -106,6 +106,11 @@ export interface SessionState {
   waitUntil: string | null;
   lastAnswer: LastAnswer | null;
   summary: SessionSummary | null;
+  /**
+   * The session bonus (ADR-022) once the session is done: `awarded` now, `already` earlier (an
+   * undo after the done screen keeps it), `no_answers` when nothing was answered. Null otherwise.
+   */
+  bonus: repo.CompleteSessionStatus | null;
   notice: string | null;
   error: string | null;
   busy: boolean;
@@ -131,6 +136,7 @@ const INITIAL: SessionState = {
   waitUntil: null,
   lastAnswer: null,
   summary: null,
+  bonus: null,
   notice: null,
   error: null,
   busy: false,
@@ -201,7 +207,7 @@ export class ReviewSessionController {
         ...this.prefs,
         deckIds: deckIds && deckIds.length > 0 ? deckIds : null,
       });
-      this.set({ summary: null, lastAnswer: null, answered: 0, notice: null });
+      this.set({ summary: null, bonus: null, lastAnswer: null, answered: 0, notice: null });
       await this.open(started.session);
     });
   }
@@ -229,6 +235,7 @@ export class ReviewSessionController {
       const dropped = resumed.dropped.length;
       this.set({
         summary: null,
+        bonus: null,
         lastAnswer: null,
         notice:
           dropped > 0
@@ -384,6 +391,7 @@ export class ReviewSessionController {
             .filter(Boolean)
             .join(' '),
           summary: null,
+          bonus: null,
           phase: 'question',
         });
         await this.presentCard(out.card, 'pending');
@@ -591,14 +599,16 @@ export class ReviewSessionController {
     });
   }
 
+  /** Clears the stored session and records its bonus (once per session) in one transaction. */
   private async finish(session: ReviewSession): Promise<void> {
-    await this.port.clearStudySession();
+    const { status } = await this.port.completeStudySession(session.id, { now: this.now() });
     const logs = await this.port.listReviewLogs({ since: session.startedAt });
     this.set({
       phase: 'done',
       current: null,
       waitUntil: null,
       summary: summarizeSession(logs, session.id),
+      bonus: status,
     });
   }
 

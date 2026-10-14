@@ -78,6 +78,7 @@ describe('sync policy against every registered schema', () => {
         'filingRules',
         'syllabi',
         'relations',
+        'gameFacts',
       ]),
     );
     expect(active.notSynced).toEqual([]);
@@ -123,6 +124,8 @@ describe('sync policy against every registered schema', () => {
     );
     expect(policy.cards!.immutable).toContain('sourceQuote');
     expect(policy.reviewLogs!.appendOnly).toBe(true);
+    // game facts are append-only: an undo or a goal change is a new row, never an edit
+    expect(policy.gameFacts!.appendOnly).toBe(true);
     // free text is never merged last-writer-wins without a record of the other side
     expect(policy.notes!.text).toEqual(expect.arrayContaining(['title', 'body']));
     expect(policy.highlights!.text).toContain('userComment');
@@ -161,8 +164,9 @@ describe('sync policy against every registered schema', () => {
       .map((t) => t.name)
       .filter((n) => !covered.has(n))
       .sort();
-    // device-local bookkeeping and cached bytes, plus AI output (evidence links are not final)
-    expect(leftOut).toEqual(['aiResults', 'attachments', 'meta', 'syncOps']);
+    // device-local bookkeeping and cached bytes, plus AI output (evidence links are not final), and
+    // the game events every device derives from the synced source rows itself (ADR-022)
+    expect(leftOut).toEqual(['aiResults', 'attachments', 'gameEvents', 'meta', 'syncOps']);
     expect(unregisteredTables()).toEqual(expect.not.arrayContaining(['cards', 'decks']));
   });
 });

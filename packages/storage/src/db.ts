@@ -27,6 +27,7 @@ import {
   type Syllabus,
   type Tag,
 } from '@shared';
+import type { GameRow } from '@study/game';
 import { isNewerRow, normaliseRow } from './rows';
 
 export const DB_NAME = 'studyvault';
@@ -108,8 +109,23 @@ export const SCHEMA_V4 = {
   relations: 'id, [fromKind+fromId], [toKind+toId], fromId, toId, updatedAt, deletedAt',
 } as const;
 
+/**
+ * Dexie store definitions of schema version 5 (ADR-022, the game layer). Additive: two append-only
+ * ledger tables, no existing table changes. `gameEvents` holds one row per XP-earning source row
+ * (derived, backed up, never synchronised); `at` serves the per-day range reads and counts, and
+ * `schemaVersion` is indexed because the table is large (the newer-build probe). `gameFacts` holds
+ * what cannot be re-derived (undos, session bonuses, goals, Game mode, the game start, purge
+ * copies); `[kind+at]` finds the latest mode and every goal or start without a scan, and
+ * `schemaVersion` keeps the newer-build probe off a full scan (purge copies make the table grow).
+ */
+export const SCHEMA_V5 = {
+  ...SCHEMA_V4,
+  gameEvents: 'id, at, schemaVersion',
+  gameFacts: 'id, at, [kind+at], schemaVersion',
+} as const;
+
 /** The Dexie (IndexedDB) version this build declares. Not the per-record `schemaVersion`. */
-export const DB_VERSION = 4;
+export const DB_VERSION = 5;
 
 /** Row of a table whose entity schema belongs to another module (study, ai, sync). */
 export type ForeignRow = { id: string } & Record<string, unknown>;
@@ -250,6 +266,35 @@ export async function upgradeV3ToV4(tx: Transaction): Promise<void> {
       ...prior,
       dbVersion: 4,
       v4MigratedAt: typeof prior.v4MigratedAt === 'string' ? prior.v4MigratedAt : ts,
+    },
+    updatedAt: ts,
+  };
+  await metaTable.put(marker);
+}
+
+/**
+ * v4 -> v5. The two game tables start empty and no vault row is read or written (the backfill is a
+ * separate resumable job that runs after the database opens, S/game.ts), so the upgrade can neither
+ * run out of quota nor take long on a large vault. Only the marker moves, keeping what earlier
+ * steps recorded; safe to run again.
+ */
+export async function upgradeV4ToV5(tx: Transaction): Promise<void> {
+  const ts = new Date().toISOString();
+  const metaTable = tx.table('meta');
+  const previous = (await metaTable.get(META_SCHEMA_KEY)) as MetaRow | undefined;
+  const prior =
+    previous && typeof previous.value === 'object' && previous.value !== null
+      ? (previous.value as Record<string, unknown>)
+      : {};
+  const marker: MetaRow = {
+    key: META_SCHEMA_KEY,
+    value: {
+      recordSchemaVersion: SCHEMA_VERSION,
+      migratedFrom: 4,
+      migratedAt: ts,
+      ...prior,
+      dbVersion: 5,
+      v5MigratedAt: typeof prior.v5MigratedAt === 'string' ? prior.v5MigratedAt : ts,
     },
     updatedAt: ts,
   };
@@ -457,6 +502,8 @@ export class StudyVaultDb extends Dexie {
   declare filingRules: Table<FilingRule, string>;
   declare syllabi: Table<Syllabus, string>;
   declare relations: Table<Relation, string>;
+  declare gameEvents: Table<GameRow, string>;
+  declare gameFacts: Table<GameRow, string>;
   declare meta: Table<MetaRow, string>;
 
   constructor(name: string = DB_NAME) {
@@ -476,6 +523,11 @@ export class StudyVaultDb extends Dexie {
       .stores(SCHEMA_V4)
       .upgrade(async (tx) => {
         await upgradeV3ToV4(tx);
+      });
+    this.version(5)
+      .stores(SCHEMA_V5)
+      .upgrade(async (tx) => {
+        await upgradeV4ToV5(tx);
       });
     this.use(syncCaptureMiddleware(() => this.syncInterceptor));
   }
@@ -733,7 +785,7 @@ export async function assertNoNewerRows(db: StudyVaultDb): Promise<void> {
   const refuse = () => new StudyVaultError('storage_unavailable', NEWER_DATA_MESSAGE);
   // Big tables: probe the schemaVersion index (numbers above ours; strings and junk sort after
   // Infinity and are not "newer"), and scan only when the probe says there may be one.
-  for (const table of [db.sources, db.highlights, db.notes] as const) {
+  for (const table of [db.sources, db.highlights, db.notes, db.gameEvents, db.gameFacts] as const) {
     const probe = table
       .where('schemaVersion')
       .between(SCHEMA_VERSION, Number.POSITIVE_INFINITY, false, true);

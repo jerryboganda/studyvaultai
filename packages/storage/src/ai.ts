@@ -14,6 +14,7 @@ import {
   type AiTaskKind,
 } from '@ai';
 import { Highlight, IsoDate, Note, SCHEMA_VERSION, StudyVaultError } from '@shared';
+import { cardEvent } from '@study/game';
 import { Card, Deck, KnowledgePoint } from '@study/schema';
 import {
   cmp,
@@ -28,6 +29,7 @@ import {
   unique,
 } from './core';
 import { withDb, withWritableDb, type ForeignRow, type StudyVaultDb } from './db';
+import { addMissing } from './game';
 import { registerTableSchema } from './registry';
 
 /**
@@ -701,7 +703,16 @@ export async function acceptAiItem(input: AiAcceptInput): Promise<AiAcceptOutcom
   const outcome = await withWritableDb((db) =>
     db.transaction(
       'rw',
-      [db.aiResults, db.knowledgePoints, db.decks, db.cards, db.notes, db.highlights, db.sources],
+      [
+        db.aiResults,
+        db.knowledgePoints,
+        db.decks,
+        db.cards,
+        db.notes,
+        db.highlights,
+        db.sources,
+        db.gameEvents,
+      ],
       async (): Promise<AiAcceptOutcome> => {
         const current = await readResult(db, input.resultId);
         if (!aiItemPaths(toResult(current)).includes(input.itemPath)) {
@@ -776,6 +787,7 @@ export async function acceptAiItem(input: AiAcceptInput): Promise<AiAcceptOutcom
             )
             .map((c) => (c.deckId === deckId ? c : { ...c, deckId }));
           await db.cards.bulkPut(stored);
+          await addMissing(db.gameEvents, stored.map(cardEvent));
           targets.push(...stored.map((c) => ({ table: 'cards' as const, id: c.id })));
         }
         if (note) {

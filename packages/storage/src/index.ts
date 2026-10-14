@@ -35,6 +35,7 @@ export {
   SCHEMA_V2,
   SCHEMA_V3,
   SCHEMA_V4,
+  SCHEMA_V5,
   type StudyVaultDb,
   type MigrationContext,
   type MigrationHook,
@@ -239,6 +240,24 @@ export * from './ai';
 
 // Retention: decks, knowledge points, cards, reviews, queue, session (one line; see study.ts)
 export * from './study';
+
+// Game layer (ADR-022): XP ledger state, backfill, daily goal, Game mode, celebrations (see game.ts).
+// The session bonus is `completeStudySession` in study.ts.
+export {
+  GAME_BACKFILL_LOCK,
+  claimCelebrations,
+  getGameState,
+  isGameModeOn,
+  runGameBackfill,
+  saveGameCache,
+  setDailyGoal,
+  setGameMode,
+  type BackfillView,
+  type GameBackfillOptions,
+  type GameBackfillResult,
+  type GameCacheUpdate,
+  type GameState,
+} from './game';
 
 // Optional sync: Dexie outbox, state store, applier, write capture and reconcile (one statement; see sync.ts)
 export {

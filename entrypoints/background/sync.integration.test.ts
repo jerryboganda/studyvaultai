@@ -5,7 +5,7 @@ import Dexie from 'dexie';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { getTrustedSettings, updateSettings } from '@runtime';
-import { aadOf, SyncOperation, createPayloadCodec, unlockKey } from '@sync';
+import { STUDYVAULT_SYNC_POLICY, SyncOperation, aadOf, createPayloadCodec, unlockKey } from '@sync';
 import {
   closeDb,
   countSyncAttention,
@@ -16,9 +16,11 @@ import {
   listSyncQuarantine,
   resetDbForTests,
   saveCapture,
+  setDailyGoal,
   softDeleteHighlight,
   updateHighlight,
   updateNote,
+  type SyncRuntimeOptions,
 } from '@storage';
 import { StudyVaultDb } from '../../packages/storage/src/db';
 import { cap } from '../../packages/storage/src/test-fixtures';
@@ -51,7 +53,11 @@ let devices: Device[] = [];
 
 async function makeDevice(
   name: 'A' | 'B' | 'C',
-  o: { expiresInSeconds?: number } = {},
+  o: {
+    expiresInSeconds?: number;
+    /** Another build's sync runtime (its policy, its engine limits). */
+    runtime?: Pick<SyncRuntimeOptions, 'policy' | 'options'>;
+  } = {},
 ): Promise<Device> {
   const net: Device['net'] = { online: true };
   let sent = 0;
@@ -98,7 +104,7 @@ async function makeDevice(
     fetch: provider.fetch,
     crypto: webcrypto as unknown as Crypto,
     notifyDataChanged: async () => undefined,
-    createRuntime: (o) => createSyncRuntime({ ...o, db }),
+    createRuntime: (r) => createSyncRuntime({ ...r, ...o.runtime, db }),
     attention: async () =>
       name === 'A'
         ? countSyncAttention()
@@ -481,6 +487,66 @@ describe('two devices, one account, the reference server', () => {
 });
 
 // ---------------------------------------------------------------------------------------------
+
+describe('the game ledger across devices (ADR-022)', () => {
+  it('B derives its own save events and receives A’s goal and save undo, quarantining nothing', async () => {
+    const kept = await saveCapture(cap('Aspirin irreversibly inhibits cyclooxygenase.', 100));
+    const a = await makeDevice('A');
+    const b = await makeDevice('B');
+    await connect(a);
+    await setDailyGoal(50);
+    const undone = await saveCapture(cap('Warfarin inhibits vitamin K epoxide reductase.', 400));
+    await softDeleteHighlight(undone.highlight.id); // inside the undo window: the save's XP goes
+    expect((await sync(a)).status).toBe('idle');
+    await connect(b);
+    expect((await sync(b)).status).toBe('idle');
+
+    const ids = async (db: StudyVaultDb, table: 'gameEvents' | 'gameFacts') =>
+      ((await db.table(table).toArray()) as Array<{ id: string }>).map((r) => r.id).sort();
+    // gameEvents is never synchronised: B's applier derived the same rows from A's highlights.
+    expect(await ids(b.db, 'gameEvents')).toEqual(
+      [`hs_${kept.highlight.id}`, `hs_${undone.highlight.id}`].sort(),
+    );
+    expect(await ids(b.db, 'gameEvents')).toEqual(await ids(a.db, 'gameEvents'));
+    // gameFacts is: the goal and the undo arrive as rows, so both devices count the same XP.
+    const factsB = await ids(b.db, 'gameFacts');
+    expect(factsB).toContain(`hu_${undone.highlight.id}`);
+    expect(factsB.filter((id) => id.startsWith('gs_'))).toHaveLength(1);
+    expect(factsB).toEqual(await ids(a.db, 'gameFacts'));
+    expect(await b.db.syncQuarantine.count()).toBe(0);
+    expect(await a.db.syncQuarantine.count()).toBe(0);
+  });
+
+  it('an older-build peer that quarantined more than it keeps converges after its update', async () => {
+    // The previous build did not know gameFacts; its quarantine keeps 3 ops here (1,000 for real).
+    const { gameFacts: _unknown, ...oldPolicy } = STUDYVAULT_SYNC_POLICY;
+    const keep = { maxQuarantined: 3 };
+    const a = await makeDevice('A');
+    const b = await makeDevice('B', { runtime: { policy: oldPolicy, options: keep } });
+    await connect(a);
+    for (const goal of [10, 30, 50, 100, 10] as const) await setDailyGoal(goal);
+    expect((await sync(a)).status).toBe('idle');
+    await connect(b);
+    await sync(b);
+    const goals = async () =>
+      ((await b.db.gameFacts.toArray()) as Array<{ id: string }>).filter((r) =>
+        r.id.startsWith('gs_'),
+      ).length;
+    expect(await goals()).toBe(0);
+    // Two of the five were evicted, and the cursor already moved past them.
+    expect(await b.db.syncQuarantine.count()).toBe(3);
+
+    // The update: the same database, a new worker running the new build's policy.
+    b.service = createSyncService({
+      ...b.deps,
+      createRuntime: (r) => createSyncRuntime({ ...r, options: keep, db: b.db }),
+    });
+    await b.service.onUpdated();
+    expect((await sync(b)).status).toBe('idle');
+    expect(await goals()).toBe(5);
+    expect(await b.db.syncQuarantine.count()).toBe(0);
+  });
+});
 
 describe('end-to-end encryption through the service', () => {
   it('existing history is re-encrypted, the server never sees plaintext, another device needs the passphrase', async () => {

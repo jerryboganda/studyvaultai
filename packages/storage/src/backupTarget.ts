@@ -50,6 +50,7 @@ import {
   type StudyVaultDb,
 } from './db';
 import { normalizeQuote, quoteHash } from './normalize';
+import { GAME_META_KEYS, newSourceRows, voidMergedXp } from './game';
 import { getTableRegistry } from './registry';
 import { aiCitationGuard, immutableFieldsOf } from './restoreGuards';
 import { resetSyncIdentityIfUsed } from './syncIdentity';
@@ -134,6 +135,9 @@ export const BACKUP_MIGRATIONS: readonly MigrationStep[] = [
   // v4 added three tables (filingRules, syllabi, relations): an older archive simply lacks them, and
   // a replace restore empties them (`tablesCleared`, "clearedWithoutArchiveData"). Rows unchanged.
   { from: 3 },
+  // v5 added gameEvents/gameFacts (ADR-022); rows unchanged. A replace restore of an older archive
+  // empties both and resets the game's device records, so the backfill re-derives from its rows.
+  { from: 4 },
 ];
 
 /** Tables whose ids share one namespace (same list as the integrity check). */
@@ -350,7 +354,9 @@ class DexieStaging implements StagingDb {
     // A replace is not a series of local edits: sync's bookkeeping is reset in the same transaction.
     // Every entity table is in scope even when the archive lacks it (an old or registry-limited
     // archive): `assertNoIdCollisions` reads them, and a table outside the scope is NotFoundError.
-    const scope = [...new Set([...names, ...ENTITY_TABLES])];
+    // A merge also writes the game cancellers of the source rows it adds (`voidMergedXp`).
+    const game = plan.mode === 'merge' ? ['gameEvents', 'gameFacts'] : [];
+    const scope = [...new Set([...names, ...ENTITY_TABLES, ...game])];
     const apply = (db: StudyVaultDb) =>
       db.transaction(
         'rw',
@@ -368,6 +374,7 @@ class DexieStaging implements StagingDb {
             incoming,
             new Set(plan.mode === 'replace' ? plan.tables : []),
           );
+          const added = plan.mode === 'merge' ? await newSourceRows(db, incoming) : null;
           for (const n of names) {
             const table = tableOf(db, n);
             const rows = incoming.get(n) ?? [];
@@ -376,8 +383,15 @@ class DexieStaging implements StagingDb {
               if (rows.length > 0) await table.bulkAdd(rows);
             } else if (rows.length > 0) await table.bulkPut(rows);
           }
+          // A merge earns no XP on any path (the backfill, another device, a later re-derivation).
+          if (added) await voidMergedXp(db, added);
           await db.meta.bulkPut(markers);
-          if (plan.mode === 'replace') await resetSyncIdentityIfUsed(db);
+          if (plan.mode === 'replace') {
+            await resetSyncIdentityIfUsed(db);
+            // The vault is now exactly the archive: re-derive the game from it (a running backfill
+            // sees its marker gone and stops), with a new celebration baseline and no stale cache.
+            await db.meta.bulkDelete([...GAME_META_KEYS]);
+          }
         },
       );
     // Replace is also the way out of "data from a newer build": withWritableDb would refuse it.

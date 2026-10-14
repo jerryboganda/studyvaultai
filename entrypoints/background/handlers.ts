@@ -84,6 +84,8 @@ export interface HandlerDeps {
   openSidePanel(tabId: number): Promise<void>;
   /** chrome.storage.session: hands the highlight to focus over to the side panel. */
   session: SessionArea;
+  /** Game mode (ADR-022): decides whether `capture.save` reports the XP a new highlight earned. */
+  isGameModeOn(): Promise<boolean>;
 }
 
 const forbidden = (message: string) => new StudyVaultError('forbidden', message);
@@ -156,7 +158,12 @@ export function createHandlers(deps: HandlerDeps): Handlers<BackgroundRpc> {
         const banks = await deps.repo.listBanks();
         if (banks.some((b) => b.id === settings.lastBankId)) bankId = settings.lastBankId;
       }
-      const result = await deps.repo.saveCapture({ ...input, bankId, page });
+      const saved = await deps.repo.saveCapture({ ...input, bankId, page });
+      // The toast's "+2 XP". A failed read only hides the number: the save stands.
+      const result =
+        saved.status === 'created' && (await deps.isGameModeOn().catch(() => false))
+          ? { ...saved, xp: 2 as const }
+          : saved;
       if (settings.lastBankId !== result.bank.id) {
         // The highlight is already saved; a failed convenience write must not turn it into an error.
         await deps

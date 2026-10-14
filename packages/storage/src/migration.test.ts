@@ -1,9 +1,11 @@
 // @vitest-environment node
 import 'fake-indexeddb/auto';
+import { readFileSync } from 'node:fs';
 import Dexie from 'dexie';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { INBOX_BANK_ID } from '@shared';
+import type { DayBoundary } from '@study';
 import {
   closeDb,
   DB_NAME,
@@ -16,10 +18,13 @@ import {
   SCHEMA_V2,
   SCHEMA_V3,
   SCHEMA_V4,
+  SCHEMA_V5,
   StudyVaultDb,
   upgradeV1ToV2,
   upgradeV3ToV4,
+  upgradeV4ToV5,
 } from './db';
+import { getGameState, runGameBackfill } from './game';
 import { getPageHighlights, listBanks, listBanksWithCounts, saveCapture } from './repo';
 import { cap } from './test-fixtures';
 import { dump, loadFixture, seedV1, type FixtureName, type Row } from './test-vault';
@@ -29,6 +34,25 @@ beforeEach(async () => {
   fakeBrowser.reset();
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
+
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+const UTC: DayBoundary = { timeZone: 'UTC', rolloverHour: 0 };
+
+/** Run the game backfill (as the worker does after the upgrade) and read the state it implies. */
+async function backfillAndRead(boundary: DayBoundary, now: string) {
+  expect(await runGameBackfill()).toMatchObject({ status: 'done' });
+  const state = await getGameState({ boundary, now });
+  if (!state.ready) throw new Error('the game state is not ready after the backfill');
+  const db = getDb();
+  return {
+    state,
+    events: (await db.gameEvents.toCollection().primaryKeys()).map(String).sort(),
+    facts: (await db.gameFacts.toArray()).map((r) => r.id).sort(),
+  };
+}
 
 const indexNames = (db: Dexie, table: string) =>
   db
@@ -60,15 +84,15 @@ describe('schema version 1 (frozen strings)', () => {
   });
 });
 
-describe('schema version 4 (current)', () => {
+describe('schema version 5 (current)', () => {
   it('declares every planned table with exactly the planned indexes', async () => {
     const db = new StudyVaultDb('studyvault-fresh');
     try {
       await db.open();
       expect(db.verno).toBe(DB_VERSION);
-      expect(DB_VERSION).toBe(4);
-      expect(db.tables.map((t) => t.name).sort()).toEqual(Object.keys(SCHEMA_V4).sort());
-      for (const [table, spec] of Object.entries(SCHEMA_V4)) {
+      expect(DB_VERSION).toBe(5);
+      expect(db.tables.map((t) => t.name).sort()).toEqual(Object.keys(SCHEMA_V5).sort());
+      for (const [table, spec] of Object.entries(SCHEMA_V5)) {
         expect(indexNames(db, table), table).toEqual(declared(spec));
         expect(db.table(table).schema.primKey.name, table).toBe(spec.split(',')[0]!.trim());
       }
@@ -103,6 +127,30 @@ describe('schema version 4 (current)', () => {
         .filter((t) => !(t in SCHEMA_V3))
         .sort(),
     ).toEqual(['filingRules', 'relations', 'syllabi']);
+  });
+
+  it('v5 only adds to v4: every v4 table keeps its exact definition, the two game tables appear', () => {
+    for (const [table, spec] of Object.entries(SCHEMA_V4)) {
+      expect(SCHEMA_V5[table as keyof typeof SCHEMA_V5], table).toBe(spec);
+    }
+    expect(
+      Object.keys(SCHEMA_V5)
+        .filter((t) => !(t in SCHEMA_V4))
+        .sort(),
+    ).toEqual(['gameEvents', 'gameFacts']);
+  });
+
+  it('declares the indexes the game ledger reads use', async () => {
+    const db = new StudyVaultDb('studyvault-v5-shape');
+    try {
+      await db.open();
+      expect(indexNames(db, 'gameEvents')).toEqual(['at', 'schemaVersion']);
+      expect(indexNames(db, 'gameFacts')).toEqual(['[kind+at]', 'at', 'schemaVersion']);
+      expect(db.table('gameEvents').schema.primKey.name).toBe('id');
+    } finally {
+      db.close();
+      await Dexie.delete('studyvault-v5-shape');
+    }
   });
 
   it('declares the indexes the organisation queries use', async () => {
@@ -171,8 +219,8 @@ describe('upgrading frozen version-1 fixtures through the real repo', () => {
         const sorted = (rows: Row[]) => [...rows].sort((a, b) => key(a).localeCompare(key(b)));
         expect(sorted(after[table]!), table).toEqual(sorted(v1[table]));
       }
-      // Everything new starts empty, except the marker.
-      for (const table of Object.keys(SCHEMA_V4)) {
+      // Everything new starts empty, except the marker (the game backfill is a separate job).
+      for (const table of Object.keys(SCHEMA_V5)) {
         if (table in SCHEMA_V1 || table === 'meta') continue;
         expect(after[table], table).toEqual([]);
       }
@@ -222,6 +270,25 @@ describe('upgrading frozen version-1 fixtures through the real repo', () => {
       b.close();
     }
   });
+
+  it.each([
+    ['the saved-pages fixture', 'schema-v1.json', 6],
+    ['the empty-database fixture', 'schema-v1-empty.json', 0],
+    ['the trash / bank-less fixture', 'schema-v1-trash.json', 10],
+  ] as Array<[string, FixtureName, number]>)(
+    '%s: the game backfill after the upgrade derives one save event per highlight (%i XP)',
+    async (_label, name, xp) => {
+      const v1 = loadFixture(name);
+      await seedV1(v1);
+      await listBanks();
+      const { state, events, facts } = await backfillAndRead(UTC, '2026-10-10T12:00:00.000Z');
+      expect(events).toEqual(v1.highlights.map((h) => `hs_${String(h.id)}`).sort());
+      expect(facts).toHaveLength(1); // the game's start on this vault
+      expect(facts[0]).toMatch(/^gx_/);
+      // trashed highlights keep their XP: tidying up is never punished
+      expect(state.totalXp).toBe(xp);
+    },
+  );
 
   it('the empty database still works end to end after the upgrade', async () => {
     await seedV1(loadFixture('schema-v1-empty.json'));
@@ -419,7 +486,8 @@ describe('a database written by a newer build', () => {
     newer.version(2).stores(SCHEMA_V2);
     newer.version(3).stores(SCHEMA_V3);
     newer.version(4).stores(SCHEMA_V4);
-    newer.version(5).stores({ somethingNew: 'id' });
+    newer.version(5).stores(SCHEMA_V5);
+    newer.version(6).stores({ somethingNew: 'id' });
     await newer.open();
     newer.close();
 
@@ -698,8 +766,8 @@ describe('upgrading a version-3 database to version 4', () => {
   it('keeps every row of every v3 table exactly as stored and starts the new tables empty', async () => {
     const before = await seedV3();
     expect(Object.keys(before).sort()).toEqual(Object.keys(SCHEMA_V3).sort());
-    await listBanks(); // performs the upgrade
-    expect(getDb().verno).toBe(4);
+    await listBanks(); // performs the upgrade (to the current version, through v4)
+    expect(getDb().verno).toBe(DB_VERSION);
     const after = await dump();
     for (const [table, rows] of Object.entries(before)) {
       if (table === 'meta') continue;
@@ -713,11 +781,12 @@ describe('upgrading a version-3 database to version 4', () => {
       before.meta!.filter((m) => m.key !== META_SCHEMA_KEY),
     );
     expect(after.meta!.find((m) => m.key === META_SCHEMA_KEY)!.value).toMatchObject({
-      dbVersion: 4,
+      dbVersion: DB_VERSION,
       migratedFrom: 1,
       v3MigratedAt: TS,
       v3OpsFixed: 0,
       v4MigratedAt: expect.any(String),
+      v5MigratedAt: expect.any(String),
     });
   });
 
@@ -761,9 +830,12 @@ describe('upgrading a version-3 database to version 4', () => {
     await listBanks();
     const db = getDb();
     const before = await dump();
+    // The steps as Dexie chains them, twice: the v4 step alone would rewind dbVersion to 4.
     await db.transaction('rw', db.meta, async (tx) => {
       await upgradeV3ToV4(tx);
+      await upgradeV4ToV5(tx);
       await upgradeV3ToV4(tx);
+      await upgradeV4ToV5(tx);
     });
     const after = await dump();
     const marker = (rows: Record<string, Row[]>) =>
@@ -801,7 +873,7 @@ describe('upgrading a version-3 database to version 4', () => {
       probe.close();
     }
     expect((await listBanks()).length).toBeGreaterThan(0); // the real build still upgrades it
-    expect(getDb().verno).toBe(4);
+    expect(getDb().verno).toBe(DB_VERSION);
   });
 
   it('hands the old data to the pre-update hook once, at version 3', async () => {
@@ -822,5 +894,248 @@ describe('upgrading a version-3 database to version 4', () => {
     expect(seen).toEqual([
       { from: 3, to: DB_VERSION, tables: expect.not.arrayContaining(['filingRules']) },
     ]);
+  });
+
+  it('the game backfill after the upgrade counts the valid history and skips rows it cannot read', async () => {
+    const before = await seedV3();
+    await listBanks();
+    const { state, events } = await backfillAndRead(UTC, '2026-10-10T12:00:00.000Z');
+    // The v3 card and log in this seed are partial (no scheduling state), so they do not validate:
+    // skipped like every read path skips them, never guessed. The three highlights earn 2 XP each.
+    expect(events).toEqual(before.highlights!.map((h) => `hs_${String(h.id)}`).sort());
+    expect(state.totalXp).toBe(6);
+    expect(await dump()).toMatchObject({ cards: before.cards, reviewLogs: before.reviewLogs });
+  });
+});
+
+describe('upgrading a version-4 database to version 5', () => {
+  interface V4Fixture {
+    boundary: DayBoundary;
+    tables: Record<string, Row[]>;
+  }
+  const loadV4 = (): V4Fixture =>
+    JSON.parse(
+      readFileSync(new URL('./fixtures/schema-v4-study.json', import.meta.url), 'utf8'),
+    ) as V4Fixture;
+
+  /**
+   * The frozen v4 vault written exactly as the v4 build stores it (the real v1-v4 store strings).
+   * Returns what is stored, read back from that connection, so "untouched" means byte for byte.
+   */
+  async function seedV4(): Promise<Record<string, Row[]>> {
+    const { tables } = loadV4();
+    await resetDbForTests();
+    const legacy = new Dexie(DB_NAME);
+    legacy.version(1).stores(SCHEMA_V1);
+    legacy.version(2).stores(SCHEMA_V2);
+    legacy.version(3).stores(SCHEMA_V3);
+    legacy.version(4).stores(SCHEMA_V4);
+    try {
+      await legacy.open();
+      for (const [table, list] of Object.entries(tables)) {
+        if (list.length > 0) await legacy.table(table).bulkPut(list);
+      }
+      const stored: Record<string, Row[]> = {};
+      for (const table of legacy.tables) stored[table.name] = (await table.toArray()) as Row[];
+      return stored;
+    } finally {
+      legacy.close();
+    }
+  }
+
+  it('the fixture is a realistic v4 vault: an undone log, an import, a trashed save, AI cards', () => {
+    const { tables } = loadV4();
+    expect(Object.keys(tables).sort()).toEqual(Object.keys(SCHEMA_V4).sort());
+    expect(tables.reviewLogs!.filter((l) => l.userCorrection)).toHaveLength(1);
+    expect(tables.highlights!.filter((h) => h.captureMethod === 'import')).toHaveLength(1);
+    expect(tables.highlights!.filter((h) => h.deletedAt !== null)).toHaveLength(1);
+    expect(tables.cards!.filter((c) => c.createdBy === 'ai')).toHaveLength(2);
+    expect(tables.meta!.map((m) => m.key).sort()).toEqual([META_SCHEMA_KEY, 'studySession']);
+  });
+
+  it('keeps every row of every v4 table exactly as stored, starts the game tables empty, moves the marker', async () => {
+    const before = await seedV4();
+    expect(Object.keys(before).sort()).toEqual(Object.keys(SCHEMA_V4).sort());
+    await listBanks(); // performs the upgrade
+    expect(getDb().verno).toBe(5);
+    const after = await dump();
+    for (const [table, rows] of Object.entries(before)) {
+      if (table === 'meta') continue;
+      expect(after[table], table).toEqual(rows);
+    }
+    // the upgrade reads and writes no vault row: the ledger is the backfill's job
+    expect(after.gameEvents).toEqual([]);
+    expect(after.gameFacts).toEqual([]);
+    expect(after.meta!.filter((m) => m.key !== META_SCHEMA_KEY)).toEqual(
+      before.meta!.filter((m) => m.key !== META_SCHEMA_KEY),
+    );
+    expect(after.meta!.find((m) => m.key === META_SCHEMA_KEY)!.value).toEqual({
+      recordSchemaVersion: 1,
+      migratedFrom: 3,
+      migratedAt: '2026-02-01T08:00:00.000Z',
+      dbVersion: 5,
+      v4MigratedAt: '2026-02-01T08:00:00.000Z',
+      v5MigratedAt: expect.any(String),
+    });
+  });
+
+  it('re-opening after the upgrade changes nothing, and the step itself is idempotent', async () => {
+    await seedV4();
+    await listBanks();
+    const first = await dump();
+    closeDb();
+    await listBanks();
+    expect(await dump()).toEqual(first);
+    const db = getDb();
+    await db.transaction('rw', db.meta, async (tx) => {
+      await upgradeV4ToV5(tx);
+      await upgradeV4ToV5(tx);
+    });
+    const after = await dump();
+    const marker = (rows: Record<string, Row[]>) =>
+      rows.meta!.find((m) => m.key === META_SCHEMA_KEY)!.value;
+    expect(marker(after)).toEqual(marker(first));
+    for (const table of Object.keys(first)) {
+      if (table !== 'meta') expect(after[table], table).toEqual(first[table]);
+    }
+  });
+
+  it('two connections opening a v4 database at the same time both end up on v5, upgraded once', async () => {
+    const before = await seedV4();
+    closeDb();
+    const a = new StudyVaultDb();
+    const b = new StudyVaultDb();
+    try {
+      await Promise.all([a.open(), b.open()]);
+      expect(a.verno).toBe(5);
+      expect(b.verno).toBe(5);
+      expect(await a.table('reviewLogs').count()).toBe(before.reviewLogs!.length);
+      const marker = (await b.table('meta').get(META_SCHEMA_KEY)) as Row & { value: Row };
+      expect(marker.value).toMatchObject({ dbVersion: 5, migratedFrom: 3 });
+      expect(await b.table('gameEvents').count()).toBe(0);
+    } finally {
+      a.close();
+      b.close();
+    }
+  });
+
+  it('a failure inside the v5 step leaves the v4 database untouched', async () => {
+    const before = await seedV4();
+    const failing = new Dexie(DB_NAME);
+    failing.version(1).stores(SCHEMA_V1);
+    failing.version(2).stores(SCHEMA_V2);
+    failing.version(3).stores(SCHEMA_V3);
+    failing.version(4).stores(SCHEMA_V4);
+    failing
+      .version(5)
+      .stores(SCHEMA_V5)
+      .upgrade(async (tx) => {
+        await upgradeV4ToV5(tx); // the real step ran and wrote its marker ...
+        throw new Error('injected v5 failure'); // ... then the build fails
+      });
+    await expect(failing.open()).rejects.toThrow(/injected v5 failure/);
+    failing.close();
+    const probe = new Dexie(DB_NAME);
+    await probe.open();
+    try {
+      expect(probe.verno).toBe(4);
+      expect(probe.tables.map((t) => t.name).sort()).toEqual(Object.keys(SCHEMA_V4).sort());
+      for (const [table, rows] of Object.entries(before)) {
+        expect(await probe.table(table).toArray(), table).toEqual(rows);
+      }
+    } finally {
+      probe.close();
+    }
+    expect((await listBanks()).length).toBeGreaterThan(0); // the real build still upgrades it
+    expect(getDb().verno).toBe(5);
+  });
+
+  it('hands the old data to the pre-update hook once, at version 4', async () => {
+    const before = await seedV4();
+    const seen: Array<{ from: number; to: number; tables: string[]; logs: number }> = [];
+    const off = onBeforeMigrate(async (ctx) => {
+      seen.push({
+        from: ctx.fromVersion,
+        to: ctx.toVersion,
+        tables: Object.keys(await ctx.counts()),
+        logs: (await ctx.snapshot(['reviewLogs'])).reviewLogs!.length,
+      });
+    });
+    try {
+      await Promise.all([listBanks(), listBanks()]);
+    } finally {
+      off();
+    }
+    expect(seen).toEqual([
+      {
+        from: 4,
+        to: DB_VERSION,
+        tables: expect.not.arrayContaining(['gameEvents', 'gameFacts']),
+        logs: before.reviewLogs!.length,
+      },
+    ]);
+  });
+
+  it('refuses writes while a game row from a newer build is stored, in either game table', async () => {
+    await seedV4();
+    await listBanks();
+    const future = {
+      id: 'rv_from-the-future-1',
+      schemaVersion: 2 as unknown as 1,
+      kind: 'review' as const,
+      at: '2026-03-07T21:00:00.000Z',
+      ref: 'from-the-future-1',
+      value: null,
+    };
+    for (const table of ['gameEvents', 'gameFacts'] as const) {
+      await getDb()[table].put(future);
+      closeDb();
+      await expect(saveCapture(cap())).rejects.toMatchObject({ code: 'storage_unavailable' });
+      await getDb()[table].delete(future.id);
+      closeDb();
+    }
+    expect(
+      (await saveCapture(cap('A new quote about heparin and antithrombin.', 900))).status,
+    ).toBe('created');
+  });
+
+  it('the backfill then derives exactly the ledger the history implies, across the DST change', async () => {
+    const { boundary, tables } = loadV4();
+    await seedV4();
+    await listBanks();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-03-10T12:00:00.000Z')); // when the update arrived
+    const { state, events, facts } = await backfillAndRead(boundary, '2026-03-10T16:00:00.000Z');
+    const ids = (rows: Row[]) => rows.map((r) => String(r.id));
+    expect(events).toEqual(
+      [
+        ...ids(tables.reviewLogs!).map((id) => `rv_${id}`),
+        ...ids(tables.highlights!.filter((h) => h.captureMethod !== 'import')).map(
+          (id) => `hs_${id}`,
+        ),
+        ...ids(tables.cards!).map((id) => `cd_${id}`),
+      ].sort(),
+    );
+    const undone = tables.reviewLogs!.find((l) => l.userCorrection)!;
+    expect(facts.filter((id) => !id.startsWith('gx_'))).toEqual([`ru_${String(undone.id)}`]);
+    expect(facts.filter((id) => id.startsWith('gx_'))).toHaveLength(1);
+    // 3 saves (the trashed one included, the import not) x2 + 5 cards x3 + 5 reviews - 1 undone
+    expect(state.totalXp).toBe(6 + 15 + 4);
+    const day = (key: string) => state.days.find((d) => d.dayKey === key)!;
+    // 03:30 EDT on the 8th, right after the clocks went forward, is still the 7th's study day
+    expect(day('2026-03-07')).toMatchObject({ xp: 6 + 15 + 2, goal: null, met: true });
+    expect(day('2026-03-08')).toMatchObject({ xp: 1, met: true });
+    expect(day('2026-03-09')).toMatchObject({ xp: 1, met: true });
+    // the game starts today: today is judged by the default goal, earlier days by any XP
+    expect(state.today).toMatchObject({ dayKey: '2026-03-10', xp: 0, met: false });
+    expect(state.goal).toEqual({ value: 30, chosen: false });
+    expect(state.streak).toMatchObject({ current: 3, longest: 3, todayCounts: false });
+    expect(state.badges.find((b) => b.id === 'night_owl')!.value).toBe(1);
+    // nothing old is celebrated after a backfill
+    expect(state.pending).toEqual([]);
+    // what the backfill cannot know is not invented: no session bonus
+    expect(state.badges.find((b) => b.id === 'first_session')!.unlockedDayKey).toBeNull();
+    // and a second run adds nothing
+    expect(await runGameBackfill()).toEqual({ status: 'done', added: 0 });
   });
 });

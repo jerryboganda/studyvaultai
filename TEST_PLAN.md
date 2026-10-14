@@ -239,5 +239,31 @@ permission prompt; an open overlay shadow root; `e2e.settings.patch`).
   `docs/MANUAL_TEST_CHECKLIST.md` MT-62 to MT-65 and MT-68 (`THREAT_MODEL.md` O18). Matrix items 6 and 7 have no real file and stay synthetic.
   No hostile-PDF fixture exists (the real files hold no script, attachment, XFA or encryption; O7).
 
+## Test areas added by the game layer (ADR-022, 2026-10-14)
+
+Unit and integration suites (Vitest; fake IndexedDB, jsdom where a hook renders). Status: run
+locally with `pnpm exec vitest run <folder>` only; **no Actions run yet**, so none of these counts
+is CI evidence.
+
+| Area | Files | What it covers |
+| --- | --- | --- |
+| Rules (pure) | `packages/study/src/game.test.ts` | the level table and `levelForXp` round trips up to level 500; rating-neutral XP; undo and purge-copy cancellation; goals (default 30, same-day change, past days keep theirs, before the epoch any XP counts, earliest start wins); streak and freezes (earned at 7, 14, 21, capped at 2, three missed days reset, today stays open, a late row restores a freeze); every badge, its unlock day and re-locking; milestones and the badge that hides its streak milestone; night owl and study days across DST (Berlin, São Paulo; rollover 0, 2, 4); clock-ahead rows; determinism under shuffle; prefix plus tail fold equals a full fold; celebration eligibility |
+| Ledger writes | `packages/storage/src/game.test.ts` | each write path adds exactly its row (review, undo, web and PDF save, imports none, card creators, AI accept), a failing ledger write aborts the review, the 10-minute save undo (single, bulk, delete-restore-delete), `completeStudySession` (`awarded`, `already`, `no_answers`), purge copies, the sync applier (derives, skips imports, nothing on delete; facts as plain rows; only facts reach the outbox), goal and Game mode, `claimCelebrations` raced, the not-ready state, `getGameState` inside a live query |
+| Backfill, cache, backup | `packages/storage/src/game.backfill.test.ts`, `migration.test.ts` (v4 to v5 block, backfill per fixture), `fixtures/schema-v4-study.json` | exact ledger and idempotence, resume after a failure, two runs at once, live writes during it, a replace restore mid-run, quota failure, a rules-version re-run; warm cache equals cold after every kind of change and the cache compare-and-set; v5 archive round trip, v4 archive replace, merge adds nothing |
+| Worker | `entrypoints/background/handlers.test.ts` ("capture.save and the game layer"), `index.test.ts` ("derives the game ledger on install, on update and on browser startup"), `sync.test.ts` ("after an extension update") | `xp: 2` only for `created` with Game mode on, kept beside a filing result, absent for duplicate, restored, mode off and a failed mode read (the save stands); the backfill is started by each worker event; `onUpdated` retries quarantined operations, announces only what applied, and does nothing while sync is off, unconfigured or locked |
+| Two devices | `entrypoints/background/sync.integration.test.ts` ("the game ledger across devices") | through the reference server: B derives the same `gameEvents` from A's highlights, receives A's goal and save undo as `gameFacts`, nothing quarantined on either device |
+| Review session | `packages/ui/src/review/session.test.ts` ("the session bonus") | the bonus is recorded when the session is done, in the step that clears it; an undo on the done screen keeps it (`already`); none for a session with nothing answered |
+| UI hooks | `packages/ui/src/game/game.test.tsx` | `useGame`: progress before numbers while the backfill it started runs, the cache persisted, a write from anywhere shown without a reload, a failed backfill waits for Retry, the rollover re-read with no write; `useCelebrations`: one of two open pages claims a milestone, once; nothing while hidden or before the done screen, and a queued item waits while a new session runs; nothing while Game mode is off and no backlog after it is switched back on |
+
+### Gaps the game layer leaves
+- Loaded-extension e2e (`tests/e2e/game.spec.ts`: onboarding goal, "+2 XP" toast, ring, session
+  bonus, celebration once across pages, Game mode, export and restore, worker restart mid-backfill,
+  offline, axe) is not written: the screens that consume this API are not built yet.
+- Perf budgets (`packages/storage/src/game.perf.test.ts`, `packages/study/src/game.perf.test.ts`,
+  spec section 14) are not written; they belong in the `stress` job.
+- An old-build peer that quarantines `gameFacts` and recovers after an update is covered only at the
+  service level (`sync.test.ts`, stubbed engine), not end to end.
+- A real Chrome update of a v4 profile (fake IndexedDB only).
+
 ## Exit reports
 Every phase handoff must provide: completed workflows; test commands actually executed + pass/fail counts; screenshots; browser/OS tested; permissions tested; 5 most serious unresolved defects; rollback strategy; exact next task. Never mark skipped tests as passed.

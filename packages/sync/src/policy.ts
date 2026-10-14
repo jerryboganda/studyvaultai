@@ -55,7 +55,7 @@ const LOCAL = ['schemaVersion'] as const;
  * free-text field missing from `text` would merge last-writer-wins, so whoever adds a text field to
  * a schema adds it here (the storage cross-check lists every unclassified field).
  * `attachments`, `syncOps` and `meta` are local-only and deliberately absent. `aiResults` is absent
- * until its schema (evidence links, immutable output) is final.
+ * until its schema (evidence links, immutable output) is final. `gameEvents` is derived per device.
  */
 export const STUDYVAULT_SYNC_POLICY: SyncPolicy = {
   banks: { local: LOCAL },
@@ -118,4 +118,9 @@ export const STUDYVAULT_SYNC_POLICY: SyncPolicy = {
     text: ['note'],
     local: LOCAL,
   },
+  // Game ledger (schema v5, ADR-022): the few rows that cannot be re-derived (undos, session
+  // bonuses, goals, Game mode, the game start, purge copies). Append-only with deterministic or uuid
+  // ids, so they never conflict. `gameEvents` is deliberately absent: every device derives its own
+  // from the synced review logs, highlights and cards, so syncing it would only double the traffic.
+  gameFacts: { appendOnly: true, local: LOCAL },
 };

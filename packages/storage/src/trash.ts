@@ -27,6 +27,7 @@ import {
 } from './core';
 import { STUDYVAULT_SYNC_POLICY, encodeEntityId } from '@sync';
 import { withDb, withWritableDb, type MetaRow, type StudyVaultDb } from './db';
+import { addLedgerOf, fossilize } from './game';
 import { dropRelationsOf } from './relations';
 import { tableRegistry } from './registry';
 import type { SyncOpRow } from './sync';
@@ -657,6 +658,11 @@ async function purgeInTx(db: StudyVaultDb, refs: readonly TrashRef[]): Promise<P
         ...(await keysWhereIn(db.cards, 'knowledgePointId', kpIds)),
       ].map(String),
     );
+    // Their XP must not depend on whether the game backfill reached them yet: add their ledger rows
+    // before they go (nothing when it did), so `fossilize` below copies every one into gameFacts.
+    await addLedgerOf(db, 'highlights', rows);
+    await addLedgerOf(db, 'cards', await db.cards.bulkGet(cardIds));
+    await addLedgerOf(db, 'reviewLogs', await rowsWhereIn(db.reviewLogs, 'cardId', cardIds));
     out.related.reviewLogs += (await dropWhere(db.reviewLogs, 'cardId', cardIds)).length;
     if (cardIds.length > 0) await db.cards.bulkDelete(cardIds);
     for (const id of cardIds) gone.push(['cards', id]);
@@ -788,6 +794,8 @@ async function purgeInTx(db: StudyVaultDb, refs: readonly TrashRef[]): Promise<P
     const marker: MetaRow = { key: LAST_PURGE_KEY, value: ts, updatedAt: ts };
     await db.meta.put(marker);
   }
+  // XP survives a purge: the events of every purged source row are copied into synced gameFacts.
+  await fossilize(db, gone);
   return out;
 }
 

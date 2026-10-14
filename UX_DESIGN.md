@@ -630,7 +630,7 @@ answers the person chooses to count as review, and no session bonus.
 | Goal ring       | Today's XP against the goal (section 5). Popup, side panel header, dashboard, review done screen.                                             |
 | Streak          | Consecutive study days on which the goal was met. Today counts once met; an unmet today does not break it until the day ends. Flame + number. |
 | Freezes         | One earned per 7 streak days, at most 2 held, used automatically on a missed day; that day shows a snowflake. Snowflakes held / 2, named "2 of 2 streak freezes". |
-| Level           | Hex emblem with the number; a bar to the next level; the level road shows the next 3 levels and their XP. Each level needs 50 XP more than the one before (mockup curve: level n to n + 1 needs 150 + 50n XP; the engine ADR owns the constants). |
+| Level           | Hex emblem with the number; a bar to the next level; the level road shows the next 3 levels and their XP. Each level needs 50 XP more than the one before: reaching level L takes `25·L·(L−1)` XP in all (level 2 at 50, 3 at 150, 4 at 300, 10 at 2,250; ADR-022). |
 | Badges          | Earned = coloured ring and icon; locked = grey with a lock glyph and progress. Criteria never depend on ratings, time pressure or money.         |
 | Celebrations    | Goal met (once a day), level up, badge earned, streak milestones (7, 30, 100, 365). Toast plus mascot cheer; confetti only for goal met and level up. One at a time, queued; never mid-card (shown at session end); never steal focus; spoken once through the polite region. |
 | Sounds          | None ship. A Sounds control appears only once bundled sounds exist, off by default.                                                            |

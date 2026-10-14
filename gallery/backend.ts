@@ -1,6 +1,13 @@
 import { BackgroundRpc, StudyVaultError, isHostDenied, type PageStatus } from '@shared';
 import { getSettings, getTrustedSettings, serveRpc, updateSettings } from '@runtime';
-import { acceptFiling, dismissFiling, filingAfterCapture, repo, undoFiling } from '@storage';
+import {
+  acceptFiling,
+  dismissFiling,
+  filingAfterCapture,
+  isGameModeOn,
+  repo,
+  undoFiling,
+} from '@storage';
 import { createHandlers } from '../entrypoints/background/handlers';
 import { browserSiteDeps } from '../entrypoints/background/platform';
 import { createSiteAccess, type SiteAccess } from '../entrypoints/background/siteAccess';
@@ -32,6 +39,7 @@ export function startBackend(): { site: SiteAccess } {
       extensionBaseUrl: browser.runtime.getURL('/'),
       openSidePanel: (tabId) => browser.sidePanel.open({ tabId }),
       session: browser.storage.session,
+      isGameModeOn,
     }),
   );
   registerSync(browser.runtime.getURL('/'));

@@ -5,9 +5,9 @@ import {
   PENDING_FOCUS_KEY,
   StudyVaultError,
   defaultSettings,
+  CaptureResult,
   type BankLite,
   type CaptureInput,
-  type CaptureResult,
   type FilingOutcome,
   type HighlightView,
   type Settings,
@@ -161,6 +161,8 @@ function setup(initial: Partial<Settings> = {}) {
     undo: vi.fn(async (_id: string) => ({ restored: true, reason: null as string | null })),
   };
 
+  const isGameModeOn = vi.fn(async () => true);
+
   const handlers = createHandlers({
     repo,
     filing,
@@ -170,6 +172,7 @@ function setup(initial: Partial<Settings> = {}) {
     extensionBaseUrl: EXT_BASE,
     openSidePanel,
     session: area,
+    isGameModeOn,
   }) as Required<ReturnType<typeof createHandlers>>;
 
   return {
@@ -183,6 +186,7 @@ function setup(initial: Partial<Settings> = {}) {
     settings: () => settings,
     openSidePanel,
     session: area,
+    isGameModeOn,
     pendingFocus: () => store.get(PENDING_FOCUS_KEY),
   };
 }
@@ -843,6 +847,62 @@ describe('capture.save and filing rules', () => {
       lastBankId: BANK.id,
       placed: { bankId: OTHER_BANK.id },
     });
+  });
+});
+
+describe('capture.save and the game layer (ADR-022)', () => {
+  const sender = pageSender('https://example.com/notes/pharm');
+
+  it('reports +2 XP for a new highlight while Game mode is on, in the protocol shape', async () => {
+    const t = setup();
+    const result = await t.handlers['capture.save'](captureInput(), sender);
+    expect(result).toMatchObject({ status: 'created', xp: 2 });
+    // The reply is validated against this shape; anything but 2 is not a valid reply.
+    expect(CaptureResult.shape.xp.safeParse(2).success).toBe(true);
+    expect(CaptureResult.shape.xp.safeParse(3).success).toBe(false);
+  });
+
+  it('keeps the XP next to a filing suggestion', async () => {
+    const t = setup();
+    t.filing.afterCapture.mockResolvedValueOnce({
+      status: 'suggested',
+      ruleName: 'Cardio',
+      bank: OTHER_BANK,
+      folderName: null,
+      addedTags: 0,
+    });
+    const result = await t.handlers['capture.save'](captureInput(), sender);
+    expect(result).toMatchObject({ xp: 2, filing: { status: 'suggested' } });
+  });
+
+  it('leaves the field out for a duplicate or a restored highlight, without asking', async () => {
+    for (const status of ['duplicate', 'restored'] as const) {
+      const t = setup();
+      const again: CaptureResult = { status, highlight: VIEW, bank: BANK, addedToBank: true };
+      (
+        t.repo.saveCapture as unknown as { mockResolvedValueOnce(v: CaptureResult): void }
+      ).mockResolvedValueOnce(again);
+      const result = await t.handlers['capture.save'](captureInput(), sender);
+      expect(result, status).not.toHaveProperty('xp');
+      expect(t.isGameModeOn, status).not.toHaveBeenCalled();
+    }
+  });
+
+  it('leaves the field out while Game mode is off', async () => {
+    const t = setup();
+    t.isGameModeOn.mockResolvedValueOnce(false);
+    const result = await t.handlers['capture.save'](captureInput(), sender);
+    expect(result.status).toBe('created');
+    expect(result).not.toHaveProperty('xp');
+  });
+
+  it('still saves when Game mode cannot be read: only the number is left out', async () => {
+    const t = setup();
+    t.isGameModeOn.mockRejectedValueOnce(new Error('database closed'));
+    const result = await t.handlers['capture.save'](captureInput(), sender);
+    expect(result.status).toBe('created');
+    expect(result).not.toHaveProperty('xp');
+    expect(t.repo.saveCapture).toHaveBeenCalledOnce();
   });
 });
 

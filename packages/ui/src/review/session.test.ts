@@ -7,6 +7,7 @@ import {
   createDeck,
   createManualCards,
   getCard,
+  getDb,
   listReviewLogs,
   loadStudySession,
   reviewCard,
@@ -173,6 +174,49 @@ describe('the session flow', () => {
     await again.start(null);
     expect(again.getState().phase).toBe('done');
     expect(again.getState().summary!.answered).toBe(0);
+  });
+});
+
+describe('the session bonus (ADR-022)', () => {
+  it('is recorded once when the session is done, in the same step that clears it', async () => {
+    await seed(2);
+    const c = make();
+    await c.start(null);
+    const id = c.getState().session!.id;
+    expect(c.getState().bonus).toBeNull();
+    c.reveal();
+    await c.rate(4);
+    expect(c.getState().bonus).toBeNull(); // nothing mid-session
+    c.reveal();
+    await c.rate(4);
+    expect(c.getState()).toMatchObject({ phase: 'done', bonus: 'awarded' });
+    expect(await getDb().gameFacts.get(`sb_${id}`)).toMatchObject({ kind: 'session', ref: id });
+    expect(await loadStudySession()).toBeNull();
+  });
+
+  it('stays after an undo on the done screen: finishing again reports it as already earned', async () => {
+    await seed(1);
+    const c = make();
+    await c.start(null);
+    const id = c.getState().session!.id;
+    c.reveal();
+    await c.rate(4);
+    expect(c.getState().bonus).toBe('awarded');
+
+    await c.undo();
+    expect(c.getState()).toMatchObject({ phase: 'question', bonus: null });
+    c.reveal();
+    await c.rate(4);
+    expect(c.getState()).toMatchObject({ phase: 'done', bonus: 'already' });
+    expect(await getDb().gameFacts.where('id').equals(`sb_${id}`).count()).toBe(1);
+  });
+
+  it('is not given for a session with nothing answered', async () => {
+    await seed(1, { newPerDay: 0 });
+    const c = make();
+    await c.start(null);
+    expect(c.getState()).toMatchObject({ phase: 'done', bonus: 'no_answers' });
+    expect(await getDb().gameFacts.count()).toBe(0);
   });
 });
 

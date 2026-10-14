@@ -121,6 +121,8 @@ export const CaptureResult = z.object({
   addedToBank: z.boolean(),
   /** A filing rule's result for a new highlight; absent when no rule applied. */
   filing: FilingOutcome.optional(),
+  /** XP the save earned (ADR-022): only for `created` while Game mode is on; absent otherwise. */
+  xp: z.literal(2).optional(),
 });
 export type CaptureResult = z.infer<typeof CaptureResult>;
 

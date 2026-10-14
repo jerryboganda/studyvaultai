@@ -16,6 +16,7 @@ import {
   type PreviousOcrReading,
   type HighlightView,
 } from '@shared';
+import { saveEvent } from '@study/game';
 import {
   addMembership,
   cmp,
@@ -33,6 +34,7 @@ import {
   toViews,
 } from './core';
 import { withDb, withWritableDb, type StudyVaultDb } from './db';
+import { addMissing } from './game';
 import { assertFolderInBank } from './membership';
 import { normalizeQuote, quoteHash } from './normalize';
 import type { CachedDocumentInfo, DocumentListItem, SaveOcrPageInput } from './types';
@@ -53,6 +55,7 @@ const PDF_TABLES = (db: StudyVaultDb) => [
   db.sources,
   db.highlights,
   db.highlightBanks,
+  db.gameEvents,
 ];
 
 // ---------------------------------------------------------------------------------------------
@@ -317,6 +320,8 @@ export async function savePdfHighlight(input: PdfHighlightInput): Promise<Captur
           capturedTitle: doc.title,
         };
         await db.highlights.put(highlight);
+        const event = saveEvent(highlight);
+        if (event) await addMissing(db.gameEvents, [event]);
         await db.highlightBanks.put({
           highlightId: highlight.id,
           bankId: bank.id,

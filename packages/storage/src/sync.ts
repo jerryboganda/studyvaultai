@@ -55,6 +55,7 @@ import {
   type StudyVaultDb,
   type WriteInterceptor,
 } from './db';
+import { GAME_SOURCE_TABLES, addLedgerOf, addMissing, deriveLedger } from './game';
 import { tableRegistry, unregisteredTables } from './registry';
 import { isNewerRow, normaliseRow } from './rows';
 import { META_CLIENT, META_DIRTY, META_STATE, ensureClientId } from './syncIdentity';
@@ -551,10 +552,16 @@ export function createDexieApplier(db: StudyVaultDb, active: ActiveSyncPolicy): 
       const key = entityKey(spec, change.entityId);
       await assertNoNewerRows(db);
       const table = db.table(spec.name);
-      await db.transaction('rw', table, async (tx) => {
+      // A remote review log, highlight or card earns its game event here too (same id everywhere,
+      // so it is never counted twice).
+      const derives = GAME_SOURCE_TABLES.has(spec.name);
+      const scope = derives ? [table, db.gameEvents, db.gameFacts] : [table];
+      await db.transaction('rw', scope, async (tx) => {
         // A remote change is not a local edit: do not echo it back as one.
         suppressSyncCapture(tx);
         if (change.deleted) {
+          // A purge elsewhere keeps this device's XP for the row, even before its backfill got here.
+          if (derives) await addLedgerOf(db, spec.name, [await table.get(key as IndexableType)]);
           await table.delete(key as IndexableType);
           return;
         }
@@ -599,6 +606,11 @@ export function createDexieApplier(db: StudyVaultDb, active: ActiveSyncPolicy): 
           );
         }
         await table.put(next);
+        if (derives) {
+          const derived = deriveLedger(spec.name, verdict.data);
+          await addMissing(db.gameEvents, derived.events);
+          await addMissing(db.gameFacts, derived.facts);
+        }
       });
     },
   };

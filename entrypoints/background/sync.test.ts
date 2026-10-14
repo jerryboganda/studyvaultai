@@ -92,6 +92,7 @@ function stubRuntime() {
       }),
       prune: async () => ({ tombstones: 0, sentOps: 0, conflicts: 0, orphans: 0 }),
       retryQuarantined: async () => ({ ...report }),
+      markNeedsResync: vi.fn(async () => undefined),
       resolveConflict: vi.fn(async () => undefined),
       acknowledgeServerReset: async () => undefined,
     },
@@ -1068,6 +1069,58 @@ describe('an interrupted encryption set-up', () => {
     await createSyncService(h.deps).runSync('startup');
     expect(resend).not.toHaveBeenCalled(); // locked: nothing is pushed, nothing is sent
     expect(h.mem.encryption?.resend).toBe(true);
+  });
+});
+
+describe('after an extension update', () => {
+  it('retries what the previous build quarantined, and announces what it applied', async () => {
+    const h = harness({ initial: { sync: true } });
+    await configure(h);
+    const retry = vi
+      .spyOn(h.stub.engine, 'retryQuarantined')
+      .mockResolvedValue({ ...h.stub.report, pulled: 2, applied: 2 });
+    await h.service.onUpdated();
+    expect(retry).toHaveBeenCalledOnce();
+    expect(h.deps.notifyDataChanged).toHaveBeenCalledOnce();
+  });
+
+  it('re-pulls the whole log once: the previous build dropped what its full quarantine evicted', async () => {
+    const h = harness({ initial: { sync: true } });
+    await configure(h);
+    await h.service.onUpdated();
+    expect(h.stub.engine.markNeedsResync).toHaveBeenCalledOnce();
+  });
+
+  it('announces nothing when nothing applied', async () => {
+    const h = harness({ initial: { sync: true } });
+    await configure(h);
+    const retry = vi.spyOn(h.stub.engine, 'retryQuarantined');
+    await h.service.onUpdated();
+    expect(retry).toHaveBeenCalledOnce();
+    expect(h.deps.notifyDataChanged).not.toHaveBeenCalled();
+  });
+
+  it('does nothing while sync is off, or before a server is set', async () => {
+    const off = harness({ initial: { sync: false } });
+    await configure(off);
+    off.createRuntime.mockClear();
+    await off.service.onUpdated();
+    expect(off.createRuntime).not.toHaveBeenCalled();
+
+    const unconfigured = harness({ initial: { sync: true } });
+    await unconfigured.service.onUpdated();
+    expect(unconfigured.createRuntime).not.toHaveBeenCalled();
+  });
+
+  it('waits for the passphrase when the key is locked: the unlock retries them', async () => {
+    const h = harness({ initial: { sync: true } });
+    await configure(h);
+    await h.deps.config.save({ ...h.mem.config!, e2ee: { kid: 'k1-testkid', version: 1 } });
+    const retry = vi.spyOn(h.stub.engine, 'retryQuarantined');
+    await h.service.onUpdated();
+    expect(retry).not.toHaveBeenCalled();
+    // the flag waits in the stored state: the first run after the unlock pulls from the start
+    expect(h.stub.engine.markNeedsResync).toHaveBeenCalledOnce();
   });
 });
 
