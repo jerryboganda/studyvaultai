@@ -61,6 +61,9 @@ export const BACKUP_TABLES = [
   'filingRules',
   'syllabi',
   'relations',
+  // The game ledger (ADR-022): backed up, re-derived after a replace restore.
+  'gameEvents',
+  'gameFacts',
   // Rows hold Blob values: compared by size and type.
   'attachments',
 ] as const;

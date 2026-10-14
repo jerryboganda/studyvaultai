@@ -174,8 +174,8 @@ const SPECS: readonly Spec[] = [
   { name: 'relations', primaryKey: 'id', schema: Relation, softDelete: true },
   // Game ledger (schema v5, ADR-022). Append-only, never soft-deleted. No `references`: an event
   // outlives the row it was derived from (a purge keeps the XP), so it is never an orphan.
-  { name: 'gameEvents', primaryKey: 'id', schema: GameEventRow, softDelete: false },
-  { name: 'gameFacts', primaryKey: 'id', schema: GameFactRow, softDelete: false },
+  { name: 'gameEvents', primaryKey: 'id', schema: GameEventRow, softDelete: false, bookkeeping: true },
+  { name: 'gameFacts', primaryKey: 'id', schema: GameFactRow, softDelete: false, bookkeeping: true },
 ];
 
 interface NestedReference {
