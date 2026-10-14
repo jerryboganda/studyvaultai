@@ -3,6 +3,7 @@
 import 'fake-indexeddb/auto';
 import { gallery } from './shim/chrome';
 import { findState } from './catalog';
+import { armFaults, setFaults, registerDbFaults, withoutFaults } from './faults';
 
 /** The real entrypoints: importing one mounts the page exactly as the extension does. */
 const SURFACES = {
@@ -25,6 +26,7 @@ type Theme = 'light' | 'dark';
  *  - tab: active tab preset (scenarios/tabs.ts) or an address; default per scenario
  *  - state: a state from catalog.json; its address parameters are added (the page's own wins) and
  *    its script (states.ts) runs before and after the page mounts
+ *  - fault: injected failures, armed just before the page mounts (faults.ts)
  * `<html data-gallery>` reads seeding -> mounted, or error (the message is shown in the page).
  * `window.__gallery.setTheme('dark')` switches the theme in place, as the Settings page does.
  */
@@ -50,17 +52,28 @@ export async function boot(surface: Surface): Promise<void> {
     const theme = params.get('theme');
     if (theme === 'light' || theme === 'dark') html.dataset.theme = theme;
     const started = performance.now();
-    const [{ loadScenario }, { startBackend }, { openActiveTab }, { updateSettings }, { SCRIPTS }] =
-      await Promise.all([
-        import('./scenarios'),
-        import('./backend'),
-        import('./scenarios/tabs'),
-        import('@runtime'),
-        import('./states'),
-      ]);
+    const [
+      { loadScenario },
+      { startBackend },
+      { openActiveTab },
+      { updateSettings },
+      { SCRIPTS },
+      { getDb },
+    ] = await Promise.all([
+      import('./scenarios'),
+      import('./backend'),
+      import('./scenarios/tabs'),
+      import('@runtime'),
+      import('./states'),
+      import('@storage'),
+    ]);
+    setFaults(params.get('fault'), (name, mode) =>
+      gallery.calls.push({ api: 'fault', args: [name, mode], at: Date.now() }),
+    );
+    registerDbFaults(getDb());
     const setTheme = async (next: Theme) => {
       html.dataset.theme = next;
-      await updateSettings((s) => ({ ...s, theme: next }));
+      await withoutFaults(() => updateSettings((s) => ({ ...s, theme: next })));
     };
     Object.assign(gallery, { setTheme });
     const scenario = await loadScenario(params.get('scenario') ?? 'student');
@@ -74,6 +87,7 @@ export async function boot(surface: Surface): Promise<void> {
     console.info(
       `[gallery] ${surface}/${stateId}: scenario "${scenario.id}" seeded in ${Math.round(performance.now() - started)} ms`,
     );
+    armFaults(true);
     await SURFACES[surface]();
     await script?.run?.();
     html.dataset.gallery = 'mounted';

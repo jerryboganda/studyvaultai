@@ -1,0 +1,291 @@
+/* Preview page layout only (dz-*). The components themselves live in packages/ui/src/design. */
+html,
+body {
+  margin: 0;
+  background: var(--sv-canvas);
+}
+.dz-page {
+  min-height: 100vh;
+}
+.dz-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 20px;
+  border-bottom: 2px solid var(--sv-border);
+  background: var(--sv-surface);
+}
+.dz-top h1 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 900;
+  letter-spacing: -0.01em;
+}
+.dz-top__sub {
+  color: var(--sv-ink-2);
+  font-size: 13px;
+  font-weight: 700;
+}
+.dz-spacer {
+  flex: 1;
+}
+.dz-themes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.dz-cols {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(560px, 100%), 1fr));
+}
+.dz-col {
+  padding: 20px;
+}
+.dz-col__label {
+  margin: 0 0 12px;
+  color: var(--sv-ink-2);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.dz-grid {
+  columns: 2 460px;
+  column-gap: 20px;
+}
+.dz-flow {
+  margin: 0 0 20px;
+  break-inside: avoid;
+}
+.dz-card {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  margin: 0 0 20px;
+  padding: 18px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-lg);
+  background: var(--sv-surface);
+  box-shadow: 0 3px 0 var(--sv-border);
+  break-inside: avoid;
+}
+.dz-card > h2 {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  font-size: 18px;
+  font-weight: 900;
+}
+.dz-card > h3 {
+  margin: 0;
+  color: var(--sv-ink-2);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.dz-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.dz-row--top {
+  align-items: flex-start;
+}
+.dz-stack {
+  display: grid;
+  gap: 10px;
+}
+.dz-poses {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+  gap: 8px;
+  text-align: center;
+}
+.dz-poses figure {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  margin: 0;
+}
+.dz-poses figcaption {
+  font-size: 14px;
+  font-weight: 800;
+}
+.dz-small {
+  display: flex;
+  gap: 4px;
+  align-items: flex-end;
+}
+.dz-meterrow {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr) 52px;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  font-weight: 800;
+}
+.dz-meterrow > span:last-child {
+  color: var(--sv-ink-2);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.dz-ringnum {
+  font-size: 18px;
+}
+.dz-ringnum--lg {
+  font-size: 30px;
+}
+.dz-ringof {
+  margin-top: 2px;
+  color: var(--sv-ink-2);
+  font-size: 11px;
+  font-weight: 800;
+}
+.dz-xp {
+  position: relative;
+  display: inline-flex;
+}
+.dz-confetti {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 150px;
+  overflow: hidden;
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-glow);
+}
+.dz-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(320px, 100%);
+  height: 600px;
+  overflow: hidden;
+  border: 2px solid var(--sv-border);
+  border-radius: 18px;
+  background: var(--sv-canvas);
+}
+.dz-panel__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px 8px 10px;
+  border-bottom: 2px solid var(--sv-border);
+  background: var(--sv-surface);
+}
+.dz-panel .sv-tabbar {
+  flex: 1;
+}
+.dz-panel__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: 12px;
+  padding: 12px;
+}
+.dz-panel__body h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 900;
+}
+.dz-bank {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface);
+  box-shadow: 0 3px 0 var(--sv-border);
+}
+.dz-bank__top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.dz-bank__tile {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  border-radius: 13px;
+}
+.dz-bank__tile svg {
+  width: 22px;
+  height: 22px;
+}
+.dz-bank__name {
+  display: grid;
+  font-weight: 800;
+}
+.dz-bank__name small {
+  color: var(--sv-ink-2);
+  font-size: 12px;
+  font-weight: 700;
+}
+.dz-bank__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 800;
+}
+.dz-bank__bar .sv-meter {
+  flex: 1;
+}
+.dz-done {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  min-height: 300px;
+  overflow: hidden;
+  text-align: center;
+}
+.dz-done h2 {
+  font-size: 24px;
+}
+.dz-hc {
+  padding: 14px;
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-canvas);
+}
+.dz-emptygrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
+  gap: 8px;
+}
+.dz-emptygrid > * {
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-canvas);
+}
+.dz-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-weight: 800;
+}
+.dz-note {
+  color: var(--sv-ink-2);
+  font-size: 14px;
+}
+
+/* A 320px panel at 200% zoom leaves 160 CSS px: the preview's own padding steps back. */
+@media (max-width: 400px) {
+  .dz-top,
+  .dz-col {
+    padding: 8px;
+  }
+  .dz-card {
+    padding: 10px;
+  }
+  .dz-meterrow {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+}

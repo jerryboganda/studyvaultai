@@ -9,6 +9,8 @@
  * configures (tabs, grants, the permission prompt's answer) lives in `gallery`.
  */
 
+import { SLOW_MS, faultFor, faultMessage, later, never } from '../faults';
+
 declare const __SV_GALLERY_MANIFEST__: GalleryManifest;
 
 interface GalleryManifest {
@@ -82,6 +84,10 @@ export const gallery = {
   registeredScripts: [] as { id: string; matches?: string[]; excludeMatches?: string[] }[],
   contentScript: null as ContentScript | null,
   manifest: __SV_GALLERY_MANIFEST__,
+  /** Canned RPC answers by message type, used instead of the real handler (states.ts: sync). */
+  answers: {} as Record<string, (payload: unknown) => unknown>,
+  /** Browser tabs opened for tabs.create / windows.create, by fake tab id. */
+  windows: new Map<number, Window | null>(),
 };
 
 const record = (api: string, args: unknown[]) => {
@@ -168,7 +174,22 @@ const onMessage = event<Parameters<OnMessage>>();
 const NO_RECEIVER = 'Could not establish connection. Receiving end does not exist.';
 
 /** Promise semantics of chrome.runtime.sendMessage, matching packages/runtime/src/messaging.ts. */
-function dispatch(message: unknown, sender: MessageSender): Promise<unknown> {
+async function dispatch(message: unknown, sender: MessageSender): Promise<unknown> {
+  const type = (message as { type?: unknown } | null)?.type;
+  if (typeof type === 'string') {
+    const mode = faultFor(type);
+    if (mode === 'hang') return never();
+    if (mode === 'slow') await later(SLOW_MS);
+    if (mode === 'error' || mode === 'unavailable') {
+      const code = mode === 'error' ? 'internal' : 'storage_unavailable';
+      return { ok: false, error: { code, message: faultMessage(type) } };
+    }
+    const answer = gallery.answers[type];
+    if (answer) {
+      const payload = (json(message) as { payload?: unknown }).payload;
+      return json({ ok: true, data: await answer(payload) });
+    }
+  }
   return new Promise((resolve, reject) => {
     queueMicrotask(() => {
       const wire = json(message);
@@ -192,9 +213,39 @@ function dispatch(message: unknown, sender: MessageSender): Promise<unknown> {
   });
 }
 
-/** Extension paths map onto the gallery pages: getURL('/review.html?x') -> <origin>/pages/review.html?x */
+/**
+ * Extension pages map onto the gallery pages (getURL('/review.html?x') -> <origin>/pages/review.html?x);
+ * everything else is the repo's public/ folder, which the gallery serves at its root (/ocr/, /icon/).
+ */
 function getURL(path: string): string {
-  return `${location.origin}/pages/${path.replace(/^\/+/, '')}`;
+  const clean = path.replace(/^\/+/, '');
+  return /^[^?#]+\.html(?:[?#]|$)/.test(clean)
+    ? `${location.origin}/pages/${clean}`
+    : `${location.origin}/${clean}`;
+}
+
+/**
+ * Opens an extension page as its gallery page in a new browser tab (named after the fake tab, so a
+ * later tabs.update reuses it), with this page's scenario, theme and active tab. Web and chrome://
+ * addresses are only recorded: the gallery never loads a real site.
+ */
+function openGalleryPage(url: string | undefined, tabId: number): void {
+  if (!url) return;
+  let target = new URL(url, `${location.origin}/pages/`);
+  if (target.protocol === 'chrome-extension:') {
+    target = new URL(`/pages${target.pathname}${target.search}${target.hash}`, location.origin);
+  }
+  if (target.origin !== location.origin || !target.pathname.startsWith('/pages/')) return;
+  const here = new URLSearchParams(location.search);
+  const carry = {
+    scenario: here.get('scenario'),
+    tab: here.get('tab'),
+    theme: document.documentElement.dataset.theme ?? here.get('theme'),
+  };
+  for (const [name, value] of Object.entries(carry)) {
+    if (value && !target.searchParams.has(name)) target.searchParams.set(name, value);
+  }
+  gallery.windows.set(tabId, window.open(target.href, `gallery-tab-${tabId}`));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -289,6 +340,8 @@ export const browser = {
     onStartup: event<[]>(),
     async openOptionsPage() {
       record('runtime.openOptionsPage', []);
+      const tab = addTab({ url: getURL('/options.html'), title: 'Settings' });
+      openGalleryPage(tab.url, tab.id);
     },
     reload: () => record('runtime.reload', []),
   },
@@ -317,6 +370,7 @@ export const browser = {
       // Opened tabs never take over the scenario's active tab, so the page under test keeps its context.
       const tab = addTab({ url: props.url, title: props.url, active: false });
       tabsOnCreated.emit(publicTab(tab));
+      openGalleryPage(tab.url, tab.id);
       return publicTab(tab);
     },
     async update(tabId: number, props: { url?: string; active?: boolean }) {
@@ -325,6 +379,8 @@ export const browser = {
       const change: TabChange = {};
       if (props.url !== undefined) tab.url = change.url = props.url;
       tabsOnUpdated.emit(tabId, change, publicTab(tab));
+      if (props.url !== undefined) openGalleryPage(tab.url, tab.id);
+      else if (props.active) gallery.windows.get(tabId)?.focus();
       return publicTab(tab);
     },
     async remove(tabIds: number | number[]) {
@@ -338,6 +394,11 @@ export const browser = {
     async sendMessage(tabId: number, message: unknown) {
       record('tabs.sendMessage', [tabId, message]);
       await Promise.resolve();
+      const type = String((message as { type?: unknown } | null)?.type);
+      const mode = faultFor(type);
+      if (mode === 'hang') return never();
+      if (mode === 'slow') await later(SLOW_MS);
+      if (mode === 'error' || mode === 'unavailable') throw new Error(faultMessage(type));
       const tab = gallery.tabs.find((t) => t.id === tabId);
       if (!tab?.contentScript || !gallery.contentScript) throw new Error(NO_RECEIVER);
       return json(await gallery.contentScript(tab, json(message)));
@@ -362,6 +423,13 @@ export const browser = {
     async update(windowId: number, props: Record<string, unknown>) {
       record('windows.update', [windowId, props]);
       return { id: windowId, focused: true, incognito: false };
+    },
+    async create(props: { url?: string | string[] } = {}) {
+      record('windows.create', [props]);
+      const urls = props.url === undefined ? [] : [props.url].flat();
+      const tabs = urls.map((url) => addTab({ url, title: url, windowId: WINDOW_ID + 1 }));
+      for (const tab of tabs) openGalleryPage(tab.url, tab.id);
+      return { id: WINDOW_ID + 1, focused: true, incognito: false, tabs: tabs.map(publicTab) };
     },
     onFocusChanged: event<[number]>(),
   },
@@ -506,6 +574,26 @@ export const browser = {
 };
 
 export type FakeBrowser = typeof browser;
+
+/** Every async API function above, wrapped for `chrome.<path>` faults (../faults.ts). */
+function armable(obj: Record<string, unknown>, path: string): void {
+  for (const [key, value] of Object.entries(obj)) {
+    const name = `${path}.${key}`;
+    if (typeof value === 'function') {
+      const fn = value as (...args: unknown[]) => unknown;
+      obj[key] = (...args: unknown[]) => {
+        const mode = faultFor(name);
+        if (!mode) return fn.apply(obj, args);
+        if (mode === 'hang') return never();
+        if (mode === 'slow') return later(SLOW_MS).then(() => fn.apply(obj, args));
+        return Promise.reject(new Error(faultMessage(name)));
+      };
+    } else if (value && typeof value === 'object' && !('addListener' in value)) {
+      armable(value as Record<string, unknown>, name);
+    }
+  }
+}
+armable(browser as unknown as Record<string, unknown>, 'chrome');
 
 const g = globalThis as unknown as Record<string, unknown>;
 for (const name of ['chrome', 'browser'] as const) {

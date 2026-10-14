@@ -15,6 +15,13 @@ export interface CatalogState {
   hash?: string;
   /** Capture the whole page (default: the surface's setting). */
   fullPage?: boolean;
+  /**
+   * The state injects a failure (`query.fault`), so console errors are expected: capture.mjs fails
+   * a shot with console errors only when this is not set.
+   */
+  expectErrors?: boolean;
+  /** Viewport for this state instead of the surface's (dashboard at a narrow width). */
+  viewport?: { width: number; height: number };
 }
 
 export interface CatalogSurface {

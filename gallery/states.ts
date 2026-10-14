@@ -2,15 +2,21 @@ import { updateSettings } from '@runtime';
 import { patchSettings } from './scenarios/kit';
 import {
   listBanks,
+  listCards,
   listDocuments,
   listPageHighlights,
   listPdfHighlights,
   listRecentHighlights,
+  rescheduleCard,
 } from '@storage';
 import { TAB_PRESETS } from './scenarios/tabs';
 import type { Surface } from './boot';
-import { $, byText, click, clickTestId, clickText, frames, setValue, waitFor } from './dom';
+import { $, byText, click, clickTestId, clickText, frames, setValue, sleep, waitFor } from './dom';
 import { browser } from './shim/chrome';
+import { seedAi } from './fakes/ai';
+import { fakeSync, seedConflict } from './fakes/sync';
+import { FILES, chooseFile, fakeDirectoryPicker, storeScannedPdf } from './fakes/files';
+import { DAY, NOW } from './scenarios/kit';
 
 /**
  * Scripts for gallery states that an address alone cannot reach (catalog.json lists every state and
@@ -89,6 +95,112 @@ const pdfOpened: StateScript = {
   },
 };
 
+/** Scrolls `el` to the top once the page has placed its own focus (which scrolls too). */
+async function scrollUp<E extends HTMLElement>(el: E): Promise<E> {
+  await sleep(300);
+  el.scrollIntoView({ block: 'start' });
+  await frames();
+  return el;
+}
+
+/** Waits for `selector`, then scrolls it to the top, so the shot shows that part of the page. */
+async function scrollTo<E extends HTMLElement = HTMLElement>(
+  selector: string,
+  timeout?: number,
+): Promise<E> {
+  return scrollUp(await waitFor(() => $<E>(selector), selector, timeout));
+}
+const tid = (id: string) => `[data-testid="${id}"]`;
+
+/** Waits for the innermost `selector` element containing `text`, then scrolls it to the top. */
+async function scrollToText(text: string, selector = 'h2, h3, h4'): Promise<HTMLElement> {
+  return scrollUp(await waitFor(() => byText(text, selector), `"${text}"`));
+}
+
+/** AI turned on with the fake provider (fakes/ai.ts). */
+const aiConfigured: StateScript['prepare'] = () => seedAi();
+
+/** Asks the dashboard chat a question: the consent dialog opens (nothing is sent before Send). */
+async function askChat(): Promise<void> {
+  const box = await waitFor(() => $<HTMLTextAreaElement>(tid('chat-question')), 'the question box');
+  setValue(box, 'What do beta blockers do in heart failure?');
+  await clickTestId('chat-ask');
+  await waitFor(() => $(tid('ai-consent-dialog')), 'the consent dialog');
+}
+
+/** Sends from the open consent dialog and waits for the fake provider's answer. */
+async function sendConsent(): Promise<void> {
+  await clickTestId('ai-send');
+  await waitFor(() => $(tid('ai-close')), 'the answer', 20_000);
+}
+
+/** The sync section signed in with a canned status (fakes/sync.ts). */
+const syncAs = (view: Parameters<typeof fakeSync>[0], conflict = false): StateScript => ({
+  prepare: async () => {
+    if (conflict) await seedConflict();
+    await fakeSync(view);
+  },
+  run: async () =>
+    void (await scrollToText(conflict ? 'Conflicts (' : 'Sync between devices', 'h2, h3')),
+});
+
+/** Restore wizard: chooses `file`, then shows the step with test id `step`. */
+const restoreWith =
+  (
+    file: () => File | Promise<File>,
+    step: string,
+    then?: () => Promise<void>,
+  ): StateScript['run'] =>
+  async () => {
+    chooseFile(await scrollTo<HTMLInputElement>(tid('backup-import-file')), await file());
+    await scrollTo(tid(step), 30_000);
+    if (then) await then();
+  };
+
+/** The scanned PDF opened in the reader (its copy is kept), first page drawn. */
+const scannedOpen: StateScript['prepare'] = async (setParam) =>
+  setParam('doc', await storeScannedPdf());
+const scannedBanner = () =>
+  waitFor(() => byText('Scanned pages', 'p, div, strong, h2, h3'), 'the scanned banner', 30_000);
+
+/** Exam setup -> a short exam started. */
+async function startExam(): Promise<void> {
+  const count = await waitFor(() => $<HTMLInputElement>(tid('rv-exam-questions')), 'the count');
+  setValue(count, '6');
+  await clickTestId('rv-exam-start');
+  await waitFor(() => $(tid('rv-exam-run')), 'the exam', 20_000);
+}
+
+/** Answers every question (first choice, or a typed answer), finishes, marks, shows results. */
+async function finishExam(): Promise<void> {
+  for (let i = 0; i < 20; i++) {
+    const choice = $<HTMLInputElement>(`${tid('rv-exam-choices')} input[type="radio"]`);
+    const text = $<HTMLTextAreaElement>(tid('rv-exam-text'));
+    if (choice) choice.click();
+    else if (text) setValue(text, 'My answer, typed in the gallery.');
+    await frames();
+    const next = $<HTMLButtonElement>(tid('rv-exam-next'));
+    if (!next || next.matches('[aria-disabled="true"], :disabled')) break;
+    next.click();
+    await frames();
+  }
+  await clickTestId('rv-exam-finish');
+  await frames();
+  const confirm = byText('Finish exam', 'dialog[open] button');
+  if (confirm) confirm.click();
+  await waitFor(() => $(tid('rv-exam-marking')) ?? $(tid('rv-exam-results')), 'marking or results');
+  if ($(tid('rv-exam-marking'))) {
+    const knew = [...document.querySelectorAll<HTMLElement>('label.rv-choice')].filter((l) =>
+      l.textContent?.includes('I knew it'),
+    );
+    knew.filter((_, i) => i % 2 === 0).forEach((l) => l.querySelector('input')?.click());
+    await frames();
+    await clickTestId('rv-exam-mark-rest');
+    await clickTestId('rv-exam-show-results');
+  }
+  await scrollTo(tid('rv-exam-results'));
+}
+
 export const SCRIPTS: Partial<Record<Surface, Record<string, StateScript>>> = {
   popup: {
     reminder,
@@ -154,6 +266,22 @@ export const SCRIPTS: Partial<Record<Surface, Record<string, StateScript>>> = {
         await waitFor(() => $('[role="tabpanel"] mark'), 'marked search results');
       },
     },
+    'ai-drafts': {
+      prepare: aiConfigured,
+      run: async () => {
+        await clickTestId('card-ai-toggle');
+        await scrollTo(tid('ai-actions'));
+      },
+    },
+    'ai-result': {
+      prepare: aiConfigured,
+      run: async () => {
+        await clickTestId('card-ai-toggle');
+        await clickTestId('ai-action-exam_pearl');
+        await waitFor(() => $(tid('ai-consent-dialog')), 'the consent dialog');
+        await sendConsent();
+      },
+    },
   },
   dashboard: {
     preview: { prepare: async (setParam) => setParam('highlight', await richHighlightId()) },
@@ -193,6 +321,22 @@ export const SCRIPTS: Partial<Record<Surface, Record<string, StateScript>>> = {
     storage: { run: clickThen(() => clickTestId('view-storage'), '[data-testid="storage-panel"]') },
     palette: { run: clickThen(() => clickTestId('open-palette'), DIALOG) },
     'new-bank': { run: clickThen(() => clickTestId('new-bank'), DIALOG) },
+    'chat-consent': { prepare: aiConfigured, run: askChat },
+    'chat-answer': {
+      prepare: aiConfigured,
+      run: async () => {
+        await askChat();
+        await sendConsent();
+        await clickTestId('ai-close');
+        await scrollTo(tid('chat-turn'), 20_000);
+      },
+    },
+    'narrow-tree': {
+      run: clickThen(
+        () => clickTestId('toggle-tree'),
+        '[data-testid="toggle-tree"][aria-expanded="true"]',
+      ),
+    },
   },
   review: {
     session: {
@@ -214,14 +358,122 @@ export const SCRIPTS: Partial<Record<Surface, Record<string, StateScript>>> = {
     'create-highlight': {
       prepare: async (setParam) => setParam('highlight', await richHighlightId()),
     },
+    'kp-editor': {
+      prepare: async (setParam) => setParam('highlight', await richHighlightId()),
+      run: async () => void (await scrollTo(tid('rv-kp-editor'))),
+    },
+    'exam-run': { run: startExam },
+    'exam-results': {
+      run: async () => {
+        await startExam();
+        await finishExam();
+      },
+    },
+    'card-edit': {
+      run: async () => {
+        await click(() => byText('Edit', `${tid('rv-browser')} button`), 'a card Edit button');
+        await scrollTo(`${tid('rv-browser')} ${tid('rv-editor')}`);
+      },
+    },
+    backlog: {
+      // 25 review cards whose due date passed while the student was away: the planner opens itself.
+      prepare: async () => {
+        const { cards } = await listCards({ filter: 'all', limit: 2000 });
+        const due = cards.filter((c) => c.fsrs.state === 'review').slice(0, 25);
+        for (const [i, card] of due.entries()) {
+          const at = NOW - (2 + (i % 8)) * DAY;
+          await rescheduleCard(card.id, at, at);
+        }
+      },
+      run: async () => {
+        // A budget of 2 reviews per deck and day, so the plan moves cards and shows what changes.
+        const planner = await waitFor(() => $(tid('rv-backlog')), 'the planner');
+        setValue(
+          await waitFor(() => $<HTMLInputElement>('input[id$="-budget"]', planner), 'budget'),
+          '2',
+        );
+        await waitFor(() => $('table', planner), 'the moves table');
+      },
+    },
   },
   options: {
     'ai-on': {
       prepare: async () =>
         void (await updateSettings((s) => ({ ...s, features: { ...s.features, ai: true } }))),
     },
+    'save-failed': {
+      // The settings write fails (catalog fault): the section reports its own error.
+      run: async () => {
+        await click(() => $('input[type="radio"][value="compact"]'), 'the Compact density radio');
+        const notice = await waitFor(
+          () => byText('Your change was not saved', 'p, div, strong'),
+          'the error',
+        );
+        notice.scrollIntoView({ block: 'center' });
+      },
+    },
     'delete-dialog': { run: clickThen(() => clickText('Delete all StudyVault data…'), DIALOG) },
     'all-sites-dialog': { run: clickThen(() => clickText('Enable on all sites'), DIALOG) },
+    'ai-configured': { prepare: aiConfigured },
+    'ai-test-success': {
+      prepare: aiConfigured,
+      run: async () => {
+        await clickTestId('ai-test');
+        const result = await waitFor(() => $(tid('ai-test-result')), 'the test result', 20_000);
+        result.scrollIntoView({ block: 'center' });
+      },
+    },
+    'ai-routing': {
+      prepare: aiConfigured,
+      run: async () => void (await scrollTo(tid('ai-routing'))),
+    },
+    'ai-ledger': {
+      prepare: aiConfigured,
+      run: async () => void (await scrollTo(tid('ai-ledger'))),
+    },
+    'sync-signed-in': syncAs({}),
+    'sync-encryption-choice': syncAs({
+      status: 'awaiting_encryption_choice',
+      encryptionChoice: 'undecided',
+      lastSyncAt: null,
+      pending: 139,
+      e2ee: { mode: 'none', version: null, lockInSeconds: null },
+    }),
+    'sync-locked': syncAs({
+      status: 'locked',
+      pending: 4,
+      e2ee: { mode: 'locked', lockInSeconds: null },
+    }),
+    'sync-conflicts': syncAs({ attention: { conflicts: 1, quarantined: 0 } }, true),
+    'restore-review': { run: restoreWith(FILES.exported, 'backup-import-review') },
+    'restore-invalid': { run: restoreWith(FILES.oldModelBackup, 'backup-import-blocked') },
+    'restore-passphrase': {
+      run: restoreWith(FILES.encryptedBackup, 'backup-import-passphrase'),
+    },
+    'restore-done': {
+      run: restoreWith(FILES.exported, 'backup-import-review', async () => {
+        // No safety download in the gallery: merging keeps everything anyway.
+        const safety = $<HTMLInputElement>(tid('backup-import-safety'));
+        if (safety?.checked) safety.click();
+        await clickTestId('backup-import-restore');
+        await scrollTo(tid('backup-import-done'), 30_000);
+      }),
+    },
+    'import-anki': {
+      run: async () => {
+        chooseFile(await scrollTo<HTMLInputElement>(tid('backup-external-file')), FILES.anki());
+        await scrollTo(tid('backup-external-review'), 20_000);
+      },
+    },
+    'backup-folder': {
+      prepare: async () => fakeDirectoryPicker(),
+      run: async () => {
+        await scrollTo(tid('backup-folder'));
+        await clickTestId('backup-folder-choose');
+        await clickTestId('backup-folder-now');
+        await scrollTo(tid('backup-folder-done'), 30_000);
+      },
+    },
   },
   onboarding: {
     privacy: tourAt('privacy'),
@@ -231,6 +483,13 @@ export const SCRIPTS: Partial<Record<Surface, Record<string, StateScript>>> = {
     look: tourAt('look'),
     keys: tourAt('keys'),
     done: tourAt('done'),
+    'banks-created': {
+      prepare: tourAt('banks', 'medicine').prepare,
+      run: async () => {
+        await clickText('Create the bank and folders');
+        await waitFor(() => byText('Done', 'p, div, strong'), 'the created bank');
+      },
+    },
     skipped: {
       run: async () => {
         await clickText('Skip the tour');
@@ -240,6 +499,42 @@ export const SCRIPTS: Partial<Record<Surface, Record<string, StateScript>>> = {
   },
   'pdf-reader': {
     default: pdfOpened,
+    loading: { prepare: openStoredPdf },
+    'load-failed': { prepare: openStoredPdf },
+    password: {
+      run: async () => {
+        const input = await waitFor(() => $<HTMLInputElement>(tid('pdf-file-input')), 'the input');
+        chooseFile(input, await FILES.lockedPdf());
+        await waitFor(() => byText('This PDF is password protected', 'h2'), 'the password dialog');
+      },
+    },
+    scanned: {
+      prepare: scannedOpen,
+      run: async () => void (await scannedBanner()),
+    },
+    'ocr-done': {
+      // Real OCR (tesseract from public/ocr, served by the gallery): one page takes a few seconds.
+      prepare: scannedOpen,
+      run: async () => {
+        await scannedBanner();
+        await clickTestId('pdf-ocr-this-page');
+        await waitFor(
+          () => byText('Recognised 1 page', 'p, div, strong'),
+          'the OCR result',
+          60_000,
+        );
+        await click(() => byText('Page text', '[role="tab"], button'), 'the Page text tab');
+        await waitFor(() => byText('Edit line', 'button'), 'the recognised lines');
+      },
+    },
+    'ocr-running': {
+      prepare: scannedOpen,
+      run: async () => {
+        await scannedBanner();
+        await clickTestId('pdf-ocr-this-page');
+        await waitFor(() => byText('Recognising', 'p, div, strong, h2, h3'), 'OCR running');
+      },
+    },
     highlight: {
       prepare: async (setParam) => {
         const doc = await storedPdf();

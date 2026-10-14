@@ -9,9 +9,10 @@
  * Without --url it starts the gallery's Vite dev server and stops it at the end. Writes
  * <out>/<scenario>/<surface>[-<state>]-<theme>[-w<width>].png and <out>/report.json (console errors
  * and warnings, page errors and failed requests per shot). Exits 1 when a shot has an uncaught page
- * error, did not reach its state, or rendered blank.
+ * error, did not reach its state, rendered blank, or logged a console error in a state that does not
+ * inject a failure (catalog `expectErrors`).
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -77,6 +78,14 @@ function plan() {
 }
 
 async function main() {
+  // The PDF reader's OCR states need public/ocr, which is generated (and git-ignored).
+  if (!existsSync(path.join(repo, 'public', 'ocr', 'worker.min.js'))) {
+    const copy = spawnSync(process.execPath, ['scripts/copy-ocr-assets.mjs'], {
+      cwd: repo,
+      stdio: 'inherit',
+    });
+    if (copy.status !== 0) throw new Error('scripts/copy-ocr-assets.mjs failed');
+  }
   const server = args.has('url')
     ? { base: args.get('url').replace(/\/$/, ''), child: null }
     : await startServer();
@@ -117,6 +126,8 @@ async function main() {
       shots: all.length,
       failed: all.filter((s) => s.failed).length,
       withConsoleErrors: all.filter((s) => s.consoleErrors.length).length,
+      withUnexpectedConsoleErrors: all.filter((s) => s.consoleErrors.length && !s.expectErrors)
+        .length,
       withPageErrors: all.filter((s) => s.pageErrors.length).length,
       withFailedRequests: all.filter((s) => s.failedRequests.length).length,
     },
@@ -135,8 +146,11 @@ async function captureLoad(browser, base, { surface, state, scenario }) {
   const query = new URLSearchParams({ scenario, theme: 'light' });
   if (state.id !== 'default') query.set('state', state.id);
   const url = `${base}/pages/${surface.id}.html?${query}`;
-  const context = await browser.newContext({ viewport: surface.viewport });
+  const viewport = state.viewport ?? surface.viewport;
+  const context = await browser.newContext({ viewport });
   const page = await context.newPage();
+  // A page opened by the one under test (tabs.create opens gallery tabs) is not part of the shot.
+  context.on('page', (opened) => void opened.close());
   // Collected per shot: what happened since the previous shot of this load (the first gets the load).
   let events = { consoleErrors: [], consoleWarnings: [], pageErrors: [], failedRequests: [] };
   page.on('console', (m) => {
@@ -153,6 +167,7 @@ async function captureLoad(browser, base, { surface, state, scenario }) {
 
   const shots = [];
   let reached = 'not loaded';
+  let faultProblem = null;
   try {
     await page.goto(url, { waitUntil: 'load', timeout: LOAD_TIMEOUT });
     await page.waitForSelector('html[data-gallery="mounted"], html[data-gallery="error"]', {
@@ -160,6 +175,13 @@ async function captureLoad(browser, base, { surface, state, scenario }) {
     });
     reached = await page.evaluate(() => document.documentElement.dataset.gallery);
     await settle(page);
+    // A fault whose target matches nothing would show the normal page under a fault title.
+    if (state.query?.fault && reached === 'mounted') {
+      const hits = await page.evaluate(
+        () => window.__gallery.calls.filter((c) => c.api === 'fault').length,
+      );
+      if (hits === 0) faultProblem = `fault "${state.query.fault}" never fired`;
+    }
   } catch (err) {
     events.pageErrors.push(`Gallery: ${err instanceof Error ? err.message : String(err)}`);
   }
@@ -167,7 +189,7 @@ async function captureLoad(browser, base, { surface, state, scenario }) {
   const dir = path.join(out, scenario);
   mkdirSync(dir, { recursive: true });
   const fullPage = state.fullPage ?? surface.fullPage;
-  const widths = [surface.viewport.width, ...(surface.widths ?? [])];
+  const widths = state.viewport ? [viewport.width] : [viewport.width, ...(surface.widths ?? [])];
   for (const theme of THEMES) {
     let themeProblem = null;
     if (theme !== 'light' && reached === 'mounted') {
@@ -183,10 +205,10 @@ async function captureLoad(browser, base, { surface, state, scenario }) {
     }
     for (const width of widths) {
       if (width !== page.viewportSize().width) {
-        await page.setViewportSize({ width, height: surface.viewport.height });
+        await page.setViewportSize({ width, height: viewport.height });
         await settle(page);
       }
-      const name = `${surface.id}${state.id === 'default' ? '' : `-${state.id}`}-${theme}${width === surface.viewport.width ? '' : `-w${width}`}.png`;
+      const name = `${surface.id}${state.id === 'default' ? '' : `-${state.id}`}-${theme}${width === viewport.width ? '' : `-w${width}`}.png`;
       const file = path.join(dir, name);
       const blank = await isBlank(page);
       try {
@@ -201,6 +223,8 @@ async function captureLoad(browser, base, { surface, state, scenario }) {
         ...(blank ? ['blank render'] : []),
         ...(events.pageErrors.length ? ['uncaught page error'] : []),
         ...(themeProblem ? [themeProblem] : []),
+        ...(faultProblem ? [faultProblem] : []),
+        ...(events.consoleErrors.length && !state.expectErrors ? ['console error'] : []),
       ];
       shots.push({
         file: path.relative(out, file).replaceAll('\\', '/'),
@@ -210,13 +234,14 @@ async function captureLoad(browser, base, { surface, state, scenario }) {
         theme,
         width,
         url,
+        expectErrors: Boolean(state.expectErrors),
         failed: problems.length > 0,
         problems,
         ...events,
       });
       events = { consoleErrors: [], consoleWarnings: [], pageErrors: [], failedRequests: [] };
     }
-    if (widths.length > 1) await page.setViewportSize(surface.viewport);
+    if (widths.length > 1) await page.setViewportSize(viewport);
   }
   await context.close();
   return shots;

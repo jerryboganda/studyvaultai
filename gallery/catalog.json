@@ -100,6 +100,42 @@
           "id": "reminder",
           "title": "Daily review reminder",
           "scenarios": ["student"]
+        },
+        {
+          "id": "checking",
+          "title": "Fault: checking this tab (site check never answers)",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "site.status:hang"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "check-error",
+          "title": "Fault: could not check this tab",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "site.status:error"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "page-error",
+          "title": "Fault: could not read this page",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "content.pageStatus:error"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "storage-unavailable",
+          "title": "Fault: storage unavailable",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "db.*:unavailable"
+          },
+          "expectErrors": true
         }
       ]
     },
@@ -193,6 +229,53 @@
         {
           "id": "card-links",
           "title": "Card links section open",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "start-failed",
+          "title": "Fault: could not start (tabs unavailable)",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "chrome.tabs.query:error"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "page-loading",
+          "title": "Fault: loading this page",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "content.pageStatus:hang"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "list-error",
+          "title": "Fault: could not load highlights",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "db.highlights:error"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "search-building",
+          "title": "Fault: search index building",
+          "scenarios": ["student"],
+          "hash": "search",
+          "query": {
+            "fault": "db.notes.query.primary:hang"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "ai-drafts",
+          "title": "AI configured: AI drafts on a card",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "ai-result",
+          "title": "AI configured: exam pearl answered (sample provider)",
           "scenarios": ["student"]
         }
       ]
@@ -298,6 +381,76 @@
           "id": "compact-contrast",
           "title": "Compact density, high contrast",
           "scenarios": ["student"]
+        },
+        {
+          "id": "loading",
+          "title": "Fault: storage slow (loading)",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "db.highlights:hang"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "load-failed",
+          "title": "Fault: could not load highlights",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "db.highlights:error"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "index-building",
+          "title": "Fault: search index building",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "db.notes.query.primary:hang"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "chat-consent",
+          "title": "AI configured: chat consent preview",
+          "scenarios": ["student"],
+          "query": {
+            "view": "chat"
+          }
+        },
+        {
+          "id": "chat-answer",
+          "title": "AI configured: chat answer (sample provider)",
+          "scenarios": ["student"],
+          "query": {
+            "view": "chat"
+          }
+        },
+        {
+          "id": "tablet",
+          "title": "Tablet width (1024 px)",
+          "scenarios": ["student"],
+          "viewport": {
+            "width": 1024,
+            "height": 768
+          }
+        },
+        {
+          "id": "narrow",
+          "title": "Phone width (390 px)",
+          "scenarios": ["student"],
+          "viewport": {
+            "width": 390,
+            "height": 844
+          }
+        },
+        {
+          "id": "narrow-tree",
+          "title": "Phone width: bank tree open",
+          "scenarios": ["student"],
+          "viewport": {
+            "width": 390,
+            "height": 844
+          }
         }
       ]
     },
@@ -372,6 +525,63 @@
           "query": {
             "view": "settings"
           }
+        },
+        {
+          "id": "loading",
+          "title": "Fault: loading the decks",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "db.cards:hang"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "load-failed",
+          "title": "Fault: decks could not be loaded",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "db.cards:error"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "kp-editor",
+          "title": "Knowledge-point editor",
+          "scenarios": ["student"],
+          "query": {
+            "view": "create"
+          },
+          "fullPage": false
+        },
+        {
+          "id": "exam-run",
+          "title": "Exam in progress",
+          "scenarios": ["student"],
+          "query": {
+            "view": "exam"
+          }
+        },
+        {
+          "id": "exam-results",
+          "title": "Exam results",
+          "scenarios": ["student"],
+          "query": {
+            "view": "exam"
+          }
+        },
+        {
+          "id": "card-edit",
+          "title": "Card browser: editing a card",
+          "scenarios": ["student"],
+          "query": {
+            "view": "cards"
+          },
+          "fullPage": false
+        },
+        {
+          "id": "backlog",
+          "title": "Backlog recovery planner (25 overdue)",
+          "scenarios": ["student"]
         }
       ]
     },
@@ -486,6 +696,125 @@
           "scenarios": ["student"],
           "hash": "ai",
           "fullPage": false
+        },
+        {
+          "id": "load-failed",
+          "title": "Fault: settings could not be read",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "chrome.storage.local.get:error"
+          },
+          "fullPage": false,
+          "expectErrors": true
+        },
+        {
+          "id": "save-failed",
+          "title": "Fault: change not saved",
+          "scenarios": ["student"],
+          "hash": "appearance",
+          "query": {
+            "fault": "db.meta.mutate:error"
+          },
+          "fullPage": false,
+          "expectErrors": true
+        },
+        {
+          "id": "ai-configured",
+          "title": "AI configured (sample provider and key)",
+          "scenarios": ["student"],
+          "hash": "ai",
+          "fullPage": false
+        },
+        {
+          "id": "ai-test-success",
+          "title": "AI configured: Test connection succeeded",
+          "scenarios": ["student"],
+          "hash": "ai",
+          "fullPage": false
+        },
+        {
+          "id": "ai-routing",
+          "title": "AI configured: more providers and routing",
+          "scenarios": ["student"],
+          "hash": "ai",
+          "fullPage": false
+        },
+        {
+          "id": "ai-ledger",
+          "title": "AI configured: usage ledger",
+          "scenarios": ["student"],
+          "hash": "ai",
+          "fullPage": false
+        },
+        {
+          "id": "sync-signed-in",
+          "title": "Sync: signed in, up to date, encrypted",
+          "scenarios": ["student"],
+          "hash": "sync",
+          "fullPage": false
+        },
+        {
+          "id": "sync-encryption-choice",
+          "title": "Sync: signed in, choose encryption",
+          "scenarios": ["student"],
+          "hash": "sync",
+          "fullPage": false
+        },
+        {
+          "id": "sync-locked",
+          "title": "Sync: encryption locked",
+          "scenarios": ["student"],
+          "hash": "sync",
+          "fullPage": false
+        },
+        {
+          "id": "sync-conflicts",
+          "title": "Sync: a conflict to decide",
+          "scenarios": ["student"],
+          "hash": "sync",
+          "fullPage": false
+        },
+        {
+          "id": "restore-review",
+          "title": "Restore: backup checked, choose how",
+          "scenarios": ["student"],
+          "hash": "backup",
+          "fullPage": false
+        },
+        {
+          "id": "restore-passphrase",
+          "title": "Restore: protected backup asks for the passphrase",
+          "scenarios": ["student"],
+          "hash": "backup",
+          "fullPage": false
+        },
+        {
+          "id": "restore-done",
+          "title": "Restore: merged",
+          "scenarios": ["student"],
+          "hash": "backup",
+          "fullPage": false
+        },
+        {
+          "id": "import-anki",
+          "title": "Import highlights: Anki text file read",
+          "scenarios": ["student"],
+          "hash": "backup",
+          "fullPage": false
+        },
+        {
+          "id": "backup-folder",
+          "title": "Backup folder chosen, backup written",
+          "scenarios": ["student"],
+          "hash": "backup",
+          "fullPage": false
+        },
+        {
+          "id": "restore-invalid",
+          "title": "Restore: old-model backup, items need a decision",
+          "scenarios": ["student"],
+          "hash": "backup",
+          "fullPage": false
         }
       ]
     },
@@ -534,6 +863,18 @@
         {
           "id": "skipped",
           "title": "Tour skipped"
+        },
+        {
+          "id": "start-error",
+          "title": "Fault: the tour could not start",
+          "query": {
+            "fault": "chrome.storage.local.get:error"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "banks-created",
+          "title": "Step 4: Medicine bank created"
         }
       ]
     },
@@ -591,6 +932,44 @@
           "query": {
             "src": "http://example.com/papers/cardiology.pdf"
           }
+        },
+        {
+          "id": "loading",
+          "title": "Fault: reading the stored copy never answers",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "db.attachments:hang"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "load-failed",
+          "title": "Fault: reading the stored copy fails",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "db.attachments:error"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "password",
+          "title": "Password-protected PDF",
+          "scenarios": ["fresh"]
+        },
+        {
+          "id": "scanned",
+          "title": "Scanned PDF: OCR offered",
+          "scenarios": ["fresh"]
+        },
+        {
+          "id": "ocr-running",
+          "title": "Scanned PDF: recognising a page (OCR)",
+          "scenarios": ["fresh"]
+        },
+        {
+          "id": "ocr-done",
+          "title": "Scanned PDF: page recognised, page text",
+          "scenarios": ["fresh"]
         }
       ]
     },

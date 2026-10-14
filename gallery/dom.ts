@@ -46,9 +46,17 @@ export const clickTestId = (id: string) =>
 export const clickText = (text: string, selector = 'button') =>
   click(() => byText(text, selector), `"${text}"`);
 
-/** Sets a React-controlled input or select the way typing or choosing does. */
-export function setValue(el: HTMLInputElement | HTMLSelectElement, value: string): void {
-  const proto = el instanceof HTMLSelectElement ? HTMLSelectElement : HTMLInputElement;
+/** Sets a React-controlled input, textarea or select the way typing or choosing does. */
+export function setValue(
+  el: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
+  value: string,
+): void {
+  const proto =
+    el instanceof HTMLSelectElement
+      ? HTMLSelectElement
+      : el instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement
+        : HTMLInputElement;
   Object.getOwnPropertyDescriptor(proto.prototype, 'value')!.set!.call(el, value);
   el.dispatchEvent(
     new Event(el instanceof HTMLSelectElement ? 'change' : 'input', { bubbles: true }),

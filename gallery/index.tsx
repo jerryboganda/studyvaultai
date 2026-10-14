@@ -9,7 +9,7 @@ import { catalog, type CatalogState, type CatalogSurface } from './catalog';
  */
 
 type Theme = 'light' | 'dark';
-const MOCKUPS = ['sunny', 'candy', 'arcade'] as const;
+const MOCKUPS = ['sunny', 'design'] as const;
 /** Pages wider than this are shown at half size. */
 const SCALE_ABOVE = 600;
 
@@ -92,7 +92,8 @@ function SurfaceSection({
   const scenarios = state.scenarios ?? surface.scenarios;
   // A state that is not shown with this scenario falls back to its first one, and says so.
   const shown = scenarios.includes(scenario) ? scenario : scenarios[0]!;
-  const widths = [surface.viewport.width, ...(surface.widths ?? [])];
+  const viewport = state.viewport ?? surface.viewport;
+  const widths = state.viewport ? [viewport.width] : [viewport.width, ...(surface.widths ?? [])];
   const pickerId = `state-${surface.id}`;
   return (
     <section className="surface" aria-labelledby={`h-${surface.id}`}>
@@ -111,6 +112,11 @@ function SurfaceSection({
             Not shown with “{scenario}”: this is the “{shown}” scenario.
           </p>
         ) : null}
+        {state.query?.fault ? (
+          <p className="note">
+            Injected failure (gallery only): <code>{state.query.fault}</code>
+          </p>
+        ) : null}
       </div>
       <div className="frames">
         {widths.map((w) => (
@@ -118,7 +124,7 @@ function SurfaceSection({
             key={`${w}-${state.id}-${shown}-${theme}`}
             src={frameUrl(surface, state, shown, theme)}
             width={w}
-            height={surface.viewport.height}
+            height={viewport.height}
           />
         ))}
       </div>
@@ -203,7 +209,6 @@ function Overview() {
           </fieldset>
         </div>
         <nav aria-label="Gallery pages" className="links">
-          <a href="./audit.html">Design audit</a>
           {MOCKUPS.map((m) => (
             <a key={m} href={`./mockups/${m}/`}>
               Mockup: {m}
@@ -217,7 +222,7 @@ function Overview() {
         ))}
         <section className="surface" aria-labelledby="h-mockups">
           <h2 id="h-mockups">Mockups</h2>
-          <p className="note">Redesign directions, built separately (a link may not exist yet).</p>
+          <p className="note">The chosen Sunny Vault direction and the component preview.</p>
           <ul>
             {MOCKUPS.map((m) => (
               <li key={m}>
