@@ -41,7 +41,13 @@ import { expect } from './helpers.review';
 // What a backup holds
 // -----------------------------------------------------------------------------------------------
 
-/** The registry's tables minus `meta` and `syncOps` (packages/storage backupTarget.ts). */
+/** The game ledger (ADR-022): a backup carries it, but the app re-derives it after a restore. */
+export const LEDGER_TABLES = ['gameEvents', 'gameFacts'] as const;
+
+/**
+ * The registry's tables minus `meta` and `syncOps` (packages/storage backupTarget.ts) and minus the game
+ * ledger, so vault comparisons cover the person's data only.
+ */
 export const BACKUP_TABLES = [
   'banks',
   'folders',
@@ -61,9 +67,6 @@ export const BACKUP_TABLES = [
   'filingRules',
   'syllabi',
   'relations',
-  // The game ledger (ADR-022): backed up, re-derived after a replace restore.
-  'gameEvents',
-  'gameFacts',
   // Rows hold Blob values: compared by size and type.
   'attachments',
 ] as const;

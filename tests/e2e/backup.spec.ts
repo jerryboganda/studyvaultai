@@ -9,6 +9,7 @@ import {
   chooseBackup,
   commitRestore,
   countsOf,
+  LEDGER_TABLES,
   createBackup,
   databaseNames,
   deleteAllData,
@@ -338,7 +339,11 @@ test.describe('export, Delete all data, restore', () => {
     for (const never of ['meta', 'syncOps', 'attachments']) {
       expect(tableNames, `${never} is never in a backup unless asked for`).not.toContain(never);
     }
+    for (const name of LEDGER_TABLES) {
+      expect(tableNames, `the game ledger table ${name} is in a backup`).toContain(name);
+    }
     for (const t of archive.manifest.tables) {
+      if ((LEDGER_TABLES as readonly string[]).includes(t.name)) continue; // bookkeeping, re-derived
       expect(t.rowCount, `manifest row count of ${t.name}`).toBe(counts[t.name] ?? 0);
       expect(archive.tables[t.name], `rows of ${t.name} in the file`).toHaveLength(t.rowCount);
     }
