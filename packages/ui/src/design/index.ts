@@ -1,9 +1,9 @@
 /**
  * Sunny Vault component library for extension pages (React 19; also runs under preact/compat).
- * Pages load design/tokens.css + design/components.css and the bundled Nunito
- * (@fontsource-variable/nunito). Class names are chosen not to collide with the legacy
- * components.css, so both can load during the migration. The in-page overlay must not import
- * this barrel (@ui); it may only share tokens.css inside its shadow root.
+ * Every page entry (main.tsx) loads the bundled Nunito (@fontsource-variable/nunito), tokens.css
+ * and components.css, which @imports design/components.css. Exported from @ui too (with
+ * BuddyEmptyState and ArtTone as aliases). The in-page overlay must not import this barrel or
+ * @ui; it may only share tokens.css inside its shadow root.
  */
 export { BarMeter, type BarMeterProps } from './BarMeter';
 export {

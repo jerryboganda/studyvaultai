@@ -2002,7 +2002,7 @@ test.describe('accessibility', () => {
       }));
 
     await page.emulateMedia({ reducedMotion: 'no-preference' });
-    expect(await motion()).toMatchObject({ tokenMs: 120, transition: '0.12s' });
+    expect(await motion()).toMatchObject({ tokenMs: 140, transition: '0.14s' });
 
     await page.emulateMedia({ reducedMotion: 'reduce' });
     expect(await motion()).toMatchObject({ tokenMs: 0, transition: '0s', scroll: 'auto' });

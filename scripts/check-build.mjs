@@ -111,6 +111,18 @@ for (const file of walk(prod).filter((f) => f.endsWith('.css'))) {
 }
 if (walk(prod).some((f) => f.endsWith('.map'))) fail('source maps are shipped');
 
+// --- bundled font: OFL-1.1 requires its licence text to ship with the font files (ADR-021) ----
+const nunito = walk(prod).filter((f) => /nunito[^/\\]*\.woff2$/i.test(f));
+const ofl = join(prod, 'licenses', 'Nunito-OFL.txt');
+if (nunito.length && !(existsSync(ofl) && /SIL Open Font License/.test(readFileSync(ofl, 'utf8'))))
+  fail(
+    `${nunito.length} Nunito woff2 files ship without licenses/Nunito-OFL.txt (public/licenses/)`,
+  );
+// The overlay uses system fonts: an @font-face in the content script would be hoisted into the page.
+const contentScript = join(prod, 'content-scripts', 'highlighter.js');
+if (existsSync(contentScript) && readFileSync(contentScript, 'utf8').includes('@font-face'))
+  fail('content-scripts/highlighter.js declares an @font-face (web fonts are for extension pages)');
+
 // --- size budgets (regress guard; tighten as the lazy-mount work lands) ---------------------
 const KB = 1024;
 const size = (rel) => statSync(join(prod, rel)).size;
@@ -141,7 +153,10 @@ const total = walk(prod)
 // (temml 0.14.0 with mhchem, ~207 KB minified, ~61 KB gzip, fetched only when a note holds a formula)
 // and 2 KB of its stylesheet: measured 6662 KB before it, so 7000 KB keeps ~2% headroom. OCR assets are
 // budgeted separately above. Raise this only with a reason in the commit.
-const TOTAL_BUDGET_KB = 7000;
+// The Sunny Vault redesign (docs/adr/021) bundles Nunito (5 woff2 subsets, 134 KB; a page fetches only the
+// subsets it needs) with its OFL licence and the Sunny stylesheets (~30 KB): ~7076 KB estimated against 6903 KB
+// measured in run 38560072781. 7250 KB keeps ~2% headroom.
+const TOTAL_BUDGET_KB = 7250;
 if (total > TOTAL_BUDGET_KB * KB)
   fail(`total extension size ${Math.round(total / KB)} KB exceeds ${TOTAL_BUDGET_KB} KB`);
 

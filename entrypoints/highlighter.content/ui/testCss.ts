@@ -44,6 +44,23 @@ function parseDecls(body: string): Map<string, string> {
   return out;
 }
 
+/** A selector list split at its top-level commas (not the ones inside :is() or :not()). */
+function splitSelectors(head: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < head.length; i += 1) {
+    if (head[i] === '(') depth += 1;
+    else if (head[i] === ')') depth -= 1;
+    else if (head[i] === ',' && depth === 0) {
+      out.push(head.slice(start, i));
+      start = i + 1;
+    }
+  }
+  out.push(head.slice(start));
+  return out.map((s) => s.trim().replace(/\s+/g, ' '));
+}
+
 export function parseCss(css: string): Rule[] {
   const text = stripComments(css).replace(/@import[^;]+;/g, '');
   const rules: Rule[] = [];
@@ -66,7 +83,7 @@ export function parseCss(css: string): Rule[] {
       } else if (!head.startsWith('@')) {
         rules.push({
           media,
-          selectors: head.split(',').map((s) => s.trim().replace(/\s+/g, ' ')),
+          selectors: splitSelectors(head),
           decls: parseDecls(body),
           order: rules.length,
         });
@@ -127,18 +144,34 @@ function mediaApplies(media: string, s: Scenario): boolean {
   });
 }
 
-/** Only the selector forms tokens.css uses; anything else must be modelled before it ships. */
+/**
+ * Only the selector forms tokens.css uses; anything else must be modelled before it ships. The
+ * overlay's .sv-root always carries data-theme (system, light or dark) and never data-contrast;
+ * density only changes spacing, so the model is the comfortable default.
+ */
 function selectorMatch(selector: string, s: Scenario): { applies: boolean; specificity: number } {
   switch (selector) {
     case ':root':
     case ':host':
+    case '.sv-root':
+    case '[data-theme]':
       return { applies: true, specificity: 1 };
+    case "[data-theme='light']":
+      return { applies: s.attr === 'light', specificity: 1 };
+    case "[data-theme='dark']":
+      return { applies: s.attr === 'dark', specificity: 1 };
     case ":root:not([data-theme='light'])":
     case ".sv-root:not([data-theme='light'])":
       return { applies: s.attr !== 'light', specificity: 2 };
-    case ":root[data-theme='dark']":
-    case ".sv-root[data-theme='dark']":
-      return { applies: s.attr === 'dark', specificity: 2 };
+    case '[data-contrast]':
+    case "[data-contrast='more']":
+    case "[data-contrast='high']":
+      return { applies: false, specificity: 1 };
+    case ":root:is([data-contrast='more'], [data-contrast='high'])":
+    case ".sv-root:is([data-contrast='more'], [data-contrast='high'])":
+      return { applies: false, specificity: 2 };
+    case "[data-density='compact']":
+      return { applies: false, specificity: 1 };
     default:
       throw new Error(`tokens.css selector not modelled by the contrast test: ${selector}`);
   }

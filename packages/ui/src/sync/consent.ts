@@ -27,6 +27,7 @@ export const TABLE_GROUP: Readonly<Record<string, SyncedGroupId>> = {
   decks: 'flashcards',
   cards: 'flashcards',
   reviewLogs: 'history',
+  gameFacts: 'history',
   documents: 'pdfs',
   ocrPages: 'scans',
 };
@@ -55,7 +56,8 @@ export const GROUP_TEXT: Readonly<Record<SyncedGroupId, { label: string; detail:
   },
   history: {
     label: 'Review history',
-    detail: 'every answer you gave to a flashcard: when, how you rated it and how long you took.',
+    detail:
+      'every answer you gave to a flashcard (when, how you rated it and how long you took), plus your daily XP goal, the Game mode switch and the records that keep XP right (session bonuses, undos).',
   },
   pdfs: {
     label: 'PDF details',

@@ -51,6 +51,7 @@ export function AsyncSwitch({
       <input
         id={id}
         type="checkbox"
+        className="sv-switch"
         checked={pending ?? checked}
         aria-busy={busy || undefined}
         aria-describedby={hintId}

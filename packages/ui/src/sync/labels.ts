@@ -20,6 +20,7 @@ const ENTITY: Record<string, string> = {
   reviewLogs: 'Review record',
   documents: 'PDF',
   ocrPages: 'Scanned page text',
+  gameFacts: 'Goal, streak and XP record',
 };
 
 const FIELD: Record<string, string> = {

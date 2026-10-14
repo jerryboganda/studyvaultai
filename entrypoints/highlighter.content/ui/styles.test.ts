@@ -31,15 +31,20 @@ const BG = '--sv-bg';
 const SURFACE = '--sv-surface';
 const RAISED = '--sv-surface-raised';
 const SURFACES = [BG, SURFACE, RAISED];
+// The hover tint of every transparent button, and the quote and chip fill.
+const HOVER = '--sv-primary-soft';
+const SUNK = '--sv-sunk';
 
 /** Text (>= 4.5:1): which token is painted as text on which surfaces. */
 const TEXT: Array<[fg: string, on: string[]]> = [
-  ['--sv-text', SURFACES],
-  // Quote, labels, hints, status and icon buttons.
-  ['--sv-text-muted', SURFACES],
-  // Text buttons and links, also on their hover fill (--sv-surface).
-  ['--sv-accent', SURFACES],
-  ['--sv-accent-text', ['--sv-accent', '--sv-accent-hover']],
+  // Body text, the quote and the bank chip (on the sunk fill), any button on its hover tint.
+  ['--sv-text', [...SURFACES, SUNK, HOVER]],
+  // Labels, hints, status and icon buttons.
+  ['--sv-text-muted', [...SURFACES, HOVER]],
+  // Text buttons and links, also on their hover tint.
+  ['--sv-accent', [...SURFACES, HOVER]],
+  // The filled (3D) buttons: Save and Delete.
+  ['--sv-on-primary', ['--sv-primary', '--sv-danger-fill']],
   ['--sv-danger', SURFACES],
   // Toast tick; the toast sits on the raised surface.
   ['--sv-success', SURFACES],
@@ -52,13 +57,13 @@ const UI: Array<[fg: string, on: string[]]> = [
   // Invalid field edge, danger button edge, error toast bar.
   ['--sv-danger', [BG, RAISED]],
   ['--sv-success', [RAISED]],
-  // Quote bar (on --sv-surface) and toast bar.
-  ['--sv-accent', [SURFACE, RAISED]],
+  // Quote bar (on the sunk fill) and toast bar.
+  ['--sv-accent', [SUNK, RAISED]],
   // The ring sits on the surface or, at the edge of a surface, on the page: against the halo it
   // always has 3:1, which is what keeps it visible on any page.
   ['--sv-focus', [...SURFACES, '--sv-focus-halo']],
-  // The halo touches the control: the primary button is the one with a fill of its own.
-  ['--sv-focus-halo', ['--sv-accent', '--sv-accent-hover']],
+  // The halo touches the control: the filled buttons are the ones with a fill of their own.
+  ['--sv-focus-halo', ['--sv-primary', '--sv-danger-fill']],
 ];
 
 describe('overlay colours reach WCAG AA in every theme', () => {
@@ -115,11 +120,20 @@ describe('overlay colours reach WCAG AA in every theme', () => {
 
   it('every colour token styles.css paints with is part of this audit', () => {
     const light = computeTokens(tokenRules, { system: 'light', attr: 'light', contrast: false });
-    const isColor = (name: string): boolean => /^(#|currentcolor)/i.test(light.get(name) ?? '');
+    // Aliases (--sv-text: var(--sv-ink)) count: a token is a colour if it resolves to one.
+    const isColor = (name: string): boolean => {
+      try {
+        colorOf(light, name);
+        return true;
+      } catch {
+        return false;
+      }
+    };
     const audited = new Set([...TEXT, ...UI].flatMap(([fg, on]) => [fg, ...on]));
-    // --sv-border is only the hairline around floating surfaces (the shadow and the surface
-    // difference separate them); fields use --sv-border-strong. The highlight palette is user data.
-    const exempt = new Set(['--sv-border', '--sv-shadow']);
+    // --sv-border is only the outline around floating surfaces (the shadow and the surface
+    // difference separate them); fields use --sv-border-strong. The 3D edges under the filled
+    // buttons are decoration (UX_DESIGN 2.7): the label and the fill identify the button.
+    const exempt = new Set(['--sv-border', '--sv-shadow', '--sv-primary-edge', '--sv-danger-edge']);
     const used = new Set<string>();
     for (const rule of styles) {
       for (const value of rule.decls.values()) {
@@ -306,7 +320,7 @@ describe('toolbar is click-through while it animates in', () => {
     expect(off.get('animation')).toBe('none !important');
     // And the duration token is zero there, for the animations that read it.
     const tokens = computeTokens(tokenRules, { system: 'light', attr: 'light', contrast: false });
-    expect(tokens.get('--sv-motion')).toBe('120ms');
+    expect(tokens.get('--sv-motion')).toBe('140ms');
     const reduced = tokenRules.filter(
       (r) => r.media === '(prefers-reduced-motion: reduce)' && r.decls.has('--sv-motion'),
     );
@@ -337,7 +351,7 @@ describe('theme and density are applied inside the shadow root', () => {
   it('the theme attribute is read from .sv-root, and its colour scheme follows it', () => {
     expect(declsFor(styles, ".sv-root[data-theme='light']").get('color-scheme')).toBe('light');
     expect(declsFor(styles, ".sv-root[data-theme='dark']").get('color-scheme')).toBe('dark');
-    const darkTokens = declsFor(tokenRules, ".sv-root[data-theme='dark']");
+    const darkTokens = declsFor(tokenRules, "[data-theme='dark']");
     expect(darkTokens.get('--sv-surface-raised')).toBeDefined();
     const system = declsFor(
       tokenRules,
