@@ -1,9 +1,12 @@
 import { useId, useState, type ReactNode } from 'react';
+import { ChevronRight, CircleAlert, Coffee, Rocket, SlidersHorizontal, Sprout } from 'lucide-react';
 import { DEFAULT_DECK_SETTINGS, type Deck } from '@study';
 import { updateDeckSettings } from '@storage';
 import { Button } from '../Button';
+import { ChoiceCards, InfoTip, type Choice } from '../design';
 import { InlineNotice } from '../Notice';
 import { errorMessage } from '../text';
+import './manage.css';
 import {
   parseDraft,
   sameDeckSettings,
@@ -13,31 +16,84 @@ import {
 } from './model';
 import { TID, deckSettingsId } from './testids';
 
+export type DeckPreset = 'light' | 'standard' | 'intense' | 'custom';
+type PresetValues = Pick<DeckSettingsDraft, 'targetRetentionPct' | 'newPerDay' | 'reviewsPerDay'>;
+
+const standard = toDraft(DEFAULT_DECK_SETTINGS);
+/**
+ * Presets set only the three numbers people think in (how much to remember, how many new cards,
+ * how many reviews); steps, the interval cap, leeches and fuzz stay as they are. Standard is the
+ * documented default.
+ */
+export const DECK_PRESETS: Record<Exclude<DeckPreset, 'custom'>, PresetValues> = {
+  light: { targetRetentionPct: '85', newPerDay: '10', reviewsPerDay: '100' },
+  standard: {
+    targetRetentionPct: standard.targetRetentionPct,
+    newPerDay: standard.newPerDay,
+    reviewsPerDay: standard.reviewsPerDay,
+  },
+  intense: { targetRetentionPct: '95', newPerDay: '40', reviewsPerDay: '400' },
+};
+
+/** The preset the draft matches, or 'custom'. */
+export function presetOf(d: DeckSettingsDraft): DeckPreset {
+  const same = (p: PresetValues) =>
+    Number(d.targetRetentionPct.trim()) === Number(p.targetRetentionPct) &&
+    d.newPerDay.trim() === p.newPerDay &&
+    d.reviewsPerDay.trim() === p.reviewsPerDay;
+  const hit = (Object.keys(DECK_PRESETS) as (keyof typeof DECK_PRESETS)[]).find((k) =>
+    same(DECK_PRESETS[k]),
+  );
+  return hit ?? 'custom';
+}
+
+export const PRESET_CHOICES: Choice<DeckPreset>[] = [
+  { value: 'light', label: 'Light', hint: '10 new a day', icon: Coffee, tone: 'success' },
+  { value: 'standard', label: 'Standard', hint: '20 new a day', icon: Sprout, tone: 'primary' },
+  { value: 'intense', label: 'Intense', hint: '40 new a day', icon: Rocket, tone: 'violet' },
+  {
+    value: 'custom',
+    label: 'Custom',
+    hint: 'Your numbers',
+    icon: SlidersHorizontal,
+    tone: 'neutral',
+  },
+];
+
 function Field({
   id,
   label,
-  hint,
+  tip,
+  unit,
   error,
   children,
 }: {
   id: string;
   label: string;
-  hint: string;
+  tip: string;
+  unit?: string;
   error: string | undefined;
   children: ReactNode;
 }) {
   return (
     <div className="sv-field">
-      <label className="sv-label" htmlFor={id}>
-        {label}
-      </label>
-      {children}
-      <p id={`${id}-hint`} className="sv-small sv-muted">
-        {hint}
-      </p>
+      <span className="rvm-label">
+        <label className="sv-label" htmlFor={id}>
+          {label}
+        </label>
+        <InfoTip label={`About ${label.toLowerCase()}`}>{tip}</InfoTip>
+      </span>
+      {unit ? (
+        <span className="rvm-unit">
+          {children}
+          <span aria-hidden="true">{unit}</span>
+        </span>
+      ) : (
+        children
+      )}
       {error ? (
-        <p id={`${id}-error`} className="sv-small rv-error">
-          <span aria-hidden="true">✕ </span>
+        <p id={`${id}-error`} className="rvm-fielderr">
+          <CircleAlert aria-hidden="true" strokeWidth={2.6} />
           {error}
         </p>
       ) : null}
@@ -46,8 +102,9 @@ function Field({
 }
 
 /**
- * Scheduling rules of one deck. Every field says what it does and validates before saving; the new
- * rules apply from the next answer on (stored cards and due dates are not rewritten).
+ * Scheduling rules of one deck: a preset as picture cards, the raw numbers under "Advanced". Every
+ * field validates before saving; the new rules apply from the next answer on (stored cards and due
+ * dates are not rewritten).
  */
 export function DeckSettingsForm({
   deck,
@@ -65,17 +122,17 @@ export function DeckSettingsForm({
   });
   const parsed = parseDraft(draft);
   const errors: DeckSettingsErrors = parsed.ok ? {} : parsed.errors;
+  const preset = presetOf(draft);
+  const [advanced, setAdvanced] = useState(() => presetOf(toDraft(deck.settings)) === 'custom');
   const changed = parsed.ok ? !sameDeckSettings(parsed.value, deck.settings) : true;
   const set = <K extends keyof DeckSettingsDraft>(key: K, value: DeckSettingsDraft[K]) => {
     setDraft((d) => ({ ...d, [key]: value }));
     setState((s) => ({ ...s, saved: false }));
   };
   const id = (name: string) => `${uid}-${name}`;
-  const describe = (name: keyof DeckSettingsDraft) =>
-    errors[name] ? `${id(name)}-hint ${id(name)}-error` : `${id(name)}-hint`;
 
   const disabledReason = !parsed.ok
-    ? 'Fix the fields marked with a cross first.'
+    ? 'Fix the fields marked in red first.'
     : !changed
       ? 'There are no changes to save.'
       : undefined;
@@ -96,21 +153,21 @@ export function DeckSettingsForm({
     }
   };
 
-  const number = (name: 'newPerDay' | 'reviewsPerDay' | 'maxIntervalDays' | 'leechThreshold') => (
+  const input = (name: keyof Omit<DeckSettingsDraft, 'enableFuzz'>, decimal = false) => (
     <input
       id={id(name)}
       className="sv-control"
-      inputMode="numeric"
+      inputMode={decimal ? 'decimal' : 'numeric'}
       value={draft[name]}
       aria-invalid={errors[name] ? true : undefined}
-      aria-describedby={describe(name)}
+      aria-describedby={errors[name] ? `${id(name)}-error` : undefined}
       onChange={(e) => set(name, e.target.value)}
     />
   );
 
   return (
     <form
-      className="sv-stack"
+      className="rvm-fields"
       data-testid={deckSettingsId(deck.id)}
       aria-label={`Settings of deck ${deck.name}`}
       onSubmit={(e) => {
@@ -118,101 +175,115 @@ export function DeckSettingsForm({
         if (!disabledReason) void save();
       }}
     >
-      <div className="rv-grid">
-        <Field
-          id={id('targetRetentionPct')}
-          label="Target retention (%)"
-          hint="How many cards you want to still remember when they come due. Higher means more reviews. 90% is the usual balance; 70 to 99 is allowed."
-          error={errors.targetRetentionPct}
-        >
-          <input
-            id={id('targetRetentionPct')}
-            className="sv-control"
-            inputMode="decimal"
-            value={draft.targetRetentionPct}
-            aria-invalid={errors.targetRetentionPct ? true : undefined}
-            aria-describedby={describe('targetRetentionPct')}
-            onChange={(e) => set('targetRetentionPct', e.target.value)}
-          />
-        </Field>
-        <Field
-          id={id('newPerDay')}
-          label="New cards per day"
-          hint="The most unseen cards introduced in one study day. 0 stops new cards."
-          error={errors.newPerDay}
-        >
-          {number('newPerDay')}
-        </Field>
-        <Field
-          id={id('reviewsPerDay')}
-          label="Reviews per day"
-          hint="The most reviews of already-learned cards shown in one study day. Cards over the cap stay due and are reported, never dropped."
-          error={errors.reviewsPerDay}
-        >
-          {number('reviewsPerDay')}
-        </Field>
-        <Field
-          id={id('maxIntervalDays')}
-          label="Maximum interval (days)"
-          hint="The longest wait between two reviews. 36500 is effectively no limit."
-          error={errors.maxIntervalDays}
-        >
-          {number('maxIntervalDays')}
-        </Field>
-        <Field
-          id={id('learningSteps')}
-          label="Learning steps"
-          hint="Delays a new card goes through before it graduates, for example 1m 10m. Whole numbers with m (minutes), h (hours) or d (days)."
-          error={errors.learningSteps}
-        >
-          <input
-            id={id('learningSteps')}
-            className="sv-control"
-            value={draft.learningSteps}
-            aria-invalid={errors.learningSteps ? true : undefined}
-            aria-describedby={describe('learningSteps')}
-            onChange={(e) => set('learningSteps', e.target.value)}
-          />
-        </Field>
-        <Field
-          id={id('relearnSteps')}
-          label="Relearning steps"
-          hint="Delays after you forget a graduated card. Leave empty to schedule it straight back into review."
-          error={errors.relearnSteps}
-        >
-          <input
-            id={id('relearnSteps')}
-            className="sv-control"
-            value={draft.relearnSteps}
-            aria-invalid={errors.relearnSteps ? true : undefined}
-            aria-describedby={describe('relearnSteps')}
-            onChange={(e) => set('relearnSteps', e.target.value)}
-          />
-        </Field>
-        <Field
-          id={id('leechThreshold')}
-          label="Leech threshold"
-          hint="A card forgotten this many times is suspended and tagged leech so you can rewrite it; it repeats every half-threshold lapses after that."
-          error={errors.leechThreshold}
-        >
-          {number('leechThreshold')}
-        </Field>
-      </div>
-      <label className="sv-check">
-        <input
-          type="checkbox"
-          checked={draft.enableFuzz}
-          aria-describedby={id('fuzz-hint')}
-          onChange={(e) => set('enableFuzz', e.target.checked)}
+      {/* A click on Custom opens Advanced even when Custom is already the checked card. */}
+      <div
+        onClick={(e) => {
+          if ((e.target as HTMLInputElement).value === 'custom') setAdvanced(true);
+        }}
+      >
+        <ChoiceCards
+          label="Pace"
+          options={PRESET_CHOICES}
+          value={preset}
+          columns={4}
+          onChange={(next) => {
+            if (next === 'custom') {
+              setAdvanced(true);
+              return;
+            }
+            setDraft((d) => ({ ...d, ...DECK_PRESETS[next] }));
+            setState((s) => ({ ...s, saved: false }));
+          }}
         />
-        <span>
-          <span className="sv-label">Spread due dates (fuzz)</span>
-          <span id={id('fuzz-hint')} className="sv-small sv-muted rv-block">
-            Moves long intervals by a few percent so cards made together do not all return on the
-            same day. The shift is deterministic for each card. Off means exact intervals.
+      </div>
+      <details
+        className="rvm-disclosure"
+        open={advanced}
+        onToggle={(e) => setAdvanced(e.currentTarget.open)}
+      >
+        <summary>
+          <ChevronRight className="rvm-chev" aria-hidden="true" strokeWidth={2.6} />
+          <SlidersHorizontal aria-hidden="true" width={18} height={18} />
+          Advanced
+        </summary>
+        <div className="rvm-disclosure__body">
+          <div className="rvm-advgrid">
+            <Field
+              id={id('targetRetentionPct')}
+              label="Target retention"
+              unit="%"
+              tip="How many cards you still remember when they come due. Higher means more reviews. 90 is the usual balance; 70 to 99 is allowed."
+              error={errors.targetRetentionPct}
+            >
+              {input('targetRetentionPct', true)}
+            </Field>
+            <Field
+              id={id('newPerDay')}
+              label="New per day"
+              tip="The most unseen cards introduced in one study day. 0 stops new cards."
+              error={errors.newPerDay}
+            >
+              {input('newPerDay')}
+            </Field>
+            <Field
+              id={id('reviewsPerDay')}
+              label="Reviews per day"
+              tip="The most reviews of learned cards in one study day. Cards over the cap stay due and are reported, never dropped."
+              error={errors.reviewsPerDay}
+            >
+              {input('reviewsPerDay')}
+            </Field>
+            <Field
+              id={id('maxIntervalDays')}
+              label="Max interval"
+              unit="days"
+              tip="The longest wait between two reviews. 36500 is effectively no limit."
+              error={errors.maxIntervalDays}
+            >
+              {input('maxIntervalDays')}
+            </Field>
+            <Field
+              id={id('learningSteps')}
+              label="Learning steps"
+              tip="Delays a new card goes through before it graduates, for example 1m 10m. Use m, h or d."
+              error={errors.learningSteps}
+            >
+              {input('learningSteps')}
+            </Field>
+            <Field
+              id={id('relearnSteps')}
+              label="Relearning steps"
+              tip="Delays after you forget a learned card. Empty sends it straight back to review."
+              error={errors.relearnSteps}
+            >
+              {input('relearnSteps')}
+            </Field>
+            <Field
+              id={id('leechThreshold')}
+              label="Leech threshold"
+              tip="A card forgotten this many times is suspended and tagged leech so you can rewrite it. It repeats every half that many lapses after."
+              error={errors.leechThreshold}
+            >
+              {input('leechThreshold')}
+            </Field>
+          </div>
+          <span className="rvm-label">
+            <label className="sv-check">
+              <input
+                type="checkbox"
+                className="sv-switch"
+                checked={draft.enableFuzz}
+                onChange={(e) => set('enableFuzz', e.target.checked)}
+              />
+              <span className="sv-label">Spread due dates</span>
+            </label>
+            <InfoTip label="About spreading due dates">
+              Moves long intervals by a few percent so cards made together do not all return on the
+              same day. Off means exact intervals.
+            </InfoTip>
           </span>
-        </span>
-      </label>
+        </div>
+      </details>
       {state.error ? (
         <InlineNotice tone="error" title="Not saved">
           {state.error}
@@ -220,11 +291,10 @@ export function DeckSettingsForm({
       ) : null}
       {state.saved ? (
         <InlineNotice tone="success" live>
-          Saved. The new rules apply from the next answer; cards already scheduled keep their due
-          dates.
+          Saved. The new rules apply from the next answer.
         </InlineNotice>
       ) : null}
-      <div className="sv-row">
+      <div className="rvm-row">
         <Button
           variant="primary"
           type="submit"
@@ -232,7 +302,7 @@ export function DeckSettingsForm({
           data-testid={TID.deckSettingsSave}
           disabledReason={disabledReason}
         >
-          Save deck settings
+          Save deck
         </Button>
         <Button
           data-testid={TID.deckSettingsReset}
@@ -241,9 +311,10 @@ export function DeckSettingsForm({
             setState((s) => ({ ...s, saved: false }));
           }}
         >
-          Use the defaults
+          Use defaults
         </Button>
-        {disabledReason ? <span className="sv-small sv-muted">{disabledReason}</span> : null}
+        {/* "No changes" is what the dimmed button says; only a problem to fix gets a line. */}
+        {!parsed.ok ? <span className="rvm-fielderr">{disabledReason}</span> : null}
       </div>
     </form>
   );

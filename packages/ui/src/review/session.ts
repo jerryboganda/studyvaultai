@@ -94,6 +94,8 @@ export interface LastAnswer {
   rating: Rating;
   leech: boolean;
   front: string;
+  /** Written now (XP earned); false when the answer was already recorded (a duplicate). */
+  fresh: boolean;
 }
 
 export interface SessionState {
@@ -165,6 +167,8 @@ export class ReviewSessionController {
   private prefs: repo.QueuePrefs;
   private boundary: repo.StudyClockOptions['boundary'];
   private locked = false;
+  /** Set by leave(): work still in flight (an answer being saved) must not put a card back on screen. */
+  private away = false;
   private decks = new Map<string, Deck>();
 
   constructor(deps: ControllerDeps = {}) {
@@ -201,6 +205,7 @@ export class ReviewSessionController {
   /** Build today's queue for `deckIds` (null = every deck) and show the first card. */
   async start(deckIds: readonly string[] | null): Promise<void> {
     await this.guard('loading', async () => {
+      this.away = false;
       const started = await this.port.startStudySession({
         now: this.now(),
         ...(this.boundary ? { boundary: this.boundary } : {}),
@@ -215,6 +220,7 @@ export class ReviewSessionController {
   /** Continue the stored session after reconciling it with the cards as they are now. */
   async resume(): Promise<ResumedSession | null> {
     const found = await this.guard<ResumedSession | null>('loading', async () => {
+      this.away = false;
       const resumed = await this.port.resumeStudySession({
         now: this.now(),
         ...(this.boundary ? { boundary: this.boundary } : {}),
@@ -252,6 +258,7 @@ export class ReviewSessionController {
 
   /** Leave the session; it is saved and can be continued. */
   leave(): void {
+    this.away = true;
     this.set({ phase: 'idle', current: null, waitUntil: null, notice: null });
   }
 
@@ -321,6 +328,7 @@ export class ReviewSessionController {
               rating,
               leech,
               front: cur.card.front,
+              fresh: outcome.status === 'reviewed',
             },
             notice: leech
               ? 'This card keeps being forgotten (a leech), so it was suspended. Rewrite it, or unsuspend it from the Cards view.'
@@ -392,7 +400,7 @@ export class ReviewSessionController {
             .join(' '),
           summary: null,
           bonus: null,
-          phase: 'question',
+          ...(this.away ? {} : { phase: 'question' as const }),
         });
         await this.presentCard(out.card, 'pending');
       } else {
@@ -552,6 +560,7 @@ export class ReviewSessionController {
         return;
       }
       if (next.kind === 'wait') {
+        if (this.away) return;
         this.set({ phase: 'waiting', current: null, waitUntil: next.until });
         return;
       }
@@ -576,7 +585,7 @@ export class ReviewSessionController {
   ): Promise<void> {
     const session = this.state.session;
     const deck = knownDeck ?? (await this.deckOf(card));
-    if (!session || !deck) return;
+    if (!session || !deck || this.away) return;
     const nowMs = this.now();
     const choices =
       card.cardType === 'mcq' && card.choices ? orderChoices(card.choices, choiceRandom(card)) : [];
@@ -603,6 +612,8 @@ export class ReviewSessionController {
   private async finish(session: ReviewSession): Promise<void> {
     const { status } = await this.port.completeStudySession(session.id, { now: this.now() });
     const logs = await this.port.listReviewLogs({ since: session.startedAt });
+    // The session is over even if the person left while its last answer was saved: show its end.
+    this.away = false;
     this.set({
       phase: 'done',
       current: null,

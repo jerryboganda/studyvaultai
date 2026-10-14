@@ -1,8 +1,10 @@
 import { useId, useState } from 'react';
+import { Eye, Plus, Trash } from 'lucide-react';
 import { parseCloze, type Card } from '@study';
 import type { CardPatch } from '@storage';
-import { Button, InlineNotice } from '@ui';
+import { Button, ChunkyButton, IconButton, InfoTip, InlineNotice } from '@ui';
 import { CardFace, TID } from '@ui/review';
+import '@ui/review/manage.css';
 
 /**
  * Edit the content of a card in place. Scheduling, the source link and the quote snapshot are not
@@ -52,7 +54,7 @@ export function CardEditForm({
   if (!isCloze && front.trim() === '') problems.push('The question is empty.');
   if (!isCloze && !isMcq && back.trim() === '') problems.push('The answer is empty.');
   if (isCloze && parseCloze(markup).deletions.length === 0) {
-    problems.push('Add at least one deletion, written as {{c1::answer}} or {{c1::answer::hint}}.');
+    problems.push('Add at least one blank, like {{c1::answer}}.');
   }
   if (isMcq) {
     if (choices.length < 2) problems.push('A multiple-choice card needs at least 2 options.');
@@ -81,7 +83,7 @@ export function CardEditForm({
 
   return (
     <form
-      className="sv-stack rv-edit"
+      className="rvm rvm-fields rv-edit"
       aria-label="Edit card"
       data-testid={TID.editor}
       onSubmit={(e) => {
@@ -91,21 +93,22 @@ export function CardEditForm({
     >
       {isCloze ? (
         <div className="sv-field">
-          <label className="sv-label" htmlFor={`${uid}-markup`}>
-            Cloze text
-          </label>
+          <span className="rvm-label">
+            <label className="sv-label" htmlFor={`${uid}-markup`}>
+              Text with blanks
+            </label>
+            <InfoTip label="How to write blanks">
+              Hide a word with {'{{c1::answer}}'}; add a hint with {'{{c1::answer::hint}}'}. Other
+              cards made from the same text do not change.
+            </InfoTip>
+          </span>
           <textarea
             id={`${uid}-markup`}
             className="sv-control"
             rows={4}
             value={markup}
-            aria-describedby={`${uid}-markup-hint`}
             onChange={(e) => setMarkup(e.target.value)}
           />
-          <p id={`${uid}-markup-hint`} className="sv-small sv-muted">
-            Hide a word with {'{{c1::answer}}'} or add a hint with {'{{c1::answer::hint}}'}. Editing
-            this card does not change the other cards made from the same text.
-          </p>
         </div>
       ) : (
         <>
@@ -122,11 +125,12 @@ export function CardEditForm({
             />
           </div>
           {isMcq ? (
-            <fieldset className="rv-fieldset">
-              <legend className="sv-label">Options (mark the correct one)</legend>
-              <ul className="sv-stack sv-stack--tight">
+            <fieldset className="rvm-fieldset">
+              <legend>Options</legend>
+              <p className="rvm-line">Tick the right one.</p>
+              <ul className="rvm-fields">
                 {choices.map((c, i) => (
-                  <li key={c.id} className="rv-row">
+                  <li key={c.id} className="rvm-optrow">
                     <input
                       type="radio"
                       name={`${uid}-key`}
@@ -135,7 +139,7 @@ export function CardEditForm({
                       onChange={() => setAnswerId(c.id)}
                     />
                     <input
-                      className="sv-control sv-grow"
+                      className="sv-control"
                       value={c.text}
                       aria-label={`Option ${i + 1} text`}
                       onChange={(e) =>
@@ -144,27 +148,28 @@ export function CardEditForm({
                         )
                       }
                     />
-                    <Button
-                      aria-label={`Remove option ${i + 1}`}
-                      disabledReason={
-                        choices.length <= 2 ? 'A question needs at least 2 options.' : undefined
-                      }
-                      onClick={() => {
-                        setChoices(choices.filter((x) => x.id !== c.id));
-                        if (answerId === c.id) setAnswerId('');
-                      }}
-                    >
-                      Remove
-                    </Button>
+                    {choices.length > 2 ? (
+                      <IconButton
+                        icon={Trash}
+                        label={`Remove option ${i + 1}`}
+                        size="sm"
+                        onClick={() => {
+                          setChoices(choices.filter((x) => x.id !== c.id));
+                          if (answerId === c.id) setAnswerId('');
+                        }}
+                      />
+                    ) : null}
                   </li>
                 ))}
               </ul>
-              <Button
+              <ChunkyButton
+                size="sm"
+                icon={Plus}
                 disabledReason={choices.length >= 8 ? 'At most 8 options.' : undefined}
                 onClick={() => setChoices([...choices, { id: nextChoiceId(), text: '' }])}
               >
                 Add option
-              </Button>
+              </ChunkyButton>
             </fieldset>
           ) : (
             <div className="sv-field">
@@ -196,30 +201,37 @@ export function CardEditForm({
       </div>
       <div className="sv-field">
         <label className="sv-label" htmlFor={`${uid}-tags`}>
-          Tags (comma separated)
+          Tags
         </label>
         <input
           id={`${uid}-tags`}
           className="sv-control"
+          placeholder="Comma separated"
           value={tags}
           onChange={(e) => setTags(e.target.value)}
         />
       </div>
-      <div className="rv-preview-box" aria-label="How the card will look">
-        <p className="sv-label">Preview</p>
-        <CardFace card={preview} reveal={false} />
+      <div className="rvm-preview" role="group" aria-label="How the card will look">
+        <span className="rvm-preview__head">
+          <Eye aria-hidden="true" strokeWidth={2.4} />
+          Preview
+        </span>
+        <div className="rvm-face">
+          <span className="rvm-face__side">Front</span>
+          <CardFace card={preview} reveal={false} />
+        </div>
       </div>
       {error ? (
         <InlineNotice tone="error" title="Not saved">
           {error}
         </InlineNotice>
       ) : null}
-      <div className="sv-row">
+      <div className="rvm-row">
         <Button variant="primary" type="submit" busy={busy} disabledReason={disabledReason}>
           Save card
         </Button>
         <Button onClick={onCancel}>Cancel</Button>
-        {disabledReason ? <span className="sv-small sv-muted">{disabledReason}</span> : null}
+        {problems[0] ? <span className="rvm-fielderr">{problems[0]}</span> : null}
       </div>
     </form>
   );

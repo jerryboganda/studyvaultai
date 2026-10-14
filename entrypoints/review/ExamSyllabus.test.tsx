@@ -76,15 +76,32 @@ async function seedSyllabus() {
 const storedExam = async () =>
   (await getDb().meta.get('examSession'))?.value as ExamSession | undefined;
 
-/** Press start (order as created, no limit). */
-async function start(user: ReturnType<typeof userEvent.setup>) {
-  await waitFor(() =>
-    expect(screen.getByTestId(TID.examStart).getAttribute('aria-disabled')).toBeNull(),
+type User = ReturnType<typeof userEvent.setup>;
+const step = (title: string) => screen.findByRole('heading', { name: title });
+const next = (user: User) => user.click(screen.getByRole('button', { name: 'Next' }));
+/** The setup wizard's first step: ask from a syllabus, then on to its topic. */
+async function chooseSyllabus(user: User) {
+  await step('Ask from');
+  await user.click(
+    within(screen.getByTestId(TID.examSource)).getByRole('radio', { name: /A syllabus/ }),
   );
-  await user.click(screen.getByTestId(TID.examShuffle));
-  await user.click(screen.getByTestId(TID.examStart));
-  await screen.findByTestId(TID.examRun);
+  await next(user);
+  await step('Which topic?');
 }
+/** From the topic step to the last look (order as created, no limit). */
+async function toReview(user: User) {
+  await next(user);
+  await step('How many?');
+  await user.click(screen.getByTestId(TID.examShuffle));
+  await next(user);
+  await step('Time limit');
+  await next(user);
+  await step('Looks good?');
+}
+const start = async (user: User) => {
+  await user.click(screen.getByRole('button', { name: 'Start exam' }));
+  await screen.findByTestId(TID.examRun);
+};
 
 describe('exam: from a syllabus', () => {
   it('offers the syllabus, counts what the coverage counts, shares the questions by weight and draws only from it', async () => {
@@ -93,8 +110,10 @@ describe('exam: from a syllabus', () => {
     render(<Review />);
     await screen.findByTestId(TID.examSetup);
     // Banks, folders and tags first; a syllabus is one click away.
-    expect(screen.getByTestId(TID.examScope)).toBeTruthy();
-    await user.click(screen.getByTestId(TID.examSourceSyllabus));
+    expect(
+      within(screen.getByTestId(TID.examSource)).getByRole('radio', { name: /My banks/ }),
+    ).toHaveProperty('checked', true);
+    await chooseSyllabus(user);
 
     const topic = (await screen.findByTestId(TID.examTopic)) as HTMLSelectElement;
     await waitFor(() =>
@@ -106,10 +125,19 @@ describe('exam: from a syllabus', () => {
       ]),
     );
     expect(screen.queryByTestId(TID.examScope)).toBeNull();
-    expect((screen.getByTestId(TID.examQuestions) as HTMLInputElement).value).toBe('3');
 
     // Weighted: 3 questions, Cardiology 75 % and Renal 25 % of the topics that have cards.
     await user.click(screen.getByTestId(TID.examWeighted));
+    await next(user);
+    await step('How many?');
+    expect(screen.getByRole('radio', { name: /^All/ }).closest('label')?.textContent).toMatch(
+      /3 cards/,
+    );
+    await user.click(screen.getByTestId(TID.examShuffle));
+    await next(user);
+    await step('Time limit');
+    await next(user);
+    await step('Looks good?');
     const plan = screen.getByTestId(TID.examPlan);
     await user.click(within(plan).getByText(/How the 3 questions are shared between topics/));
     const rows = within(plan)
@@ -152,13 +180,12 @@ describe('exam: from a syllabus', () => {
     const create = vi.spyOn(browser.tabs, 'create').mockResolvedValue({} as never);
     render(<Review />);
     await screen.findByTestId(TID.examSetup);
-    await user.click(screen.getByTestId(TID.examSourceSyllabus));
+    await chooseSyllabus(user);
     const topic = (await screen.findByTestId(TID.examTopic)) as HTMLSelectElement;
     await waitFor(() => expect(topic.options).toHaveLength(4));
     await user.selectOptions(topic, s.topic('Cardiology').id);
-    await waitFor(() =>
-      expect((screen.getByTestId(TID.examQuestions) as HTMLInputElement).value).toBe('2'),
-    );
+    await toReview(user);
+    expect(screen.getByText(/^2 · in order$/)).toBeTruthy();
     await start(user);
     const run = await storedExam();
     expect(run?.scopeLabel).toBe('Syllabus: Cardiorenal exam / Cardiology');
@@ -171,7 +198,7 @@ describe('exam: from a syllabus', () => {
     await user.click(within(confirm).getByRole('button', { name: 'Finish exam' }));
     await screen.findByTestId(TID.examMarking);
     await user.click(screen.getByRole('radio', { name: 'I knew it (question 1)' }));
-    await user.click(screen.getByRole('radio', { name: 'I did not know it (question 2)' }));
+    await user.click(screen.getByRole('radio', { name: "Didn't know it (question 2)" }));
     await user.click(screen.getByTestId(TID.examShowResults));
 
     const results = await screen.findByTestId(TID.examResults);
@@ -212,14 +239,17 @@ describe('exam: from a syllabus', () => {
       `/review.html?view=exam&syllabus=${s.syllabus.id}&topic=${s.topic('Renal').id}`,
     );
     render(<Review />);
+    // The source is already answered: the wizard opens on the topic.
     const topic = (await screen.findByTestId(TID.examTopic)) as HTMLSelectElement;
-    expect((screen.getByTestId(TID.examSourceSyllabus) as HTMLInputElement).checked).toBe(true);
-    expect((screen.getByTestId(TID.examSyllabus) as HTMLSelectElement).value).toBe(s.syllabus.id);
+    expect(screen.queryByTestId(TID.examSource)).toBeNull();
+    expect(screen.getByTestId(TID.examSyllabus).textContent).toBe('Cardiorenal exam');
     expect(topic.value).toBe(s.topic('Renal').id);
-    await waitFor(() =>
-      expect((screen.getByTestId(TID.examQuestions) as HTMLInputElement).value).toBe('1'),
-    );
-    await waitFor(() => expect(document.activeElement?.textContent).toBe('Exam simulation'));
+    await waitFor(() => expect(document.activeElement?.textContent).toBe('Practice exam'));
+    // Next waits for the syllabus cards to be read (the counts appear then).
+    await waitFor(() => expect(topic.options[0]?.textContent).toMatch(/\(3 cards\)$/));
+    const user = userEvent.setup();
+    await toReview(user);
+    expect(screen.getByText(/^1 · in order$/)).toBeTruthy();
   });
 
   it('says so when the topic or the syllabus in the address is gone, and falls back honestly', async () => {
@@ -259,10 +289,46 @@ describe('exam: from a syllabus', () => {
     expect(window.location.search).toBe(
       `?view=exam&syllabus=${s.syllabus.id}&topic=${s.topic('Cardiology').id}`,
     );
-    await waitFor(() => expect(document.activeElement?.textContent).toBe('Exam simulation'));
+    await waitFor(() => expect(document.activeElement?.textContent).toBe('Practice exam'));
     // Moving to another tab forgets the preselection (the address too).
     await user.click(screen.getByRole('tab', { name: 'Study' }));
     expect(window.location.search).toBe('?view=study');
+  });
+
+  it('a bank exam: "A bank" adds a step that needs a pick, and only that bank is asked', async () => {
+    const user = userEvent.setup();
+    const s = await seedSyllabus();
+    render(<Review />);
+    await screen.findByTestId(TID.examSetup);
+    await step('Ask from');
+    await next(user);
+    await step('What to ask');
+    const kinds = within(screen.getByTestId(TID.examScope));
+    const labels = kinds.getAllByRole('radio').map((r) => r.closest('label')?.textContent);
+    expect(labels).toHaveLength(2);
+    expect(labels[0]).toMatch(/All cards.*3 cards/);
+    expect(labels[1]).toMatch(/A bank.*2 banks/);
+    await user.click(kinds.getByRole('radio', { name: /^A bank/ }));
+    await next(user);
+    await step('Which bank?');
+    // Nothing is picked for the person: Next says what is missing and puts focus on the choices.
+    await next(user);
+    expect((await screen.findByRole('alert')).textContent).toBe('Pick a bank.');
+    expect(document.activeElement).toBe(screen.getByRole('radio', { name: /^Cardiology/ }));
+    await user.click(screen.getByRole('radio', { name: /^Renal/ }));
+    await toReview(user);
+    expect(screen.getByText('Bank: Renal')).toBeTruthy();
+    // Back to the kind step and on again: the pick is kept.
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+    await step('Which bank?');
+    expect(screen.getByRole('radio', { name: /^Renal/ })).toHaveProperty('checked', true);
+    await toReview(user);
+    await start(user);
+    const exam = (await storedExam())!;
+    expect(exam.scope).toEqual({ kind: 'bank', bankId: s.renal.id });
+    expect(exam.questions).toHaveLength(1);
   });
 
   it('with no syllabus it says how to get one and offers the editor', async () => {
@@ -273,7 +339,7 @@ describe('exam: from a syllabus', () => {
     await screen.findByTestId(TID.examSetup);
     expect(screen.queryByTestId(TID.examSource)).toBeNull();
     const hint = await screen.findByTestId(TID.examSyllabusNone);
-    expect(hint.textContent).toMatch(/make a syllabus first/);
+    expect(hint.textContent).toMatch(/Make a syllabus first/);
     await user.click(within(hint).getByRole('button', { name: 'Create a syllabus' }));
     await waitFor(() => expect(create).toHaveBeenCalled());
     expect(String(create.mock.calls[0]?.[0]?.url)).toMatch(/dashboard\.html\?view=syllabus$/);
@@ -290,9 +356,11 @@ describe('exam: from a syllabus', () => {
     });
     render(<Review />);
     await screen.findByTestId(TID.examSetup);
-    await user.click(screen.getByTestId(TID.examSourceSyllabus));
-    expect(await screen.findByText('No card belongs to this topic yet')).toBeTruthy();
-    expect(screen.getByTestId(TID.examStart).getAttribute('aria-disabled')).toBe('true');
+    await chooseSyllabus(user);
+    expect(await screen.findByText('No cards here')).toBeTruthy();
+    await next(user);
+    expect((await screen.findByRole('alert')).textContent).toMatch(/No card belongs to this topic/);
+    expect(screen.getByRole('heading', { name: 'Which topic?' })).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Edit this syllabus' }));
     await waitFor(() => expect(create).toHaveBeenCalled());
     expect(String(create.mock.calls[0]?.[0]?.url)).toMatch(
@@ -345,9 +413,8 @@ describe('exam: a stored exam of another version', () => {
     render(<Review />);
     expect(await screen.findByText(/could not be read/)).toBeTruthy();
     expect(screen.queryByTestId(TID.examContinue)).toBeNull();
-    await waitFor(() =>
-      expect(screen.getByTestId(TID.examStart).getAttribute('aria-disabled')).toBeNull(),
-    );
+    // A new exam can be set up right away.
+    expect(await screen.findByRole('button', { name: 'Next' })).toBeTruthy();
     await waitFor(async () => expect(await getDb().meta.get('examSession')).toBeUndefined());
   });
 });

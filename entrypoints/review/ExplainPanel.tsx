@@ -1,3 +1,5 @@
+import { BookOpenText, Lightbulb, NotebookPen, Quote, type LucideIcon } from 'lucide-react';
+import type { ReactNode } from 'react';
 import type { VerificationStatus } from '@study';
 import type { CardSourceContext } from '@storage';
 import { Badge, InlineNotice, type Tone } from '@ui';
@@ -9,6 +11,28 @@ export const VERIFICATION_LABEL: Record<VerificationStatus, { label: string; ton
   conflicting: { label: 'Conflicting evidence', tone: 'warning' },
   externally_verified: { label: 'Verified by you against an outside source', tone: 'success' },
 };
+
+function Part({
+  icon: Icon,
+  title,
+  testId,
+  children,
+}: {
+  icon: LucideIcon;
+  title: string;
+  testId?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="rv-explain__part" data-testid={testId}>
+      <h3 className="rv-explain__title">
+        <Icon aria-hidden="true" strokeWidth={2.5} />
+        {title}
+      </h3>
+      {children}
+    </div>
+  );
+}
 
 /**
  * Why the answer is the answer: the card's own explanation, the saved source quote (immutable,
@@ -24,20 +48,14 @@ export function ExplainPanel({
   const kp = context.knowledgePoint;
   const hasNote = context.userComment.trim() !== '' || context.notes.length > 0;
   return (
-    <section
-      className="rv-explain sv-stack"
-      aria-label="Explanation"
-      data-testid={TID.explainPanel}
-    >
+    <section className="rv-explain" aria-label="Explanation" data-testid={TID.explainPanel}>
       {explanation ? (
-        <div>
-          <h3>Explanation</h3>
+        <Part icon={Lightbulb} title="Explanation">
           <p className="rv-prewrap">{explanation}</p>
-        </div>
+        </Part>
       ) : null}
 
-      <div>
-        <h3>Source quote</h3>
+      <Part icon={Quote} title="Source quote">
         {context.quote ? (
           <>
             <blockquote className="sv-quote" data-testid={TID.explainQuote}>
@@ -59,11 +77,10 @@ export function ExplainPanel({
             This card is not linked to a highlight, so there is no source quote to show.
           </p>
         )}
-      </div>
+      </Part>
 
       {hasNote ? (
-        <div data-testid={TID.explainNote}>
-          <h3>Your note</h3>
+        <Part icon={NotebookPen} title="Your note" testId={TID.explainNote}>
           {context.userComment.trim() !== '' ? (
             <p className="rv-prewrap">{context.userComment}</p>
           ) : null}
@@ -73,12 +90,11 @@ export function ExplainPanel({
               <p className="rv-prewrap">{n.body}</p>
             </div>
           ))}
-        </div>
+        </Part>
       ) : null}
 
       {kp ? (
-        <div>
-          <h3>Knowledge point</h3>
+        <Part icon={BookOpenText} title="Knowledge point">
           <p>{kp.shortOneLiner}</p>
           {kp.examPearl ? (
             <p>
@@ -98,7 +114,7 @@ export function ExplainPanel({
             </Badge>
             {kp.createdBy === 'ai' ? <Badge tone="warning">AI-made, unverified</Badge> : null}
           </p>
-        </div>
+        </Part>
       ) : null}
 
       {!context.quote && !explanation && !hasNote && !kp ? (

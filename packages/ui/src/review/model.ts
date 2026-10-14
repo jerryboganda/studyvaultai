@@ -1,4 +1,6 @@
 import {
+  BADGES,
+  XP,
   backlog,
   countsByBank,
   countsByDeck,
@@ -13,6 +15,7 @@ import {
   type BacklogStats,
   type BankCounts,
   type Card,
+  type Celebration,
   type DeckCounts,
   type DeckSettings,
   type DueForecast,
@@ -173,6 +176,39 @@ export function formatDuration(ms: number): string {
   const m = Math.round(s / 60);
   if (m < 60) return `${m} min`;
   return `${Math.floor(m / 60)} h ${String(m % 60).padStart(2, '0')} min`;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Game layer (ADR-022): what the review page says about XP and celebrations
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * XP a finished session earned: one per counted answer (undone answers are not in the summary) and
+ * the session bonus, which `already` means was recorded earlier for this same session.
+ */
+export function sessionXp(
+  answered: number,
+  bonus: 'awarded' | 'already' | 'no_answers' | null,
+): number {
+  const bonusXp = answered > 0 && (bonus === 'awarded' || bonus === 'already') ? XP.session : 0;
+  return answered * XP.review + bonusXp;
+}
+
+/** Title (no exclamation mark: the done screen already has one) and one line for a celebration. */
+export function celebrationText(c: Celebration): { title: string; line: string } {
+  switch (c.kind) {
+    case 'goal':
+      return { title: 'Daily goal met', line: `${c.xp} of ${c.goal} XP today` };
+    case 'level':
+      return { title: `Level ${c.level}`, line: 'You reached a new level' };
+    case 'badge':
+      return {
+        title: 'Badge earned',
+        line: BADGES.find((b) => b.id === c.badgeId)?.name ?? c.badgeId,
+      };
+    case 'streak':
+      return { title: `${c.days}-day streak`, line: `Daily goal met ${c.days} days running` };
+  }
 }
 
 /** "in 7m", "in 3h", "in 4d": time until an instant, with the labels the answer buttons use. */

@@ -44,6 +44,7 @@ export {
   watchStudySettings,
 } from './settings';
 export {
+  celebrationText,
   computeAnalytics,
   choiceRandom,
   formatDayKey,
@@ -54,6 +55,7 @@ export {
   keyAction,
   parseDraft,
   percent,
+  sessionXp,
   summarizeSession,
   toDraft,
   untilLabel,

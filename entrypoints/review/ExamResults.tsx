@@ -1,4 +1,13 @@
 import { useId, useState, type ReactNode } from 'react';
+import {
+  CircleCheck,
+  CircleMinus,
+  CircleX,
+  Clock,
+  Download,
+  LocateFixed,
+  type LucideIcon,
+} from 'lucide-react';
 import type { Card } from '@study';
 import {
   correctAnswerText,
@@ -23,11 +32,26 @@ import {
   listTags,
   type CardSourceContext,
 } from '@storage';
-import { Badge, Button, InlineNotice, plural, truncate, useAction, useAsync } from '@ui';
+import {
+  Badge,
+  Button,
+  ChunkyButton,
+  InfoTip,
+  InlineNotice,
+  ProgressRing,
+  VaultBuddy,
+  plural,
+  truncate,
+  useAction,
+  useAsync,
+} from '@ui';
 import { TID, examJumpId, examMissedId, examStudyTopicId, formatWhen, percent } from '@ui/review';
 import { openDashboard, type DashboardTarget } from '@ui/vault/dashboardLink';
 import { subtreeMappings, topicLibraryTarget } from '@ui/vault/topicLink';
 import { openSource, type JumpResult } from './jump';
+
+/** Missed questions shown before "Show all": a long exam must not turn the results into a wall. */
+const MISSED_PREVIEW = 5;
 
 const OUTCOME = {
   correct: { glyph: '✓', text: 'Correct' },
@@ -66,10 +90,11 @@ function Breakdown({
 }) {
   if (rows.length === 0) return null;
   return (
-    <section className="sv-stack sv-stack--tight" data-testid={testId}>
-      <h3>{title}</h3>
-      <div className="rv-tablewrap">
-        <table className="rv-table">
+    <section className="rv-breakdown" data-testid={testId}>
+      <h3 className="rv-subhead">{title}</h3>
+      {/* Scrolls sideways on a narrow screen: focusable so the keyboard can scroll it. */}
+      <div className="rv-tablewrap" role="region" aria-label={title} tabIndex={0}>
+        <table className="rv-table rv-table--cards">
           <caption className="sv-sr">{title}</caption>
           <thead>
             <tr>
@@ -90,7 +115,17 @@ function Breakdown({
                 <td>{r.correct}</td>
                 <td>{r.wrong}</td>
                 <td>{r.unanswered}</td>
-                <td>{percent(r.correct / r.total)}</td>
+                <td>
+                  <span className="rv-scorecell">
+                    <span className="rv-bars__track" aria-hidden="true">
+                      <span
+                        className="rv-bars__fill rv-bars__fill--success"
+                        style={{ width: `${Math.round((r.correct / r.total) * 100)}%` }}
+                      />
+                    </span>
+                    <span>{percent(r.correct / r.total)}</span>
+                  </span>
+                </td>
                 {action ? <td>{action.cell(r)}</td> : null}
               </tr>
             ))}
@@ -128,21 +163,21 @@ function MissedItem({
   const quote = context?.quote ?? card?.sourceQuote ?? null;
   const o = OUTCOME[outcome];
   return (
-    <li className="rv-card sv-stack sv-stack--tight" data-testid={examMissedId(index)}>
-      <div className="sv-row rv-card__meta">
-        <h4 className="rv-exam__heading">Question {index + 1}</h4>
+    <li className="rv-missed" data-testid={examMissedId(index)}>
+      <div className="rv-missed__head">
+        <h4 className="rv-missed__title">Question {index + 1}</h4>
         <Badge tone={outcome === 'wrong' ? 'danger' : 'neutral'} glyph={o.glyph}>
           {o.text}
         </Badge>
       </div>
       {card ? (
         <>
-          <p className="rv-face rv-face--small">{card.front}</p>
-          <p className="sv-small">
+          <p className="rv-missed__q">{card.front}</p>
+          <p className="rv-missed__a rv-missed__a--yours">
             <span className="sv-label">Your answer: </span>
             <span className="rv-prewrap">{givenAnswerText(q, card) ?? 'No answer'}</span>
           </p>
-          <p className="sv-small">
+          <p className="rv-missed__a rv-missed__a--key">
             <span className="sv-label">Correct answer: </span>
             <span className="rv-prewrap">{correctAnswerText(card)}</span>
           </p>
@@ -163,6 +198,7 @@ function MissedItem({
       ) : null}
       <div className="sv-row">
         <Button
+          variant="ghost"
           data-testid={examJumpId(index)}
           busy={open.busy}
           disabledReason={
@@ -170,6 +206,7 @@ function MissedItem({
           }
           onClick={() => void open.run()}
         >
+          <LocateFixed aria-hidden="true" className="rv-icon" strokeWidth={2.5} />
           Jump to source
         </Button>
       </div>
@@ -216,6 +253,7 @@ export function ExamResults({
 }) {
   const uid = useId();
   const [wanted, setWanted] = useState<boolean | null>(null);
+  const [allMissed, setAllMissed] = useState(false);
   const outcomes = exam.outcomes ?? [];
   const score = scoreOutcomes(outcomes);
   const timing = examTiming(exam);
@@ -297,55 +335,86 @@ export function ExamResults({
       ? 'No answered question to count.'
       : null;
 
-  return (
-    <section className="sv-stack" aria-labelledby={`${uid}-h`} data-testid={TID.examResults}>
-      <h2 id={`${uid}-h`}>Exam results</h2>
-      <p className="sv-muted">
-        {exam.scopeLabel}, finished {formatWhen(exam.finishedAt ?? exam.lastAt, timeZone)}.
-      </p>
+  const primaryRows = parts.topics.length > 0 ? 'topics' : 'banks';
+  const timeText =
+    timing.limitMs === null
+      ? 'taken'
+      : timing.timedOut
+        ? `time ran out (limit ${exam.minutes} min)`
+        : `of ${exam.minutes} min`;
+  const chips: { icon: LucideIcon; tone: string; value: ReactNode; label: string }[] = [
+    { icon: CircleX, tone: 'danger', value: score.wrong, label: 'wrong' },
+    { icon: CircleMinus, tone: 'neutral', value: score.unanswered, label: 'unanswered' },
+    { icon: Clock, tone: 'primary', value: examDuration(timing.usedMs), label: timeText },
+  ];
+  const topicsTable = (
+    <Breakdown
+      title="By topic"
+      first="Topic"
+      rows={parts.topics}
+      testId={TID.examTopics}
+      action={{ header: 'Study', cell: studyCell }}
+    />
+  );
+  const banksTable = (
+    <Breakdown title="By bank" first="Bank" rows={parts.banks} testId={TID.examBanks} />
+  );
 
-      <div className="rv-stats" data-testid={TID.examScore}>
-        <div className="rv-stat">
-          <span className="rv-count">
-            {score.fraction === null ? 'n/a' : percent(score.fraction)}
-          </span>
-          <span className="sv-small">
-            {score.correct} of {score.graded} correct
-          </span>
+  return (
+    <section className="rv-results" aria-labelledby={`${uid}-h`} data-testid={TID.examResults}>
+      <header className="rv-results__hero">
+        <VaultBuddy
+          pose={score.fraction !== null && score.fraction >= 0.6 ? 'cheer' : 'think'}
+          size={112}
+          className="rv-results__buddy"
+        />
+        <div className="rv-results__head">
+          <h2 id={`${uid}-h`} className="rv-tabhead__title">
+            Exam results
+          </h2>
+          <p className="rv-tabhead__line">
+            {exam.scopeLabel}, finished {formatWhen(exam.finishedAt ?? exam.lastAt, timeZone)}.
+          </p>
         </div>
-        <div className="rv-stat">
-          <span className="rv-count">{score.wrong}</span>
-          <span className="sv-small">wrong</span>
+        <div className="rv-score" data-testid={TID.examScore}>
+          {score.fraction === null ? (
+            <span className="rv-score__na">n/a</span>
+          ) : (
+            <ProgressRing
+              value={score.correct}
+              max={score.graded}
+              label="Score"
+              unit="correct"
+              tone="success"
+              size={120}
+              stroke={14}
+            >
+              <span className="rv-ring__num">{percent(score.fraction)}</span>
+            </ProgressRing>
+          )}
+          <div className="rv-score__facts">
+            <strong className="rv-score__main">
+              {score.correct} of {score.graded} correct
+            </strong>
+            <ul className="rv-score__chips">
+              {chips.map(({ icon: Icon, tone, value, label }) => (
+                <li key={label} className={`rv-scorechip rv-scorechip--${tone}`}>
+                  <Icon aria-hidden="true" strokeWidth={2.6} />
+                  <strong>{value}</strong> <span>{label}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
-        <div className="rv-stat">
-          <span className="rv-count">{score.unanswered}</span>
-          <span className="sv-small">unanswered</span>
-        </div>
-        <div className="rv-stat">
-          <span className="rv-count">{examDuration(timing.usedMs)}</span>
-          <span className="sv-small">
-            {timing.limitMs === null
-              ? 'no time limit'
-              : timing.timedOut
-                ? `time ran out (limit ${exam.minutes} min)`
-                : `of ${exam.minutes} min`}
-          </span>
-        </div>
-      </div>
+      </header>
       {score.void > 0 ? (
-        <p className="sv-small sv-muted">
+        <p className="rv-wizline">
           {plural(score.void, 'question')} could not be scored because the card was removed or
           changed type; {score.void === 1 ? 'it is' : 'they are'} left out of the score.
         </p>
       ) : null}
 
-      <Breakdown
-        title="By topic"
-        first="Topic"
-        rows={parts.topics}
-        testId={TID.examTopics}
-        action={{ header: 'Study', cell: studyCell }}
-      />
+      {primaryRows === 'topics' ? topicsTable : banksTable}
       {openTopic.error ? (
         <InlineNotice tone="error" title="Could not open the dashboard">
           {openTopic.error}
@@ -375,53 +444,20 @@ export function ExamResults({
           ) : null}
         </div>
       ) : null}
-      <Breakdown title="By bank" first="Bank" rows={parts.banks} testId={TID.examBanks} />
-      <Breakdown title="By tag" first="Tag" rows={parts.tags} testId={TID.examTags} />
-      {parts.tags.length > 0 ? (
-        <p className="sv-small sv-muted">A question with several tags counts under each of them.</p>
-      ) : null}
 
-      <details className="rv-details" data-testid={TID.examTimes}>
-        <summary>
-          Time per question
-          {timing.meanMs === null ? '' : ` (average ${examDuration(timing.meanMs)})`}
-        </summary>
-        <div className="rv-details__body rv-tablewrap">
-          <table className="rv-table">
-            <caption className="sv-sr">Time spent on each question</caption>
-            <thead>
-              <tr>
-                <th scope="col">#</th>
-                <th scope="col">Question</th>
-                <th scope="col">Result</th>
-                <th scope="col">Time</th>
-              </tr>
-            </thead>
-            <tbody>
-              {exam.questions.map((q, i) => {
-                const o = OUTCOME[outcomes[i] ?? 'void'];
-                return (
-                  <tr key={q.cardId}>
-                    <th scope="row">{i + 1}</th>
-                    <td className="sv-wrap">
-                      {truncate(cards.get(q.cardId)?.front ?? '(card removed)', 70)}
-                    </td>
-                    <td>
-                      <span aria-hidden="true">{o.glyph}</span> {o.text}
-                    </td>
-                    <td>{examDuration(q.spentMs)}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </details>
-
-      <section className="sv-stack" aria-labelledby={`${uid}-missed`} data-testid={TID.examMissed}>
-        <h3 id={`${uid}-missed`}>Missed questions</h3>
+      <section
+        className="rv-breakdown"
+        aria-labelledby={`${uid}-missed`}
+        data-testid={TID.examMissed}
+      >
+        <h3 id={`${uid}-missed`} className="rv-subhead">
+          Missed questions
+        </h3>
         {missed.length === 0 ? (
-          <p>Nothing was missed.</p>
+          <p className="rv-wizline">
+            <CircleCheck aria-hidden="true" strokeWidth={2.6} />
+            Nothing was missed.
+          </p>
         ) : (
           <>
             {contexts.error ? (
@@ -430,8 +466,8 @@ export function ExamResults({
                 where they exist.
               </InlineNotice>
             ) : null}
-            <ol className="sv-stack">
-              {missed.map(({ q, i, o }) => (
+            <ol className="rv-missedlist">
+              {(allMissed ? missed : missed.slice(0, MISSED_PREVIEW)).map(({ q, i, o }) => (
                 <MissedItem
                   key={q.cardId}
                   q={q}
@@ -442,33 +478,99 @@ export function ExamResults({
                 />
               ))}
             </ol>
+            {!allMissed && missed.length > MISSED_PREVIEW ? (
+              <div className="sv-row">
+                <ChunkyButton onClick={() => setAllMissed(true)}>
+                  Show all {missed.length}
+                </ChunkyButton>
+              </div>
+            ) : null}
           </>
         )}
       </section>
 
-      <section className="sv-stack sv-stack--tight" aria-labelledby={`${uid}-review`}>
-        <h3 id={`${uid}-review`}>After the exam</h3>
-        <label className="sv-check">
-          <input
-            type="checkbox"
-            data-testid={TID.examCount}
-            // While the work runs the box shows what was asked for, not the old state.
-            checked={countBusy && wanted !== null ? wanted : counted}
-            disabled={countBusy || countReason !== null}
-            aria-busy={countBusy || undefined}
-            aria-describedby={`${uid}-count-note`}
-            onChange={(e) => {
-              setWanted(e.target.checked);
-              onCount(e.target.checked);
-            }}
-          />
-          <span>Count this exam as review</span>
-        </label>
+      <details className="rv-details rv-more">
+        <summary>More details</summary>
+        <div className="rv-details__body sv-stack">
+          {primaryRows === 'topics' ? banksTable : null}
+          <Breakdown title="By tag" first="Tag" rows={parts.tags} testId={TID.examTags} />
+          {parts.tags.length > 0 ? (
+            <p className="sv-small sv-muted">
+              A question with several tags counts under each of them.
+            </p>
+          ) : null}
+          <section className="rv-breakdown" data-testid={TID.examTimes}>
+            <h3 className="rv-subhead">
+              Time per question
+              {timing.meanMs === null ? '' : ` (average ${examDuration(timing.meanMs)})`}
+            </h3>
+            <div className="rv-tablewrap" role="region" aria-label="Time per question" tabIndex={0}>
+              <table className="rv-table rv-table--cards">
+                <caption className="sv-sr">Time spent on each question</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">#</th>
+                    <th scope="col">Question</th>
+                    <th scope="col">Result</th>
+                    <th scope="col">Time</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {exam.questions.map((q, i) => {
+                    const o = OUTCOME[outcomes[i] ?? 'void'];
+                    return (
+                      <tr key={q.cardId}>
+                        <th scope="row">{i + 1}</th>
+                        <td className="sv-wrap">
+                          {truncate(cards.get(q.cardId)?.front ?? '(card removed)', 70)}
+                        </td>
+                        <td>
+                          <span aria-hidden="true">{o.glyph}</span> {o.text}
+                        </td>
+                        <td>{examDuration(q.spentMs)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </details>
+
+      <section className="rv-after" aria-labelledby={`${uid}-review`}>
+        <h3 id={`${uid}-review`} className="rv-subhead">
+          After the exam
+        </h3>
+        <span className="rv-switchrow">
+          <label className="sv-check">
+            <input
+              type="checkbox"
+              role="switch"
+              className="sv-switch"
+              data-testid={TID.examCount}
+              // While the work runs the box shows what was asked for, not the old state.
+              checked={countBusy && wanted !== null ? wanted : counted}
+              disabled={countBusy || countReason !== null}
+              aria-busy={countBusy || undefined}
+              aria-describedby={`${uid}-count-note`}
+              onChange={(e) => {
+                setWanted(e.target.checked);
+                onCount(e.target.checked);
+              }}
+            />
+            <span>Count as review</span>
+          </label>
+          <InfoTip label="About counting as review" align="start">
+            Gives {plural(plan.items.length, 'answered card')} one rating each (correct is Good,
+            wrong is Again) and updates their schedule. Untick it to undo.
+          </InfoTip>
+        </span>
         <p id={`${uid}-count-note`} className="sv-small sv-muted">
           {countReason ??
-            `Gives ${plural(plan.items.length, 'answered card')} one rating each (correct is Good, wrong is Again) and updates their schedule. ${
-              plan.skipped > 0 ? `${plural(plan.skipped, 'question')} left alone. ` : ''
-            }Untick it to undo.`}
+            (plan.skipped > 0
+              ? `${plural(plan.skipped, 'question')} left alone. Untick it to undo.`
+              : 'Untick it to undo.')}
         </p>
         <p className="sv-small" role="status" data-testid={TID.examCountStatus}>
           {reviewNote ??
@@ -478,8 +580,9 @@ export function ExamResults({
         </p>
         {countError ? <InlineNotice tone="error">{countError}</InlineNotice> : null}
 
-        <div className="sv-row">
-          <Button
+        <div className="rv-examnav">
+          <ChunkyButton
+            icon={Download}
             data-testid={TID.examExport}
             onClick={() =>
               downloadText(
@@ -488,11 +591,12 @@ export function ExamResults({
               )
             }
           >
-            Export results as Markdown
-          </Button>
-          <Button variant="primary" data-testid={TID.examClose} onClick={onClose}>
+            Export results
+          </ChunkyButton>
+          <span className="rv-examnav__spacer" />
+          <ChunkyButton variant="primary" data-testid={TID.examClose} onClick={onClose}>
             Close results
-          </Button>
+          </ChunkyButton>
         </div>
       </section>
     </section>

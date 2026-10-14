@@ -3,6 +3,7 @@ import { DEFAULT_DECK_SETTINGS } from '@study';
 import { makeCard, makeDeck } from '@study/testUtils';
 import type { AnalyticsInput } from '@storage';
 import {
+  celebrationText,
   choiceRandom,
   computeAnalytics,
   formatDuration,
@@ -10,6 +11,7 @@ import {
   isFieldTarget,
   keyAction,
   parseDraft,
+  sessionXp,
   summarizeSession,
   toDraft,
   type KeyContext,
@@ -360,5 +362,38 @@ describe('links and settings parsing', () => {
     expect(s.timeZone).not.toBe('Not/AZone');
     expect(s.interleave).toBe('deck');
     expect(parseStudySettings(null).learnAheadMinutes).toBe(20);
+  });
+});
+
+describe('game view helpers', () => {
+  it('counts one XP per answer and the session bonus once, also when it was recorded earlier', () => {
+    expect(sessionXp(3, 'awarded')).toBe(8);
+    expect(sessionXp(3, 'already')).toBe(8);
+    expect(sessionXp(3, null)).toBe(3);
+    // No answer, no bonus (and no XP at all).
+    expect(sessionXp(0, 'no_answers')).toBe(0);
+    expect(sessionXp(0, 'awarded')).toBe(0);
+  });
+
+  it('names each celebration with real numbers and no exclamation mark', () => {
+    const at = '2026-03-10T12:00:00.000Z';
+    const goal = celebrationText({
+      key: 'g',
+      at,
+      kind: 'goal',
+      dayKey: '2026-03-10',
+      goal: 30,
+      xp: 34,
+    });
+    expect(goal).toEqual({ title: 'Daily goal met', line: '34 of 30 XP today' });
+    expect(celebrationText({ key: 'l', at, kind: 'level', level: 4 }).title).toBe('Level 4');
+    expect(celebrationText({ key: 'b', at, kind: 'badge', badgeId: 'first_session' }).line).toBe(
+      'Session done',
+    );
+    expect(celebrationText({ key: 's', at, kind: 'streak', days: 7 })).toEqual({
+      title: '7-day streak',
+      line: 'Daily goal met 7 days running',
+    });
+    for (const t of [goal.title, goal.line]) expect(t).not.toMatch(/!/);
   });
 });

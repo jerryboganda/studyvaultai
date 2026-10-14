@@ -159,6 +159,24 @@ describe('the session flow', () => {
     expect(await loadStudySession()).toBeNull();
   });
 
+  it('leaving while an answer is still being saved keeps the person out of the session', async () => {
+    await seed(3);
+    const c = make();
+    await c.start(null);
+    c.reveal();
+    const saving = c.rate(4);
+    c.leave();
+    await saving;
+    const s = c.getState();
+    expect(s.phase).toBe('idle');
+    expect(s.current).toBeNull();
+    expect(s.answered).toBe(1); // the answer itself was kept
+    expect((await loadStudySession())!.answered).toBe(1);
+    // Continuing brings the next card back.
+    await c.resume();
+    expect(c.getState().phase).toBe('question');
+  });
+
   it('honours the daily cap: only the allowed new cards are in the session', async () => {
     await seed(5, { newPerDay: 2 });
     const c = make();
@@ -229,6 +247,8 @@ describe('undo', () => {
     c.reveal();
     await c.rate(3);
     expect(c.getState().lastAnswer?.cardId).toBe(first.id);
+    // Written now: the page may show its XP.
+    expect(c.getState().lastAnswer?.fresh).toBe(true);
 
     await c.undo();
     const s = c.getState();

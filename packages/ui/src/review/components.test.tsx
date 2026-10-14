@@ -22,12 +22,14 @@ import {
   type TemplateInput,
 } from '@storage';
 import { freshDatabase } from '@storage/test-vault';
-import { DeckSettingsForm } from './DeckSettingsForm';
+import { DEFAULT_DECK_SETTINGS } from '@study';
+import { DECK_PRESETS, DeckSettingsForm, presetOf } from './DeckSettingsForm';
 import { useDueCount } from './hooks';
 import { ReviewSettingsSection, StudyDaySettings } from './ReviewSettingsSection';
 import { ReviewTab } from './ReviewTab';
 import { STUDY_SETTINGS_KEY, defaultStudySettings, getStudySettings } from './settings';
 import { TID } from './testids';
+import { toDraft } from './model';
 
 const basic = (n: number): TemplateInput => ({
   template: 'basic',
@@ -76,7 +78,8 @@ describe('ReviewTab', () => {
     const user = userEvent.setup();
     render(<ReviewTab open={open} />);
     const empty = await screen.findByTestId(TID.tabEmpty);
-    expect(empty.textContent).toMatch(/Turn a saved highlight into a flashcard/);
+    expect(empty.textContent).toMatch(/Turn a highlight into a flashcard/);
+    expect(screen.getByRole('heading', { name: 'No cards yet' })).toBeTruthy();
     await user.click(screen.getByTestId(TID.tabCreate));
     expect(open).toHaveBeenCalledWith({ view: 'create' });
   });
@@ -94,6 +97,10 @@ describe('ReviewTab', () => {
     render(<ReviewTab open={open} />);
 
     expect((await screen.findByTestId(TID.tabCount)).textContent).toBe('2');
+    // The mix as chips, never as a sentence; zeros are real counts here (cards exist).
+    expect(screen.getByRole('list', { name: 'Due mix' }).textContent).toBe(
+      '2 new0 learning0 review',
+    );
     expect(screen.getByTestId(TID.deferredNote).textContent).toMatch(/1 more card/);
     const bankRow = screen.getByTestId(`rv-bank-${bank.id}`);
     await waitFor(() => expect(bankRow.textContent).toMatch(/Cardiology/));
@@ -137,8 +144,16 @@ describe('DeckSettingsForm', () => {
     expect(save.getAttribute('aria-disabled')).toBe('true');
     expect(save.getAttribute('title')).toBe('There are no changes to save.');
     expect(within(form).getAllByText(/./).length).toBeGreaterThan(10);
+    // The documented defaults are the Standard pace; the raw numbers wait under Advanced.
+    expect(
+      (within(form).getByRole('radio', { name: /^Standard/ }) as HTMLInputElement).checked,
+    ).toBe(true);
+    const advanced = within(form).getByText('Advanced').closest('details')!;
+    expect(advanced.open).toBe(false);
+    await user.click(within(form).getByText('Advanced'));
+    expect(advanced.open).toBe(true);
 
-    const retention = within(form).getByLabelText('Target retention (%)');
+    const retention = within(form).getByLabelText('Target retention');
     await user.clear(retention);
     await user.type(retention, '55');
     expect(within(form).getByText(/between 70% and 99%/)).toBeTruthy();
@@ -147,8 +162,8 @@ describe('DeckSettingsForm', () => {
 
     await user.clear(retention);
     await user.type(retention, '85');
-    await user.clear(within(form).getByLabelText('New cards per day'));
-    await user.type(within(form).getByLabelText('New cards per day'), '7');
+    await user.clear(within(form).getByLabelText('New per day'));
+    await user.type(within(form).getByLabelText('New per day'), '7');
     await user.clear(within(form).getByLabelText('Learning steps'));
     await user.type(within(form).getByLabelText('Learning steps'), '2m 15m 1h');
     await user.click(within(form).getByRole('checkbox'));
@@ -169,11 +184,52 @@ describe('DeckSettingsForm', () => {
     const user = userEvent.setup();
     const deck = await createDeck({ name: 'Cardiology', settings: { newPerDay: 3 } });
     render(<DeckSettingsForm deck={deck} />);
-    const field = screen.getByLabelText('New cards per day') as HTMLInputElement;
+    const field = screen.getByLabelText('New per day') as HTMLInputElement;
     expect(field.value).toBe('3');
     await user.click(screen.getByTestId(TID.deckSettingsReset));
     expect(field.value).toBe('20');
     expect((await getDeck(deck.id))!.settings.newPerDay).toBe(3);
+  });
+
+  it('a pace preset sets the three everyday numbers and keeps the rest; Custom opens Advanced', async () => {
+    const user = userEvent.setup();
+    const deck = await createDeck({
+      name: 'Cardiology',
+      settings: { learningSteps: ['2m', '20m'], leechThreshold: 5 },
+    });
+    render(<DeckSettingsForm deck={deck} />);
+    await user.click(screen.getByRole('radio', { name: /^Light/ }));
+    expect((screen.getByLabelText('Target retention') as HTMLInputElement).value).toBe('85');
+    expect((screen.getByLabelText('New per day') as HTMLInputElement).value).toBe('10');
+    expect((screen.getByLabelText('Reviews per day') as HTMLInputElement).value).toBe('100');
+    await user.click(screen.getByTestId(TID.deckSettingsSave));
+    await waitFor(async () =>
+      expect((await getDeck(deck.id))!.settings).toMatchObject({
+        targetRetention: 0.85,
+        newPerDay: 10,
+        reviewsPerDay: 100,
+        learningSteps: ['2m', '20m'],
+        leechThreshold: 5,
+      }),
+    );
+
+    // A number of its own makes the pace Custom; picking Custom shows every number.
+    const details = screen.getByText('Advanced').closest('details')!;
+    fireEvent.change(screen.getByLabelText('New per day'), { target: { value: '12' } });
+    expect((screen.getByRole('radio', { name: /^Custom/ }) as HTMLInputElement).checked).toBe(true);
+    if (details.open) await user.click(screen.getByText('Advanced'));
+    await user.click(screen.getByRole('radio', { name: /^Custom/ }));
+    expect(details.open).toBe(true);
+  });
+
+  it('presetOf names the pace a draft matches', () => {
+    const base = toDraft(DEFAULT_DECK_SETTINGS);
+    expect(presetOf(base)).toBe('standard');
+    expect(presetOf({ ...base, ...DECK_PRESETS.intense })).toBe('intense');
+    expect(
+      presetOf({ ...base, targetRetentionPct: '85.0', newPerDay: '10', reviewsPerDay: '100' }),
+    ).toBe('light');
+    expect(presetOf({ ...base, newPerDay: '21' })).toBe('custom');
   });
 });
 
@@ -212,6 +268,6 @@ describe('study day settings', () => {
     render(<ReviewSettingsSection />);
     const section = await screen.findByTestId(TID.settingsSection);
     await waitFor(() => expect(within(section).getByText('Cardiology')).toBeTruthy());
-    expect(within(section).getByRole('heading', { name: 'Review and study day' })).toBeTruthy();
+    expect(within(section).getByRole('heading', { name: 'Review settings' })).toBeTruthy();
   });
 });

@@ -1,4 +1,15 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Check,
+  Files,
+  Highlighter,
+  Layers,
+  Lightbulb,
+  PenLine,
+  Plus,
+  ListRestart,
+  Search,
+} from 'lucide-react';
 import type { Deck } from '@study';
 import {
   createCardsFromHighlight,
@@ -12,35 +23,81 @@ import {
   type TemplateInput,
 } from '@storage';
 import {
-  Badge,
   Button,
-  EmptyState,
+  ChoiceCards,
+  ChunkyButton,
   InlineNotice,
-  Tabs,
+  VaultBuddy,
+  Wizard,
   errorMessage,
   plural,
   truncate,
-  useAction,
   useObserved,
   useToast,
+  type Choice,
+  type WizardStep,
 } from '@ui';
-import { TID, pickerItemId } from '@ui/review';
+import { TID, initialEditorState, pickerItemId, type EditorState } from '@ui/review';
 import { KnowledgePointEditor } from './KnowledgePointEditor';
-import { TemplateEditor } from './TemplateEditor';
+import { Disclosure, Empty, Loading, Pill } from './ManageKit';
+import { CardPreview, TEMPLATES, TemplateFields, useDrafts } from './TemplateEditor';
 
 const PICKER_LIMIT = 200;
+/** The "automatic deck" choice; deck ids are 8 to 64 characters, so it cannot collide. */
+const AUTO = 'auto';
 
-type Mode = 'single' | 'bulk' | 'manual';
+type Source = 'highlight' | 'several' | 'blank';
+type StepId = 'source' | 'pick' | 'type' | 'write' | 'questions' | 'deck';
 
-/** Make cards: from one highlight, from several at once, or typed by hand. */
+/** The steps of each way to start (UX_DESIGN 10: one decision per screen). */
+const FLOW: Record<Source, StepId[]> = {
+  highlight: ['source', 'pick', 'type', 'write', 'deck'],
+  several: ['source', 'pick', 'questions', 'deck'],
+  blank: ['source', 'type', 'write', 'deck'],
+};
+
+const SOURCES: Choice<Source>[] = [
+  {
+    value: 'highlight',
+    label: 'A highlight',
+    hint: 'From one quote',
+    icon: Highlighter,
+    tone: 'sun',
+  },
+  { value: 'several', label: 'Several', hint: 'One per quote', icon: Files, tone: 'primary' },
+  { value: 'blank', label: 'Blank card', hint: 'Type it in', icon: PenLine, tone: 'violet' },
+];
+
+function defaultQuestion(item: HighlightListItem): string {
+  const heading = item.highlight.headingContext?.trim();
+  return heading ? `What does the source say about "${heading}"?` : '';
+}
+
+/**
+ * Make cards as a wizard: where from (a highlight, several, or blank), which highlight, the card
+ * type, the fields with a live preview, then the deck. A link with a highlight starts at the type.
+ */
 export function Author({ initialHighlightId }: { initialHighlightId: string | null }) {
   const toast = useToast();
   const [bankId, setBankId] = useState('');
   const [search, setSearch] = useState('');
+  const [source, setSource] = useState<Source | null>(initialHighlightId ? 'highlight' : null);
   const [active, setActive] = useState<string | null>(initialHighlightId);
-  const [checked, setChecked] = useState<ReadonlySet<string>>(new Set());
-  const [mode, setMode] = useState<Mode>('single');
+  /** Ticked highlights for "Several", kept by id so a filter change never drops one. */
+  const [checked, setChecked] = useState<ReadonlyMap<string, HighlightListItem>>(new Map());
+  const [editor, setEditor] = useState<EditorState>(() => initialEditorState(null));
+  /** The highlight whose quote seeded the editor (the cloze text starts as the quote). */
+  const [seeded, setSeeded] = useState<string | null>(null);
+  const [deckId, setDeckId] = useState('');
+  const [questions, setQuestions] = useState<Record<string, string>>({});
+  const [skipped, setSkipped] = useState<ReadonlySet<string>>(new Set());
+  /** First step shown: later than "source" when the choice is already made (a link, "Make another"). */
+  const [from, setFrom] = useState<StepId>(initialHighlightId ? 'type' : 'source');
+  const [run, setRun] = useState(0);
+  const [done, setDone] = useState<number | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const inFlight = useRef(false);
 
   const banks = useObserved(() => listBanks(), []);
   const decks = useObserved(() => listDecks(), []);
@@ -56,8 +113,8 @@ export function Author({ initialHighlightId }: { initialHighlightId: string | nu
     return counts;
   }, []);
 
+  const all = useMemo(() => page.data?.items ?? [], [page.data]);
   const items = useMemo(() => {
-    const all = page.data?.items ?? [];
     const needle = search.trim().toLowerCase();
     if (needle === '') return all;
     return all.filter(
@@ -66,55 +123,141 @@ export function Author({ initialHighlightId }: { initialHighlightId: string | nu
         i.highlight.userComment.toLowerCase().includes(needle) ||
         i.source.title.toLowerCase().includes(needle),
     );
-  }, [page.data, search]);
+  }, [all, search]);
+  // Kept while the person searches or filters: the chosen highlight does not vanish with the list.
+  const [activeItem, setActiveItem] = useState<HighlightListItem | null>(null);
+  const found = all.find((i) => i.highlight.id === active) ?? null;
+  if (found && found !== activeItem) setActiveItem(found);
+  const chosenItem = active && activeItem?.highlight.id === active ? activeItem : null;
 
-  const activeItem = items.find((i) => i.highlight.id === active) ?? null;
+  // A linked highlight that is not among the newest: open the picker instead of a quote-less card.
+  if (from === 'type' && source === 'highlight' && page.data && !found && !chosenItem) {
+    setFrom('pick');
+    setRun((r) => r + 1);
+  }
+  const quote = source === 'highlight' ? (chosenItem?.highlight.exactQuote ?? null) : null;
+  // A new highlight seeds the editor with its quote (the cloze text); the card type and tags stay.
+  if (source === 'highlight' && chosenItem && seeded !== chosenItem.highlight.id) {
+    setSeeded(chosenItem.highlight.id);
+    setEditor((s) => ({
+      ...initialEditorState(chosenItem.highlight.exactQuote, s.template),
+      tags: s.tags,
+    }));
+  }
+
   const deckList: readonly Deck[] = decks.data ?? [];
-  const chosen = items.filter((i) => checked.has(i.highlight.id));
+  const { input, built, count } = useDrafts(editor, quote);
+  const chosen = [...checked.values()];
+  const questionOf = (it: HighlightListItem) => questions[it.highlight.id] ?? defaultQuestion(it);
+  const bulkRows = chosen
+    .filter((it) => !skipped.has(it.highlight.id))
+    .map((it) => ({ it, question: questionOf(it).trim() }));
+  const ready = bulkRows.filter((r) => r.question !== '');
 
-  const toggle = (id: string) =>
+  const chooseSource = (next: Source) => {
+    if (next === source) return;
+    setSource(next);
+    setSaveError(null);
+    if (next === 'blank') {
+      setSeeded(null);
+      setEditor((s) => ({ ...initialEditorState(null, s.template), tags: s.tags }));
+    } else if (next === 'highlight') {
+      setSeeded(null); // re-seeded from the chosen highlight, if there is one
+    }
+  };
+
+  const toggle = (it: HighlightListItem) =>
     setChecked((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      const next = new Map(prev);
+      if (next.has(it.highlight.id)) next.delete(it.highlight.id);
+      else next.set(it.highlight.id, it);
       return next;
     });
 
-  const saveSingle = async (template: TemplateInput, deckId: string | null) => {
-    if (!activeItem) return false;
+  const finish = async () => {
+    if (inFlight.current || source === null) return;
+    inFlight.current = true;
+    setSaving(true);
     setSaveError(null);
+    const deck = deckId ? { deckId } : {};
     try {
-      const cards = await createCardsFromHighlight(activeItem.highlight.id, [template], {
-        ...(deckId ? { deckId } : {}),
-      });
-      toast.push({ message: `Created ${plural(cards.length, 'card')}.` });
-      return true;
+      let made = 0;
+      if (source === 'several') {
+        const cards = await createCardsFromHighlights(
+          ready.map((r) => ({
+            highlightId: r.it.highlight.id,
+            template: {
+              template: 'basic',
+              question: r.question,
+              answer: r.it.highlight.exactQuote,
+            } satisfies TemplateInput,
+          })),
+          deck,
+        );
+        made = cards.length;
+      } else if (source === 'highlight') {
+        if (!chosenItem) throw new Error('Pick a highlight first.');
+        made = (await createCardsFromHighlight(chosenItem.highlight.id, [input], deck)).length;
+      } else {
+        made = (await createManualCards([input], deck)).length;
+      }
+      toast.push({ message: `Created ${plural(made, 'card')}.` });
+      setDone(made);
     } catch (err) {
       setSaveError(errorMessage(err));
-      return false;
+    } finally {
+      inFlight.current = false;
+      setSaving(false);
     }
   };
 
-  const saveManual = async (template: TemplateInput, deckId: string | null) => {
-    setSaveError(null);
-    try {
-      const cards = await createManualCards([template], { ...(deckId ? { deckId } : {}) });
-      toast.push({ message: `Created ${plural(cards.length, 'card')}.` });
-      return true;
-    } catch (err) {
-      setSaveError(errorMessage(err));
-      return false;
+  /** Another card from the same start: the fields clear, the source and type stay. */
+  const another = () => {
+    if (source === 'several') {
+      setChecked(new Map());
+      setQuestions({});
+      setSkipped(new Set());
+      setFrom('pick');
+    } else {
+      setEditor((s) => ({ ...initialEditorState(quote, s.template), tags: s.tags }));
+      setFrom('write');
     }
+    setDone(null);
+    setRun((r) => r + 1);
+  };
+  const restart = () => {
+    setSource(null);
+    setActive(null);
+    setActiveItem(null);
+    setSeeded(null);
+    setChecked(new Map());
+    setQuestions({});
+    setSkipped(new Set());
+    setEditor(initialEditorState(null));
+    setDeckId('');
+    setFrom('source');
+    setDone(null);
+    setRun((r) => r + 1);
   };
 
-  return (
-    <div className="rv-author" data-testid={TID.author}>
-      <section
-        className="rv-picker sv-stack"
-        aria-label="Choose highlights"
-        data-testid={TID.picker}
-      >
-        <h2>Highlights</h2>
+  const picker = (multi: boolean) => (
+    <div className="rvm-fields" data-testid={TID.picker}>
+      <div className="rvm-toolbar">
+        <div className="rvm-search">
+          <label className="sv-vh" htmlFor="rv-search">
+            Search highlights
+          </label>
+          <Search aria-hidden="true" strokeWidth={2.4} />
+          <input
+            id="rv-search"
+            className="sv-control"
+            type="search"
+            placeholder="Search highlights"
+            data-testid={TID.pickerSearch}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
         <div className="sv-field">
           <label className="sv-label" htmlFor="rv-bank">
             Bank
@@ -134,312 +277,389 @@ export function Author({ initialHighlightId }: { initialHighlightId: string | nu
             ))}
           </select>
         </div>
-        <div className="sv-field">
-          <label className="sv-label" htmlFor="rv-search">
-            Search these highlights
-          </label>
-          <input
-            id="rv-search"
-            className="sv-control"
-            type="search"
-            data-testid={TID.pickerSearch}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-        </div>
-        {page.error ? (
-          <InlineNotice
-            tone="error"
-            title="Highlights could not be loaded"
-            action={page.retryable ? <Button onClick={page.refresh}>Retry</Button> : undefined}
-          >
-            {page.error}
-          </InlineNotice>
-        ) : page.loading ? (
-          <p className="sv-muted">Loading highlights…</p>
-        ) : items.length === 0 ? (
-          <EmptyState title={search ? 'No highlight matches' : 'No highlights yet'}>
-            {search
-              ? 'Try different words, or choose another bank.'
-              : 'Save a highlight from any page first, or type a card by hand.'}
-          </EmptyState>
-        ) : (
-          <ul className="rv-pick-list" aria-label="Highlights">
-            {items.map((it) => (
-              <PickRow
-                key={it.highlight.id}
-                item={it}
-                active={it.highlight.id === active}
-                checked={checked.has(it.highlight.id)}
-                cards={cardCounts.data?.get(it.highlight.id) ?? 0}
-                onOpen={() => {
-                  setActive(it.highlight.id);
-                  setMode('single');
-                  setSaveError(null);
-                }}
-                onToggle={() => toggle(it.highlight.id)}
-              />
-            ))}
-          </ul>
-        )}
-        {(page.data?.items.length ?? 0) >= PICKER_LIMIT ? (
-          <p className="sv-small sv-muted">
-            Showing the {PICKER_LIMIT} most recent. Choose a bank or search to narrow the list.
-          </p>
-        ) : null}
-      </section>
-
-      <section className="rv-workspace sv-stack" aria-label="Card workspace">
-        <Tabs
-          label="How to make cards"
-          tabs={[
-            { id: 'single', label: 'From a highlight' },
-            { id: 'bulk', label: 'From several', count: chosen.length },
-            { id: 'manual', label: 'Typed card' },
-          ]}
-          value={mode}
-          onChange={(id) => {
-            setMode(id as Mode);
-            setSaveError(null);
-          }}
+      </div>
+      {multi ? (
+        <p className="rvm-line" role="status">
+          {plural(checked.size, 'highlight')} ticked
+        </p>
+      ) : null}
+      {page.error ? (
+        <InlineNotice
+          tone="error"
+          title="Highlights could not load"
+          action={page.retryable ? <Button onClick={page.refresh}>Retry</Button> : undefined}
         >
-          {mode === 'single' ? (
-            activeItem ? (
-              <div className="sv-stack">
-                <p className="sv-muted sv-wrap">
-                  From {activeItem.source.title || activeItem.source.host}
-                  {activeItem.highlight.anchorSet.type === 'pdf'
-                    ? `, page ${activeItem.highlight.anchorSet.pageNumber}`
-                    : ''}
-                  .
-                </p>
-                <TemplateEditor
-                  key={activeItem.highlight.id}
-                  quote={activeItem.highlight.exactQuote}
-                  decks={deckList}
-                  autoDeckLabel={activeItem.banks[0]?.name ?? 'General'}
-                  saving={false}
-                  error={saveError}
-                  onSave={saveSingle}
-                />
-                <h2>Knowledge points</h2>
-                <KnowledgePointEditor highlightId={activeItem.highlight.id} highlights={items} />
-              </div>
-            ) : (
-              <EmptyState title="Choose a highlight">
-                Pick one from the list to write cards for it, or use the other tabs.
-              </EmptyState>
-            )
-          ) : null}
+          {page.error}
+        </InlineNotice>
+      ) : page.loading ? (
+        <Loading>Loading highlights…</Loading>
+      ) : items.length === 0 ? (
+        <Empty
+          title={search ? 'No highlight matches' : 'No highlights yet'}
+          line={
+            search ? 'Try other words or another bank.' : 'Save one from a page, or start blank.'
+          }
+        >
+          {search ? null : (
+            <ChunkyButton variant="primary" icon={PenLine} onClick={() => chooseSource('blank')}>
+              Blank card
+            </ChunkyButton>
+          )}
+        </Empty>
+      ) : (
+        <fieldset className="rvm-picks">
+          <legend className="sv-vh">Highlights</legend>
+          {items.map((it) => (
+            <PickRow
+              key={it.highlight.id}
+              item={it}
+              multi={multi}
+              checked={multi ? checked.has(it.highlight.id) : it.highlight.id === active}
+              cards={cardCounts.data?.get(it.highlight.id) ?? 0}
+              onChange={() => {
+                if (multi) toggle(it);
+                else setActive(it.highlight.id);
+              }}
+            />
+          ))}
+        </fieldset>
+      )}
+      {all.length >= PICKER_LIMIT ? (
+        <p className="rvm-line">Showing the {PICKER_LIMIT} newest. Search or pick a bank.</p>
+      ) : null}
+    </div>
+  );
 
-          {mode === 'bulk' ? (
-            <BulkCreate items={chosen} decks={deckList} onDone={() => setChecked(new Set())} />
-          ) : null}
+  const autoChoice: Choice<string> =
+    source === 'several'
+      ? { value: AUTO, label: 'Automatic', hint: 'Each own bank', icon: Layers, tone: 'sun' }
+      : source === 'highlight'
+        ? {
+            value: AUTO,
+            label: 'Automatic',
+            hint: chosenItem?.banks[0]?.name ?? 'General',
+            icon: Layers,
+            tone: 'sun',
+          }
+        : {
+            value: AUTO,
+            label: 'General',
+            hint: deckList.length === 0 ? 'Made for you' : 'Default deck',
+            icon: Layers,
+            tone: 'sun',
+          };
+  const finalCount = source === 'several' ? ready.length : count;
 
-          {mode === 'manual' ? (
-            <div className="sv-stack" data-testid={TID.manual}>
-              <p className="sv-muted">
-                A card without a source. It cannot jump back to a page, so prefer making cards from
-                highlights when you can.
+  const STEPS: Record<StepId, WizardStep> = {
+    source: {
+      id: 'source',
+      title: 'Start from',
+      validate: () => (source ? null : 'Pick where to start.'),
+      content: ({ error, errorId }) => (
+        <ChoiceCards
+          label="Start from"
+          options={SOURCES}
+          value={source}
+          onChange={chooseSource}
+          columns={3}
+          invalid={Boolean(error)}
+          describedBy={error ? errorId : undefined}
+        />
+      ),
+    },
+    pick: {
+      id: 'pick',
+      title: source === 'several' ? 'Pick highlights' : 'Pick a highlight',
+      validate: () =>
+        source === 'several'
+          ? checked.size > 0
+            ? null
+            : 'Tick at least one highlight.'
+          : chosenItem
+            ? null
+            : 'Pick a highlight.',
+      content: () => picker(source === 'several'),
+    },
+    type: {
+      id: 'type',
+      title: 'Card type',
+      content: (
+        <>
+          {source === 'highlight' && chosenItem ? (
+            <div className="rvm-from">
+              <Highlighter className="rvm-from__icon" aria-hidden="true" strokeWidth={2.4} />
+              <p className="rvm-from__quote" dir="auto">
+                {truncate(chosenItem.highlight.exactQuote, 140)}
               </p>
-              <TemplateEditor
-                quote={null}
-                decks={deckList}
-                autoDeckLabel={null}
-                saving={false}
-                error={saveError}
-                onSave={saveManual}
-              />
+              {from === 'type' ? (
+                <ChunkyButton
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setFrom('pick');
+                    setRun((r) => r + 1);
+                  }}
+                >
+                  Change
+                </ChunkyButton>
+              ) : null}
             </div>
           ) : null}
-        </Tabs>
-      </section>
+          <ChoiceCards
+            label="Card type"
+            options={TEMPLATES.map((t) => ({
+              value: t.id,
+              label: t.label,
+              hint: t.hint,
+              icon: t.icon,
+              tone: t.tone,
+            }))}
+            value={editor.template}
+            onChange={(template) => setEditor((s) => ({ ...s, template }))}
+            columns={3}
+          />
+        </>
+      ),
+    },
+    write: {
+      id: 'write',
+      title: 'Write the card',
+      validate: () => (built.ok ? null : (built.issues[0] ?? 'The card is not complete yet.')),
+      content: (
+        <div className="rvm-write">
+          <TemplateFields
+            key={`${editor.template}-${seeded ?? 'none'}`}
+            state={editor}
+            onChange={setEditor}
+            quote={quote}
+            testId={source === 'blank' ? TID.manual : undefined}
+          />
+          <CardPreview state={editor} built={built} count={count} />
+        </div>
+      ),
+    },
+    questions: {
+      id: 'questions',
+      title: 'Write questions',
+      validate: () => (ready.length > 0 ? null : 'Write at least one question.'),
+      content: (
+        <div className="rvm-fields" data-testid={TID.bulk}>
+          <p className="rvm-line">The quote becomes the answer. Untick a row to leave it out.</p>
+          <ul className="rvm-fields">
+            {chosen.map((it) => {
+              const id = it.highlight.id;
+              const off = skipped.has(id);
+              return (
+                <li key={id} className="rvm-kp">
+                  <label className="sv-check">
+                    <input
+                      type="checkbox"
+                      checked={!off}
+                      onChange={() =>
+                        setSkipped((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(id)) next.delete(id);
+                          else next.add(id);
+                          return next;
+                        })
+                      }
+                    />
+                    <span className="rvm-pick__quote" dir="auto">
+                      {truncate(it.highlight.exactQuote, 200)}
+                    </span>
+                  </label>
+                  <div className="sv-field">
+                    <label className="sv-label" htmlFor={`rv-bq-${id}`}>
+                      Question
+                    </label>
+                    <input
+                      id={`rv-bq-${id}`}
+                      className="sv-control"
+                      disabled={off}
+                      value={questionOf(it)}
+                      onChange={(e) => setQuestions((q) => ({ ...q, [id]: e.target.value }))}
+                    />
+                    {!off && questionOf(it).trim() === '' ? (
+                      <p className="rvm-line">Add a question or untick this row.</p>
+                    ) : null}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ),
+    },
+    deck: {
+      id: 'deck',
+      title: 'Pick a deck',
+      content: (
+        <>
+          <div data-testid={TID.deckSelect}>
+            <ChoiceCards
+              label="Deck"
+              className="rvm-compact"
+              options={[
+                autoChoice,
+                ...deckList.map((d) => ({ value: d.id, label: d.name, icon: Layers })),
+              ]}
+              value={deckId || AUTO}
+              onChange={(v) => setDeckId(v === AUTO ? '' : v)}
+              columns={3}
+            />
+          </div>
+          <div className="rvm-badges">
+            <Pill icon={Check} tone="success">
+              {plural(finalCount, 'card')} ready
+            </Pill>
+            {source !== 'several' ? (
+              <Pill>{TEMPLATES.find((t) => t.id === editor.template)?.label}</Pill>
+            ) : null}
+            {source === 'several' && ready.length < bulkRows.length ? (
+              <Pill tone="warning">{bulkRows.length - ready.length} left out</Pill>
+            ) : null}
+          </div>
+          {saving ? (
+            <p className="rvm-line" role="status">
+              Saving…
+            </p>
+          ) : null}
+          {saveError ? (
+            <InlineNotice tone="error" title="The cards were not saved">
+              {saveError}
+            </InlineNotice>
+          ) : null}
+        </>
+      ),
+    },
+  };
+  const flow = FLOW[source ?? 'highlight'];
+  const steps = flow.slice(Math.max(0, flow.indexOf(from))).map((id) => STEPS[id]);
+  const dirty =
+    source !== null &&
+    (checked.size > 0 ||
+      JSON.stringify(editor) !== JSON.stringify(initialEditorState(quote, editor.template)));
+
+  return (
+    <div className="rvm" data-testid={TID.author}>
+      {done !== null ? (
+        <Done
+          count={done}
+          another={source === 'several' ? 'Make more' : 'Make another'}
+          onAnother={another}
+          onRestart={restart}
+        />
+      ) : (
+        <Wizard
+          key={run}
+          className="rvm-wiz"
+          label="Create cards"
+          steps={steps}
+          dirty={dirty}
+          finishLabel={
+            source === 'several'
+              ? `Create ${plural(ready.length, 'card')}`
+              : count > 1
+                ? `Create ${count} cards`
+                : 'Create card'
+          }
+          finishIcon={Plus}
+          onFinish={() => void finish()}
+        />
+      )}
+      {source === 'highlight' && chosenItem ? (
+        <Disclosure
+          summary={
+            <>
+              <Lightbulb aria-hidden="true" width={18} height={18} />
+              Knowledge points
+            </>
+          }
+        >
+          <KnowledgePointEditor highlightId={chosenItem.highlight.id} highlights={all} />
+        </Disclosure>
+      ) : null}
     </div>
+  );
+}
+
+function Done({
+  count,
+  another,
+  onAnother,
+  onRestart,
+}: {
+  count: number;
+  another: string;
+  onAnother(): void;
+  onRestart(): void;
+}) {
+  const title = useRef<HTMLHeadingElement>(null);
+  useEffect(() => title.current?.focus(), []);
+  return (
+    <section className="rvm-card rvm-done" aria-labelledby="rv-made">
+      <span className="rvm-done__halo">
+        <VaultBuddy pose="cheer" size={140} />
+      </span>
+      <h2 id="rv-made" ref={title} tabIndex={-1}>
+        {count === 1 ? 'Card created!' : `${count} cards created!`}
+      </h2>
+      <p className="rvm-line">
+        {count === 1 ? 'It joins your next review.' : 'They join your next review.'}
+      </p>
+      <div className="rvm-done__actions">
+        <ChunkyButton variant="primary" icon={Plus} onClick={onAnother}>
+          {another}
+        </ChunkyButton>
+        <ChunkyButton icon={ListRestart} onClick={onRestart}>
+          Start over
+        </ChunkyButton>
+      </div>
+    </section>
   );
 }
 
 function PickRow({
   item,
-  active,
+  multi,
   checked,
   cards,
-  onOpen,
-  onToggle,
+  onChange,
 }: {
   item: HighlightListItem;
-  active: boolean;
+  multi: boolean;
   checked: boolean;
   cards: number;
-  onOpen(): void;
-  onToggle(): void;
+  onChange(): void;
 }) {
-  const quote = item.highlight.exactQuote;
   return (
-    <li
-      className={`rv-pick${active ? ' rv-pick--active' : ''}`}
-      data-testid={pickerItemId(item.highlight.id)}
-    >
+    <label className="rvm-pick" data-testid={pickerItemId(item.highlight.id)}>
       <input
-        type="checkbox"
+        type={multi ? 'checkbox' : 'radio'}
+        name={multi ? undefined : 'rv-pick'}
+        className="sv-vh"
         checked={checked}
-        aria-label={`Select for bulk: ${truncate(quote, 60)}`}
-        onChange={onToggle}
+        onChange={onChange}
       />
-      <button
-        type="button"
-        className="rv-pick__body"
-        aria-current={active ? 'true' : undefined}
-        onClick={onOpen}
-      >
-        <span className="rv-pick__quote">{truncate(quote, 160)}</span>
-        <span className="sv-small sv-muted">
-          {item.source.title || item.source.host}
-          {item.banks.length > 0 ? ` · ${item.banks.map((b) => b.name).join(', ')}` : ''}
+      <span className={`rvm-pick__mark${multi ? ' rvm-pick__mark--box' : ''}`} aria-hidden="true">
+        <Check strokeWidth={3.5} />
+      </span>
+      <span className="rvm-pick__body">
+        <span className="rvm-pick__quote" dir="auto">
+          {truncate(item.highlight.exactQuote, 160)}
         </span>
-      </button>
-      {cards > 0 ? <Badge tone="info">{plural(cards, 'card')}</Badge> : null}
-    </li>
-  );
-}
-
-function defaultQuestion(item: HighlightListItem): string {
-  const heading = item.highlight.headingContext?.trim();
-  return heading ? `What does the source say about "${heading}"?` : '';
-}
-
-/**
- * One basic card per selected highlight: the quote is the answer and the learner writes (or
- * confirms) the question. Rows without a question are left out, never filled with invented text.
- */
-function BulkCreate({
-  items,
-  decks,
-  onDone,
-}: {
-  items: HighlightListItem[];
-  decks: readonly Deck[];
-  onDone(): void;
-}) {
-  const toast = useToast();
-  const [questions, setQuestions] = useState<Record<string, string>>({});
-  const [skipped, setSkipped] = useState<ReadonlySet<string>>(new Set());
-  const [deckId, setDeckId] = useState('');
-  const questionOf = (it: HighlightListItem) => questions[it.highlight.id] ?? defaultQuestion(it);
-  const rows = items
-    .filter((it) => !skipped.has(it.highlight.id))
-    .map((it) => ({ it, question: questionOf(it).trim() }));
-  const ready = rows.filter((r) => r.question !== '');
-
-  const create = useAction(async () => {
-    const cards = await createCardsFromHighlights(
-      ready.map((r) => ({
-        highlightId: r.it.highlight.id,
-        template: {
-          template: 'basic',
-          question: r.question,
-          answer: r.it.highlight.exactQuote,
-        } satisfies TemplateInput,
-      })),
-      deckId ? { deckId } : {},
-    );
-    toast.push({ message: `Created ${plural(cards.length, 'card')}.` });
-    onDone();
-  });
-
-  if (items.length === 0) {
-    return (
-      <EmptyState title="Nothing selected">
-        Tick the box next to two or more highlights in the list, then come back here to write a
-        question for each.
-      </EmptyState>
-    );
-  }
-
-  return (
-    <div className="sv-stack" data-testid={TID.bulk}>
-      <p className="sv-muted">
-        Each selected highlight becomes one question-and-answer card whose answer is the saved
-        quote. Write the question for each; a row with no question is left out.
-      </p>
-      <ul className="sv-stack">
-        {items.map((it) => {
-          const id = it.highlight.id;
-          const off = skipped.has(id);
-          return (
-            <li key={id} className="rv-bulk-row sv-stack sv-stack--tight">
-              <label className="sv-check">
-                <input
-                  type="checkbox"
-                  checked={!off}
-                  onChange={() =>
-                    setSkipped((prev) => {
-                      const next = new Set(prev);
-                      if (next.has(id)) next.delete(id);
-                      else next.add(id);
-                      return next;
-                    })
-                  }
-                />
-                <span className="sv-quote sv-small">{truncate(it.highlight.exactQuote, 200)}</span>
-              </label>
-              <div className="sv-field">
-                <label className="sv-label" htmlFor={`rv-bq-${id}`}>
-                  Question
-                </label>
-                <input
-                  id={`rv-bq-${id}`}
-                  className="sv-control"
-                  disabled={off}
-                  value={questionOf(it)}
-                  onChange={(e) => setQuestions((q) => ({ ...q, [id]: e.target.value }))}
-                />
-                {!off && questionOf(it).trim() === '' ? (
-                  <p className="sv-small sv-muted">Add a question or untick this row.</p>
-                ) : null}
-              </div>
-            </li>
-          );
-        })}
-      </ul>
-      <div className="sv-field">
-        <label className="sv-label" htmlFor="rv-bulk-deck">
-          Deck
-        </label>
-        <select
-          id="rv-bulk-deck"
-          className="sv-control"
-          value={deckId}
-          onChange={(e) => setDeckId(e.target.value)}
-        >
-          <option value="">Automatic: each highlight&rsquo;s own bank</option>
-          {decks.map((d) => (
-            <option key={d.id} value={d.id}>
-              {d.name}
-            </option>
+        <span className="rvm-badges">
+          <span className="rvm-line">{item.source.title || item.source.host}</span>
+          {item.banks.map((b) => (
+            <Pill key={b.id}>{b.name}</Pill>
           ))}
-        </select>
-      </div>
-      {create.error ? (
-        <InlineNotice tone="error" title="No cards were created">
-          {create.error}
-        </InlineNotice>
-      ) : null}
-      <div className="sv-row">
-        <Button
-          variant="primary"
-          data-testid={TID.bulkCreate}
-          busy={create.busy}
-          disabledReason={ready.length === 0 ? 'Write at least one question first.' : undefined}
-          onClick={() => void create.run()}
-        >
-          Create {plural(ready.length, 'card')}
-        </Button>
-        {ready.length < rows.length ? (
-          <span className="sv-small sv-muted">
-            {plural(rows.length - ready.length, 'row')} without a question will be left out.
-          </span>
-        ) : null}
-      </div>
-    </div>
+          {cards > 0 ? (
+            <Pill icon={Layers} tone="primary">
+              {plural(cards, 'card')}
+            </Pill>
+          ) : null}
+        </span>
+      </span>
+    </label>
   );
 }

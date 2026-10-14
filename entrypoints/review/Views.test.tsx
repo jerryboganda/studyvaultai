@@ -1,6 +1,14 @@
 import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { configure, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import {
+  configure,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { makeCard } from '@study/testUtils';
 import {
@@ -70,13 +78,22 @@ describe('analytics', () => {
     expect(within(table).getByText(/^Today, /)).toBeTruthy();
 
     expect(screen.getByTestId(TID.retentionInsufficient).textContent).toMatch(
-      /at least 20 reviews of learned cards; you have 0/,
+      /Needs 20 reviews of learned cards; you have 0/,
     );
-    expect(screen.getByTestId(TID.studyLog).textContent).toMatch(/No reviews were recorded/);
+    // No ring and no percentage while there is not enough data.
+    expect(within(screen.getByTestId(TID.retention)).queryByRole('img')).toBeNull();
+    expect(screen.getByTestId(TID.studyLog).textContent).toMatch(/No reviews in the last 30 days/);
     expect(screen.getByTestId(TID.streak).textContent).toMatch(/^0/);
     // 2 new cards, 1 review card.
     const counts = screen.getByTestId(TID.counts);
-    expect(within(counts).getByText('Cardiology').closest('tr')!.textContent).toMatch(
+    // The bar names the whole mix; the table behind "Show as table" has the same numbers.
+    expect(
+      within(counts).getByRole('img', {
+        name: 'Cardiology: 3 cards, 2 new, 0 learning, 1 review, 0 suspended',
+      }),
+    ).toBeTruthy();
+    const countsTable = within(counts).getByRole('table');
+    expect(within(countsTable).getByText('Cardiology').closest('tr')!.textContent).toMatch(
       /Cardiology3201/,
     );
   });
@@ -107,7 +124,11 @@ describe('analytics', () => {
       expect(retention.textContent).toMatch(/reviews of learned cards were remembered/),
     );
     // 22 answers; the one right after the lapse is a relearning step, not a mature review.
-    expect(retention.textContent).toMatch(/95\.2% of 21 reviews/);
+    expect(retention.textContent).toMatch(/95\.2%\s*of 21 reviews/);
+    // The ring is named with its number, so the picture is never the only carrier.
+    expect(within(retention).getByRole('img').getAttribute('aria-label')).toBe(
+      'Retention: 95.2 of 100 %',
+    );
     expect(screen.queryByTestId(TID.retentionInsufficient)).toBeNull();
     expect(within(retention).getByText(/Again/)).toBeTruthy();
     // The study log has 30 daily rows and counts only the days that had reviews.
@@ -166,53 +187,119 @@ describe('backlog recovery', () => {
         <BacklogRecovery settings={settings} overdue={1} />
       </ToastProvider>,
     );
-    await user.type(screen.getByLabelText('Reviews per day, per deck'), '0');
+    await user.type(screen.getByLabelText('Daily cap per deck'), '0');
     expect(await screen.findByText(/whole number between 1 and 9999/)).toBeTruthy();
     expect(screen.queryByTestId(TID.backlogPlan)).toBeNull();
+  });
+
+  it('spreads over the days the slider names', async () => {
+    await createDeck({ name: 'Any' });
+    render(
+      <ToastProvider>
+        <BacklogRecovery settings={settings} overdue={1} />
+      </ToastProvider>,
+    );
+    const days = screen.getByTestId(TID.backlogDays);
+    expect(days.getAttribute('aria-valuetext')).toBe('7 days, today included');
+    fireEvent.change(days, { target: { value: '0' } });
+    expect(days.getAttribute('aria-valuetext')).toBe('2 days, today included');
+    expect(screen.getByLabelText(/^Spread over 2 days/)).toBe(days);
+    fireEvent.change(days, { target: { value: '7' } });
+    expect(days.getAttribute('aria-valuetext')).toBe('30 days, today included');
   });
 });
 
 describe('card browser', () => {
-  it('suspends and unsuspends, filters, and deletes with an undo', async () => {
-    const user = userEvent.setup();
-    const deck = await createDeck({ name: 'Cardiology' });
-    const [a, b] = await createManualCards([basic(1), basic(2)], { deckId: deck.id });
+  const renderBrowser = () =>
     render(
       <ToastProvider>
         <CardBrowser settings={settings} />
       </ToastProvider>,
     );
+  const chip = (name: string) =>
+    within(screen.getByTestId(TID.browserFilter)).getByRole('button', { name });
+
+  it('suspends and unsuspends, filters with chips, and deletes with an undo', async () => {
+    const user = userEvent.setup();
+    const deck = await createDeck({ name: 'Cardiology' });
+    const [a, b] = await createManualCards([basic(1), basic(2)], { deckId: deck.id });
+    renderBrowser();
     const rowA = await screen.findByTestId(cardRowId(a!.id));
 
     await user.click(within(rowA).getByRole('button', { name: 'Suspend' }));
     await waitFor(() => expect(within(rowA).getByText('Suspended')).toBeTruthy());
     expect((await getCard(a!.id))!.suspended).toBe(true);
 
-    await user.selectOptions(screen.getByTestId(TID.browserFilter), 'suspended');
+    await user.click(chip('Suspended'));
+    expect(chip('Suspended').getAttribute('aria-pressed')).toBe('true');
     await waitFor(() => expect(screen.queryByTestId(cardRowId(b!.id))).toBeNull());
     await user.click(
       within(screen.getByTestId(cardRowId(a!.id))).getByRole('button', { name: 'Unsuspend' }),
     );
     await waitFor(async () => expect((await getCard(a!.id))!.suspended).toBe(false));
 
-    await user.selectOptions(screen.getByTestId(TID.browserFilter), 'all');
+    await user.click(chip('All cards'));
     const row = await screen.findByTestId(cardRowId(b!.id));
     await user.click(within(row).getByRole('button', { name: 'Delete' }));
     await waitFor(async () => expect(await getCard(b!.id)).toBeNull());
-    expect(await screen.findByText(/A copy stays on this device/)).toBeTruthy();
+    expect(await screen.findByText(/Card deleted/)).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Undo' }));
     await waitFor(async () => expect(await getCard(b!.id)).not.toBeNull());
   });
 
+  it('asks before resetting progress, and resets only after the yes', async () => {
+    const user = userEvent.setup();
+    const deck = await createDeck({ name: 'Cardiology' });
+    const now = Date.now();
+    await getDb().cards.put(
+      makeCard('card-learned-01', {
+        deckId: deck.id,
+        state: 'review',
+        due: new Date(now + 3 * DAY).toISOString(),
+        lastReview: new Date(now - 4 * DAY).toISOString(),
+        stability: 9,
+      }),
+    );
+    renderBrowser();
+    const row = await screen.findByTestId(cardRowId('card-learned-01'));
+    await user.click(within(row).getByRole('button', { name: 'Reset progress' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Reset this card?' });
+    // The safe choice has focus, and cancelling changes nothing.
+    expect(document.activeElement?.textContent).toBe('Cancel');
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect((await getCard('card-learned-01'))!.fsrs.state).toBe('review');
+
+    await user.click(within(row).getByRole('button', { name: 'Reset progress' }));
+    await user.click(
+      within(await screen.findByRole('dialog')).getByRole('button', { name: 'Reset progress' }),
+    );
+    await waitFor(async () => expect((await getCard('card-learned-01'))!.fsrs.state).toBe('new'));
+  });
+
+  it('edits a card in a side sheet and saves it', async () => {
+    const user = userEvent.setup();
+    const deck = await createDeck({ name: 'Cardiology' });
+    const [a] = await createManualCards([basic(1)], { deckId: deck.id });
+    renderBrowser();
+    const row = await screen.findByTestId(cardRowId(a!.id));
+    await user.click(within(row).getByRole('button', { name: 'Edit' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Edit card' });
+    const form = within(sheet).getByRole('form', { name: 'Edit card' });
+    const front = within(form).getByLabelText('Front');
+    await user.clear(front);
+    await user.type(front, 'Sharper question?');
+    await user.click(within(form).getByRole('button', { name: 'Save card' }));
+    await waitFor(async () => expect((await getCard(a!.id))!.front).toBe('Sharper question?'));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  });
+
   it('makes a deck and explains why create is unavailable until it has a name', async () => {
     const user = userEvent.setup();
-    render(
-      <ToastProvider>
-        <CardBrowser settings={settings} />
-      </ToastProvider>,
-    );
-    const create = await screen.findByTestId(TID.newDeck);
+    renderBrowser();
+    await user.click(await screen.findByRole('button', { name: 'New deck' }));
+    const create = screen.getByTestId(TID.newDeck);
     expect(create.getAttribute('aria-disabled')).toBe('true');
+    expect(document.activeElement).toBe(screen.getByTestId(TID.newDeckName));
     await user.type(screen.getByTestId(TID.newDeckName), 'Pharmacology');
     await user.click(create);
     await waitFor(() =>
