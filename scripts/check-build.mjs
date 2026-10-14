@@ -155,8 +155,11 @@ const total = walk(prod)
 // budgeted separately above. Raise this only with a reason in the commit.
 // The Sunny Vault redesign (docs/adr/021) bundles Nunito (5 woff2 subsets, 134 KB; a page fetches only the
 // subsets it needs) with its OFL licence and the Sunny stylesheets (~30 KB): ~7076 KB estimated against 6903 KB
-// measured in run 38560072781. 7250 KB keeps ~2% headroom.
-const TOTAL_BUDGET_KB = 7250;
+// measured in run 38560072781 (7093 KB measured after it). The redesigned review page and dashboard (Home,
+// wizards, charts, game UI, lucide icons) measured 7355 KB at 626591f (+262 KB: ~90 KB page CSS, ~84 KB page
+// code, ~37 KB shared components). The remaining surfaces are still landing: 7800 KB is an interim ceiling,
+// to be set to measured + ~3% once the redesign is complete.
+const TOTAL_BUDGET_KB = 7800;
 if (total > TOTAL_BUDGET_KB * KB)
   fail(`total extension size ${Math.round(total / KB)} KB exceeds ${TOTAL_BUDGET_KB} KB`);
 
