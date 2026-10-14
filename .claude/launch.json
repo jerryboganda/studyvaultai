@@ -4,7 +4,15 @@
     {
       "name": "gallery",
       "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["exec", "vite", "--config", "gallery/vite.config.ts", "--port", "5299", "--strictPort"],
+      "runtimeArgs": [
+        "exec",
+        "vite",
+        "--config",
+        "gallery/vite.config.ts",
+        "--port",
+        "5299",
+        "--strictPort"
+      ],
       "port": 5299
     }
   ]
