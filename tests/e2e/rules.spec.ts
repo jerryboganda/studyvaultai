@@ -1,4 +1,5 @@
 import { createBankRpc, dialogOf, expectAxeClean, treeItem } from './helpers.dashboard';
+import { showLibrary, showMoreView } from './helpers.graph';
 import { stopWorker } from './helpers.lifecycle';
 import { deleteAllData } from './helpers.backup';
 import {
@@ -61,11 +62,12 @@ test.describe('filing rules', () => {
     const ctrl = await openExt(env, 'options');
     const cardio = await createBankRpc(ctrl, 'Cardiology');
     const rules = await openRules(env);
-    await expect(rules.getByText('No filing rules yet')).toBeVisible();
+    await expect(rules.getByRole('heading', { name: 'No rules yet' })).toBeVisible();
 
     await createRule(rules, { name: 'Fixture site', hosts: ['127.0.0.1'], bank: 'Cardiology' });
     const row = ruleRow(rules, 'Fixture site');
-    await expect(row).toContainText('the site is 127.0.0.1');
+    // Conditions are chips; the field name is read out before the value.
+    await expect(row).toContainText('Site: 127.0.0.1');
     await expect(row).toContainText('Cardiology');
     await expect(row).toContainText('Asks first');
     expect((await storedRules(ctrl)).map((r) => r.name)).toEqual(['Fixture site']);
@@ -134,6 +136,9 @@ test.describe('filing rules', () => {
     // The first (and last) rule cannot move past the ends, and says why.
     const first = ruleRow(rules, 'A first');
     await expect(first.getByTestId('rule-up')).toHaveAttribute('aria-disabled', 'true');
+    await expect(first.getByTestId('rule-up')).toHaveAccessibleName(
+      'Move up: A first. This rule is already first.',
+    );
 
     const page = await openFixture(env, FIXTURE);
     await saveParagraph(ctrl, page, '#p-intro');
@@ -177,8 +182,9 @@ test.describe('filing rules', () => {
     const card = side.locator(`article[data-highlight-id="${first.id}"]`);
     const chip = card.getByTestId('card-suggestion');
     await expect(chip).toBeVisible();
-    await expect(chip).toContainText('Rule “Fixture site” suggests filing this in');
-    await expect(chip).toContainText('Cardiology');
+    await expect(chip).toContainText('File in Cardiology?');
+    await expect(chip).toContainText('Rule: Fixture site');
+    await expect(chip.getByTestId('suggestion-file')).toHaveAccessibleName('File in Cardiology');
 
     await chip.getByTestId('suggestion-file').click();
     await expect(side.getByText("Filed in Cardiology by rule 'Fixture site'.")).toBeVisible();
@@ -259,7 +265,11 @@ test.describe('filing rules', () => {
       asks: false,
     });
 
+    // The tester is folded away until asked for.
     const tester = rules.getByTestId('rule-tester');
+    await expect(tester).toBeHidden();
+    await rules.getByTestId('rule-tester-toggle').click();
+    await expect(rules.getByTestId('rule-tester-toggle')).toHaveAttribute('aria-expanded', 'true');
     await tester.getByTestId('test-url').fill('http://127.0.0.1:4444/anything');
     await expect(tester.getByTestId('test-verdict')).toContainText(
       'Ask first, then file in Cardiology',
@@ -272,11 +282,14 @@ test.describe('filing rules', () => {
     await tester.getByTestId('test-url').fill('https://elsewhere.example/x');
     await expect(tester.getByTestId('test-verdict')).toContainText('No rule matches');
 
-    // A rule whose bank is deleted is reported in the list and does not file anything.
+    // A rule whose bank is deleted is reported in the list and does not file anything. The bank
+    // tree lives in the highlight list; the rules are a More view.
+    await showLibrary(rules);
     await treeItem(rules, 'Temp').press('Delete');
     const del = dialogOf(rules, 'Delete bank “Temp”?');
     await del.getByTestId('dialog-confirm').click();
     await expect(del).toHaveCount(0);
+    await showMoreView(rules, 'rules');
     await expect(ruleRow(rules, 'Temp rule')).toContainText('Its bank was deleted');
 
     // "Primer" is in the fixture's title; the broken rule is the first match once the site rule
@@ -304,6 +317,7 @@ test.describe('filing rules', () => {
       bank: 'Cardiology',
       asks: false,
     });
+    await rules.getByTestId('rule-tester-toggle').click();
     await rules.getByTestId('test-url').fill('http://127.0.0.1/x');
     await expect(rules.getByTestId('test-verdict')).toBeVisible();
     await expectAxeClean(rules);
@@ -326,6 +340,6 @@ test.describe('filing rules', () => {
 
     expect(await storedRules(ctrl)).toEqual([]);
     await rules.reload();
-    await expect(rules.getByText('No filing rules yet')).toBeVisible();
+    await expect(rules.getByRole('heading', { name: 'No rules yet' })).toBeVisible();
   });
 });

@@ -3,11 +3,11 @@ import {
   expect,
   expectAxeClean,
   externalRequests,
-  openDashboard,
   openPreview,
   pageErrors,
   test,
 } from './helpers.dashboard';
+import { openLibrary } from './helpers.graph';
 import {
   TEXT,
   relatedIds,
@@ -30,7 +30,7 @@ test.describe('related highlights', () => {
     const { ds } = await seedRelated(env);
     const [w1, w2, w3, w4, w5, v1] = ['w1', 'w2', 'w3', 'w4', 'w5', 'v1'].map((k) => ds.id.hl(k));
 
-    const page = await openDashboard(env);
+    const page = await openLibrary(env);
     await env.context.setOffline(true);
     try {
       await openPreview(page, w1!);
@@ -84,7 +84,7 @@ test.describe('related highlights', () => {
   }) => {
     const { ctrl, ds } = await seedRelated(env);
     const before = await countTables(ctrl, ['highlights', 'notes']);
-    const page = await openDashboard(env);
+    const page = await openLibrary(env);
     await openPreview(page, ds.id.hl('v1'));
     await relatedToggle(page).click();
 
@@ -101,7 +101,7 @@ test.describe('related highlights', () => {
     env,
   }) => {
     const { ds } = await seedRelated(env);
-    const page = await openDashboard(env);
+    const page = await openLibrary(env);
     await openPreview(page, ds.id.hl('v1'));
     await relatedToggle(page).click();
     await expect(page.getByTestId('related-summary')).toContainText('No other highlight');

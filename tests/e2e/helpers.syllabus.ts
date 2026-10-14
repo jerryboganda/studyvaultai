@@ -19,6 +19,7 @@ import {
   type Env,
   type TableName,
 } from './helpers.dashboard';
+import { pickCard, showMoreView } from './helpers.graph';
 
 /**
  * Helpers for syllabus.spec.ts (custom syllabus editor and coverage, ADR-020 part 2).
@@ -74,15 +75,11 @@ export const SID = {
   view: 'syllabus-view',
   select: 'syllabus-select',
   create: 'syllabus-new',
-  import: 'syllabus-import',
-  fromBanks: 'syllabus-from-banks',
   rename: 'syllabus-rename',
   export: 'syllabus-export',
   remove: 'syllabus-delete',
   size: 'syllabus-size',
-  importDialog: 'syllabus-import-dialog',
   importText: 'syllabus-import-text',
-  importName: 'syllabus-import-name',
   importSummary: 'syllabus-import-summary',
   importErrors: 'syllabus-import-errors',
   importPreview: 'syllabus-import-preview',
@@ -361,17 +358,42 @@ export const topicItem = (page: Page, title: string): Locator =>
     .getByRole('treeitem')
     .filter({ hasText: new RegExp(`^${title}(\\s|$)`) });
 
+/** Rail › More › Syllabus. */
 export async function openSyllabusView(page: Page): Promise<void> {
-  await page.getByTestId('view-syllabus').click();
+  await showMoreView(page, 'syllabus');
   await expect(page.getByTestId(SID.view)).toBeVisible();
 }
 
-/** Paste `text` into the import dialog (which must be open). */
+/** The "New syllabus" wizard dialog. */
+export const syllabusWizard = (page: Page): Locator =>
+  page.getByRole('dialog', { name: 'New syllabus' });
+
+/** The current step of a wizard is its heading. */
+export const wizardStep = (wizard: Locator, title: string): Locator =>
+  wizard.getByRole('heading', { name: title, exact: true });
+
+/** Press Next and wait for the named step. */
+export async function wizardNext(wizard: Locator, title: string): Promise<void> {
+  await wizard.getByRole('button', { name: 'Next', exact: true }).click();
+  await expect(wizardStep(wizard, title)).toBeVisible();
+}
+
+/** Open the wizard and choose "Paste outline" (Start from › Paste outline). */
+export async function startPaste(page: Page): Promise<Locator> {
+  await page.getByTestId(SID.create).click();
+  const wizard = syllabusWizard(page);
+  await expect(wizardStep(wizard, 'Start from')).toBeVisible();
+  await pickCard(wizard.getByRole('radio', { name: /^Paste outline/ }));
+  await wizardNext(wizard, 'Paste outline');
+  return wizard;
+}
+
+/** Paste `text` into the wizard's outline field (on its "Paste outline" step). */
 export async function pasteOutline(page: Page, text: string): Promise<Locator> {
-  const dialog = page.getByTestId(SID.importDialog);
-  await expect(dialog).toBeVisible();
-  await dialog.getByTestId(SID.importText).fill(text);
-  return dialog;
+  const wizard = syllabusWizard(page);
+  await expect(wizardStep(wizard, 'Paste outline')).toBeVisible();
+  await wizard.getByTestId(SID.importText).fill(text);
+  return wizard;
 }
 
 /** Select a topic and tick banks and tags in its pickers. */
@@ -383,10 +405,10 @@ export async function mapTopic(
   await topicItem(page, title).click();
   await expect(page.getByTestId(SID.title)).toHaveValue(title);
   for (const bank of to.banks ?? []) {
-    await page.getByTestId(SID.banks).getByRole('checkbox', { name: bank, exact: true }).check();
+    await pickCard(page.getByTestId(SID.banks).getByRole('checkbox', { name: bank, exact: true }));
   }
   for (const tag of to.tags ?? []) {
-    await page.getByTestId(SID.tags).getByRole('checkbox', { name: tag, exact: true }).check();
+    await pickCard(page.getByTestId(SID.tags).getByRole('checkbox', { name: tag, exact: true }));
   }
 }
 
@@ -395,48 +417,62 @@ export async function mapTopic(
 // -----------------------------------------------------------------------------------------------
 
 const pct = (n: number, digits = 0) => `${(n * 100).toFixed(digits)}%`;
+/** Whole percent as the coverage rings round it (Math.round, as a person reads 56.25 % as 56). */
+const whole = (n: number) => Math.round(n * 100);
 
 export interface ExpectedRow {
   cells: string[];
 }
 
+/** Topic cell of a topic nothing points at: its title and a "Not mapped" badge. */
+const unmapped = (title: string) => `${title} Not mapped`;
+
 /** The first eight cells of each table row (topic, share, highlights, cards, due, retention, last, state). */
 export function expectedRows(lastK1: string, lastK3: string, covered = 'default') {
-  const hfState = covered === 'default' ? '✓ Covered' : '◐ Thin';
-  const renalState = '✓ Covered';
+  const hfState = covered === 'default' ? 'Covered' : 'Thin';
+  const renalState = 'Covered';
   const cardiologyState =
     covered === 'default'
-      ? '◐ Thin (50% of its subtopics by weight)'
-      : '◐ Thin (0% of its subtopics by weight)';
+      ? 'Thin (50% of its subtopics by weight)'
+      : 'Thin (0% of its subtopics by weight)';
   return {
     Cardiology: ['Cardiology', pct(0.375, 1), '3', '2', '1', '83% (6)', lastK1, cardiologyState],
     'Heart failure': ['Heart failure', pct(0.1875, 1), '3', '2', '1', '83% (6)', lastK1, hfState],
-    Rhythm: [
-      'Rhythm (map a bank or tag to this topic)',
-      pct(0.1875, 1),
-      '0',
-      '0',
-      '0',
-      'n/a (0)',
-      'Never',
-      '– None',
-    ],
+    Rhythm: [unmapped('Rhythm'), pct(0.1875, 1), '0', '0', '0', 'n/a (0)', 'Never', 'None'],
     Renal: ['Renal', pct(0.375, 1), '4', '2', '0', 'n/a (3)', lastK3, renalState],
-    'Misc notes': ['Misc notes', pct(0.125, 1), '1', '0', '0', 'n/a (0)', 'Never', '◐ Thin'],
+    'Misc notes': ['Misc notes', pct(0.125, 1), '1', '0', '0', 'n/a (0)', 'Never', 'Thin'],
     'Not started': [
-      'Not started (map a bank or tag to this topic)',
+      unmapped('Not started'),
       pct(0.125, 1),
       '0',
       '0',
       '0',
       'n/a (0)',
       'Never',
-      '– None',
+      'None',
     ],
   } as Record<string, string[]>;
 }
 
-export const overallText = {
-  covered: pct(0.5625),
-  started: pct(0.6875),
+/** Row key of the table: the topic title without its "Not mapped" badge or "in <parent>". */
+export const topicOfCell = (cell: string): string => cell.replace(/ in .*$| Not mapped$/, '');
+
+/** Whole-syllabus coverage by weight, as whole percents (56.25 % covered, 68.75 % started). */
+export const overallPct = {
+  covered: whole(0.5625),
+  started: whole(0.6875),
+  /** With 4 highlights needed: only Renal (3 of 8) is covered. */
+  strictCovered: whole(0.375),
 };
+
+/** Accessible name of a coverage ring (ProgressRing: "<label>: <n> of 100 %", ", done" when full). */
+export const ringName = (label: string, value: number): string =>
+  `${label}: ${value} of 100 %${value >= 100 ? ', done' : ''}`;
+
+/** The top-level topics of the chart, in outline order: covered share by weight and state. */
+export const expectedChart: ReadonlyArray<{ title: string; covered: number; state: string }> = [
+  { title: 'Cardiology', covered: 50, state: 'Thin' },
+  { title: 'Renal', covered: 100, state: 'Covered' },
+  { title: 'Misc notes', covered: 0, state: 'Thin' },
+  { title: 'Not started', covered: 0, state: 'None' },
+];

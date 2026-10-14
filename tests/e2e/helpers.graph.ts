@@ -6,9 +6,12 @@ import {
   ensureVault,
   expect,
   openControl,
+  openDashboard,
   rawPut,
   readTable,
+  settle,
   writeDataset,
+  type DashTarget,
   type DatasetInput,
   type Env,
   type TableName,
@@ -65,6 +68,46 @@ export async function seedGraph(env: Env) {
     v: ds.id.hl('v'),
   };
   return { ctrl, ds, id };
+}
+
+// -----------------------------------------------------------------------------------------------
+// Dashboard navigation (shared with related, syllabus and rules specs)
+// -----------------------------------------------------------------------------------------------
+
+/**
+ * The dashboard on the highlight list. A plain dashboard.html opens on Home, so this goes through the
+ * rail's Banks button like a person would (harmless when a deep link already opened the list).
+ */
+export async function openLibrary(env: Env, target: DashTarget = {}): Promise<Page> {
+  const page = await openDashboard(env, target, { settle: false });
+  await showLibrary(page);
+  return page;
+}
+
+/** Rail › Banks: the highlight list, scope unchanged, loaded. */
+export async function showLibrary(page: Page): Promise<void> {
+  await page.getByTestId('nav-banks').click();
+  await expect(page.getByTestId('view-library')).toBeVisible();
+  await settle(page);
+}
+
+export type MoreView = 'graph' | 'syllabus' | 'rules' | 'trash' | 'duplicates' | 'storage' | 'chat';
+
+/** Rail › More, then the view's tile. Inside the view the rail marks More as the current page. */
+export async function showMoreView(page: Page, view: MoreView): Promise<void> {
+  await page.getByTestId('nav-more').click();
+  await page.getByTestId('more-view').getByTestId(`view-${view}`).click();
+  await expect(page.getByTestId('nav-more')).toHaveAttribute('aria-current', 'page');
+  await expect(page.getByTestId('more-view')).toHaveCount(0);
+}
+
+/**
+ * Tick a picture-card or pill radio/checkbox the way a person does: by its label (the native input
+ * is visually hidden inside it). Resolves once the input is checked.
+ */
+export async function pickCard(input: Locator): Promise<void> {
+  await input.locator('xpath=ancestor::label[1]').click();
+  await expect(input).toBeChecked();
 }
 
 // -----------------------------------------------------------------------------------------------

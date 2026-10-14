@@ -1,6 +1,5 @@
 import type { Page } from '@playwright/test';
 import {
-  dashboardHref,
   dialogOf,
   expect,
   expectAxeClean,
@@ -27,20 +26,26 @@ import {
 import {
   OUTLINE,
   SID,
+  expectedChart,
   expectedRows,
   mapTopic,
   openSyllabusView,
-  overallText,
+  overallPct,
   pasteOutline,
   putSyllabus,
+  ringName,
   seedSyllabusVault,
   sortId,
+  startPaste,
   storedThresholds,
   syllabusRows,
   topicId,
   topicItem,
+  topicOfCell,
   topicsTree,
   topicsByTitle,
+  wizardNext,
+  wizardStep,
 } from './helpers.syllabus';
 
 /**
@@ -52,31 +57,36 @@ import {
 test.describe.configure({ timeout: 240_000 });
 
 const analyticsTable = (rows: string[][]) =>
-  Object.fromEntries(
-    rows.map((r) => [(r[0] ?? '').replace(/ \(map a bank or tag to this topic\)$/, ''), r]),
-  ) as Record<string, string[]>;
+  Object.fromEntries(rows.map((r) => [topicOfCell(r[0] ?? ''), r])) as Record<string, string[]>;
+
+/** The thresholds sit in the closed "Coverage rule" disclosure of the coverage section. */
+const openCoverageRule = async (review: Page) => {
+  const rule = review.getByTestId(SID.rvSection).locator('details', { hasText: 'Coverage rule' });
+  await rule.locator('summary').click();
+  await expect(rule).toHaveAttribute('open', '');
+};
 
 test.describe('syllabus editor and coverage', () => {
   test('an outline becomes a syllabus, topics are mapped to banks and tags, and the coverage equals the seeded vault; offline, no request, axe clean', async ({
     env,
   }) => {
     const seed = await seedSyllabusVault(env);
-    const page = await openDashboard(env);
+    const page = await openDashboard(env, {}, { settle: false });
     await env.context.setOffline(true);
     try {
       // ---- the view starts honest and empty ----------------------------------------------------
       await openSyllabusView(page);
-      await expect(page.getByText('You have no syllabus yet')).toBeVisible();
+      await expect(page.getByRole('heading', { name: 'No syllabus yet' })).toBeVisible();
       await expect(page.getByTestId(SID.add)).toHaveCount(0);
 
       // ---- an outline is previewed (a dry run), and one the schema refuses is not importable ----
-      await page.getByTestId(SID.import).click();
-      const dialog = dialogOf(page, 'Import an outline');
-      await expect(dialog.getByTestId('dialog-confirm')).toHaveAttribute('aria-disabled', 'true');
-      await expect(dialog.getByTestId('dialog-confirm')).toHaveAttribute(
-        'title',
-        'Paste an outline first.',
-      );
+      // The "New syllabus" wizard: Start from › Paste outline › Name it › Looks good?
+      const dialog = await startPaste(page);
+      const pasteStep = wizardStep(dialog, 'Paste outline');
+      const next = dialog.getByRole('button', { name: 'Next', exact: true });
+      await next.click();
+      await expect(dialog.getByRole('alert')).toHaveText('Paste an outline first.');
+      await expect(pasteStep).toBeVisible();
 
       await pasteOutline(
         page,
@@ -84,13 +94,23 @@ test.describe('syllabus editor and coverage', () => {
       );
       await expect(dialog.getByTestId(SID.importErrors)).toContainText('Line 7');
       await expect(dialog.getByTestId(SID.importErrors)).toContainText('at most 6 are allowed');
-      await expect(dialog.getByTestId('dialog-confirm')).toHaveAttribute('aria-disabled', 'true');
+      await next.click();
+      await expect(dialog.getByRole('alert')).toHaveText('Fix the problems listed first.');
+      await expect(pasteStep).toBeVisible();
       expect(await syllabusRows(seed.ctrl)).toEqual([]);
 
       await pasteOutline(page, OUTLINE);
-      await expect(dialog.getByTestId(SID.importSummary)).toContainText(
-        '6 topics in 2 levels will be created as “Cardiorenal exam”',
-      );
+      const summary = dialog.getByTestId(SID.importSummary);
+      for (const part of ['6 topics', '2 levels', '“Cardiorenal exam”']) {
+        await expect(summary).toContainText(part);
+      }
+      // The name comes from the outline's heading unless one is typed.
+      await wizardNext(dialog, 'Name it');
+      await expect(dialog.getByTestId('name-input')).toHaveValue('');
+      await expect(dialog).toContainText('Empty uses “Cardiorenal exam”.');
+      await wizardNext(dialog, 'Looks good?');
+      await expect(dialog.getByRole('button', { name: 'Change the name' })).toBeVisible();
+      await expect(dialog).toContainText('Cardiorenal exam');
       await expect(dialog.getByTestId(SID.importPreview).getByRole('listitem')).toHaveText([
         'Cardiology (weight 3)',
         'Heart failure',
@@ -100,8 +120,8 @@ test.describe('syllabus editor and coverage', () => {
         'Not started',
       ]);
       expect(await syllabusRows(seed.ctrl), 'a preview saves nothing').toEqual([]);
-      expect(await axeReport(page), 'axe: the import dialog').toBe('');
-      await dialog.getByTestId('dialog-confirm').click();
+      expect(await axeReport(page), 'axe: the new-syllabus wizard').toBe('');
+      await dialog.getByRole('button', { name: 'Create syllabus', exact: true }).click();
       await expect(dialog).toHaveCount(0);
 
       // ---- the outline is the stored syllabus, in order, with its weights and no mapping -------
@@ -135,8 +155,10 @@ test.describe('syllabus editor and coverage', () => {
           ];
         })
         .toEqual([[seed.id.cardio], [seed.id.renal], [seed.id.hy], [seed.id.inbox]]);
-      await expect(topicItem(page, 'Renal')).toContainText('1 bank, 1 tag');
-      await expect(topicItem(page, 'Rhythm')).toContainText('not mapped');
+      // One chip per kind of mapping.
+      await expect(topicItem(page, 'Renal')).toContainText('1 bank');
+      await expect(topicItem(page, 'Renal')).toContainText('1 tag');
+      await expect(topicItem(page, 'Rhythm')).toContainText('Not mapped');
 
       // ---- keyboard: Alt+Arrow reorders, and the buttons say why a move is not possible ---------
       await topicItem(page, 'Renal').focus();
@@ -145,9 +167,8 @@ test.describe('syllabus editor and coverage', () => {
         .poll(async () => (await syllabusRows(seed.ctrl))[0]!.nodes.map((n) => n.title))
         .toEqual(['Renal', 'Cardiology', 'Misc notes', 'Not started']);
       await expect(page.getByTestId(SID.up)).toHaveAttribute('aria-disabled', 'true');
-      await expect(page.getByTestId(SID.up)).toHaveAttribute(
-        'title',
-        'Already the first topic at this level.',
+      await expect(page.getByTestId(SID.up)).toHaveAccessibleName(
+        'Move up. Already the first topic at this level.',
       );
       await page.getByTestId(SID.down).click();
       await expect
@@ -180,11 +201,14 @@ test.describe('syllabus editor and coverage', () => {
       const review = await openReview(env, { query: '?view=analytics', settings: UTC_DAY });
       const overall = review.getByTestId(SID.rvOverall);
       await expect(overall).toBeVisible();
-      await expect(overall).toContainText(
-        `${overallText.covered}of the syllabus is covered, by weight`,
-      );
-      await expect(overall).toContainText(`${overallText.started}has at least some material`);
-      await expect(overall).toContainText('2of 6 topics point at no bank or tag yet');
+      await expect(
+        overall.getByRole('img', { name: ringName('Covered by weight', overallPct.covered) }),
+      ).toBeVisible();
+      await expect(
+        overall.getByRole('img', { name: ringName('Started by weight', overallPct.started) }),
+      ).toBeVisible();
+      await expect(overall).toContainText('2 of 6 topics unmapped');
+      await expect(overall).toContainText('Covered from 3 highlights and 1 card');
 
       const lastK1 = await whenText(review, seed.at(-3), 'UTC');
       const lastK3 = await whenText(review, seed.at(-5), 'UTC');
@@ -197,17 +221,21 @@ test.describe('syllabus editor and coverage', () => {
       }
       expect(Object.keys(got)).toHaveLength(6);
 
-      // The chart is the same numbers as text.
+      // The chart: one ring per top-level topic, named with its number, and its state in words.
       const chart = review.getByTestId(SID.rvChart);
-      await expect(chart.getByRole('img')).toContainText(
+      await expect(chart).toHaveAccessibleName(
         '4 top-level topics: 1 covered, 2 thin, 1 with no material',
       );
-      expect(await tableRows(chart.locator('table'))).toEqual([
-        ['1. Cardiology', '50', '0', '37.5%'],
-        ['2. Renal', '100', '0', '37.5%'],
-        ['3. Misc notes', '0', '100', '12.5%'],
-        ['4. Not started', '0', '0', '12.5%'],
-      ]);
+      const rings = chart.getByRole('listitem');
+      await expect(rings).toHaveCount(expectedChart.length);
+      for (const [i, want] of expectedChart.entries()) {
+        const item = rings.nth(i);
+        await expect(item.getByRole('img')).toHaveAccessibleName(
+          ringName(`${want.title} covered`, want.covered),
+        );
+        await expect(item).toContainText(want.title);
+        await expect(item).toContainText(want.state);
+      }
 
       expect(await axeReport(review), 'axe: the coverage section').toBe('');
       expect(reviewErrors(review)).toEqual([]);
@@ -223,12 +251,16 @@ test.describe('syllabus editor and coverage', () => {
     await putSyllabus(seed);
     const review = await openReview(env, { query: '?view=analytics', settings: UTC_DAY });
     const overall = review.getByTestId(SID.rvOverall);
-    await expect(overall).toContainText(`${overallText.covered}of the syllabus is covered`);
+    const coveredRing = (value: number) =>
+      overall.getByRole('img', { name: ringName('Covered by weight', value) });
+    const startedRing = overall.getByRole('img', {
+      name: ringName('Started by weight', overallPct.started),
+    });
+    await expect(coveredRing(overallPct.covered)).toBeVisible();
     const table = review.getByTestId(SID.rvTable);
 
     // Outline order first; then ascending and descending by highlights, then back to the outline.
-    const titles = async () =>
-      (await tableRows(table)).map((r) => (r[0] ?? '').replace(/ in .*$| \(map a bank.*$/, ''));
+    const titles = async () => (await tableRows(table)).map((r) => topicOfCell(r[0] ?? ''));
     const outline = ['Cardiology', 'Heart failure', 'Rhythm', 'Renal', 'Misc notes', 'Not started'];
     expect(await titles()).toEqual(outline);
     const header = review.getByRole('columnheader', { name: 'Highlights', exact: true });
@@ -250,6 +282,7 @@ test.describe('syllabus editor and coverage', () => {
     expect(await titles()).toEqual(outline);
 
     // The thresholds are shown, and a nonsense value is refused without saving anything.
+    await openCoverageRule(review);
     const highlights = review.getByTestId(SID.rvMinHighlights);
     const cards = review.getByTestId(SID.rvMinCards);
     await expect(highlights).toHaveValue('3');
@@ -266,8 +299,9 @@ test.describe('syllabus editor and coverage', () => {
     await expect(review.getByTestId(SID.rvStatus)).toContainText(
       'Saved on this device: covered from 4 highlights and 1 card',
     );
-    await expect(overall).toContainText('38%of the syllabus is covered');
-    await expect(overall).toContainText(`${overallText.started}has at least some material`);
+    await expect(coveredRing(overallPct.strictCovered)).toBeVisible();
+    await expect(startedRing).toBeVisible();
+    await expect(overall).toContainText('Covered from 4 highlights and 1 card');
     expect(await storedThresholds(seed.ctrl)).toEqual({ minHighlights: 4, minCards: 1 });
     const lastK1 = await whenText(review, seed.at(-3), 'UTC');
     const lastK3 = await whenText(review, seed.at(-5), 'UTC');
@@ -280,12 +314,11 @@ test.describe('syllabus editor and coverage', () => {
     // It survives a reload (the number is what the page opens with), and resets.
     await review.reload();
     await expect(review.getByTestId(SID.rvMinHighlights)).toHaveValue('4');
-    await expect(review.getByTestId(SID.rvOverall)).toContainText('38%of the syllabus is covered');
+    await expect(coveredRing(overallPct.strictCovered)).toBeVisible();
+    await openCoverageRule(review);
     await review.getByTestId(SID.rvReset).click();
     await expect(review.getByTestId(SID.rvMinHighlights)).toHaveValue('3');
-    await expect(review.getByTestId(SID.rvOverall)).toContainText(
-      `${overallText.covered}of the syllabus is covered`,
-    );
+    await expect(coveredRing(overallPct.covered)).toBeVisible();
     await expect.poll(() => storedThresholds(seed.ctrl)).toEqual({ minHighlights: 3, minCards: 1 });
     expect(reviewErrors(review)).toEqual([]);
   });
@@ -339,6 +372,7 @@ test.describe('syllabus editor and coverage', () => {
     const review = await openReview(env, { query: '?view=analytics', settings: UTC_DAY });
     await review.setViewportSize({ width: 320, height: 900 });
     await expect(review.getByTestId(SID.rvOverall)).toBeVisible();
+    await openCoverageRule(review);
     await expect(review.getByTestId(SID.rvMinHighlights)).toBeVisible();
     expect(await sideways(review), 'the review page scrolls sideways').toBeLessThanOrEqual(0);
     const numbers = await review.getByTestId(SID.rvMinHighlights).boundingBox();
@@ -347,7 +381,7 @@ test.describe('syllabus editor and coverage', () => {
 
     const page = await openDashboard(env, {}, { settle: false });
     await page.setViewportSize({ width: 320, height: 900 });
-    await page.goto(`${dashboardHref(env)}?view=syllabus`);
+    await page.goto(`chrome-extension://${env.extensionId}/dashboard.html?view=syllabus`);
     await expect(page.getByTestId(SID.view)).toBeVisible();
     await topicItem(page, 'Renal').click();
     await expect(page.getByTestId(SID.title)).toHaveValue('Renal');
@@ -365,7 +399,7 @@ test.describe('syllabus editor and coverage', () => {
     const seed = await seedSyllabusVault(env);
     const id = await putSyllabus(seed);
     const page = await openDashboard(env, {}, { settle: false });
-    await page.getByTestId('view-syllabus').click();
+    await openSyllabusView(page);
     await expect(page.getByTestId(SID.select)).toContainText('Cardiorenal exam');
 
     // Rename, then delete: the editor goes, Undo brings it back as it was.
@@ -377,7 +411,7 @@ test.describe('syllabus editor and coverage', () => {
     await expect.poll(async () => (await syllabusRows(seed.ctrl))[0]?.name).toBe('Final exam');
 
     await page.getByTestId(SID.remove).click();
-    await expect(page.getByText('You have no syllabus yet')).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'No syllabus yet' })).toBeVisible();
     await expect(toast(page, /Deleted the syllabus “Final exam”/)).toBeVisible();
     expect((await syllabusRows(seed.ctrl))[0]!.deletedAt).not.toBeNull();
     await toast(page, /Deleted the syllabus/)
@@ -399,6 +433,7 @@ test.describe('syllabus editor and coverage', () => {
     // A threshold is kept on this device (in the meta table, not in backups).
     const review = await openReview(env, { query: '?view=analytics', settings: UTC_DAY });
     await expect(review.getByTestId(SID.rvOverall)).toBeVisible();
+    await openCoverageRule(review);
     await review.getByTestId(SID.rvMinCards).fill('2');
     await review.getByTestId(SID.rvMinCards).blur();
     await expect.poll(() => storedThresholds(seed.ctrl)).toEqual({ minHighlights: 3, minCards: 2 });
@@ -412,7 +447,9 @@ test.describe('syllabus editor and coverage', () => {
     expect(await readTable(control, 'cards')).toEqual([]);
 
     const empty = await openReview(env, { query: '?view=analytics', settings: UTC_DAY });
-    await expect(empty.getByTestId(SID.rvEmpty)).toContainText('A syllabus is your own outline');
+    await expect(empty.getByTestId(SID.rvEmpty)).toContainText(
+      'Outline your exam to see coverage per topic.',
+    );
     await expect(empty.getByTestId(SID.rvCreate)).toBeVisible();
     expect(await axeReport(empty), 'axe: the empty coverage section').toBe('');
     expect(reviewErrors(empty)).toEqual([]);

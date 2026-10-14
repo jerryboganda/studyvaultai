@@ -1,6 +1,7 @@
 import type { Locator, Page } from '@playwright/test';
 import { INBOX_BANK_ID } from '@shared';
 import { expect, readTable, settle } from './helpers.dashboard';
+import { pickCard } from './helpers.graph';
 import type { Env } from './helpers.pages';
 
 export { INBOX_BANK_ID };
@@ -36,19 +37,40 @@ export interface NewRule {
   hosts?: string[];
   titleContains?: string[];
   bank: string;
-  /** Default true, as in the dialog. */
+  /** Default true, as in the wizard. */
   asks?: boolean;
 }
 
-/** Fill and submit the "New filing rule" dialog (opened by the caller's click or by this). */
+/** The "New filing rule" wizard dialog. */
+export const ruleWizard = (page: Page): Locator =>
+  page.getByRole('dialog', { name: 'New filing rule' });
+
+/** Press the wizard's Next and wait for the named step heading. */
+async function nextStep(dialog: Locator, step: string): Promise<void> {
+  await dialog.getByRole('button', { name: 'Next', exact: true }).click();
+  await expect(dialog.getByRole('heading', { name: step, exact: true })).toBeVisible();
+}
+
+/**
+ * Walk the "New filing rule" wizard with real input and create the rule: When (which fields) ›
+ * What matches › File into › Ask first? › Try it › Looks good? (name) › Create rule.
+ */
 export async function createRule(page: Page, rule: NewRule): Promise<void> {
   const before = await ruleRows(page).count();
-  const open = page.getByTestId('rule-new');
-  if (await open.isVisible()) await open.click();
-  else await page.getByRole('button', { name: 'Create the first rule' }).click();
-  const dialog = page.getByRole('dialog', { name: 'New filing rule' });
+  await page.getByTestId('rule-new').click();
+  const dialog = ruleWizard(page);
   await expect(dialog).toBeVisible();
-  await dialog.getByTestId('rule-name').fill(rule.name);
+
+  // When: the fields this rule looks at.
+  await expect(dialog.getByRole('heading', { name: 'When', exact: true })).toBeVisible();
+  const when = dialog.getByTestId('rule-when');
+  if (rule.hosts?.length) await pickCard(when.getByRole('checkbox', { name: /^Site/ }));
+  if (rule.titleContains?.length) {
+    await pickCard(when.getByRole('checkbox', { name: /^Page title/ }));
+  }
+
+  // What matches: the values, one chip each.
+  await nextStep(dialog, 'What matches');
   for (const host of rule.hosts ?? []) {
     const field = dialog.getByTestId('rule-hosts').getByRole('textbox');
     await field.fill(host);
@@ -59,10 +81,28 @@ export async function createRule(page: Page, rule: NewRule): Promise<void> {
     const field = dialog.getByTestId('rule-title').getByRole('textbox');
     await field.fill(word);
     await field.press('Enter');
+    await expect(dialog.getByTestId('rule-title').getByRole('listitem')).toContainText(word);
   }
-  await dialog.getByTestId('rule-bank').selectOption({ label: rule.bank });
-  if (rule.asks === false) await dialog.getByTestId('rule-confirm').uncheck();
-  await dialog.getByTestId('dialog-confirm').click();
+
+  // File into: the bank, as a picture card.
+  await nextStep(dialog, 'File into');
+  await pickCard(
+    dialog.getByTestId('rule-bank').getByRole('radio', { name: rule.bank, exact: true }),
+  );
+
+  // Ask first? On by default.
+  await nextStep(dialog, 'Ask first?');
+  const confirm = dialog.getByTestId('rule-confirm');
+  if (rule.asks === false) {
+    await pickCard(confirm.getByRole('radio', { name: /^File at once/ }));
+  } else {
+    await expect(confirm.getByRole('radio', { name: /^Ask first/ })).toBeChecked();
+  }
+
+  await nextStep(dialog, 'Try it');
+  await nextStep(dialog, 'Looks good?');
+  await dialog.getByTestId('rule-name').fill(rule.name);
+  await dialog.getByRole('button', { name: 'Create rule', exact: true }).click();
   await expect(dialog).toHaveCount(0);
   await expect(ruleRows(page)).toHaveCount(before + 1);
 }
