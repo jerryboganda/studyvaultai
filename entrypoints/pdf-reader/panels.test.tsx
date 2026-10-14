@@ -46,7 +46,7 @@ describe('OcrPanel', () => {
   it('offers OCR for a page without text and explains an unavailable engine', async () => {
     const p = base();
     const { rerender } = render(<OcrPanel {...p} state="none" ocr={undefined} />);
-    await userEvent.click(screen.getByRole('button', { name: 'OCR this page' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Recognise page' }));
     expect(p.onRecognizePage).toHaveBeenCalledTimes(1);
     expect(screen.getByText(/nothing is uploaded/)).toBeTruthy();
 
@@ -109,7 +109,14 @@ describe('OcrPanel', () => {
     );
     await user.click(within(lines[1]!).getByTestId('pdf-ocr-revert-line'));
     expect(p.onRevertLine).toHaveBeenCalledWith(1);
+    // Reverting every correction asks first, with Cancel as the safe choice.
     await user.click(screen.getByTestId('pdf-ocr-revert-page'));
+    expect(p.onRevertPage).not.toHaveBeenCalled();
+    await user.click(
+      within(screen.getByRole('dialog', { name: 'Revert all edits?' })).getByRole('button', {
+        name: 'Revert all',
+      }),
+    );
     expect(p.onRevertPage).toHaveBeenCalled();
   });
 
@@ -122,10 +129,18 @@ describe('OcrPanel', () => {
     await user.click(screen.getAllByTestId('pdf-ocr-edit')[0]!);
     await user.type(screen.getByTestId('pdf-ocr-input'), '!{Enter}');
     expect((await screen.findByRole('alert')).textContent).toContain('disk full');
+    // The typed correction is not lost: the field stays open with it.
+    expect((screen.getByTestId('pdf-ocr-input') as HTMLInputElement).value).toBe(
+      'Glomeruli filter plasma!',
+    );
   });
 });
 
 describe('SidePane', () => {
+  const nav = {
+    links: null,
+    onFollowLink: vi.fn(),
+  };
   const outline: OutlineEntry[] = [
     { title: '1 Renal physiology', pageNumber: 1, top: null, depth: 0 },
     { title: '1.1 Filtration', pageNumber: 3, top: null, depth: 1 },
@@ -135,7 +150,16 @@ describe('SidePane', () => {
 
   it('lists the outline, marks the section in view and jumps on click', async () => {
     const onGoToPage = vi.fn();
-    render(<SidePane doc={doc as never} outline={outline} page={3} onGoToPage={onGoToPage} />);
+    render(
+      <SidePane
+        {...nav}
+        tab="outline"
+        doc={doc as never}
+        outline={outline}
+        page={3}
+        onGoToPage={onGoToPage}
+      />,
+    );
     const current = screen
       .getAllByRole('button')
       .find((b) => b.getAttribute('aria-current') === 'location')!;
@@ -148,18 +172,31 @@ describe('SidePane', () => {
   });
 
   it('says so when a file has no outline and while it is still being read', async () => {
-    const { rerender } = render(
-      <SidePane doc={doc as never} outline={[]} page={1} onGoToPage={vi.fn()} />,
-    );
-    expect(screen.getByTestId('pdf-outline-empty').textContent).toMatch(/no outline/);
-    rerender(<SidePane doc={doc as never} outline={null} page={1} onGoToPage={vi.fn()} />);
+    const props = {
+      ...nav,
+      tab: 'outline' as const,
+      doc: doc as never,
+      page: 1,
+      onGoToPage: vi.fn(),
+    };
+    const { rerender } = render(<SidePane {...props} outline={[]} />);
+    expect(screen.getByTestId('pdf-outline-empty').textContent).toMatch(/No outline/);
+    rerender(<SidePane {...props} outline={null} />);
     expect(screen.getByRole('status').textContent).toContain('Reading the outline');
   });
 
   it('the Pages tab has one button per page and navigates', async () => {
     const onGoToPage = vi.fn();
-    render(<SidePane doc={doc as never} outline={[]} page={2} onGoToPage={onGoToPage} />);
-    await userEvent.click(screen.getByRole('tab', { name: 'Pages' }));
+    render(
+      <SidePane
+        {...nav}
+        tab="pages"
+        doc={doc as never}
+        outline={[]}
+        page={2}
+        onGoToPage={onGoToPage}
+      />,
+    );
     const thumbs = screen.getAllByRole('button', { name: /Go to page/ });
     expect(thumbs).toHaveLength(4);
     expect(thumbs[1]!.getAttribute('aria-current')).toBe('page');
@@ -218,6 +255,41 @@ describe('DocInfo', () => {
   });
 });
 
+describe('DocInfo: the popover', () => {
+  it('closes on a click outside it, not on one inside it', async () => {
+    render(
+      <>
+        <button type="button">elsewhere</button>
+        <DocInfo
+          title="Renal physiology"
+          pageCount={1}
+          byteLength={10}
+          fingerprint={'ab'.repeat(32)}
+          textStatus="text"
+          scannedPages={0}
+          ocrPages={0}
+          host={null}
+          copy="none"
+          copyUnavailable={undefined}
+          busy={false}
+          onKeep={vi.fn()}
+          onRemove={vi.fn()}
+        />
+      </>,
+    );
+    const details = screen.getByTestId('pdf-props') as HTMLDetailsElement;
+    const summary = details.querySelector('summary')!;
+    await userEvent.click(summary);
+    expect(details.open).toBe(true);
+    await userEvent.click(screen.getByRole('button', { name: 'elsewhere' }));
+    expect(details.open).toBe(false);
+    // A click inside it (its own buttons) leaves it open.
+    await userEvent.click(summary);
+    await userEvent.click(screen.getByTestId('pdf-keep-copy'));
+    expect(details.open).toBe(true);
+  });
+});
+
 describe('StoredCopies', () => {
   it('lists kept copies with sizes, opens one and removes one without touching the rest', async () => {
     const store = createMemoryPdfStore();
@@ -236,18 +308,38 @@ describe('StoredCopies', () => {
     const rows = await screen.findAllByTestId('pdf-copy');
     expect(rows).toHaveLength(2);
     expect(screen.getByTestId('pdf-copies-total').textContent).toContain('2 copies');
+    // Every row's buttons say which file they act on.
+    expect(within(rows[0]!).getByRole('button', { name: 'Open Renal physiology' })).toBeTruthy();
     expect(screen.getByTestId('pdf-copies-total').textContent).toContain('3.0 MB');
     expect(rows[0]!.textContent).toContain('Renal physiology');
     expect(rows[0]!.textContent).toContain('2.0 MB');
 
-    await userEvent.click(within(rows[0]!).getByRole('button', { name: 'Open' }));
+    await userEvent.click(within(rows[0]!).getByRole('button', { name: /^Open/ }));
     expect(onOpen).toHaveBeenCalledWith('a'.repeat(64));
 
-    await userEvent.click(within(rows[0]!).getByRole('button', { name: 'Remove copy' }));
+    await userEvent.click(within(rows[0]!).getByRole('button', { name: /^Remove copy of/ }));
     await waitFor(() => expect(screen.getAllByTestId('pdf-copy')).toHaveLength(1));
     expect(store.copies.has('a'.repeat(64))).toBe(false);
     expect(store.copies.has('b'.repeat(64))).toBe(true);
     expect(store.documents.has('a'.repeat(64))).toBe(true); // the document row is not a copy
+  });
+
+  it('says while it is looking, and offers Retry when the list cannot be read', async () => {
+    let fail = true;
+    const store = {
+      listStoredCopies: vi.fn(async () => {
+        if (fail) throw new Error('disk busy');
+        return [];
+      }),
+      removeDocumentBytes: undefined,
+    };
+    render(<StoredCopies store={store} onOpen={vi.fn()} />);
+    expect(screen.getByRole('status').textContent).toContain('Checking for stored copies');
+    expect((await screen.findByRole('alert')).textContent).toContain('disk busy');
+    fail = false;
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByTestId('pdf-copies-empty')).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('says there are none, and renders nothing without a listing capability', async () => {
@@ -305,7 +397,7 @@ describe('OpenPanel additions', () => {
       expect(screen.getByText(`failure: ${kind}`)).toBeTruthy();
       expect(screen.getByText(new RegExp(text))).toBeTruthy();
       expect(Boolean(screen.queryByRole('button', { name: 'Try again' }))).toBe(retry);
-      expect(screen.getByRole('button', { name: 'Choose a PDF file' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Choose a PDF' })).toBeTruthy();
     },
   );
 });

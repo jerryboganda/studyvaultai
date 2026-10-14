@@ -1,12 +1,23 @@
 import { useRef, useState } from 'react';
+import { Archive, Download, FileArchive, Lock, LockOpen, ShieldCheck, X } from 'lucide-react';
 import type { ExportProgress, ExportResult } from '@backup';
-import { Button } from '../Button';
+import { ChunkyButton } from '../design/Buttons';
 import { useAsync } from '../hooks';
-import { InlineNotice } from '../Notice';
 import type { BackupDeps } from './deps';
 import { explainBackupError, type ErrorExplanation } from './explain';
 import { ExportProgressView } from './ExportProgressView';
 import { formatBytes, formatWhen, tableLabel } from './format';
+import {
+  Chip,
+  Choices,
+  Counts,
+  Disclosure,
+  Fact,
+  Facts,
+  Outcome,
+  StepFlow,
+  type FlowStep,
+} from './kit';
 import {
   PassphraseSetup,
   emptyPassphrase,
@@ -22,23 +33,25 @@ type Run =
   | { step: 'failed'; error: ErrorExplanation };
 
 /**
- * Full, lossless backup of the vault's tables (the file the Restore wizard reads). Settings are not
- * part of it, and the copy says so (`scope.ts`). Selected-bank exports are the readable formats in
- * <ReadableExports>.
+ * Full, lossless backup of the vault's tables (the file the Restore wizard reads), as a short wizard:
+ * lock it or not, the passphrase, a last look (cached PDFs), then real progress and a summary of the
+ * file. Settings are not part of it, and the copy says so (`scope.ts`). Selected-bank exports are the
+ * readable formats in <ReadableExports>; dated copies into a folder are <BackupFolder>.
  */
 export function ExportPanel({ deps }: { deps: BackupDeps }) {
   const [includePdfs, setIncludePdfs] = useState(false);
   const [pass, setPass] = useState<PassphraseState>(emptyPassphrase);
+  const [index, setIndex] = useState(0);
   const [run, setRun] = useState<Run>({ step: 'idle' });
   const abort = useRef<AbortController | null>(null);
+  /** The flow comes back after a run (cancel, Back, Done): its title takes focus then. */
+  const ran = useRef(false);
   const pdfs = useAsync(() => deps.cachedPdfs(), []);
-
-  const problem = passphraseProblem(pass);
-  const working = run.step === 'working';
 
   async function start() {
     const controller = new AbortController();
     abort.current = controller;
+    ran.current = true;
     setRun({ step: 'working', progress: null });
     try {
       const result = await deps.exportFull({
@@ -66,155 +79,244 @@ export function ExportPanel({ deps }: { deps: BackupDeps }) {
     });
   }
 
+  function again() {
+    setRun({ step: 'idle' });
+    setPass(emptyPassphrase);
+    setIncludePdfs(false);
+    setIndex(0);
+  }
+
   const cached = pdfs.data;
+  const scope = (
+    <Disclosure summary="What is in the file" icon={FileArchive} testId="backup-export-scope">
+      <p data-testid="backup-export-holds">
+        One file with {BACKUP_HOLDS}. It restores on this or another computer; it is made on this
+        device and never uploaded.
+      </p>
+      <p data-testid="backup-export-leaves-out">
+        <strong>Not in the file:</strong> {BACKUP_LEAVES_OUT}. Set them up again after restoring on
+        another computer.
+      </p>
+    </Disclosure>
+  );
+
+  const steps: FlowStep[] = [
+    {
+      id: 'lock',
+      title: 'Lock it?',
+      content: (
+        <>
+          <Choices
+            name="bk-export-lock"
+            label="Lock the backup file"
+            columns={2}
+            value={pass.enabled ? 'yes' : 'no'}
+            onChange={(v) =>
+              setPass(v === 'yes' ? { ...emptyPassphrase, enabled: true } : emptyPassphrase)
+            }
+            options={[
+              {
+                value: 'no',
+                label: 'No lock',
+                hint: 'Anyone can open it',
+                icon: LockOpen,
+                tone: 'neutral',
+                testId: 'backup-export-pass-off',
+              },
+              {
+                value: 'yes',
+                label: 'Passphrase',
+                hint: 'Encrypted file',
+                icon: Lock,
+                tone: 'success',
+                testId: 'backup-export-pass-enable',
+              },
+            ]}
+          />
+          {scope}
+        </>
+      ),
+    },
+    ...(pass.enabled
+      ? [
+          {
+            id: 'pass',
+            title: 'Passphrase',
+            validate: () => passphraseProblem(pass),
+            inlineError: true,
+            content: ({ error, errorId }: { error: string | null; errorId: string }) => (
+              <PassphraseSetup
+                bare
+                state={pass}
+                onChange={setPass}
+                idPrefix="bk-export"
+                testId="backup-export-pass"
+                error={error}
+                errorId={errorId}
+              />
+            ),
+          },
+        ]
+      : []),
+    {
+      id: 'check',
+      title: 'Looks good?',
+      content: (
+        <>
+          <div className="sd-row">
+            {pass.enabled ? (
+              <Chip icon={Lock} tone="success">
+                Locked with your passphrase
+              </Chip>
+            ) : (
+              <Chip icon={LockOpen} tone="warning">
+                Not locked
+              </Chip>
+            )}
+            <Chip icon={Download}>To your downloads</Chip>
+          </div>
+          <div className="sv-check">
+            <input
+              id="bk-include-pdfs"
+              type="checkbox"
+              checked={includePdfs}
+              disabled={!cached || cached.count === 0}
+              data-testid="backup-include-pdfs"
+              aria-describedby="bk-include-pdfs-hint"
+              onChange={(e) => setIncludePdfs(e.target.checked)}
+            />
+            <label htmlFor="bk-include-pdfs">Add cached PDFs</label>
+          </div>
+          <p id="bk-include-pdfs-hint" className="sd-line">
+            {pdfs.loading
+              ? 'Checking for cached PDFs…'
+              : cached && cached.count > 0
+                ? `${cached.count} cached PDF${cached.count === 1 ? '' : 's'}, ${formatBytes(cached.bytes)}: the file grows by that much.`
+                : 'No PDFs are cached. Highlights made in PDFs are always in.'}
+          </p>
+          {scope}
+        </>
+      ),
+    },
+  ];
+
   const progress = run.step === 'working' ? run.progress : null;
 
   return (
-    <div className="sv-stack" data-testid="backup-export">
-      <h3>{BACKUP_TITLE}</h3>
-      <p data-testid="backup-export-holds">
-        Saves one file with {BACKUP_HOLDS}. It can be restored on this or another computer. Nothing
-        is uploaded: the file is created on this device.
-      </p>
-      <p data-testid="backup-export-leaves-out">
-        <strong>Not in the file:</strong> {BACKUP_LEAVES_OUT}. They stay on this device, so after
-        restoring on another computer set them up again.
-      </p>
-
-      <div className="sv-check">
-        <input
-          id="bk-include-pdfs"
-          type="checkbox"
-          checked={includePdfs}
-          disabled={working || !cached || cached.count === 0}
-          data-testid="backup-include-pdfs"
-          aria-describedby="bk-include-pdfs-hint"
-          onChange={(e) => setIncludePdfs(e.target.checked)}
+    <div className="sd-stack" data-testid="backup-export">
+      {run.step === 'idle' ? (
+        <StepFlow
+          label={BACKUP_TITLE}
+          steps={steps}
+          index={index}
+          onIndex={setIndex}
+          testId="backup-export-flow"
+          autoFocus={ran.current}
+          finish={{
+            label: 'Back up now',
+            icon: Archive,
+            testId: 'backup-export-start',
+            onClick: () => void start(),
+          }}
         />
-        <label htmlFor="bk-include-pdfs">Include cached PDF files</label>
-      </div>
-      <p id="bk-include-pdfs-hint" className="sv-small sv-muted bk-indent">
-        {pdfs.loading
-          ? 'Checking for cached PDFs…'
-          : cached && cached.count > 0
-            ? `${cached.count} cached PDF${cached.count === 1 ? '' : 's'}, ${formatBytes(
-                cached.bytes,
-              )}. They make the backup file about that much larger. Your highlights and quotes are always included; PDFs are only needed to reopen the document offline.`
-            : 'No PDFs are cached on this device, so there is nothing to add. Highlights made in PDFs are always included.'}
-      </p>
-
-      <PassphraseSetup
-        state={pass}
-        onChange={setPass}
-        idPrefix="bk-export"
-        testId="backup-export-pass"
-      />
-
-      <div className="sv-row">
-        <Button
-          variant="primary"
-          busy={working}
-          disabledReason={problem ?? undefined}
-          data-testid="backup-export-start"
-          onClick={() => void start()}
-        >
-          Create backup file
-        </Button>
-        {working ? (
-          <Button data-testid="backup-export-cancel" onClick={() => abort.current?.abort()}>
-            Cancel
-          </Button>
-        ) : null}
-      </div>
-      {problem && !working ? (
-        <p className="sv-small sv-muted" data-testid="backup-export-problem">
-          {problem}
-        </p>
       ) : null}
 
-      {working ? <ExportProgressView progress={progress} testId="backup-export-progress" /> : null}
+      {run.step === 'working' ? (
+        <div className="sd-card">
+          <Outcome pose="think" title="Backing up…" line="Reading and packing your vault." />
+          <ExportProgressView progress={progress} testId="backup-export-progress" />
+          <div className="sd-row">
+            <ChunkyButton
+              icon={X}
+              data-testid="backup-export-cancel"
+              onClick={() => abort.current?.abort()}
+            >
+              Cancel
+            </ChunkyButton>
+          </div>
+        </div>
+      ) : null}
 
       {run.step === 'failed' ? (
-        <InlineNotice
-          tone="error"
-          title={run.error.title}
-          action={
-            run.error.retryable ? (
-              <Button data-testid="backup-export-retry" onClick={() => void start()}>
+        <div className="sd-card sd-card--danger" data-testid="backup-export-failed">
+          <Outcome pose="think" title={run.error.title} line={run.error.body} />
+          <div className="sd-row">
+            {run.error.retryable ? (
+              <ChunkyButton
+                variant="primary"
+                data-testid="backup-export-retry"
+                onClick={() => void start()}
+              >
                 Try again
-              </Button>
-            ) : undefined
-          }
-        >
-          {run.error.body}
-        </InlineNotice>
+              </ChunkyButton>
+            ) : null}
+            <ChunkyButton onClick={() => setRun({ step: 'idle' })}>Back</ChunkyButton>
+          </div>
+        </div>
       ) : null}
 
       {run.step === 'done' ? (
-        <div className="sv-stack" data-testid="backup-export-done">
-          <InlineNotice tone="success" live title="Backup file created">
-            The file is saved to your browser’s download location. Keep it somewhere that is not
-            only on this computer.
-          </InlineNotice>
-          <dl className="bk-facts">
-            <div>
-              <dt>File name</dt>
-              <dd className="sv-wrap" data-testid="backup-export-filename">
-                {run.result.suggestedFilename}
-              </dd>
-            </div>
-            <div>
-              <dt>Size</dt>
-              <dd>{formatBytes(run.result.bytes.length)}</dd>
-            </div>
-            <div>
-              <dt>Created</dt>
-              <dd>{formatWhen(run.result.manifest.createdAt)}</dd>
-            </div>
-            <div>
-              <dt>Protection</dt>
-              <dd>
-                {run.result.encrypted
-                  ? 'Encrypted with your passphrase (AES-256-GCM)'
-                  : 'Not encrypted: anyone with the file can read it'}
-              </dd>
-            </div>
-            <div>
-              <dt>Cached PDFs</dt>
-              <dd>
-                {run.result.manifest.options.includesAttachments
-                  ? `Included (${run.result.stats.blobs})`
-                  : 'Not included'}
-              </dd>
-            </div>
-            <div>
-              <dt>SHA-256 of the file</dt>
-              <dd className="bk-mono sv-wrap" data-testid="backup-export-sha">
+        <div className="sd-card" data-testid="backup-export-done">
+          <div role="status">
+            <Outcome
+              title="Backup file created"
+              line="Saved to your downloads. Keep a copy off this computer."
+            />
+          </div>
+          <Facts>
+            <Fact icon={FileArchive} label="File name" testId="backup-export-filename" wide>
+              {run.result.suggestedFilename}
+            </Fact>
+            <Fact icon={Archive} label="Size">
+              {formatBytes(run.result.bytes.length)}
+            </Fact>
+            <Fact icon={Download} label="Created">
+              {formatWhen(run.result.manifest.createdAt)}
+            </Fact>
+            <Fact icon={run.result.encrypted ? Lock : LockOpen} label="Protection">
+              {run.result.encrypted ? 'Encrypted with your passphrase' : 'Not encrypted'}
+            </Fact>
+            <Fact icon={FileArchive} label="Cached PDFs">
+              {run.result.manifest.options.includesAttachments
+                ? `Included (${run.result.stats.blobs})`
+                : 'Not included'}
+            </Fact>
+          </Facts>
+          <Disclosure summary="What is inside" icon={ShieldCheck}>
+            <Counts
+              testId="backup-export-counts"
+              items={run.result.manifest.tables.map((t) => ({
+                label: tableLabel(t.name),
+                value: t.rowCount,
+              }))}
+            />
+            <Facts>
+              <Fact
+                icon={ShieldCheck}
+                label="SHA-256 of the file"
+                testId="backup-export-sha"
+                mono
+                wide
+              >
                 {run.sha}
-              </dd>
-            </div>
-          </dl>
-          <div>
-            <h4 className="bk-subhead">What is inside</h4>
-            <ul className="bk-counts" data-testid="backup-export-counts">
-              {run.result.manifest.tables.map((t) => (
-                <li key={t.name}>
-                  <span>{tableLabel(t.name)}</span>
-                  <span>{t.rowCount}</span>
-                </li>
-              ))}
-            </ul>
-            <p className="sv-small sv-muted" data-testid="backup-export-done-leaves-out">
+              </Fact>
+            </Facts>
+            <p className="sd-line" data-testid="backup-export-done-leaves-out">
               Not included, by design: {BACKUP_LEAVES_OUT}.
             </p>
-          </div>
-          <div className="sv-row">
-            <Button data-testid="backup-export-again" onClick={() => save(run.result)}>
+          </Disclosure>
+          <div className="sd-row">
+            <ChunkyButton
+              variant="primary"
+              icon={Download}
+              data-testid="backup-export-again"
+              onClick={() => save(run.result)}
+            >
               Download again
-            </Button>
-            <Button variant="ghost" onClick={() => setRun({ step: 'idle' })}>
+            </ChunkyButton>
+            <ChunkyButton variant="ghost" onClick={again}>
               Done
-            </Button>
+            </ChunkyButton>
           </div>
         </div>
       ) : null}

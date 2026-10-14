@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import { Button, InlineNotice } from '@ui';
+import { FileText, KeyRound, ShieldCheck } from 'lucide-react';
+import { Button, InlineNotice, VaultBuddy } from '@ui';
 
 /**
  * Asks for a PDF's password. The value lives in this component's state until it is handed to pdf.js,
@@ -38,7 +39,7 @@ export function PasswordDialog({
   return (
     <dialog
       ref={dialog}
-      className="sv-dialog"
+      className="sv-dialog sv-pwdialog"
       aria-labelledby={titleId}
       onCancel={(e) => {
         e.preventDefault();
@@ -46,37 +47,48 @@ export function PasswordDialog({
       }}
     >
       <form
-        className="sv-dialog__body sv-stack"
+        className="sv-dialog__body sv-pwdialog__body"
         onSubmit={(e) => {
           e.preventDefault();
           if (value !== '') onSubmit(value);
         }}
       >
-        <h2 id={titleId}>This PDF is password protected</h2>
-        <p className="sv-muted sv-wrap">{fileLabel}</p>
+        <VaultBuddy pose="think" size={96} />
+        <h2 id={titleId} className="sv-pwdialog__title">
+          Password needed
+        </h2>
+        <p className="sv-pill sv-pwdialog__file">
+          <FileText aria-hidden="true" strokeWidth={2.4} />
+          <span className="sv-wrap">{fileLabel}</span>
+        </p>
         {reason === 'incorrect' ? (
           <InlineNotice tone="error" title="That password did not open the file">
-            Check the password and try again.
+            Check it and try again.
           </InlineNotice>
         ) : null}
-        <label className="sv-field" htmlFor={inputId}>
+        <label className="sv-field sv-pwdialog__field" htmlFor={inputId}>
           <span className="sv-label">Password</span>
-          <input
-            ref={field}
-            id={inputId}
-            className="sv-control"
-            type="password"
-            autoComplete="off"
-            spellCheck={false}
-            value={value}
-            data-testid="pdf-password"
-            onChange={(e) => setValue(e.target.value)}
-          />
+          <span className="sv-pwdialog__input">
+            <KeyRound aria-hidden="true" strokeWidth={2.4} />
+            <input
+              ref={field}
+              id={inputId}
+              className="sv-control"
+              type="password"
+              autoComplete="off"
+              spellCheck={false}
+              value={value}
+              data-testid="pdf-password"
+              onChange={(e) => setValue(e.target.value)}
+            />
+          </span>
         </label>
-        <p className="sv-small sv-muted">
-          The password is used once to open this file on this device. StudyVault does not store it.
+        <p className="sv-small sv-muted sv-pwdialog__note">
+          <ShieldCheck aria-hidden="true" strokeWidth={2.4} />
+          Used once on this device. StudyVault does not store it.
         </p>
-        <div className="sv-row">
+        <div className="sv-pwdialog__actions">
+          <Button onClick={onCancel}>Cancel</Button>
           <Button
             variant="primary"
             type="submit"
@@ -84,7 +96,6 @@ export function PasswordDialog({
           >
             Open PDF
           </Button>
-          <Button onClick={onCancel}>Cancel</Button>
         </div>
       </form>
     </dialog>

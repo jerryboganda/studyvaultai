@@ -9,6 +9,7 @@ import {
   getDocument,
   getDocumentBytes,
   getOcrPages,
+  isGameModeOn,
   listBanks,
   listDocuments,
   listPdfHighlights,
@@ -34,8 +35,12 @@ export function createStorageStore(): PdfStore {
     upsertDocument: (input) => upsertDocument(input),
     getDocument: (id) => getDocument(id),
     savePdfHighlight: async (input) => {
-      const result = await savePdfHighlight(input);
-      if (result.status !== 'created') return result;
+      const saved = await savePdfHighlight(input);
+      if (saved.status !== 'created') return saved;
+      // The save earned XP only while Game mode is on (ADR-022, as the worker's capture handler says).
+      const result = (await isGameModeOn().catch(() => false))
+        ? { ...saved, xp: 2 as const }
+        : saved;
       // Rules look at a new reader highlight only when they name "PDF document" as a source
       // (decideFiling). Nothing here may fail the save that already succeeded.
       try {

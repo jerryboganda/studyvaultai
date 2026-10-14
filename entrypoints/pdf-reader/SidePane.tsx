@@ -1,35 +1,23 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { OutlineEntry, PageLink, PageLinks, PdfDocument } from '@pdf';
 import { NO_LINKS } from '@pdf';
-import { Button, Tabs } from '@ui';
+import { BuddyEmptyState, Button } from '@ui';
 import { LinkList } from './links';
 
+export type NavTab = 'outline' | 'pages' | 'links';
+
 /**
- * Collapsible navigation pane: the document outline (bookmarks), lazy page thumbnails and the links
- * of the page in view. Thumbnails are drawn only while they are near the pane's viewport and released
- * when they leave it, so a 1,000-page document costs a handful of small canvases.
+ * The links of the page in view, read while `enabled` (the side pane is open); null while reading.
+ * Without `doc.getLinks` there is nothing to read and the Links tab is not offered.
  */
-export function SidePane({
-  doc,
-  outline,
-  page,
-  onGoToPage,
-  onFollowLink,
-}: {
-  doc: Pick<PdfDocument, 'getPage' | 'pageCount'> & Partial<Pick<PdfDocument, 'getLinks'>>;
-  /** null while the outline is still being read. */
-  outline: readonly OutlineEntry[] | null;
-  page: number;
-  onGoToPage(pageNumber: number): void;
-  /** Follow a link of the Links list. Without it (and `doc.getLinks`) there is no Links tab. */
-  onFollowLink?(link: PageLink): void;
-}) {
-  const [tab, setTab] = useState<'outline' | 'pages' | 'links'>('outline');
-  const count = outline?.length;
+export function usePageLinks(
+  doc: Partial<Pick<PdfDocument, 'getLinks'>>,
+  page: number,
+  enabled: boolean,
+): PageLinks | null {
   const [read, setRead] = useState<{ page: number; links: PageLinks } | null>(null);
-  const linkable = Boolean(doc.getLinks && onFollowLink);
   useEffect(() => {
-    if (!doc.getLinks || !linkable) return undefined;
+    if (!doc.getLinks || !enabled) return undefined;
     let live = true;
     doc.getLinks(page).then(
       (links) => live && setRead({ page, links }),
@@ -38,28 +26,43 @@ export function SidePane({
     return () => {
       live = false;
     };
-  }, [doc, linkable, page]);
-  const links = read?.page === page ? read.links : null;
+  }, [doc, enabled, page]);
+  return read?.page === page ? read.links : null;
+}
+
+/**
+ * The navigation tabs of the side pane: the document outline (bookmarks), lazy page thumbnails and
+ * the links of the page in view. Thumbnails are drawn only while they are near the pane's visible
+ * area and released when they leave it, so a 1,000-page document costs a handful of small canvases.
+ */
+export function SidePane({
+  tab,
+  doc,
+  outline,
+  page,
+  links,
+  onGoToPage,
+  onFollowLink,
+}: {
+  tab: NavTab;
+  doc: Pick<PdfDocument, 'getPage' | 'pageCount'>;
+  /** null while the outline is still being read. */
+  outline: readonly OutlineEntry[] | null;
+  page: number;
+  /** The page's links (`usePageLinks`); null while they are read. */
+  links: PageLinks | null;
+  onGoToPage(pageNumber: number): void;
+  onFollowLink(link: PageLink): void;
+}) {
   return (
     <nav className="sv-sidepane" aria-label="Outline and pages" data-testid="pdf-sidepane">
-      <Tabs
-        label="Navigation"
-        tabs={[
-          { id: 'outline', label: 'Outline', count },
-          { id: 'pages', label: 'Pages' },
-          ...(linkable ? [{ id: 'links', label: 'Links', count: links?.links.length }] : []),
-        ]}
-        value={tab}
-        onChange={(id) => setTab(id === 'pages' ? 'pages' : id === 'links' ? 'links' : 'outline')}
-      >
-        {tab === 'outline' ? (
-          <OutlineList outline={outline} page={page} onGoToPage={onGoToPage} />
-        ) : tab === 'pages' ? (
-          <Thumbnails doc={doc} page={page} onGoToPage={onGoToPage} />
-        ) : (
-          <LinkList links={links} pageNumber={page} onFollow={(l) => onFollowLink?.(l)} />
-        )}
-      </Tabs>
+      {tab === 'outline' ? (
+        <OutlineList outline={outline} page={page} onGoToPage={onGoToPage} />
+      ) : tab === 'pages' ? (
+        <Thumbnails doc={doc} page={page} onGoToPage={onGoToPage} />
+      ) : (
+        <LinkList links={links} pageNumber={page} onFollow={onFollowLink} />
+      )}
     </nav>
   );
 }
@@ -90,10 +93,14 @@ function OutlineList({
     );
   if (outline.length === 0) {
     return (
-      <p className="sv-muted" data-testid="pdf-outline-empty">
-        This PDF has no outline (bookmarks). Use the Pages tab, the page box or search to move
-        around.
-      </p>
+      <div data-testid="pdf-outline-empty">
+        <BuddyEmptyState
+          pose="think"
+          mascotSize={96}
+          title="No outline"
+          text="This PDF has no bookmarks. Try Pages."
+        />
+      </div>
     );
   }
   return (
@@ -113,8 +120,8 @@ function OutlineList({
               aria-current={i === current ? 'location' : undefined}
               onClick={() => onGoToPage(entry.pageNumber!)}
             >
-              <span>{entry.title}</span>
-              <span className="sv-muted sv-small"> · p. {entry.pageNumber}</span>
+              <span className="sv-grow">{entry.title}</span>
+              <span className="sv-outline__page sv-small"> · p. {entry.pageNumber}</span>
             </Button>
           )}
         </li>
@@ -229,7 +236,8 @@ function Thumb({
           else clear();
         }
       },
-      { root: root.current, rootMargin: '300px 0px' },
+      // The tab panel is what scrolls (the list itself never clips, so as a root it saw every page).
+      { root: root.current?.closest('[role="tabpanel"]') ?? null, rootMargin: '300px 0px' },
     );
     io.observe(el);
     return () => {
@@ -252,7 +260,7 @@ function Thumb({
         <canvas ref={canvas} aria-hidden="true" />
         {failed ? <span className="sv-small">No preview</span> : null}
       </span>
-      <span className="sv-small">{pageNumber}</span>
+      <span className="sv-thumb__num">{pageNumber}</span>
     </button>
   );
 }

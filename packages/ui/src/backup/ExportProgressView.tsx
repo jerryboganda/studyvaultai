@@ -1,4 +1,5 @@
 import type { ExportProgress } from '@backup';
+import { BarMeter } from '../design/BarMeter';
 import { tableLabel } from './format';
 
 const PHASE: Record<ExportProgress['phase'], string> = {
@@ -16,21 +17,23 @@ export function ExportProgressView({
   progress: ExportProgress | null;
   testId: string;
 }) {
+  const text = progress
+    ? `${PHASE[progress.phase]}${
+        progress.table ? ` ${tableLabel(progress.table).toLowerCase()}` : ''
+      }… ${progress.rowsDone} of ${progress.rowsTotal} items`
+    : 'Starting…';
   return (
-    <div className="sv-stack sv-stack--tight" role="status" data-testid={testId}>
-      <progress
-        aria-label="Backup progress"
-        className="bk-progress"
-        {...(progress && progress.rowsTotal > 0
-          ? { value: progress.rowsDone, max: progress.rowsTotal }
-          : {})}
+    <div className="sd-progress" data-testid={testId}>
+      {/* Empty until the engine reports its first counts: no movement that is not real. */}
+      <BarMeter
+        value={progress?.rowsDone ?? 0}
+        max={progress && progress.rowsTotal > 0 ? progress.rowsTotal : 1}
+        label="Backup progress"
+        valueText={text}
+        size="lg"
       />
-      <p className="sv-small">
-        {progress
-          ? `${PHASE[progress.phase]}${
-              progress.table ? ` ${tableLabel(progress.table).toLowerCase()}` : ''
-            }… ${progress.rowsDone} of ${progress.rowsTotal} items`
-          : 'Starting…'}
+      <p className="sd-progress__line" role="status">
+        {text}
       </p>
     </div>
   );

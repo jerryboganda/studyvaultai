@@ -1,5 +1,17 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState, type CSSProperties } from 'react';
 import {
+  ChevronDown,
+  ExternalLink,
+  Library,
+  LocateFixed,
+  NotebookPen,
+  RotateCcw,
+  ScanText,
+  TableOfContents,
+  Trash2,
+} from 'lucide-react';
+import {
+  COLOR_SWATCH,
   HIGHLIGHT_KINDS,
   KIND_LABELS,
   MAX_COMMENT_CHARS,
@@ -10,13 +22,15 @@ import {
 } from '@shared';
 import { isOcrSignature, type PdfResolution } from '@pdf';
 import {
+  BuddyEmptyState,
   Button,
-  EmptyState,
+  IconButton,
+  InfoTip,
   InlineNotice,
-  KindChip,
   ResolveBadge,
   describeResolveState,
   errorMessage,
+  plural,
   safeHref,
   truncate,
 } from '@ui';
@@ -35,7 +49,7 @@ function statusOf(r: PdfResolution | undefined): ResolveStatus {
   return r ? r.status : 'unchecked';
 }
 
-/** The companion pane: this document's highlights, with note editing and jump-to. */
+/** The highlights tab: this document's highlights as cards, with note editing and jump-to. */
 export function Companion({
   rows,
   resolutions,
@@ -45,6 +59,9 @@ export function Companion({
   selectedId,
   paletteFor,
   actions,
+  loading = false,
+  error = null,
+  onRetry,
 }: {
   rows: readonly PdfHighlightRow[];
   resolutions: ReadonlyMap<string, PdfResolution>;
@@ -55,28 +72,62 @@ export function Companion({
   selectedId: string | null;
   paletteFor(kind: HighlightKind): ColorId;
   actions: CompanionActions;
+  /** The list has not been read yet: no empty state is claimed. */
+  loading?: boolean;
+  /** The list could not be read: said as an error, never as "no highlights". */
+  error?: string | null;
+  onRetry?(): void;
 }) {
   const attention = rows.filter(
     (r) => describeResolveState(statusOf(resolutions.get(r.view.id))).attention,
   ).length;
   return (
-    <aside
+    <section
       className="sv-companion"
       aria-label="Highlights in this document"
       data-testid="pdf-companion"
     >
-      <h2>Highlights in this document</h2>
-      {attention > 0 ? (
-        <InlineNotice tone="warning" title={`${attention} not painted on the page`}>
-          These could not be placed on exactly one passage, so StudyVault does not draw them rather
-          than mark the wrong text. Your quotes and notes are unchanged.
+      <h2 className="sv-sr">Highlights in this document</h2>
+      {error ? (
+        <InlineNotice
+          tone="error"
+          title="Highlights not loaded"
+          action={
+            onRetry ? (
+              <Button onClick={onRetry}>
+                <RotateCcw aria-hidden="true" />
+                Retry
+              </Button>
+            ) : undefined
+          }
+        >
+          {error}
         </InlineNotice>
       ) : null}
+      {attention > 0 ? (
+        <p className="sv-attention" role="note">
+          <span className="sv-pill sv-pill--warning">
+            {plural(attention, 'highlight')} not painted
+          </span>
+          <InfoTip label="Why some are not painted" align="start">
+            These could not be placed on exactly one passage, so StudyVault does not draw them
+            rather than mark the wrong text. Your quotes and notes are unchanged.
+          </InfoTip>
+        </p>
+      ) : null}
       {rows.length === 0 ? (
-        <EmptyState title="No highlights yet">
-          Select text on a page, then choose Save highlight. Highlights you save here come back
-          every time you open this PDF.
-        </EmptyState>
+        loading ? (
+          <p className="sv-muted sv-small" role="status">
+            Loading highlights…
+          </p>
+        ) : error ? null : (
+          <BuddyEmptyState
+            pose="sleep"
+            mascotSize={112}
+            title="No highlights yet"
+            text="Select text on a page, then press S."
+          />
+        )
       ) : (
         <ul className="sv-companion__list">
           {rows.map((r) => (
@@ -99,7 +150,7 @@ export function Companion({
           ))}
         </ul>
       )}
-    </aside>
+    </section>
   );
 }
 
@@ -168,54 +219,103 @@ function Card({
   const bankNames = view.bankIds
     .map((id) => banks.find((b) => b.id === id)?.name)
     .filter((n): n is string => Boolean(n));
+  // Resolved and not-yet-checked need no badge: only a status that asks for a look is shown.
+  const flagged = status !== 'resolved' && status !== 'unchecked';
+  const stripe = { '--sv-stripe': COLOR_SWATCH[view.color].solid } as CSSProperties;
 
   return (
     <article
       ref={card}
-      className={`sv-card${selected ? ' sv-card--selected' : ''}`}
+      className={`sv-hlcard${selected ? ' sv-hlcard--selected' : ''}`}
+      style={stripe}
       aria-current={selected ? 'true' : undefined}
       data-highlight-id={view.id}
       data-testid="pdf-highlight-card"
       aria-label={`Page ${pageNumber}, ${KIND_LABELS[view.kind].label}: ${truncate(view.exactQuote, 60)}`}
     >
-      <div className="sv-row">
-        <span className="sv-badge" data-testid="pdf-card-page">
+      <div className="sv-hlcard__top">
+        <span className="sv-pill" data-testid="pdf-card-page">
           p. {pageNumber}
         </span>
-        <KindChip kind={view.kind} color={view.color} />
-        <ResolveBadge status={status} />
-        {fromOcr ? <span className="sv-badge sv-badge--warning">OCR text</span> : null}
+        {/* The kind chip is the kind control: one place shows the kind and changes it. */}
+        <span className="sv-hlcard__kindwrap">
+          <label className="sv-sr" htmlFor={`${uid}-kind`}>
+            Kind
+          </label>
+          <select
+            id={`${uid}-kind`}
+            className="sv-hlcard__kind"
+            value={view.kind}
+            onChange={(e) => {
+              const kind = e.target.value as HighlightKind;
+              actions.update(view.id, { kind, color: paletteFor(kind) }).catch((err: unknown) =>
+                setSaveState({
+                  t: 'error',
+                  message: errorMessage(err, 'The kind could not be changed.'),
+                }),
+              );
+            }}
+          >
+            {HIGHLIGHT_KINDS.map((k) => (
+              <option key={k} value={k}>
+                {KIND_LABELS[k].glyph} {KIND_LABELS[k].label}
+              </option>
+            ))}
+          </select>
+          <ChevronDown aria-hidden="true" strokeWidth={2.6} />
+        </span>
+        {flagged ? <ResolveBadge status={status} /> : null}
+        {fromOcr ? (
+          <span className="sv-pill sv-pill--warning">
+            <ScanText aria-hidden="true" strokeWidth={2.4} />
+            OCR text
+          </span>
+        ) : null}
+        {(flagged && state.explanation) || fromOcr ? (
+          <InfoTip label="About this highlight" align="end">
+            {flagged && state.explanation ? `${state.explanation} ` : ''}
+            {fromOcr ? 'This text was recognised from a scanned image and may contain errors.' : ''}
+          </InfoTip>
+        ) : null}
       </div>
 
-      <blockquote className="sv-quote" dir="auto">
-        {truncate(view.exactQuote, 400)}
+      <blockquote className="sv-hlcard__quote" dir="auto">
+        {view.exactQuote}
       </blockquote>
-      {state.attention && state.explanation ? (
-        <p className="sv-small sv-muted">{state.explanation}</p>
-      ) : null}
-      {fromOcr ? (
-        <p className="sv-small sv-muted">
-          This text was recognised from a scanned image and may contain errors.
-        </p>
-      ) : null}
-      {view.headingContext ? (
-        <p className="sv-small sv-muted" dir="auto" data-testid="pdf-card-heading">
-          Section: {view.headingContext}
-        </p>
-      ) : null}
-      {bankNames.length > 0 ? (
-        <p className="sv-small sv-muted">Bank: {bankNames.join(', ')}</p>
+
+      {view.headingContext || bankNames.length > 0 ? (
+        <div className="sv-hlcard__meta">
+          {view.headingContext ? (
+            <span className="sv-hlcard__heading" dir="auto" data-testid="pdf-card-heading">
+              <TableOfContents aria-hidden="true" strokeWidth={2.4} />
+              <span className="sv-sr">Section: </span>
+              {view.headingContext}
+            </span>
+          ) : null}
+          {bankNames.map((name) => (
+            <span key={name} className="sv-pill sv-pill--bank">
+              <Library aria-hidden="true" strokeWidth={2.4} />
+              <span className="sv-sr">Bank: </span>
+              {name}
+            </span>
+          ))}
+        </div>
       ) : null}
 
-      <label className="sv-field" htmlFor={`${uid}-note`}>
-        <span className="sv-label">Note</span>
+      {/* At rest the note reads as a line of the card (icon + text), as on the side panel. */}
+      <div className="sv-hlcard__note">
+        <label htmlFor={`${uid}-note`}>
+          <NotebookPen aria-hidden="true" strokeWidth={2.4} />
+          <span className="sv-sr">Note</span>
+        </label>
         <textarea
           id={`${uid}-note`}
-          className="sv-control"
-          rows={2}
+          className="sv-hlcard__noteinput"
+          rows={1}
           maxLength={MAX_COMMENT_CHARS}
           value={note}
-          placeholder="Your own words (the quote above never changes)"
+          dir="auto"
+          placeholder="Quick note"
           onChange={(e) => {
             setNote(e.target.value);
             setSaveState({ t: 'idle' });
@@ -231,55 +331,54 @@ function Card({
             }
           }}
         />
-      </label>
-      <p className="sv-small sv-muted" role="status">
-        {saveState.t === 'saving' ? 'Saving…' : saveState.t === 'saved' ? 'Note saved.' : ''}
-      </p>
+        <p className="sv-hlcard__status" role="status">
+          {saveState.t === 'saving' ? 'Saving…' : saveState.t === 'saved' ? 'Note saved.' : ''}
+        </p>
+      </div>
       {saveState.t === 'error' ? (
-        <InlineNotice tone="error" title="Note not saved">
+        <InlineNotice tone="error" title="Not saved">
           {saveState.message}
         </InlineNotice>
       ) : null}
 
-      <div className="sv-row">
-        <Button onClick={() => actions.goTo(view.id)} data-testid="pdf-card-goto">
-          Go to highlight
-        </Button>
-        <label className="sv-sr" htmlFor={`${uid}-kind`}>
-          Kind
-        </label>
-        <select
-          id={`${uid}-kind`}
-          className="sv-control sv-card__kind"
-          value={view.kind}
-          onChange={(e) => {
-            const kind = e.target.value as HighlightKind;
-            void actions.update(view.id, { kind, color: paletteFor(kind) });
-          }}
-        >
-          {HIGHLIGHT_KINDS.map((k) => (
-            <option key={k} value={k}>
-              {KIND_LABELS[k].glyph} {KIND_LABELS[k].label}
-            </option>
-          ))}
-        </select>
+      <div className="sv-hlcard__actions">
+        <IconButton
+          icon={LocateFixed}
+          label="Go to highlight"
+          size="sm"
+          tipSide="top"
+          onClick={() => actions.goTo(view.id)}
+          data-testid="pdf-card-goto"
+        />
+        {/* A file from this device has no address to go back to: the link is offered for web PDFs. */}
         {href ? (
           <a
-            className="sv-btn"
+            className="sv-ibtn sv-ibtn--sm"
             href={`${href}#page=${pageNumber}`}
             target="_blank"
             rel="noopener noreferrer"
+            aria-label="Open page in source"
+            title="Open page in source"
           >
-            Open page in source
+            <ExternalLink aria-hidden="true" strokeWidth={2.4} />
           </a>
-        ) : (
-          <Button disabledReason="This PDF was opened from a file on this device, so there is no web address to open.">
-            Open page in source
-          </Button>
-        )}
-        <Button variant="danger" onClick={() => void actions.remove(view.id)}>
-          Delete
-        </Button>
+        ) : null}
+        <span className="sv-grow" />
+        <IconButton
+          icon={Trash2}
+          label="Delete"
+          size="sm"
+          tipSide="top"
+          className="sv-ibtn--danger"
+          onClick={() => {
+            actions.remove(view.id).catch((err: unknown) =>
+              setSaveState({
+                t: 'error',
+                message: errorMessage(err, 'The highlight could not be deleted.'),
+              }),
+            );
+          }}
+        />
       </div>
     </article>
   );

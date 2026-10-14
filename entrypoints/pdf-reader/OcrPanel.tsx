@@ -1,5 +1,14 @@
 import { Suspense, lazy, useEffect, useId, useRef, useState } from 'react';
-import { Button, InlineNotice, errorMessage, plural } from '@ui';
+import {
+  CircleCheck,
+  Hourglass,
+  Pencil,
+  RotateCw,
+  ScanText,
+  TriangleAlert,
+  Undo2,
+} from 'lucide-react';
+import { Button, ConfirmDialog, InfoTip, InlineNotice, errorMessage, plural } from '@ui';
 import {
   BAND_TEXT,
   HIGH_CONFIDENCE,
@@ -65,12 +74,15 @@ export function OcrPanel(props: OcrPanelProps) {
   const { pageNumber, state, ocr } = props;
   const [error, setError] = useState<string | null>(null);
 
-  const report = async (work: () => Promise<void>): Promise<void> => {
+  /** Runs a correction; false (and the error shown) when it was not saved. */
+  const report = async (work: () => Promise<void>): Promise<boolean> => {
     setError(null);
     try {
       await work();
+      return true;
     } catch (err) {
       setError(errorMessage(err, 'The correction could not be saved.'));
+      return false;
     }
   };
 
@@ -80,22 +92,40 @@ export function OcrPanel(props: OcrPanelProps) {
       aria-label={`Text of page ${pageNumber}`}
       data-testid="pdf-ocr-panel"
     >
-      <h2>Text of page {pageNumber}</h2>
+      <h2 className="sv-ocrpanel__title">
+        <span className="sv-pill">p. {pageNumber}</span> Page text
+        <span className="sv-sr"> of page {pageNumber}</span>
+      </h2>
 
       {state === 'embedded' ? (
-        <p className="sv-muted">
-          This page has its own selectable text, so there is nothing to recognise on it.
+        <div className="sv-paneempty">
+          <span className="sv-tile sv-tile--lg sv-art--success" aria-hidden="true">
+            <CircleCheck strokeWidth={2.4} />
+          </span>
+          <p className="sv-paneempty__title">Text found</p>
+          <p className="sv-muted sv-small">
+            This page has its own selectable text: nothing to recognise.
+          </p>
+        </div>
+      ) : null}
+
+      {state === 'unknown' ? (
+        <p className="sv-muted" role="status">
+          <Hourglass aria-hidden="true" className="sv-inline-icon" /> The page is still being read.
         </p>
       ) : null}
 
-      {state === 'unknown' ? <p className="sv-muted">The page is still being read.</p> : null}
-
       {state === 'none' ? (
-        <>
-          <p>
-            This page has no selectable text: it is a picture of text. Recognising it reads the
-            picture on this device (nothing is uploaded) and makes the words selectable, searchable
-            and highlightable.
+        <div className="sv-paneempty">
+          <span className="sv-tile sv-tile--lg sv-art--warning" aria-hidden="true">
+            <ScanText strokeWidth={2.4} />
+          </span>
+          <p className="sv-paneempty__title">
+            No text here{' '}
+            <InfoTip label="About recognising text">
+              This page is a picture of text. Recognising it reads the picture on this device
+              (nothing is uploaded) and makes the words selectable, searchable and highlightable.
+            </InfoTip>
           </p>
           <Button
             variant="primary"
@@ -104,10 +134,11 @@ export function OcrPanel(props: OcrPanelProps) {
             disabledReason={props.unavailableReason}
             data-testid="pdf-ocr-page"
           >
-            OCR this page
+            <ScanText aria-hidden="true" />
+            Recognise page
           </Button>
           {props.unavailableReason ? <p className="sv-small">{props.unavailableReason}</p> : null}
-        </>
+        </div>
       ) : null}
 
       {state === 'ocr' && ocr ? (
@@ -144,12 +175,13 @@ function RecognisedLines({
 }: {
   ocr: PageOcr;
   error: string | null;
-  onSetLine(line: number, text: string): Promise<void>;
-  onRevertLine(line: number): Promise<void>;
-  onRevertPage(): Promise<void>;
+  onSetLine(line: number, text: string): Promise<boolean>;
+  onRevertLine(line: number): Promise<boolean>;
+  onRevertPage(): Promise<boolean>;
 }) {
   const [editing, setEditing] = useState<number | null>(null);
   const [draft, setDraft] = useState('');
+  const [confirmRevert, setConfirmRevert] = useState(false);
   const uid = useId();
   // The line's Edit button is replaced by the field: when the field closes, focus goes back to it.
   const editedFrom = useRef<number | null>(null);
@@ -165,54 +197,79 @@ function RecognisedLines({
 
   return (
     <>
-      <InlineNotice tone="warning" title="Machine-recognised text">
-        <p>
-          {MACHINE_NOTICE} Correcting a line changes search, selection and highlights you make
-          afterwards. A highlight you saved earlier keeps the exact words it captured; if it sat on
-          a line you corrected, it is listed as &ldquo;Source changed&rdquo;.
-        </p>
-      </InlineNotice>
+      <p className="sv-machine" role="note">
+        <TriangleAlert aria-hidden="true" strokeWidth={2.4} />
+        <strong>Machine-recognised text</strong>
+        <InfoTip label="About recognised text" align="end">
+          {MACHINE_NOTICE} Correcting a line changes search, selection and new highlights. A
+          highlight saved earlier keeps the words it captured; if it sat on a corrected line it
+          shows as &ldquo;Source changed&rdquo;.
+        </InfoTip>
+      </p>
 
+      {/* Three sample words, short for the eye; the full band wording is in each entry's text. */}
       <dl className="sv-ocr-legend" aria-label="Confidence legend" data-testid="pdf-ocr-legend">
-        <div>
-          <dt>
-            <span className="sv-ocr-word" data-band="high">
-              word
-            </span>
-          </dt>
-          <dd>High confidence ({HIGH_CONFIDENCE}% and above): no mark.</dd>
-        </div>
-        <div>
-          <dt>
-            <span className="sv-ocr-word" data-band="medium">
-              word
-            </span>
-          </dt>
-          <dd>
-            Medium confidence ({MEDIUM_CONFIDENCE}% to {HIGH_CONFIDENCE - 1}%): shaded.
-          </dd>
-        </div>
-        <div>
-          <dt>
-            <span className="sv-ocr-word" data-band="low">
-              word
-            </span>
-          </dt>
-          <dd>Low confidence (under {MEDIUM_CONFIDENCE}%): shaded and underlined. Check these.</dd>
-        </div>
+        {(
+          [
+            [
+              'high',
+              'High',
+              `${HIGH_CONFIDENCE}%+`,
+              `High confidence (${HIGH_CONFIDENCE}% and above)`,
+            ],
+            [
+              'medium',
+              'Medium',
+              `${MEDIUM_CONFIDENCE}-${HIGH_CONFIDENCE - 1}%`,
+              `Medium confidence (${MEDIUM_CONFIDENCE}% to ${HIGH_CONFIDENCE - 1}%)`,
+            ],
+            [
+              'low',
+              'Low',
+              `<${MEDIUM_CONFIDENCE}%`,
+              `Low confidence (under ${MEDIUM_CONFIDENCE}%): check these`,
+            ],
+          ] as const
+        ).map(([band, name, range, full]) => (
+          <div key={band}>
+            <dt>
+              <span className="sv-ocr-word" data-band={band}>
+                word
+              </span>
+            </dt>
+            <dd>
+              <span aria-hidden="true">
+                <strong>{name}</strong> {range}
+              </span>
+              <span className="sv-sr">{full}</span>
+            </dd>
+          </div>
+        ))}
       </dl>
 
-      <p className="sv-small" data-testid="pdf-ocr-summary">
-        {plural(ocr.page.lines.length, 'line')}, {plural(ocr.page.words.length, 'word')} ·{' '}
-        {lowWords === 0 ? 'no low-confidence words' : `${plural(lowWords, 'low-confidence word')}`}
-        {' · '}
-        {changed === 0 ? 'no corrections' : plural(changed, 'corrected line')}
+      <p className="sv-ocr-summary" data-testid="pdf-ocr-summary">
+        <span className="sv-pill">{plural(ocr.page.lines.length, 'line')}</span>
+        <span className="sv-pill">{plural(ocr.page.words.length, 'word')}</span>
+        {lowWords > 0 ? (
+          <span className="sv-pill sv-pill--warning">
+            {plural(lowWords, 'low-confidence word')}
+          </span>
+        ) : null}
+        {changed > 0 ? (
+          <span className="sv-pill sv-pill--info">{plural(changed, 'corrected line')}</span>
+        ) : null}
       </p>
 
       {ocr.page.orientation ? (
-        <p className="sv-small" data-testid="pdf-ocr-orientation">
-          This scan is stored {ORIENTATION_TEXT[ocr.page.orientation as 90 | 180 | 270]}. It was
-          turned to be read; the words sit where they are on the page as it is shown.
+        <p className="sv-ocr-summary" data-testid="pdf-ocr-orientation">
+          <span className="sv-pill">
+            <RotateCw aria-hidden="true" strokeWidth={2.4} />
+            Turned to read
+          </span>
+          <InfoTip label="About the turned scan" align="end">
+            This scan is stored {ORIENTATION_TEXT[ocr.page.orientation as 90 | 180 | 270]}. It was
+            turned to be read; the words sit where they are on the page as it is shown.
+          </InfoTip>
         </p>
       ) : null}
 
@@ -230,14 +287,15 @@ function RecognisedLines({
             const isEdited = Object.hasOwn(ocr.corrections.lines, index);
             const current = edited[index] ?? line.text;
             const isEditing = editing === index;
+            const band = confidenceBand(line.confidence);
             return (
               <li key={index} className="sv-ocr-line" data-edited={isEdited || undefined}>
-                <div className="sv-row">
-                  <span className="sv-badge">Line {index + 1}</span>
-                  <span className="sv-small sv-muted">
-                    {Math.round(line.confidence)}% ({BAND_TEXT[confidenceBand(line.confidence)]})
+                <div className="sv-ocr-line__head">
+                  <span className="sv-pill">Line {index + 1}</span>
+                  <span className="sv-pill" data-band={band}>
+                    {Math.round(line.confidence)}% ({BAND_TEXT[band]})
                   </span>
-                  {isEdited ? <span className="sv-badge sv-badge--info">Edited</span> : null}
+                  {isEdited ? <span className="sv-pill sv-pill--info">Edited</span> : null}
                 </div>
 
                 {isEditing ? (
@@ -245,7 +303,8 @@ function RecognisedLines({
                     className="sv-ocr-edit"
                     onSubmit={(e) => {
                       e.preventDefault();
-                      void onSetLine(index, draft).then(() => setEditing(null));
+                      // A failed save keeps the field open with what was typed (the error says why).
+                      void onSetLine(index, draft).then((ok) => ok && setEditing(null));
                     }}
                   >
                     <label className="sv-sr" htmlFor={`${uid}-${index}`}>
@@ -280,14 +339,14 @@ function RecognisedLines({
                       {isEdited
                         ? current
                         : ocr.page.words.slice(line.first, line.end).map((w, i) => {
-                            const band = confidenceBand(w.confidence);
+                            const wb = confidenceBand(w.confidence);
                             return (
                               <span key={line.first + i}>
                                 {i > 0 ? ' ' : ''}
-                                <span className="sv-ocr-word" data-band={band}>
+                                <span className="sv-ocr-word" data-band={wb}>
                                   {w.text}
-                                  {band === 'high' ? null : (
-                                    <span className="sv-sr"> ({BAND_TEXT[band]})</span>
+                                  {wb === 'high' ? null : (
+                                    <span className="sv-sr"> ({BAND_TEXT[wb]})</span>
                                   )}
                                 </span>
                               </span>
@@ -302,6 +361,7 @@ function RecognisedLines({
                     <div className="sv-row">
                       <Button
                         id={`${uid}-edit-${index}`}
+                        variant="ghost"
                         onClick={() => {
                           setDraft(current);
                           editedFrom.current = index;
@@ -309,14 +369,17 @@ function RecognisedLines({
                         }}
                         data-testid="pdf-ocr-edit"
                       >
-                        Edit line {index + 1}
+                        <Pencil aria-hidden="true" />
+                        Edit<span className="sv-sr"> line {index + 1}</span>
                       </Button>
                       {isEdited ? (
                         <Button
+                          variant="ghost"
                           onClick={() => void onRevertLine(index)}
                           data-testid="pdf-ocr-revert-line"
                         >
-                          Revert line {index + 1}
+                          <Undo2 aria-hidden="true" />
+                          Revert<span className="sv-sr"> line {index + 1}</span>
                         </Button>
                       ) : null}
                     </div>
@@ -330,12 +393,30 @@ function RecognisedLines({
 
       <Button
         variant="danger"
-        onClick={() => void onRevertPage()}
+        onClick={() => setConfirmRevert(true)}
         disabledReason={changed === 0 ? 'No corrections on this page to revert.' : undefined}
         data-testid="pdf-ocr-revert-page"
       >
-        Revert all corrections on this page
+        <Undo2 aria-hidden="true" />
+        Revert all edits
       </Button>
+      {confirmRevert ? (
+        <ConfirmDialog
+          title="Revert all edits?"
+          confirmLabel="Revert all"
+          danger
+          onCancel={() => setConfirmRevert(false)}
+          onConfirm={() => {
+            setConfirmRevert(false);
+            void onRevertPage();
+          }}
+        >
+          <p>
+            Every correction on this page goes back to the recognised text (
+            {plural(changed, 'corrected line')}).
+          </p>
+        </ConfirmDialog>
+      ) : null}
     </>
   );
 }

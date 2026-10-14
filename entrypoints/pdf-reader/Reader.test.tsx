@@ -90,7 +90,7 @@ describe('Reader: what is saved depends on the window', () => {
     expect(text.closest('[role="status"]')).not.toBeNull();
     expect(screen.getByText('Nothing is being saved')).toBeTruthy();
     // The reader is still usable: the file chooser is there.
-    expect(screen.getByRole('button', { name: 'Choose a PDF file' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Choose a PDF' })).toBeTruthy();
   });
 
   it('a window that cannot be told is treated the same way, in its own words', async () => {
@@ -100,14 +100,14 @@ describe('Reader: what is saved depends on the window', () => {
 
   it('a normal window, and a private one the person allowed, show no such message', async () => {
     mount({ privacy: 'normal' });
-    await screen.findByRole('heading', { name: 'Open a PDF in StudyVault' });
+    await screen.findByRole('heading', { name: 'Open a PDF' });
     await settle();
     expect(screen.queryByText('Nothing is being saved')).toBeNull();
     cleanup();
 
     await setSettings({ allowIncognitoCapture: true });
     mount({ privacy: 'private' });
-    await screen.findByRole('heading', { name: 'Open a PDF in StudyVault' });
+    await screen.findByRole('heading', { name: 'Open a PDF' });
     await settle();
     expect(screen.queryByText('Nothing is being saved')).toBeNull();
   });
@@ -135,6 +135,86 @@ describe('Reader: what is saved depends on the window', () => {
     await chooseFile();
     await waitFor(() => expect(openSession).toHaveBeenCalledTimes(1));
     expect(vi.mocked(openSession).mock.calls[0]![0]).toMatchObject({ persist: true });
+  });
+});
+
+describe('Reader: opening a kept copy (?doc=)', () => {
+  const DOC = 'd'.repeat(64);
+  const mountDoc = (store: ReturnType<typeof createMemoryPdfStore>) =>
+    render(
+      <Reader
+        store={store}
+        ocr={undefined}
+        params={parseReaderParams(`?doc=${DOC}`)}
+        privacy={vi.fn(async () => 'normal' as const)}
+      />,
+    );
+
+  it('shows that the copy is being read, and opens it', async () => {
+    const store = createMemoryPdfStore();
+    let release: (b: Blob | null) => void = () => undefined;
+    store.getDocumentBytes = () => new Promise((r) => (release = r));
+    mountDoc(store);
+    const loading = await screen.findByTestId('pdf-loading');
+    expect(loading.textContent).toContain('Reading the stored copy');
+    await act(async () => release(new Blob([new Uint8Array([0x25, 0x50, 0x44, 0x46])])));
+    await waitFor(() => expect(openSession).toHaveBeenCalledTimes(1));
+  });
+
+  it('a copy that cannot be read is an error with Retry, not "no copy"', async () => {
+    const store = createMemoryPdfStore();
+    store.getDocumentBytes = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('The database is busy.'))
+      .mockResolvedValueOnce(new Blob([new Uint8Array([0x25, 0x50, 0x44, 0x46])]));
+    mountDoc(store);
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Could not open the stored copy');
+    expect(alert.textContent).toContain('The database is busy.');
+    expect(screen.queryByText(/No stored copy/)).toBeNull();
+    await userEvent.click(screen.getByTestId('pdf-stored-retry'));
+    await waitFor(() => expect(openSession).toHaveBeenCalledTimes(1));
+  });
+
+  it('a document without a kept copy says so and offers the file chooser', async () => {
+    mountDoc(createMemoryPdfStore());
+    expect(await screen.findByText(/No stored copy of that PDF/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Choose a PDF' })).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('Cancel while opening returns to the open screen and stays there', async () => {
+    let finish: (s: unknown) => void = () => undefined;
+    const destroy = vi.fn(async () => undefined);
+    vi.mocked(openSession).mockImplementation(() => new Promise((r) => (finish = r)) as never);
+    const store = createMemoryPdfStore();
+    await store.cacheDocumentBytes!(DOC, new Blob([new Uint8Array([0x25, 0x50, 0x44, 0x46])]));
+    mountDoc(store);
+    await waitFor(() => expect(openSession).toHaveBeenCalledTimes(1));
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(await screen.findByTestId('pdf-open')).toBeTruthy();
+    // The open finishes after all: the document is let go, the open screen stays.
+    await act(async () => finish({ id: DOC, doc: { destroy } }));
+    expect(destroy).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('pdf-open')).toBeTruthy();
+    expect(screen.queryByTestId('pdf-viewer')).toBeNull();
+  });
+});
+
+describe('Reader: a typed web address', () => {
+  it('is checked like ?src= and then follows the same permission steps', async () => {
+    mount();
+    await userEvent.click(await screen.findByText('From a link'));
+    await userEvent.type(screen.getByTestId('pdf-link-input'), 'http://example.com/a.pdf');
+    await userEvent.click(screen.getByTestId('pdf-link-open'));
+    expect((await screen.findByRole('alert')).textContent).toContain('Only https addresses');
+    expect(permissions.contains).not.toHaveBeenCalled();
+
+    await userEvent.clear(screen.getByTestId('pdf-link-input'));
+    await userEvent.type(screen.getByTestId('pdf-link-input'), SRC);
+    await userEvent.click(screen.getByTestId('pdf-link-open'));
+    expect(await screen.findByTestId('pdf-allow-open')).toBeTruthy();
+    expect(permissions.contains).toHaveBeenCalledWith({ origins: [A] });
   });
 });
 

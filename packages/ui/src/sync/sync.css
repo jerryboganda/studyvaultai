@@ -1,43 +1,181 @@
-/* Optional sync settings (packages/ui/src/sync). Tokens come from packages/ui/src/tokens.css. */
+/* Optional sync settings (packages/ui/src/sync). Sunny tokens (tokens.css); shared parts in backup/kit.css. */
 
 .sv-sync-bullets {
   display: flex;
   flex-direction: column;
   gap: var(--sv-space-2);
+  margin: 0;
   padding-left: var(--sv-space-4);
   list-style: disc;
+}
+
+/* What is uploaded, as icon tiles. */
+.sv-sync-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(150px, 100%), 1fr));
+  gap: var(--sv-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.sv-sync-tiles li {
+  display: flex;
+  align-items: center;
+  gap: var(--sv-space-2);
+  min-width: 0;
+  padding: 8px 10px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface);
+  font-size: var(--sv-text-sm);
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+.sv-sync-tile__icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+}
+.sv-sync-tile__icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+/* The steps after "Turn on sync". */
+.sv-sync-journey {
+  gap: var(--sv-space-2);
+}
+.sv-sync-journey .sv-wiz__eyebrow {
+  margin: 0;
+}
+.sv-sync-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sv-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.sv-sync-steps li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px 4px 6px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-pill);
+  background: var(--sv-surface);
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-sm);
+  font-weight: 800;
+}
+.sv-sync-steps li > span[aria-hidden='true'],
+.sv-sync-steps li > svg {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--sv-sunk);
+  color: var(--sv-ink);
+  font-size: var(--sv-text-xs);
+}
+.sv-sync-steps li[data-state='done'] {
+  color: var(--sv-success-ink);
+}
+.sv-sync-steps li[data-state='done'] > svg {
+  background: transparent;
+  color: var(--sv-success-ink);
+}
+.sv-sync-steps li[data-state='now'] {
+  border-color: var(--sv-primary);
+  background: var(--sv-primary-soft);
+  color: var(--sv-primary-soft-ink);
+}
+.sv-sync-steps li[data-state='now'] > span[aria-hidden='true'] {
+  background: var(--sv-primary);
+  color: var(--sv-on-primary);
 }
 
 /* The two (three) versions of a conflict, side by side where there is room. */
 .sv-sync-versions {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
   gap: var(--sv-space-3);
 }
-
 .sv-sync-version {
   min-width: 0;
 }
-
+.sv-sync-version h4 {
+  margin: 0 0 4px;
+  font-size: var(--sv-text-sm);
+  font-weight: 800;
+}
 .sv-sync-text {
   margin: 0;
-  padding: var(--sv-space-2);
+  padding: var(--sv-space-2) var(--sv-space-3);
   max-height: 14rem;
   overflow: auto;
-  border: 1px solid var(--sv-border-strong);
-  border-radius: var(--sv-radius-sm);
-  background: var(--sv-surface-raised);
-  color: var(--sv-text);
+  border: 2px solid var(--sv-line-strong);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface-2);
+  color: var(--sv-ink);
   font: inherit;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-
-.sv-sync-conflict {
+.sv-sync-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.sv-sync-conflict,
+.sv-sync-item {
   padding: var(--sv-space-3);
-  border: 1px solid var(--sv-border);
-  border-left: 4px solid var(--sv-warning);
-  border-radius: var(--sv-radius-sm);
+  border: 2px solid var(--sv-border);
+  border-left: 6px solid var(--sv-warning-ink);
+  border-radius: var(--sv-radius-md);
   background: var(--sv-surface);
   list-style: none;
+}
+.sv-sync-item {
+  border-left-color: var(--sv-line-strong);
+}
+.sv-sync-conflict__title {
+  flex: 1 1 auto;
+  margin: 0;
+  font-size: var(--sv-text-md);
+  font-weight: 800;
+}
+.sv-sync-item__text {
+  margin: 0;
+}
+.sv-sync-empty {
+  padding: var(--sv-space-2) 0;
+}
+.sv-sync-btnicon {
+  width: 18px;
+  height: 18px;
+  margin-inline-end: 4px;
+  vertical-align: -3px;
+}
+
+/* Conflicts and refused changes side by side where there is room. */
+.sv-sync-pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(20rem, 100%), 1fr));
+  gap: var(--sv-space-3);
+  align-items: start;
+}
+/* Once either panel lists something, both take the full width (no lone half card). */
+.sv-sync-pair:has(.sv-sync-conflict, .sv-sync-item) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+/* Loading: the mascot thinks beside the words (no fake numbers). */
+.sd-card.sv-sync-loading {
+  flex-direction: row;
+  align-items: center;
 }

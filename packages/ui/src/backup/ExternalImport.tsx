@@ -1,14 +1,32 @@
 import { useEffect, useRef, useState } from 'react';
+import {
+  BookOpen,
+  FileInput,
+  FileText,
+  FileType,
+  Globe,
+  Info,
+  Layers,
+  ListChecks,
+  ListX,
+  Presentation,
+  Sheet,
+  type LucideIcon,
+} from 'lucide-react';
 import { KIND_LABELS } from '@shared';
 import { BackupError, MAX_DOCUMENT_BYTES, type ImportFormat, type ImportRowSet } from '@backup';
 import type { ImportExternalResult } from '@storage';
 import { Button } from '../Button';
+import { ChunkyButton } from '../design/Buttons';
+import { InfoTip } from '../design/InfoTip';
+import { Stepper } from '../design/Stepper';
 import { useAsync } from '../hooks';
 import { InlineNotice } from '../Notice';
 import { plural, truncate } from '../text';
 import type { BackupDeps } from './deps';
 import { describeRejection, explainBackupError, type ErrorExplanation } from './explain';
 import { formatBytes, formatWhen } from './format';
+import { Chip, Disclosure, FilePick, Outcome } from './kit';
 
 type Kind = 'markdown' | 'csv' | 'document';
 
@@ -39,6 +57,17 @@ const FORMAT: Record<ImportFormat, { label: string; unit: string; where: string;
   pptx: { label: 'a PowerPoint file', unit: 'slide', where: 'Slide', from: 'a PowerPoint file' },
 };
 
+/** The formats it reads, as chips under the drop card (the full list is in "Supported files"). */
+const FORMAT_CHIPS: [string, LucideIcon][] = [
+  ['Markdown', FileText],
+  ['CSV', Sheet],
+  ['Anki text', Layers],
+  ['Word', FileType],
+  ['PowerPoint', Presentation],
+  ['EPUB', BookOpen],
+  ['HTML', Globe],
+];
+
 /** The list shows this many candidates at first; all are still imported unless unticked. */
 const FIRST_ROWS = 200;
 
@@ -63,7 +92,6 @@ export function ExternalImport({ deps }: { deps: BackupDeps }) {
   const [undone, setUndone] = useState<number | null>(null);
   const [reviewEpoch, setReviewEpoch] = useState(0);
   const [showAll, setShowAll] = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
   const resultRef = useRef<HTMLDivElement>(null);
 
   // The review panel (and the button that was pressed in it) is replaced by the result: say so.
@@ -144,47 +172,78 @@ export function ExternalImport({ deps }: { deps: BackupDeps }) {
   const rows = parsed ? parsed.rowSet.highlights : [];
   const shown = showAll ? rows : rows.slice(0, FIRST_ROWS);
 
-  return (
-    <div className="sv-stack" data-testid="backup-external">
-      <h3>Import highlights from a file</h3>
-      <p>
-        For notes from other tools, a spreadsheet, an Anki export, or a document you want to study
-        from. Imported highlights are not captures from a web page, so they are marked{' '}
-        <strong>imported, needs review</strong> and nothing is added until you confirm the list
-        below.
-      </p>
-      <div className="sv-field">
-        <label className="sv-label" htmlFor="bk-external-file">
-          File to import
-        </label>
-        <input
-          ref={fileRef}
-          id="bk-external-file"
-          type="file"
-          aria-describedby="bk-external-help"
-          accept=".md,.markdown,.txt,.csv,.tsv,.docx,.pptx,.epub,.html,.htm,.xhtml,.apkg,.colpkg,.doc,.ppt,text/markdown,text/csv,text/plain,text/html"
-          disabled={busy}
-          data-testid="backup-external-file"
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            e.target.value = '';
-            void pick(f);
-          }}
-        />
-        <p id="bk-external-help" className="sv-small sv-muted" data-testid="backup-external-help">
-          Reads Markdown (.md), CSV (.csv, .tsv), Anki “Notes in Plain Text” (.txt), Word (.docx),
-          PowerPoint (.pptx), EPUB (.epub) and HTML (.html). One highlight per paragraph, or per
-          slide for PowerPoint; text only, nothing is fetched from the internet. Files up to{' '}
-          {formatBytes(MAX_DOCUMENT_BYTES)}. Not supported: Anki .apkg packages (export “Notes in
-          Plain Text” from Anki instead), old .doc and .ppt files (save as .docx or .pptx), and
-          password-protected or DRM-protected files.
-        </p>
-      </div>
+  const stats = parsed?.rowSet.stats;
+  const stage = parsed ? 1 : result ? 2 : 0;
 
-      {reading ? (
-        <p className="sv-small" role="status" data-testid="backup-external-reading">
-          Reading {reading}…
-        </p>
+  return (
+    <div className="sd-card" data-testid="backup-external">
+      <div className="sd-row">
+        <span className="sd-tile sd-tile--sm sv-art--violet" aria-hidden="true">
+          <FileInput strokeWidth={2.4} />
+        </span>
+        <h3 className="sd-card__title">Import from a file</h3>
+        <InfoTip label="About imported highlights">
+          They come from a file, not a page you saved, so they are marked “imported, needs review”.
+          Nothing is added until you confirm the list.
+        </InfoTip>
+      </div>
+      <Stepper steps={['File', 'Pick', 'Done']} current={stage} label="Import" />
+      {stage < 2 ? (
+        <h4 className="bk-steptitle">{stage === 0 ? 'Pick a file' : 'Pick highlights'}</h4>
+      ) : null}
+
+      {result ? (
+        <div
+          ref={resultRef}
+          tabIndex={-1}
+          className="bk-outcome"
+          data-testid="backup-external-outcome"
+        >
+          {undone === null ? (
+            <div className="sd-stack" role="status">
+              <Outcome
+                focus={false}
+                title="Import finished"
+                line={
+                  <span data-testid="backup-external-result">
+                    {plural(result.created, 'highlight')} added
+                    {result.duplicates > 0
+                      ? `, ${plural(result.duplicates, 'duplicate')} skipped`
+                      : ''}
+                    {result.tagsCreated > 0 ? `, ${plural(result.tagsCreated, 'new tag')}` : ''}.
+                    Marked “imported, needs review” until you confirm them; Undo moves them to the
+                    Trash.
+                  </span>
+                }
+              />
+              {result.created > 0 ? (
+                <div className="sd-row">
+                  <Button
+                    busy={busy}
+                    data-testid="backup-external-undo"
+                    onClick={() => void undo()}
+                  >
+                    Undo this import
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div role="status">
+              <Outcome
+                focus={false}
+                pose="think"
+                title="Import undone"
+                line={
+                  <span data-testid="backup-external-undone">
+                    {plural(undone, 'highlight')} moved to the Trash. Restore them from there if you
+                    change your mind.
+                  </span>
+                }
+              />
+            </div>
+          )}
+        </div>
       ) : null}
 
       {error ? (
@@ -200,14 +259,68 @@ export function ExternalImport({ deps }: { deps: BackupDeps }) {
         </InlineNotice>
       ) : null}
 
-      {parsed && spec ? (
-        <div className="sv-stack" data-testid="backup-external-review">
-          <p data-testid="backup-external-stats">
-            <strong>{parsed.name}</strong> read as {spec.label}:{' '}
-            {plural(parsed.rowSet.stats.records, spec.unit)}, {parsed.rowSet.stats.accepted} can be
-            imported, {parsed.rowSet.stats.duplicates} duplicate
-            {parsed.rowSet.stats.duplicates === 1 ? '' : 's'} skipped,{' '}
-            {parsed.rowSet.stats.rejected} rejected.
+      {!parsed ? (
+        <FilePick
+          id="bk-external-file"
+          title={result ? 'Import another file' : 'Drop a file here'}
+          line={`Up to ${formatBytes(MAX_DOCUMENT_BYTES)}. Text only, nothing is fetched.`}
+          accept=".md,.markdown,.txt,.csv,.tsv,.docx,.pptx,.epub,.html,.htm,.xhtml,.apkg,.colpkg,.doc,.ppt,text/markdown,text/csv,text/plain,text/html"
+          icon={FileInput}
+          tone="violet"
+          testId="backup-external-file"
+          describedBy="bk-external-help"
+          disabled={busy}
+          onFile={(f) => void pick(f)}
+        >
+          <ul className="bk-formats" aria-label="Formats it reads">
+            {FORMAT_CHIPS.map(([label, Icon]) => (
+              <li key={label}>
+                <Chip icon={Icon}>{label}</Chip>
+              </li>
+            ))}
+          </ul>
+        </FilePick>
+      ) : null}
+
+      {reading ? (
+        <p className="sd-progress__line" role="status" data-testid="backup-external-reading">
+          Reading {reading}…
+        </p>
+      ) : null}
+
+      {parsed && spec && stats ? (
+        <div className="sd-stack" data-testid="backup-external-review">
+          <div className="sd-row">
+            <Chip icon={FileText}>
+              <span className="sv-wrap">{parsed.name}</span>
+            </Chip>
+          </div>
+          <ul className="sd-counts" aria-label="What was read">
+            <li>
+              <span>
+                {spec.unit === 'record'
+                  ? 'Records'
+                  : `${spec.unit[0]!.toUpperCase()}${spec.unit.slice(1)}s`}
+              </span>
+              <span>{stats.records}</span>
+            </li>
+            <li>
+              <span>Can be imported</span>
+              <span>{stats.accepted}</span>
+            </li>
+            <li>
+              <span>Duplicates</span>
+              <span>{stats.duplicates}</span>
+            </li>
+            <li>
+              <span>Rejected</span>
+              <span>{stats.rejected}</span>
+            </li>
+          </ul>
+          <p className="sv-sr" data-testid="backup-external-stats">
+            {parsed.name} read as {spec.label}: {plural(stats.records, spec.unit)}, {stats.accepted}{' '}
+            can be imported, {stats.duplicates} duplicate
+            {stats.duplicates === 1 ? '' : 's'} skipped, {stats.rejected} rejected.
           </p>
 
           {parsed.rowSet.warnings && parsed.rowSet.warnings.length > 0 ? (
@@ -222,37 +335,44 @@ export function ExternalImport({ deps }: { deps: BackupDeps }) {
 
           {rows.length > 0 ? (
             <>
-              <div className="sv-field">
-                <label className="sv-label" htmlFor="bk-external-bank">
-                  Add to bank
-                </label>
-                <select
-                  id="bk-external-bank"
-                  className="sv-control"
-                  value={bankId}
-                  data-testid="backup-external-bank"
-                  onChange={(e) => setBankId(e.target.value)}
+              <div className="sd-row bk-pickbar">
+                <div className="sv-field sd-grow">
+                  <label className="sv-label" htmlFor="bk-external-bank">
+                    Add to bank
+                  </label>
+                  <select
+                    id="bk-external-bank"
+                    className="sv-control"
+                    value={bankId}
+                    data-testid="backup-external-bank"
+                    onChange={(e) => setBankId(e.target.value)}
+                  >
+                    <option value="">Inbox</option>
+                    {banks.data
+                      ?.filter((b) => b.id !== 'inbox-default')
+                      .map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.name}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+                <ChunkyButton
+                  size="sm"
+                  icon={ListChecks}
+                  onClick={() => setExcluded(new Set())}
+                  data-testid="backup-external-all"
                 >
-                  <option value="">Inbox</option>
-                  {banks.data
-                    ?.filter((b) => b.id !== 'inbox-default')
-                    .map((b) => (
-                      <option key={b.id} value={b.id}>
-                        {b.name}
-                      </option>
-                    ))}
-                </select>
-              </div>
-              <div className="sv-row">
-                <Button onClick={() => setExcluded(new Set())} data-testid="backup-external-all">
                   Select all
-                </Button>
-                <Button
+                </ChunkyButton>
+                <ChunkyButton
+                  size="sm"
+                  icon={ListX}
                   onClick={() => setExcluded(new Set(rows.map((h) => h.position)))}
                   data-testid="backup-external-none"
                 >
                   Select none
-                </Button>
+                </ChunkyButton>
               </div>
               <ul className="bk-candidates" data-testid="backup-external-rows">
                 {shown.map((h) => (
@@ -294,14 +414,18 @@ export function ExternalImport({ deps }: { deps: BackupDeps }) {
                 ))}
               </ul>
               {rows.length > shown.length ? (
-                <div className="sv-row">
-                  <p className="sv-small sv-muted" data-testid="backup-external-capped">
+                <div className="sd-row">
+                  <p className="sd-line sd-grow" data-testid="backup-external-capped">
                     Showing the first {shown.length} of {rows.length}. The rest are imported too
                     unless you press Select none.
                   </p>
-                  <Button data-testid="backup-external-show-all" onClick={() => setShowAll(true)}>
+                  <ChunkyButton
+                    size="sm"
+                    data-testid="backup-external-show-all"
+                    onClick={() => setShowAll(true)}
+                  >
                     Show all {rows.length}
-                  </Button>
+                  </ChunkyButton>
                 </div>
               ) : null}
             </>
@@ -312,9 +436,9 @@ export function ExternalImport({ deps }: { deps: BackupDeps }) {
           )}
 
           {parsed.rowSet.duplicates.length > 0 ? (
-            <details data-testid="backup-external-duplicates">
+            <details className="sd-more" data-testid="backup-external-duplicates">
               <summary>{plural(parsed.rowSet.duplicates.length, 'duplicate')} skipped</summary>
-              <ul className="bk-files">
+              <ul className="bk-files sd-more__body">
                 {parsed.rowSet.duplicates.slice(0, 20).map((d) => (
                   <li key={`${d.position}:${d.quoteHash}`}>
                     {where(d.position, d.locator)}:{' '}
@@ -327,9 +451,9 @@ export function ExternalImport({ deps }: { deps: BackupDeps }) {
             </details>
           ) : null}
           {parsed.rowSet.rejected.length > 0 ? (
-            <details data-testid="backup-external-rejected">
+            <details className="sd-more" data-testid="backup-external-rejected">
               <summary>{plural(parsed.rowSet.rejected.length, 'record')} rejected</summary>
-              <ul className="bk-files">
+              <ul className="bk-files sd-more__body">
                 {parsed.rowSet.rejected.slice(0, 20).map((r) => (
                   <li key={`${r.position}:${r.reason}`}>
                     {where(r.position, r.locator)} {describeRejection(r.reason)}.
@@ -339,7 +463,7 @@ export function ExternalImport({ deps }: { deps: BackupDeps }) {
             </details>
           ) : null}
 
-          <div className="sv-row">
+          <div className="sd-row">
             <Button
               variant="primary"
               busy={busy}
@@ -347,59 +471,34 @@ export function ExternalImport({ deps }: { deps: BackupDeps }) {
               data-testid="backup-external-commit"
               onClick={() => void commit()}
             >
-              Add {plural(chosen.length, 'highlight')} (marked needs review)
+              Add {plural(chosen.length, 'highlight')}
             </Button>
-            <Button
+            <ChunkyButton
+              variant="ghost"
               data-testid="backup-external-cancel"
               onClick={() => {
                 setParsed(null);
                 setError(null);
-                fileRef.current?.focus();
+                // The file input comes back with the next render; focus it then.
+                window.setTimeout(() => document.getElementById('bk-external-file')?.focus(), 0);
               }}
             >
               Cancel
-            </Button>
+            </ChunkyButton>
           </div>
         </div>
       ) : null}
 
-      {result ? (
-        <div ref={resultRef} tabIndex={-1} data-testid="backup-external-outcome">
-          {undone === null ? (
-            <InlineNotice
-              tone="success"
-              live
-              title="Import finished"
-              action={
-                result.created > 0 ? (
-                  <Button
-                    busy={busy}
-                    data-testid="backup-external-undo"
-                    onClick={() => void undo()}
-                  >
-                    Undo this import
-                  </Button>
-                ) : undefined
-              }
-            >
-              <span data-testid="backup-external-result">
-                {plural(result.created, 'highlight')} added
-                {result.duplicates > 0 ? `, ${plural(result.duplicates, 'duplicate')} skipped` : ''}
-                {result.tagsCreated > 0 ? `, ${plural(result.tagsCreated, 'new tag')}` : ''}. They
-                are marked “imported, needs review” below until you confirm them. Undo moves them to
-                the Trash; they can be restored from there.
-              </span>
-            </InlineNotice>
-          ) : (
-            <InlineNotice tone="success" live title="Import undone">
-              <span data-testid="backup-external-undone">
-                {plural(undone, 'highlight')} moved to the Trash. Restore them from the Trash if you
-                change your mind.
-              </span>
-            </InlineNotice>
-          )}
-        </div>
-      ) : null}
+      <Disclosure summary="Supported files" icon={Info}>
+        <p id="bk-external-help" className="sv-small" data-testid="backup-external-help">
+          Reads Markdown (.md), CSV (.csv, .tsv), Anki “Notes in Plain Text” (.txt), Word (.docx),
+          PowerPoint (.pptx), EPUB (.epub) and HTML (.html). One highlight per paragraph, or per
+          slide for PowerPoint; text only, nothing is fetched from the internet. Files up to{' '}
+          {formatBytes(MAX_DOCUMENT_BYTES)}. Not supported: Anki .apkg packages (export “Notes in
+          Plain Text” from Anki instead), old .doc and .ppt files (save as .docx or .pptx), and
+          password-protected or DRM-protected files.
+        </p>
+      </Disclosure>
 
       <NeedsReview deps={deps} epoch={reviewEpoch} />
     </div>
@@ -434,28 +533,29 @@ function NeedsReview({ deps, epoch }: { deps: BackupDeps; epoch: number }) {
 
   if (!load) {
     return (
-      <div>
-        <Button data-testid="backup-review-check" onClick={() => setRequested(true)}>
-          Show imported highlights that still need review
-        </Button>
+      <div className="sd-row">
+        <ChunkyButton
+          icon={ListChecks}
+          data-testid="backup-review-check"
+          onClick={() => setRequested(true)}
+        >
+          Imported to review
+        </ChunkyButton>
       </div>
     );
   }
   if (!list.data) return null;
   if (list.data.total === 0) {
     return (
-      <p className="sv-small sv-muted" data-testid="backup-needs-review-none">
+      <p className="sd-line" data-testid="backup-needs-review-none">
         No imported highlights are waiting for review.
       </p>
     );
   }
   return (
-    <div className="sv-stack sv-stack--tight" data-testid="backup-needs-review">
+    <div className="sd-stack" data-testid="backup-needs-review">
       <h4 className="bk-subhead">Imported, needs review ({list.data.total})</h4>
-      <p className="sv-small sv-muted">
-        These came from a file, not from a page you were on, so their source is only what the file
-        claimed. Mark each one reviewed once you have checked it.
-      </p>
+      <p className="sd-line">Their source is only what the file claimed: check, then mark.</p>
       {error ? (
         <InlineNotice tone="error" title="Could not update">
           {error}
@@ -463,8 +563,8 @@ function NeedsReview({ deps, epoch }: { deps: BackupDeps; epoch: number }) {
       ) : null}
       <ul className="bk-candidates">
         {list.data.items.map((item) => (
-          <li key={item.id} className="sv-row">
-            <span className="sv-grow">
+          <li key={item.id} className="sd-row">
+            <span className="sd-grow">
               <span className="bk-quote">{truncate(item.quote, 200)}</span>
               <span className="sv-small sv-muted bk-meta">
                 from {FORMAT[item.importedFrom as ImportFormat]?.from ?? 'a file'}

@@ -13,17 +13,18 @@ import {
 import userEvent from '@testing-library/user-event';
 import { browser } from 'wxt/browser';
 import { getSettings } from '@runtime';
-import { listBankInfos, listFolderTree } from '@storage';
+import { listBankInfos, listFolderTree, setGameMode } from '@storage';
 import { freshDatabase } from '@storage/test-vault';
 import {
   ONBOARDING_KEY,
   defaultOnboardingState,
   getOnboardingState,
 } from '@ui/shell/onboardingState';
+import type { GameState } from '@ui/game';
 import { COMMANDS, makeChromeFakes } from '@ui/testing/fakes';
 import { Onboarding } from './Onboarding';
 import type { PresetPorts } from './presets';
-import { BanksStep } from './Steps';
+import { BanksStep, goalToWrite } from './Steps';
 import { TID } from './testids';
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -40,6 +41,8 @@ beforeEach(async () => {
 afterEach(cleanup);
 
 const heading = () => screen.getByRole('heading', { level: 2 }).textContent;
+/** Unfold a disclosure (folders, all shortcuts) the way a person does. */
+const unfold = (name: string) => userEvent.click(screen.getByText(name));
 async function go(label: RegExp | string = 'Next') {
   await userEvent.click(await screen.findByRole('button', { name: label }));
 }
@@ -57,13 +60,24 @@ async function walkTo(target: string) {
 }
 
 describe('the tour', () => {
-  it('opens on what StudyVault does, says everything stays on the device, and can be skipped', async () => {
+  it('opens on the welcome, says everything stays on the device, and can be skipped', async () => {
     render(<Onboarding />);
     expect(await screen.findByTestId(TID.step('welcome'))).toBeTruthy();
-    expect(heading()).toBe('What StudyVault does');
-    expect(screen.getByText('Everything stays on this device by default')).toBeTruthy();
-    expect(screen.getByTestId(TID.skip)).toBeTruthy();
-    expect(screen.getByTestId(TID.progress).textContent).toMatch(/Step 1 of 7/);
+    expect(heading()).toBe('Welcome to StudyVault');
+    expect(
+      within(screen.getByRole('list', { name: 'Your privacy' })).getByText('On this device'),
+    ).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Skip the tour' })).toBe(
+      screen.getByTestId(TID.skip),
+    );
+    expect(screen.getByTestId(TID.progress).textContent).toBe('1/7');
+    expect(
+      screen
+        .getByRole('progressbar', { name: 'Welcome tour progress' })
+        .getAttribute('aria-valuetext'),
+    ).toBe('Step 1 of 7: Welcome to StudyVault');
+    // Back is there but says why it cannot act on the first step.
+    expect(screen.getByTestId(TID.back).getAttribute('aria-disabled')).toBe('true');
     // Focus starts on the step heading, so the keyboard and a screen reader begin at its top.
     await waitFor(() =>
       expect(document.activeElement).toBe(screen.getByRole('heading', { level: 2 })),
@@ -75,7 +89,7 @@ describe('the tour', () => {
   it('moves focus to each new step heading and stores the place', async () => {
     render(<Onboarding />);
     await go('Start');
-    await waitFor(() => expect(heading()).toBe('Your privacy choices'));
+    await waitFor(() => expect(heading()).toBe('Your privacy'));
     await waitFor(() =>
       expect(document.activeElement).toBe(screen.getByRole('heading', { level: 2 })),
     );
@@ -83,7 +97,7 @@ describe('the tour', () => {
       expect(await getOnboardingState()).toMatchObject({ status: 'pending', step: 'privacy' }),
     );
     await userEvent.click(screen.getByTestId(TID.back));
-    await waitFor(() => expect(heading()).toBe('What StudyVault does'));
+    await waitFor(() => expect(heading()).toBe('Welcome to StudyVault'));
   });
 
   it('skipping stores it, changes nothing else, and says how to come back', async () => {
@@ -114,6 +128,8 @@ describe('the tour', () => {
       (screen.getByTestId(TID.node('Diagnostic Radiology/Breast')) as HTMLInputElement).checked,
     ).toBe(false);
     expect(screen.getByTestId(TID.plan).textContent).toMatch(/with 11 folders/);
+    // Folders left out keep the folder list unfolded.
+    expect(screen.getByText('Choose folders').closest('details')!.open).toBe(true);
   });
 
   it('a finished tour opened again starts from the beginning', async () => {
@@ -179,17 +195,40 @@ describe('privacy choices', () => {
 });
 
 describe('site access', () => {
-  it('explains this tab, this site and all sites and requests nothing', async () => {
+  it('shows this tab, one site and all sites as cards, says where each is turned on, and requests nothing', async () => {
     render(<Onboarding />);
     await walkTo('access');
-    for (const level of ['This tab', 'This site', 'All sites']) {
-      expect(screen.getByText(level)).toBeTruthy();
+    for (const level of ['This tab', 'One site', 'All sites']) {
+      expect(screen.getByRole('radio', { name: new RegExp(`^${level}`) })).toBeTruthy();
     }
-    expect(screen.getByText('Nothing is requested during this tour')).toBeTruthy();
+    expect(screen.getByText('Nothing is requested during this tour.')).toBeTruthy();
+    const path = () => screen.getByRole('list', { name: 'How to turn it on' }).textContent;
+    expect(path()).toBe('Toolbar iconTurn on');
+    await userEvent.click(screen.getByRole('radio', { name: /^One site/ }));
+    expect(path()).toBe('Toolbar iconAlways on');
+    await userEvent.click(screen.getByRole('radio', { name: /^All sites/ }));
+    expect(path()).toBe('SettingsSite access');
+    expect(screen.getByRole('link', { name: /Open Settings/ }).getAttribute('href')).toBe(
+      'options.html#site-access',
+    );
     expect(chrome.permissions.request).not.toHaveBeenCalled();
     await go('Next');
     await screen.findByTestId(TID.step('banks'));
     expect(chrome.permissions.request).not.toHaveBeenCalled();
+
+    // The pick is kept for this visit: Back shows it, and the last step names it.
+    await userEvent.click(screen.getByTestId(TID.back));
+    await screen.findByTestId(TID.step('access'));
+    expect((screen.getByRole('radio', { name: /^All sites/ }) as HTMLInputElement).checked).toBe(
+      true,
+    );
+    for (const id of ['banks', 'look', 'keys', 'done']) {
+      await go('Next');
+      await screen.findByTestId(TID.step(id));
+    }
+    expect(
+      within(await screen.findByRole('list', { name: 'Your choices' })).getByText('All sites'),
+    ).toBeTruthy();
   });
 });
 
@@ -211,6 +250,8 @@ describe('bank presets', () => {
   it('Diagnostic Radiology: previews the taxonomy, creates it once, and re-running adds nothing', async () => {
     await toBanks();
     await userEvent.click(screen.getByTestId(TID.preset('radiology')));
+    expect(screen.getByText('Choose folders').closest('details')!.open).toBe(false);
+    await unfold('Choose folders');
     const tree = screen.getByRole('list', { name: 'Preview of Diagnostic Radiology' });
     expect(within(tree).getAllByRole('checkbox')).toHaveLength(13); // the bank and 12 folders
     expect(screen.getByTestId(TID.plan).textContent).toMatch(/with 12 folders/);
@@ -259,17 +300,22 @@ describe('bank presets', () => {
   it('unticking a folder leaves out what is inside it and shows why', async () => {
     await toBanks();
     await userEvent.click(screen.getByTestId(TID.preset('medicine')));
+    await unfold('Choose folders');
     const child = screen.getByTestId(TID.node('Medicine/Clinical/Surgery')) as HTMLInputElement;
     expect(child.checked).toBe(true);
     await userEvent.click(screen.getByTestId(TID.node('Medicine/Clinical')));
     expect(child.checked).toBe(false);
     expect(child.disabled).toBe(true);
     expect(screen.getAllByText(/left out with its parent/).length).toBeGreaterThan(0);
+    // The hierarchy is in the markup: Surgery's row sits in a list inside Clinical's row.
+    const clinical = screen.getByTestId(TID.node('Medicine/Clinical')).closest('li')!;
+    expect(clinical.querySelector('ul')?.contains(child)).toBe(true);
   });
 
   it('unticking the bank disables Create with its reason', async () => {
     await toBanks();
     await userEvent.click(screen.getByTestId(TID.preset('general')));
+    await unfold('Choose folders');
     await userEvent.click(screen.getByTestId(TID.node('General study')));
     expect(screen.getByTestId(TID.create).getAttribute('aria-disabled')).toBe('true');
     expect(screen.getByTestId(TID.plan).textContent).toMatch(/Nothing is selected/);
@@ -343,6 +389,11 @@ describe('theme, shortcuts and the end', () => {
   it('lists the keys exactly as Chrome reports them, "Not set" included', async () => {
     render(<Onboarding />);
     await walkTo('keys');
+    // The quick-save key sits on the "Save" picture; the full list is one click away.
+    expect(
+      within(screen.getByRole('list', { name: 'How to save' })).getByText('Alt+Shift+H'),
+    ).toBeTruthy();
+    await unfold('All shortcuts');
     const list = await screen.findByTestId(TID.shortcuts);
     const rows = within(list).getAllByRole('listitem');
     for (const c of COMMANDS) {
@@ -393,9 +444,7 @@ describe('theme, shortcuts and the end', () => {
     await go('Next');
     await go('Next');
     await go('Next');
-    expect((await screen.findByTestId(TID.summary)).textContent).toBe(
-      'Your bank "General study" is ready with 7 folders.',
-    );
+    expect((await screen.findByTestId(TID.summary)).textContent).toBe('General study · 7 folders');
   });
 });
 
@@ -538,5 +587,90 @@ describe('state is stored when the page says so', () => {
     document.dispatchEvent(new Event('visibilitychange'));
     await new Promise((r) => setTimeout(r, 50));
     expect((await browser.storage.local.get(ONBOARDING_KEY))[ONBOARDING_KEY]).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// Daily goal and Game mode (ADR-022)
+// ---------------------------------------------------------------------------------------------
+
+describe('daily goal and Game mode', () => {
+  const radio = (name: string) => screen.getByRole('radio', { name: new RegExp(`^${name}`) });
+
+  it('the welcome step picks a goal; Start stores it and the last step shows it', async () => {
+    render(<Onboarding />);
+    expect(
+      ((await screen.findByRole('radio', { name: /^Regular/ })) as HTMLInputElement).checked,
+    ).toBe(true);
+    expect(screen.getByText('Suggested')).toBeTruthy();
+    expect(screen.getByRole('list', { name: 'How you earn XP' }).textContent).toMatch(
+      /Review \+1.*Save \+2.*New card \+3.*Session \+5/,
+    );
+    await userEvent.click(radio('Serious'));
+    await go('Start');
+    await screen.findByTestId(TID.step('privacy'));
+
+    // Back keeps it: the stored goal is the checked card.
+    await userEvent.click(screen.getByTestId(TID.back));
+    await screen.findByTestId(TID.step('welcome'));
+    await waitFor(() => expect((radio('Serious') as HTMLInputElement).checked).toBe(true));
+    await walkTo('done');
+    expect(await screen.findByText('Serious · 50 XP a day')).toBeTruthy();
+  });
+
+  it('a goal that cannot be saved keeps the tour on the welcome step, with Retry', async () => {
+    const storage = await import('@storage');
+    vi.spyOn(storage, 'setDailyGoal').mockRejectedValueOnce(new Error('The disk is full.'));
+    render(<Onboarding />);
+    await screen.findByRole('radio', { name: /^Regular/ });
+    await userEvent.click(radio('Intense'));
+    await go('Start');
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/Your goal was not saved/);
+    expect(alert.textContent).toContain('The disk is full.');
+    expect(screen.getByTestId(TID.step('welcome'))).toBeTruthy();
+
+    await userEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    await screen.findByTestId(TID.step('privacy'));
+  });
+
+  it('with Game mode off there is no goal or XP, and the last step can turn it back on', async () => {
+    await setGameMode(false);
+    render(<Onboarding />);
+    await screen.findByText('Save, sort and review what you read.');
+    expect(screen.queryByRole('radio', { name: /^Regular/ })).toBeNull();
+    expect(screen.queryByRole('list', { name: 'How you earn XP' })).toBeNull();
+    // The goal's place shows what StudyVault does instead of an empty card.
+    const does = await screen.findByRole('list', { name: 'What StudyVault does' });
+    expect(
+      within(does)
+        .getAllByRole('listitem')
+        .map((li) => li.textContent),
+    ).toEqual(['Save quotes', 'Sort into banks', 'Review as cards']);
+
+    await walkTo('done');
+    const mode = (await screen.findByRole('checkbox', { name: 'Game mode' })) as HTMLInputElement;
+    expect(mode.checked).toBe(false);
+    expect(screen.queryByText(/XP a day/)).toBeNull();
+    await userEvent.click(mode);
+    expect(await screen.findByText('Regular · 30 XP a day')).toBeTruthy();
+    expect((screen.getByRole('checkbox', { name: 'Game mode' }) as HTMLInputElement).checked).toBe(
+      true,
+    );
+  });
+
+  it('Start writes a goal only when it changes something', () => {
+    const backfill = { status: 'running', done: 0, total: 3, error: null };
+    const ready = (value: number, chosen: boolean, mode = true) =>
+      ({ ready: true, mode, backfill, goal: { value, chosen } }) as unknown as GameState;
+    const pending = { ready: false, mode: true, backfill } as unknown as GameState;
+    expect(goalToWrite(undefined, 50)).toBeNull(); // the ledger is not known yet
+    expect(goalToWrite(ready(30, false, false), 50)).toBeNull(); // Game mode off
+    expect(goalToWrite(ready(30, false), null)).toBe(30); // Start accepts the suggestion
+    expect(goalToWrite(ready(30, true), null)).toBeNull();
+    expect(goalToWrite(ready(30, true), 30)).toBeNull();
+    expect(goalToWrite(ready(30, true), 50)).toBe(50);
+    expect(goalToWrite(pending, null)).toBeNull(); // never guess over an unread goal
+    expect(goalToWrite(pending, 10)).toBe(10);
   });
 });

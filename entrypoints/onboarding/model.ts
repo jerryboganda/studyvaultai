@@ -4,16 +4,20 @@ import {
   type OnboardingStep,
 } from '@ui/shell/onboardingState';
 
-/** Pure helpers of the welcome tour: step order, titles and where to start. */
+/**
+ * Pure helpers of the welcome tour: step order, titles and where to start. The stored step ids
+ * stay as they are (renaming one breaks resume); the welcome step also holds the daily goal and
+ * the keys step is the "Try it" how-to with the shortcut list.
+ */
 
 export const STEP_TITLES: Record<OnboardingStep, string> = {
-  welcome: 'What StudyVault does',
-  privacy: 'Your privacy choices',
-  access: 'How site access works',
-  banks: 'Start with a bank',
-  look: 'Theme and density',
-  keys: 'Keyboard shortcuts',
-  done: 'You are ready',
+  welcome: 'Welcome to StudyVault',
+  privacy: 'Your privacy',
+  access: 'Turn on a site',
+  banks: 'Starter bank',
+  look: 'Pick a look',
+  keys: 'Try it',
+  done: 'You’re ready',
 };
 
 export const STEP_COUNT = ONBOARDING_STEPS.length;

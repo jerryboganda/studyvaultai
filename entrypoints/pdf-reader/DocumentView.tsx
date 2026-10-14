@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { flushSync } from 'react-dom';
+import { browser } from 'wxt/browser';
 import {
   buildPdfAnchor,
   findInDocument,
@@ -25,15 +26,39 @@ import {
   type Settings,
 } from '@shared';
 import {
+  BookOpen,
+  Check,
+  CircleCheck,
+  CircleX,
+  Files,
+  FolderOpen,
+  Globe,
+  HardDrive,
+  Highlighter,
+  Info,
+  Link,
+  ScanText,
+  Settings as SettingsIcon,
+  TableOfContents,
+  TriangleAlert,
+  X,
+  type LucideIcon,
+} from 'lucide-react';
+import {
+  BarMeter,
   Button,
+  IconButton,
+  IconTabBar,
+  InfoTip,
   InlineNotice,
-  Tabs,
+  VaultBuddy,
   errorMessage,
   plural,
   useAsync,
   useDataEpoch,
   useSettings,
   useToast,
+  type IconTab,
 } from '@ui';
 import { Companion } from './Companion';
 import { DocInfo, type StoredCopyState } from './DocInfo';
@@ -53,9 +78,25 @@ import { describeProgress } from './ocrModel';
 import { OcrPanel, type PageTextState, type RerunInfo } from './OcrPanel';
 import { SaveBar, type SaveDraft } from './SaveBar';
 import { useLinks } from './links';
-import { SidePane } from './SidePane';
+import { SidePane, usePageLinks, type NavTab } from './SidePane';
 import { Toolbar, type SearchState } from './Toolbar';
 import { Viewer, type ViewerHandle, type ViewerShortcut } from './Viewer';
+
+/** Opens the settings page; a failure leaves the reader as it was (nothing to roll back). */
+export const openSettings = (): void => {
+  void browser.runtime.openOptionsPage().catch(() => undefined);
+};
+
+/** The side pane's tabs: the companion (highlights, page text) and the navigation ones. */
+type PaneTab = 'highlights' | NavTab | 'text';
+const isNav = (t: PaneTab | null): t is NavTab => t === 'outline' || t === 'pages' || t === 'links';
+
+const OUTCOME_ICON: Record<'success' | 'warning' | 'error' | 'info', LucideIcon> = {
+  success: CircleCheck,
+  warning: TriangleAlert,
+  error: CircleX,
+  info: Info,
+};
 
 /** Said when S or Enter is pressed with nothing selected: how to select without a mouse. */
 const NO_SELECTION_HELP =
@@ -116,9 +157,10 @@ export function DocumentView({
   const [resolutions, setResolutions] = useState<ReadonlyMap<string, PdfResolution>>(new Map());
   const [selection, setSelection] = useState<PdfSelection | null>(null);
   const [flashId, setFlashId] = useState<string | null>(initialHighlight);
-  const [companionOpen, setCompanionOpen] = useState(() => window.innerWidth >= 900);
-  const [sidePaneOpen, setSidePaneOpen] = useState(false);
-  const [rightTab, setRightTab] = useState<'highlights' | 'text'>('highlights');
+  // One side pane with icon tabs; open on the highlights in a wide window, closed in a narrow one.
+  const [pane, setPane] = useState<PaneTab | null>(() =>
+    window.innerWidth >= 900 ? 'highlights' : null,
+  );
   const [outline, setOutline] = useState<OutlineEntry[] | null>(null);
   const [pageNotes, setPageNotes] = useState<ReadonlyMap<number, string>>(new Map());
   const [ocrPages, setOcrPages] = useState<ReadonlySet<number>>(new Set());
@@ -254,8 +296,7 @@ export function DocumentView({
       const rect: PdfRect | null = isPainted(res) ? (res.rects[0] ?? null) : null;
       viewer.current?.reveal(row.pageNumber, rect);
       setFlashId(id);
-      setCompanionOpen(true);
-      setRightTab('highlights');
+      setPane('highlights');
     },
     [resolutions, rows],
   );
@@ -357,8 +398,12 @@ export function DocumentView({
         case 'go-to-page':
           return pageInput.current?.focus();
         case 'save-selection': {
+          // The chosen kind dot first (the bar's first decision), else its first field.
           const focusBar = () =>
-            bar.current?.querySelector<HTMLElement>('select, textarea, button')?.focus();
+            (
+              bar.current?.querySelector<HTMLElement>('input:checked') ??
+              bar.current?.querySelector<HTMLElement>('select, textarea, button')
+            )?.focus();
           if (bar.current) return focusBar();
           // The bar waits for the gate's pause after a selection: ask for it now, and let React
           // show it before focus moves (the key press is the user's act; nothing is guessed).
@@ -539,6 +584,7 @@ export function DocumentView({
       const filings: Filed[] = [];
       let duplicates = 0;
       let bankName = '';
+      let xp = 0;
       for (const part of sel.parts) {
         const built = buildPdfAnchor({
           documentFingerprint: session.id,
@@ -569,6 +615,7 @@ export function DocumentView({
           captureMethod: 'toolbar',
         });
         bankName = res.bank.name;
+        xp += res.xp ?? 0; // present only while Game mode is on (ADR-022)
         if (res.status === 'duplicate' && !res.addedToBank) duplicates++;
         else created.push(res.highlight.id);
         // A filing rule that names PDF document as a source answered for this new highlight.
@@ -583,7 +630,7 @@ export function DocumentView({
       const summary =
         created.length === 0
           ? 'Already saved.'
-          : `Saved ${plural(created.length, 'highlight')} to ${bankName}.${duplicates > 0 ? ` ${plural(duplicates, 'passage')} already saved.` : ''}`;
+          : `Saved ${plural(created.length, 'highlight')} to ${bankName}.${duplicates > 0 ? ` ${plural(duplicates, 'passage')} already saved.` : ''}${xp > 0 ? ` +${xp} XP` : ''}`;
       toast.push({
         message: summary,
         action:
@@ -604,6 +651,11 @@ export function DocumentView({
         for (const t of filingToasts(filings, store.filing, (next) => toast.push(next), refresh)) {
           toast.push(t);
         }
+      }
+      // The new card is where the person can see it: the open pane turns to the highlights.
+      if (created[0]) {
+        setFlashId(created[0]);
+        setPane((p) => (p === null ? null : 'highlights'));
       }
       engaged.current = false;
       document.getSelection()?.removeAllRanges();
@@ -696,14 +748,24 @@ export function DocumentView({
   // ---- derived view state ---------------------------------------------------------------------
   const pending = selection;
   const uncovered = [...session.known].filter(([n, has]) => !has && !ocrPages.has(n)).length;
-  const scannedBanner =
+  const scannedLine =
     uncovered === 0 && textStatus !== 'text'
       ? null
       : textStatus === 'scanned'
-        ? 'This PDF has no selectable text: it looks like scanned images. You can view the pages, but search and highlights need text to work with.'
+        ? 'This PDF has no selectable text.'
         : textStatus === 'partial'
-          ? 'Some pages of this PDF have no selectable text (scanned images). Those pages cannot be highlighted until their text is recognised.'
+          ? 'Some pages of this PDF have no selectable text.'
           : null;
+  // What the header badge says about the text: recognised pages count once nothing is left to read.
+  const textBadge: { tone: 'success' | 'info' | 'warning'; icon: LucideIcon; label: string } =
+    textStatus === 'text'
+      ? { tone: 'success', icon: Check, label: 'Selectable text' }
+      : uncovered === 0 && ocr.pages.size > 0
+        ? { tone: 'info', icon: ScanText, label: 'Text recognised' }
+        : textStatus === 'partial'
+          ? { tone: 'warning', icon: ScanText, label: 'Partly scanned' }
+          : { tone: 'warning', icon: ScanText, label: 'No text' };
+  const TextIcon = textBadge.icon;
 
   const known = session.known.get(page);
   const pageState: PageTextState = ocrPages.has(page)
@@ -741,41 +803,78 @@ export function DocumentView({
     };
   }, [ocr, page, persistAllowed]);
 
+  // Read while the pane is open, so the Links tab shows its count whichever tab is in front.
+  const pageLinks = usePageLinks(doc, page, pane !== null);
+  const paneTabs: IconTab<PaneTab>[] = [
+    { id: 'highlights', label: 'Highlights', icon: Highlighter, count: rows.length },
+    { id: 'outline', label: 'Outline', icon: TableOfContents },
+    { id: 'pages', label: 'Pages', icon: Files },
+    { id: 'links', label: 'Links', icon: Link, count: pageLinks?.links.length },
+    { id: 'text', label: 'Page text', icon: ScanText },
+  ];
+  const host = session.originalUrl ? new URL(session.originalUrl).host : null;
+  const runProgress = ocr.run?.finding
+    ? { value: ocr.run.finding.checked, max: ocr.run.finding.total }
+    : ocr.run?.progress
+      ? { value: Math.round(ocr.run.progress.progress * 100), max: 100 }
+      : null;
+  const outcomeTile = ocr.outcome
+    ? ocr.outcome.tone === 'error'
+      ? 'danger'
+      : ocr.outcome.tone === 'info'
+        ? 'primary'
+        : ocr.outcome.tone
+    : 'primary';
+  const OutcomeIcon = ocr.outcome ? OUTCOME_ICON[ocr.outcome.tone] : Info;
+
   return (
     <div className="sv-doc">
-      <div className="sv-doc__head">
-        <h1 className="sv-doc__title" title={session.title}>
-          {session.title}
-        </h1>
-        <p className="sv-small sv-muted">
-          {plural(doc.pageCount, 'page')} ·{' '}
-          {session.originalUrl
-            ? `from ${new URL(session.originalUrl).host}`
-            : 'opened from this device'}{' '}
-          ·{' '}
-          <span data-testid="pdf-text-status">
-            {textStatus === 'text'
-              ? 'selectable text'
-              : textStatus === 'scanned'
-                ? 'scanned (no text)'
-                : 'partly scanned'}
-          </span>
-        </p>
+      <div className="sv-doc__bar">
+        <span className="sv-tile sv-art--primary sv-doc__logo" aria-hidden="true">
+          <BookOpen strokeWidth={2.4} />
+        </span>
+        <div className="sv-doc__head">
+          <h1 className="sv-doc__title" title={session.title}>
+            {session.title}
+          </h1>
+          <p className="sv-doc__meta">
+            {/* Pages and source are in Details too: a narrow window keeps only the text status. */}
+            <span className="sv-pill sv-doc__wide">
+              <Files aria-hidden="true" strokeWidth={2.4} />
+              {plural(doc.pageCount, 'page')}
+            </span>
+            <span className="sv-pill sv-doc__wide">
+              {host ? (
+                <Globe aria-hidden="true" strokeWidth={2.4} />
+              ) : (
+                <HardDrive aria-hidden="true" strokeWidth={2.4} />
+              )}
+              {host ? `from ${host}` : 'from this device'}
+            </span>
+            <span className={`sv-pill sv-pill--${textBadge.tone}`}>
+              <TextIcon aria-hidden="true" strokeWidth={2.4} />
+              <span data-testid="pdf-text-status">{textBadge.label}</span>
+            </span>
+          </p>
+        </div>
         <DocInfo
           title={session.title}
           pageCount={doc.pageCount}
           byteLength={session.byteLength}
           fingerprint={session.id}
+          fingerprintNote={session.fingerprintNote}
           textStatus={textStatus}
           scannedPages={uncovered}
           ocrPages={ocr.pages.size}
-          host={session.originalUrl ? new URL(session.originalUrl).host : null}
+          host={host}
           copy={canKeepCopy ? kept : 'none'}
           copyUnavailable={copyUnavailable}
           busy={copyBusy}
           onKeep={() => void keepCopy()}
           onRemove={() => void removeCopy()}
         />
+        <IconButton icon={FolderOpen} label="Open another PDF" onClick={onOpenAnother} />
+        <IconButton icon={SettingsIcon} label="Settings" tipSide="left" onClick={openSettings} />
       </div>
 
       <Toolbar
@@ -784,8 +883,8 @@ export function DocumentView({
         zoom={zoom}
         effectiveZoom={effectiveZoom}
         search={search}
-        companionOpen={companionOpen}
-        sidePaneOpen={sidePaneOpen}
+        companionOpen={pane === 'highlights' || pane === 'text'}
+        sidePaneOpen={isNav(pane)}
         highlightCount={rows.length}
         pageInput={pageInput}
         searchInput={searchInput}
@@ -794,150 +893,150 @@ export function DocumentView({
         onRotate={() => setRotation((r) => nextRotation(r))}
         onQuery={onQuery}
         onFind={onFind}
-        onToggleCompanion={() => setCompanionOpen((v) => !v)}
-        onToggleSidePane={() => setSidePaneOpen((v) => !v)}
-        onOpenAnother={onOpenAnother}
+        onToggleCompanion={() =>
+          setPane((p) => (p === 'highlights' || p === 'text' ? null : 'highlights'))
+        }
+        onToggleSidePane={() => setPane((p) => (isNav(p) ? null : 'outline'))}
         backTo={links.backTo}
         onBack={links.back}
       />
 
-      <p className="sv-doc__keys sv-small sv-muted" data-testid="pdf-keyboard-hint">
-        Without a mouse: press <kbd className="sv-kbd">F7</kbd> to turn on caret browsing, select
-        text with <kbd className="sv-kbd">Shift</kbd> and the arrow keys, then press{' '}
-        <kbd className="sv-kbd">S</kbd> or <kbd className="sv-kbd">Enter</kbd> to save it.
-      </p>
-
       {!persistAllowed ? (
         <InlineNotice tone="warning" live title="Nothing is being saved">
-          {blockedReason} You can still read this PDF.
+          {blockedReason}
         </InlineNotice>
-      ) : null}
-      {session.fingerprintNote ? (
-        <InlineNotice tone="info">{session.fingerprintNote}</InlineNotice>
       ) : null}
 
-      {scannedBanner ? (
-        <InlineNotice
-          tone="warning"
-          title="Scanned pages"
-          action={
-            <span className="sv-row">
-              <Button
-                variant="primary"
-                onClick={() => ocr.start('document')}
-                busy={running}
-                disabledReason={ocrUnavailable}
-                data-testid="pdf-ocr"
-              >
-                OCR this document
-              </Button>
-              <Button
-                onClick={() => ocr.start('page', page)}
-                busy={running}
-                disabledReason={
-                  ocrUnavailable ??
-                  (pageState === 'none'
-                    ? undefined
-                    : pageState === 'ocr'
-                      ? `Page ${page} has already been recognised.`
-                      : pageState === 'unknown'
-                        ? `Page ${page} is still being read.`
-                        : `Page ${page} has selectable text.`)
-                }
-                data-testid="pdf-ocr-this-page"
-              >
-                OCR page {page}
-              </Button>
-            </span>
-          }
-        >
-          <p>{scannedBanner}</p>
-          <p className="sv-small">
-            Recognition runs on this device with a bundled engine: nothing is uploaded, and it works
-            offline. The result is machine-recognised text that may contain errors.
-            {persistAllowed
-              ? ''
-              : ' Nothing is being saved in this window, so the recognised text is kept for this session only.'}
-          </p>
-          {ocrUnavailable ? <p className="sv-small">{ocrUnavailable}</p> : null}
-        </InlineNotice>
+      {scannedLine && !ocr.run ? (
+        <section className="sv-ocrcard" aria-label="Scanned pages">
+          <span className="sv-tile sv-art--warning" aria-hidden="true">
+            <ScanText strokeWidth={2.4} />
+          </span>
+          <div className="sv-ocrcard__text">
+            <p className="sv-ocrcard__title">
+              Scanned pages{' '}
+              <InfoTip label="About recognising text" align="start">
+                Recognition runs on this device with a bundled engine: nothing is uploaded, and it
+                works offline. The result is machine-recognised text that may contain errors.
+                {persistAllowed
+                  ? ''
+                  : ' Nothing is being saved in this window, so it lasts this session only.'}
+              </InfoTip>
+            </p>
+            <p className="sv-ocrcard__line">{scannedLine}</p>
+            {ocrUnavailable ? <p className="sv-small">{ocrUnavailable}</p> : null}
+          </div>
+          <div className="sv-ocrcard__actions">
+            <Button
+              variant="primary"
+              onClick={() => ocr.start('document')}
+              busy={running}
+              disabledReason={ocrUnavailable}
+              data-testid="pdf-ocr"
+            >
+              <ScanText aria-hidden="true" />
+              Recognise text
+            </Button>
+            <Button
+              onClick={() => ocr.start('page', page)}
+              busy={running}
+              disabledReason={
+                ocrUnavailable ??
+                (pageState === 'none'
+                  ? undefined
+                  : pageState === 'ocr'
+                    ? `Page ${page} has already been recognised.`
+                    : pageState === 'unknown'
+                      ? `Page ${page} is still being read.`
+                      : `Page ${page} has selectable text.`)
+              }
+              data-testid="pdf-ocr-this-page"
+            >
+              Only page {page}
+            </Button>
+          </div>
+        </section>
       ) : null}
 
       {ocr.run ? (
-        <InlineNotice
-          tone="info"
-          title={
-            ocr.run.again
-              ? ocr.run.scope === 'document'
-                ? 'Reading the recognised pages again'
-                : 'Reading a page again'
-              : ocr.run.scope === 'document'
-                ? 'Recognising this document'
-                : 'Recognising a page'
-          }
-          action={
+        <section className="sv-ocrcard" aria-label="Text recognition">
+          <VaultBuddy pose="think" size={48} />
+          <div className="sv-ocrcard__text">
+            <p className="sv-ocrcard__title">
+              {ocr.run.again
+                ? ocr.run.scope === 'document'
+                  ? 'Reading the recognised pages again'
+                  : 'Reading a page again'
+                : ocr.run.scope === 'document'
+                  ? 'Recognising this document'
+                  : 'Recognising a page'}
+            </p>
+            <p className="sv-ocrcard__line" data-testid="pdf-ocr-status">
+              {/* The eye gets every step; a screen reader gets one sentence per finished page. */}
+              <span aria-hidden="true">
+                {ocr.run.finding
+                  ? `Finding pages without text… ${ocr.run.finding.checked} of ${ocr.run.finding.total} checked.`
+                  : ocr.run.progress
+                    ? describeProgress(ocr.run.progress)
+                    : 'Starting…'}
+              </span>
+              <span className="sv-sr" role="status">
+                {ocr.run.finding
+                  ? 'Finding pages without text…'
+                  : ocr.run.progress
+                    ? `Recognising text: ${ocr.run.progress.completed} of ${ocr.run.progress.total} pages done.`
+                    : 'Starting…'}
+              </span>
+            </p>
+            {runProgress ? (
+              <BarMeter
+                value={runProgress.value}
+                max={runProgress.max}
+                label="Text recognition progress"
+                size="sm"
+              />
+            ) : null}
+          </div>
+          <div className="sv-ocrcard__actions">
             <Button onClick={ocr.cancel} data-testid="pdf-ocr-cancel">
+              <X aria-hidden="true" />
               Cancel
             </Button>
-          }
-        >
-          <p data-testid="pdf-ocr-status">
-            {/* The eye gets every step; a screen reader gets one sentence per finished page. */}
-            <span aria-hidden="true">
-              {ocr.run.finding
-                ? `Finding pages without text… ${ocr.run.finding.checked} of ${ocr.run.finding.total} checked.`
-                : ocr.run.progress
-                  ? describeProgress(ocr.run.progress)
-                  : 'Starting…'}
-            </span>
-            <span className="sv-sr" role="status">
-              {ocr.run.finding
-                ? 'Finding pages without text…'
-                : ocr.run.progress
-                  ? `Recognising text: ${ocr.run.progress.completed} of ${ocr.run.progress.total} pages done.`
-                  : 'Starting…'}
-            </span>
-          </p>
-          <progress
-            max={1}
-            value={ocr.run.progress ? ocr.run.progress.progress : undefined}
-            aria-label="Text recognition progress"
-          />
-        </InlineNotice>
+          </div>
+        </section>
       ) : null}
       {ocr.outcome ? (
-        <InlineNotice
-          tone={ocr.outcome.tone}
-          title={ocr.outcome.title}
-          live
-          action={<Button onClick={ocr.dismissOutcome}>Dismiss</Button>}
+        <section
+          className="sv-ocrcard"
+          role={ocr.outcome.tone === 'error' ? 'alert' : 'status'}
+          aria-label="Text recognition result"
         >
-          <p data-testid="pdf-ocr-outcome">{ocr.outcome.detail}</p>
-          {ocr.outcome.lines && ocr.outcome.lines.length > 0 ? (
-            <ul className="sv-small" data-testid="pdf-ocr-outcome-list">
-              {ocr.outcome.lines.map((line, i) => (
-                <li key={i}>{line}</li>
-              ))}
-            </ul>
-          ) : null}
-        </InlineNotice>
+          <span className={`sv-tile sv-art--${outcomeTile}`} aria-hidden="true">
+            <OutcomeIcon strokeWidth={2.4} />
+          </span>
+          <div className="sv-ocrcard__text">
+            <p className="sv-ocrcard__title">{ocr.outcome.title}</p>
+            <p className="sv-ocrcard__line" data-testid="pdf-ocr-outcome">
+              {ocr.outcome.detail}
+            </p>
+            {ocr.outcome.lines && ocr.outcome.lines.length > 0 ? (
+              <ul className="sv-small sv-ocrcard__list" data-testid="pdf-ocr-outcome-list">
+                {ocr.outcome.lines.map((line, i) => (
+                  <li key={i}>{line}</li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+          <div className="sv-ocrcard__actions">
+            <IconButton icon={X} label="Dismiss" tipSide="left" onClick={ocr.dismissOutcome} />
+          </div>
+        </section>
       ) : null}
 
-      <div
-        className={`sv-doc__main${sidePaneOpen ? ' sv-doc__main--side' : ''}${companionOpen ? ' sv-doc__main--split' : ''}`}
-      >
+      <div className={`sv-doc__main${pane ? ' sv-doc__main--split' : ''}`}>
         {/* Over the pages, not above them: a notice that pushes the pages down moves the link the person
             meant to click next, and shortens the viewer (which draws every page again). */}
         {links.notice ? <div className="sv-linknotice">{links.notice}</div> : null}
-        {sidePaneOpen ? (
-          <SidePane
-            doc={doc}
-            outline={outline}
-            page={page}
-            onGoToPage={goToPage}
-            onFollowLink={links.follow}
-          />
-        ) : null}
         <Viewer
           ref={viewer}
           doc={doc}
@@ -953,26 +1052,17 @@ export function DocumentView({
           onPageText={onPageText}
           onSelectHighlight={(id) => {
             setFlashId(id);
-            setCompanionOpen(true);
-            setRightTab('highlights');
+            setPane('highlights');
           }}
           onFollowLink={links.follow}
           onShortcut={onShortcut}
           onError={() => undefined}
           onEffectiveZoom={setEffectiveZoom}
         />
-        {companionOpen ? (
-          <div className="sv-rightpane">
-            <Tabs
-              label="Highlights and page text"
-              tabs={[
-                { id: 'highlights', label: 'Highlights', count: rows.length },
-                { id: 'text', label: 'Page text' },
-              ]}
-              value={rightTab}
-              onChange={(id) => setRightTab(id === 'text' ? 'text' : 'highlights')}
-            >
-              {rightTab === 'highlights' ? (
+        {pane ? (
+          <aside className="sv-rightpane" aria-label="Side pane">
+            <IconTabBar label="Side pane" tabs={paneTabs} active={pane} onChange={setPane}>
+              {pane === 'highlights' ? (
                 <Companion
                   rows={rows}
                   resolutions={resolutions}
@@ -982,8 +1072,11 @@ export function DocumentView({
                   selectedId={flashId}
                   paletteFor={paletteFor}
                   actions={actions}
+                  loading={loadedHighlights.loading}
+                  error={loadedHighlights.error}
+                  onRetry={loadedHighlights.retryable ? refreshHighlights : undefined}
                 />
-              ) : (
+              ) : pane === 'text' ? (
                 <OcrPanel
                   pageNumber={page}
                   state={pageState}
@@ -996,9 +1089,19 @@ export function DocumentView({
                   onRevertPage={() => ocr.revertPage(page)}
                   rerun={rerunInfo}
                 />
+              ) : (
+                <SidePane
+                  tab={pane}
+                  doc={doc}
+                  outline={outline}
+                  page={page}
+                  links={pageLinks}
+                  onGoToPage={goToPage}
+                  onFollowLink={links.follow}
+                />
               )}
-            </Tabs>
-          </div>
+            </IconTabBar>
+          </aside>
         ) : null}
       </div>
 
@@ -1007,8 +1110,10 @@ export function DocumentView({
           blockedReason={persistAllowed ? undefined : blockedReason}
           selection={selection}
           banks={banks}
+          banksError={loadedBanks.error}
           defaultKind={settings.defaultKind}
           defaultBankId={settings.lastBankId}
+          paletteFor={paletteFor}
           barRef={bar}
           onSave={save}
           onCreateBank={async (name) => {

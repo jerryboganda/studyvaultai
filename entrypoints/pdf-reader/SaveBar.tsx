@@ -1,13 +1,16 @@
-import { useId, useLayoutEffect, useState, type RefObject } from 'react';
+import { useId, useLayoutEffect, useState, type CSSProperties, type RefObject } from 'react';
+import { Bookmark, Library, Plus, ScanText, X } from 'lucide-react';
 import {
+  COLOR_SWATCH,
   HIGHLIGHT_KINDS,
   KIND_LABELS,
   MAX_BANK_NAME_CHARS,
   MAX_COMMENT_CHARS,
   type BankLite,
+  type ColorId,
   type HighlightKind,
 } from '@shared';
-import { Button, InlineNotice, errorMessage, truncate } from '@ui';
+import { Button, IconButton, InfoTip, InlineNotice, errorMessage, truncate } from '@ui';
 import { pageRange, placeBar, type BarPlacement, type PdfSelection } from './model';
 
 export interface SaveDraft {
@@ -17,15 +20,18 @@ export interface SaveDraft {
 }
 
 /**
- * The reader's selection toolbar. It lives in the extension's own origin, so (unlike the in-page
- * overlay on websites, ADR-005) it may contain free-text fields: a note and a new bank name.
- * It is anchored under the selection, flips above when there is no room, and never covers it.
+ * The reader's selection toolbar, drawn like the in-page toolbar: kind dots, bank, note, Save. It
+ * lives in the extension's own origin, so (unlike the in-page overlay on websites, ADR-005) it may
+ * contain free-text fields: a note and a new bank name. It is anchored under the selection, flips
+ * above when there is no room, and never covers it.
  */
 export function SaveBar({
   selection,
   banks,
+  banksError,
   defaultKind,
   defaultBankId,
+  paletteFor,
   barRef,
   onSave,
   onCreateBank,
@@ -35,8 +41,12 @@ export function SaveBar({
 }: {
   selection: PdfSelection;
   banks: readonly BankLite[];
+  /** The bank list could not be read: saving still goes to the default bank. */
+  banksError?: string | null;
   defaultKind: HighlightKind;
   defaultBankId: string | null;
+  /** The colour each kind is painted in (the person's palette); amber-ish default without it. */
+  paletteFor?(kind: HighlightKind): ColorId;
   barRef: RefObject<HTMLDivElement | null>;
   onSave(draft: SaveDraft): Promise<{ summary: string }>;
   onCreateBank(name: string): Promise<BankLite>;
@@ -131,115 +141,134 @@ export function SaveBar({
         }
       }}
     >
-      <blockquote className="sv-quote sv-savebar__quote" dir="auto">
+      <blockquote className="sv-savebar__quote" dir="auto">
         {truncate(quote, 200)}
       </blockquote>
 
       {fromOcr ? (
-        <p className="sv-small" data-testid="pdf-save-ocr-note">
-          This text was recognised from a scanned image (OCR) and may contain errors. Check the
-          quote against the page before relying on it.
+        <p className="sv-savebar__note" data-testid="pdf-save-ocr-note">
+          <ScanText aria-hidden="true" strokeWidth={2.4} />
+          Text recognised from a scanned image (OCR): check it.
         </p>
       ) : null}
 
       {multi ? (
-        <InlineNotice tone="warning" title="This selection spans more than one page">
-          A highlight belongs to a single page, so StudyVault saves each page's part as its own
-          highlight ({pageRange(pages)}). Nothing is lost; they stay separate entries.
-        </InlineNotice>
+        <p className="sv-savebar__note">
+          <span className="sv-pill sv-pill--warning">Spans {pageRange(pages)}</span>
+          <InfoTip label="About selections over pages" align="start">
+            This selection spans more than one page. A highlight belongs to a single page, so
+            StudyVault saves each page&rsquo;s part as its own highlight ({pageRange(pages)}).
+          </InfoTip>
+        </p>
       ) : null}
 
-      <div className="sv-savebar__fields">
-        <label className="sv-field" htmlFor={`${uid}-kind`}>
-          <span className="sv-label">Kind</span>
+      <fieldset className="sv-kinddots" data-testid="pdf-save-kind">
+        <legend className="sv-sr">Kind</legend>
+        {HIGHLIGHT_KINDS.map((k) => {
+          const dot = {
+            '--sv-dot': COLOR_SWATCH[paletteFor?.(k) ?? 'amber'].solid,
+          } as CSSProperties;
+          return (
+            <label key={k} className="sv-kinddot" style={dot}>
+              <input
+                type="radio"
+                className="sv-sr"
+                name={`${uid}-kind`}
+                value={k}
+                checked={kind === k}
+                data-testid={`pdf-save-kind-${k}`}
+                onChange={() => setKind(k)}
+              />
+              <span className="sv-kinddot__glyph" aria-hidden="true">
+                {KIND_LABELS[k].glyph}
+              </span>
+              <span className="sv-sr">{KIND_LABELS[k].label}</span>
+            </label>
+          );
+        })}
+        <span className="sv-kinddots__name" aria-hidden="true">
+          {KIND_LABELS[kind].label}
+        </span>
+      </fieldset>
+
+      <div className="sv-savebar__row">
+        <label className="sv-savebar__bank" htmlFor={`${uid}-bank`}>
+          <Library aria-hidden="true" strokeWidth={2.4} />
+          <span className="sv-sr">Bank</span>
           <select
-            id={`${uid}-kind`}
-            className="sv-control"
-            value={kind}
-            data-testid="pdf-save-kind"
-            onChange={(e) => setKind(e.target.value as HighlightKind)}
+            id={`${uid}-bank`}
+            className="sv-control sv-grow"
+            value={bankId}
+            data-testid="pdf-save-bank"
+            onChange={(e) => setBankId(e.target.value)}
           >
-            {HIGHLIGHT_KINDS.map((k) => (
-              <option key={k} value={k}>
-                {KIND_LABELS[k].glyph} {KIND_LABELS[k].label}
+            {banks.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.name}
               </option>
             ))}
           </select>
         </label>
+        <IconButton
+          icon={Plus}
+          label="New bank"
+          tipSide="top"
+          onClick={() => setNewBank(newBank === null ? '' : null)}
+          aria-expanded={newBank !== null}
+        />
+      </div>
+      {banksError ? (
+        <p className="sv-small sv-muted" role="status">
+          Banks not loaded: it saves to your default bank.
+        </p>
+      ) : null}
 
+      {newBank !== null ? (
         <div className="sv-field">
-          <label className="sv-label" htmlFor={`${uid}-bank`}>
-            Bank
+          <label className="sv-label" htmlFor={`${uid}-newbank`}>
+            New bank name
           </label>
-          <div className="sv-row">
-            <select
-              id={`${uid}-bank`}
+          <div className="sv-savebar__row">
+            <input
+              id={`${uid}-newbank`}
               className="sv-control sv-grow"
-              value={bankId}
-              data-testid="pdf-save-bank"
-              onChange={(e) => setBankId(e.target.value)}
-            >
-              {banks.map((b) => (
-                <option key={b.id} value={b.id}>
-                  {b.name}
-                </option>
-              ))}
-            </select>
+              maxLength={MAX_BANK_NAME_CHARS}
+              value={newBank}
+              autoFocus
+              data-testid="pdf-new-bank-name"
+              onChange={(e) => setNewBank(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  void createBank();
+                }
+              }}
+            />
             <Button
-              onClick={() => setNewBank(newBank === null ? '' : null)}
-              aria-expanded={newBank !== null}
+              variant="primary"
+              busy={state.busy}
+              disabledReason={newBank.trim() === '' ? 'Type a name first.' : undefined}
+              onClick={() => void createBank()}
             >
-              New bank
+              Create
             </Button>
           </div>
         </div>
+      ) : null}
 
-        {newBank !== null ? (
-          <div className="sv-field">
-            <label className="sv-label" htmlFor={`${uid}-newbank`}>
-              New bank name
-            </label>
-            <div className="sv-row">
-              <input
-                id={`${uid}-newbank`}
-                className="sv-control sv-grow"
-                maxLength={MAX_BANK_NAME_CHARS}
-                value={newBank}
-                autoFocus
-                data-testid="pdf-new-bank-name"
-                onChange={(e) => setNewBank(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    void createBank();
-                  }
-                }}
-              />
-              <Button
-                variant="primary"
-                busy={state.busy}
-                disabledReason={newBank.trim() === '' ? 'Type a name first.' : undefined}
-                onClick={() => void createBank()}
-              >
-                Create
-              </Button>
-            </div>
-          </div>
-        ) : null}
-
-        <label className="sv-field" htmlFor={`${uid}-note`}>
-          <span className="sv-label">Note (optional)</span>
-          <textarea
-            id={`${uid}-note`}
-            className="sv-control"
-            rows={2}
-            maxLength={MAX_COMMENT_CHARS}
-            value={comment}
-            data-testid="pdf-save-note"
-            onChange={(e) => setComment(e.target.value)}
-          />
-        </label>
-      </div>
+      <label className="sv-sr" htmlFor={`${uid}-note`}>
+        Note (optional)
+      </label>
+      <textarea
+        id={`${uid}-note`}
+        className="sv-control sv-savebar__notefield"
+        rows={1}
+        maxLength={MAX_COMMENT_CHARS}
+        value={comment}
+        placeholder="Add a note (optional)"
+        data-testid="pdf-save-note"
+        onChange={(e) => setComment(e.target.value)}
+      />
 
       {blockedReason ? (
         <InlineNotice tone="warning" title="Not saved from this window">
@@ -251,11 +280,11 @@ export function SaveBar({
           {state.error}
         </InlineNotice>
       ) : null}
-      <p className="sv-small sv-muted" role="status">
+      <p className="sv-small sv-muted sv-savebar__status" role="status">
         {state.done ?? ''}
       </p>
 
-      <div className="sv-row">
+      <div className="sv-savebar__actions">
         <Button
           variant="primary"
           busy={state.busy}
@@ -263,9 +292,10 @@ export function SaveBar({
           onClick={() => void save()}
           data-testid="pdf-save"
         >
-          {multi ? `Save ${selection.parts.length} highlights` : 'Save highlight'}
+          <Bookmark aria-hidden="true" />
+          {multi ? `Save ${selection.parts.length} highlights` : 'Save'}
         </Button>
-        <Button onClick={onDismiss}>Cancel</Button>
+        <IconButton icon={X} label="Cancel" tipSide="top" onClick={onDismiss} />
       </div>
     </div>
   );

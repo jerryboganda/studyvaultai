@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   dismissFiling: vi.fn(),
   undoFiling: vi.fn(),
   getTrustedSettings: vi.fn(),
+  isGameModeOn: vi.fn(),
 }));
 
 vi.mock('@runtime', () => ({ getTrustedSettings: mocks.getTrustedSettings }));
@@ -29,6 +30,7 @@ vi.mock('@storage', () => ({
   getDocument: mocks.getDocument,
   getDocumentBytes: vi.fn(),
   getOcrPages: vi.fn(),
+  isGameModeOn: mocks.isGameModeOn,
   listBanks: vi.fn(),
   listDocuments: vi.fn(),
   listPdfHighlights: vi.fn(),
@@ -90,6 +92,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   mocks.getTrustedSettings.mockResolvedValue({ ...defaultSettings(), lastBankId: 'bank-last0001' });
+  mocks.isGameModeOn.mockResolvedValue(false);
   mocks.getDocument.mockResolvedValue({
     id: 'doc-fingerprint',
     title: 'Pharmacology textbook',
@@ -162,5 +165,22 @@ describe('createStorageStore().savePdfHighlight', () => {
     expect(mocks.acceptFiling).toHaveBeenCalledWith('hl-pdf00001');
     expect(mocks.dismissFiling).toHaveBeenCalledWith('hl-pdf00001');
     expect(mocks.undoFiling).toHaveBeenCalledWith('hl-pdf00001');
+  });
+
+  it('a new highlight earns +2 XP only while Game mode is on', async () => {
+    mocks.filingAfterCapture.mockResolvedValue(null);
+    mocks.savePdfHighlight.mockResolvedValue(saved('created'));
+    mocks.isGameModeOn.mockResolvedValue(true);
+    expect((await createStorageStore().savePdfHighlight(input)).xp).toBe(2);
+    mocks.isGameModeOn.mockResolvedValue(false);
+    expect(await createStorageStore().savePdfHighlight(input)).not.toHaveProperty('xp');
+    mocks.isGameModeOn.mockRejectedValue(new Error('db closed'));
+    expect(await createStorageStore().savePdfHighlight(input)).not.toHaveProperty('xp');
+  });
+
+  it('a duplicate earns no XP, whatever the mode', async () => {
+    mocks.savePdfHighlight.mockResolvedValue(saved('duplicate'));
+    mocks.isGameModeOn.mockResolvedValue(true);
+    expect(await createStorageStore().savePdfHighlight(input)).not.toHaveProperty('xp');
   });
 });

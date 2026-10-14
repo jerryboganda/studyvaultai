@@ -1,24 +1,90 @@
 import { useEffect, useId, useState, type ReactNode, type RefObject } from 'react';
 import { browser } from 'wxt/browser';
-import { DENY_LIST_SCOPE_NOTE, type Settings } from '@shared';
-import { createBank, createFolder, listBankInfos, listFolderTree, type FolderNode } from '@storage';
 import {
+  AppWindow,
+  ArrowLeft,
+  ArrowRight,
+  Ban,
+  Bike,
+  Bookmark,
+  Check,
+  ChevronDown,
+  Coffee,
+  EyeOff,
+  Flame,
+  FolderTree,
+  Gamepad2,
+  Globe,
+  GraduationCap,
+  HardDrive,
+  Highlighter,
+  Inbox,
+  Keyboard,
+  Layers,
+  Library,
+  Monitor,
+  Moon,
+  MousePointerClick,
+  PanelRight,
+  Plus,
+  Power,
+  Puzzle,
+  RefreshCw,
+  Rocket,
+  Rows2,
+  Rows4,
+  ScanLine,
+  Settings as SettingsIcon,
+  Sparkles,
+  Stethoscope,
+  Sun,
+  TextSelect,
+  Trophy,
+  UserX,
+  VenetianMask,
+  type LucideIcon,
+} from 'lucide-react';
+import { DENY_LIST_SCOPE_NOTE, type Settings } from '@shared';
+import {
+  createBank,
+  createFolder,
+  listBankInfos,
+  listFolderTree,
+  setDailyGoal,
+  setGameMode,
+  type FolderNode,
+} from '@storage';
+import {
+  AsyncSwitch,
   Badge,
   Button,
+  ChunkyButton,
   IN_PAGE_KEYS,
+  InfoTip,
   InlineNotice,
   Kbd,
   COMMAND,
+  VaultBuddy,
   pickCommands,
   plural,
   shortcutsPageUrl,
   useAction,
   useShortcuts,
+  type ArtTone,
+  type BuddyPose,
+  type ChunkyButtonProps,
 } from '@ui';
+import {
+  DAILY_GOALS,
+  DEFAULT_DAILY_GOAL,
+  XP,
+  type DailyGoal,
+  type GameState,
+  useGame,
+} from '@ui/game';
 import { settingsPath } from '@ui/shell/paths';
 import type { OnboardingState } from '@ui/shell/onboardingState';
-import { openDashboard } from '@ui/vault/dashboardLink';
-import { STEP_COUNT, STEP_TITLES } from './model';
+import { STEP_TITLES } from './model';
 import {
   BANK_PRESETS,
   applyPreset,
@@ -30,7 +96,9 @@ import {
   pruneExcluded,
   setIncluded,
   type ApplyResult,
+  type PresetId,
   type PresetPorts,
+  type PreviewRow,
 } from './presets';
 import { TID } from './testids';
 
@@ -40,96 +108,251 @@ export type Update = (mutate: (s: Settings) => Settings) => Promise<unknown>;
 // Shared pieces
 // ---------------------------------------------------------------------------------------------
 
-/** Step frame: the heading takes focus when the step changes (keyboard and screen-reader users). */
+type RefObjectLike = RefObject<HTMLHeadingElement | null>;
+
+/**
+ * One step: the mascot with a one-line speech bubble (title, optional (i), one helper line), the
+ * step's single decision, then Back / Next. The heading takes focus when the step changes.
+ */
 export function StepFrame({
   step,
   heading,
+  pose = 'think',
+  line,
+  tip,
+  center = false,
+  nav,
   children,
 }: {
   step: keyof typeof STEP_TITLES;
   heading: RefObjectLike;
-  children: ReactNode;
+  pose?: BuddyPose;
+  line?: string;
+  tip?: { label: string; text: ReactNode };
+  center?: boolean;
+  nav: ReactNode;
+  children?: ReactNode;
 }) {
   const id = useId();
-  return (
-    <section className="ob__step sv-stack" aria-labelledby={id} data-testid={TID.step(step)}>
-      <h2 id={id} ref={heading} tabIndex={-1} className="ob__heading">
+  const title = (
+    <div className="ob__titleRow">
+      <h2 id={id} ref={heading} tabIndex={-1} className="ob__title">
         {STEP_TITLES[step]}
       </h2>
-      {children}
+      {tip ? (
+        <InfoTip label={tip.label} align={center ? 'center' : 'start'}>
+          {tip.text}
+        </InfoTip>
+      ) : null}
+    </div>
+  );
+  return (
+    <section
+      className={`ob__step${center ? ' ob__step--center' : ''}`}
+      aria-labelledby={id}
+      data-testid={TID.step(step)}
+    >
+      {center ? (
+        <div className="ob__hero">
+          <VaultBuddy pose={pose} size={140} className="ob__buddy" />
+          {title}
+          {line ? <p className="ob__line">{line}</p> : null}
+        </div>
+      ) : (
+        <div className="ob__intro">
+          <VaultBuddy pose={pose} size={96} className="ob__buddy" />
+          <div className="ob__bubble">
+            {title}
+            {line ? <p className="ob__line">{line}</p> : null}
+          </div>
+        </div>
+      )}
+      <div className="ob__body">{children}</div>
+      {nav}
     </section>
   );
 }
 
-type RefObjectLike = RefObject<HTMLHeadingElement | null>;
+type NextButton = {
+  label: string;
+  onClick(): void;
+  busy?: boolean;
+  disabledReason?: string;
+  testId?: string;
+  variant?: ChunkyButtonProps['variant'];
+  icon?: LucideIcon;
+};
 
+/** Back (disabled with its reason on the first step), an optional extra, then the main action. */
 function StepNav({
   onBack,
   next,
   also,
 }: {
   onBack?: (() => void) | undefined;
-  next: {
-    label: string;
-    onClick(): void;
-    busy?: boolean;
-    disabledReason?: string;
-    testId?: string;
-  };
+  next: NextButton;
   also?: ReactNode;
 }) {
+  const busy = next.busy ?? false;
   return (
-    <div className="ob__nav sv-row">
-      {onBack ? (
-        <Button data-testid={TID.back} onClick={onBack}>
-          Back
-        </Button>
-      ) : null}
-      <Button
-        variant="primary"
-        busy={next.busy ?? false}
+    <div className="ob__nav">
+      <ChunkyButton
+        size="lg"
+        icon={ArrowLeft}
+        data-testid={TID.back}
+        {...(onBack ? { onClick: onBack } : { disabledReason: 'This is the first step' })}
+      >
+        Back
+      </ChunkyButton>
+      <span className="ob__spacer" />
+      {also}
+      <ChunkyButton
+        size="lg"
+        variant={next.variant ?? 'primary'}
         data-testid={next.testId ?? TID.next}
+        aria-busy={busy || undefined}
+        {...(next.icon ? { icon: next.icon } : {})}
         {...(next.disabledReason ? { disabledReason: next.disabledReason } : {})}
-        onClick={next.onClick}
+        onClick={() => {
+          if (!busy) next.onClick();
+        }}
       >
         {next.label}
-      </Button>
-      {also}
+      </ChunkyButton>
     </div>
   );
 }
 
-function Check({
-  label,
-  hint,
-  checked,
-  testId,
+interface PickOption<T extends string> {
+  value: T;
+  /** <= 2 words. */
+  label: string;
+  /** <= 3 words. */
+  hint?: string;
+  icon: LucideIcon;
+  tone: ArtTone;
+  tag?: string;
+  testId?: string;
+}
+
+/**
+ * Picture cards over native radios (UX_DESIGN 6.11), drawn with the shared `.sv-choice` styles.
+ * Local rather than `ChoiceCards` because the tour's radios carry `data-testid`s and a tag.
+ */
+function PickCards<T extends string>({
+  legend,
+  showLegend = false,
+  options,
+  value,
+  onChange,
+  columns,
+}: {
+  legend: string;
+  showLegend?: boolean;
+  options: readonly PickOption<T>[];
+  value: T;
+  onChange(value: T): void;
+  columns: 2 | 3 | 4;
+}) {
+  const name = useId();
+  return (
+    <fieldset className="sv-choiceset ob-picks">
+      <legend className={showLegend ? 'ob-legend' : 'sv-vh'}>{legend}</legend>
+      <div className={`sv-choices sv-choices--${columns}`}>
+        {options.map(({ value: v, label, hint, icon: Icon, tone, tag, testId }) => (
+          <label key={v} className="sv-choice">
+            <input
+              type="radio"
+              className="ob-pick__input"
+              name={name}
+              value={v}
+              checked={v === value}
+              data-testid={testId}
+              onChange={() => onChange(v)}
+            />
+            <span className="sv-choice__check" aria-hidden="true">
+              <Check strokeWidth={3.5} />
+            </span>
+            <span className={`sv-choice__art sv-art--${tone}`} aria-hidden="true">
+              <Icon strokeWidth={2.4} />
+            </span>
+            <span className="sv-choice__text">
+              <span className="sv-choice__label">{label}</span>
+              {hint ? <span className="sv-choice__hint">{hint}</span> : null}
+              {tag ? <span className="ob-tag">{tag}</span> : null}
+            </span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
+/**
+ * A small secondary choice under a step's main one: pill radios with an icon and a tick on the
+ * picked one (so the pick never rests on colour alone).
+ */
+function PickPills<T extends string>({
+  legend,
+  options,
+  value,
   onChange,
 }: {
-  label: string;
-  hint: string;
-  checked: boolean;
-  testId: string;
-  onChange(next: boolean): void;
+  legend: string;
+  options: readonly PickOption<T>[];
+  value: T;
+  onChange(value: T): void;
 }) {
-  const id = useId();
+  const name = useId();
   return (
-    <div className="sv-check">
-      <input
-        id={id}
-        type="checkbox"
-        checked={checked}
-        data-testid={testId}
-        aria-describedby={`${id}-hint`}
-        onChange={(e) => onChange(e.target.checked)}
-      />
-      <div>
-        <label htmlFor={id}>{label}</label>
-        <p id={`${id}-hint`} className="sv-muted sv-small">
-          {hint}
-        </p>
+    <fieldset className="sv-choiceset ob-picks">
+      <legend className="ob-legend">{legend}</legend>
+      <div className="ob-pills">
+        {options.map(({ value: v, label, icon: Icon, testId }) => (
+          <label key={v} className="ob-pill">
+            <input
+              type="radio"
+              className="ob-pick__input"
+              name={name}
+              value={v}
+              checked={v === value}
+              data-testid={testId}
+              onChange={() => onChange(v)}
+            />
+            <Icon aria-hidden="true" strokeWidth={2.4} />
+            {label}
+            <Check aria-hidden="true" strokeWidth={3.5} className="ob-pill__tick" />
+          </label>
+        ))}
       </div>
-    </div>
+    </fieldset>
+  );
+}
+
+/** A row of picture tiles (icon, short label, optional key), numbered when they are a sequence. */
+function Tiles({
+  label,
+  items,
+  numbered = false,
+}: {
+  label: string;
+  items: ReadonlyArray<{ icon: LucideIcon; tone: ArtTone; label: string; key?: string }>;
+  numbered?: boolean;
+}) {
+  const List = numbered ? 'ol' : 'ul';
+  return (
+    <List className="ob-try" aria-label={label}>
+      {items.map(({ icon: Icon, tone, label: text, key }, i) => (
+        <li key={text} className="ob-try__step">
+          <span className={`ob-try__art sv-art--${tone}`} aria-hidden="true">
+            <Icon strokeWidth={2.4} />
+            {numbered ? <span className="ob-try__num">{i + 1}</span> : null}
+          </span>
+          <span className="ob-try__label">{text}</span>
+          {key ? <Kbd shortcut={key} /> : null}
+        </li>
+      ))}
+    </List>
   );
 }
 
@@ -162,29 +385,163 @@ interface Flow {
 }
 
 // ---------------------------------------------------------------------------------------------
-// 1. Welcome
+// 1. Welcome and daily goal
 // ---------------------------------------------------------------------------------------------
 
+export const GOAL_NAMES: Record<DailyGoal, string> = {
+  10: 'Casual',
+  30: 'Regular',
+  50: 'Serious',
+  100: 'Intense',
+};
+
+const GOAL_LOOK: Record<DailyGoal, { icon: LucideIcon; tone: ArtTone }> = {
+  10: { icon: Coffee, tone: 'success' },
+  30: { icon: Bike, tone: 'primary' },
+  50: { icon: Rocket, tone: 'violet' },
+  100: { icon: Flame, tone: 'danger' },
+};
+
+const GOAL_PICKS: PickOption<`${DailyGoal}`>[] = DAILY_GOALS.map((g) => ({
+  value: `${g}`,
+  label: GOAL_NAMES[g],
+  hint: `${g} XP a day`,
+  ...GOAL_LOOK[g],
+  ...(g === DEFAULT_DAILY_GOAL ? { tag: 'Suggested' } : {}),
+}));
+
+/** How XP is earned (ADR-022): the engine's own numbers. */
+const EARN = [
+  { icon: Layers, label: 'Review', xp: XP.review, tone: 'primary' },
+  { icon: Bookmark, label: 'Save', xp: XP.save, tone: 'sun' },
+  { icon: Plus, label: 'New card', xp: XP.card, tone: 'violet' },
+  { icon: Trophy, label: 'Session', xp: XP.session, tone: 'success' },
+] as const;
+
+const PROMISES = [
+  { icon: HardDrive, label: 'On this device' },
+  { icon: UserX, label: 'No account' },
+  { icon: EyeOff, label: 'No tracking' },
+] as const;
+
+/** What StudyVault does, shown in place of the goal when Game mode is off. */
+const WHAT_IT_DOES = [
+  { icon: Highlighter, tone: 'sun', label: 'Save quotes' },
+  { icon: Library, tone: 'primary', label: 'Sort into banks' },
+  { icon: Layers, tone: 'success', label: 'Review as cards' },
+] as const;
+
+/**
+ * The goal to write when the person presses Start, or null for none: the card they picked unless
+ * it is already the stored choice; with no pick, the suggested goal on a ledger that has never had
+ * one chosen (pressing Start accepts it). Nothing while the ledger is unknown or Game mode is off.
+ */
+export function goalToWrite(
+  data: GameState | undefined,
+  picked: DailyGoal | null,
+): DailyGoal | null {
+  if (!data?.mode) return null;
+  if (picked !== null) {
+    return data.ready && data.goal.chosen && data.goal.value === picked ? null : picked;
+  }
+  return data.ready && !data.goal.chosen ? data.goal.value : null;
+}
+
 export function WelcomeStep({ heading, onNext }: Flow & { heading: RefObjectLike }) {
+  // The ledger is read only on the two steps that show it, not while banks are being created.
+  const game = useGame();
+  const [picked, setPicked] = useState<DailyGoal | null>(null);
+  const data = game.data;
+  const showGoal = data?.mode === true;
+  const shown = picked ?? (data?.ready ? data.goal.value : DEFAULT_DAILY_GOAL);
+  const start = useAction(async () => {
+    const goal = goalToWrite(data, picked);
+    if (goal !== null) await setDailyGoal(goal);
+    onNext();
+  });
+
   return (
-    <StepFrame step="welcome" heading={heading}>
-      <p>
-        StudyVault turns what you read on the web and in PDFs into a personal study library: every
-        highlight keeps its exact quote and where it came from, sits in banks and folders you
-        choose, can be searched and can be turned into flashcards for spaced review.
-      </p>
-      <InlineNotice tone="info" title="Everything stays on this device by default">
-        <p>
-          There is no account, no analytics and no StudyVault server. Highlights, notes, banks,
-          cards and review history are stored in this Chrome profile. Nothing is sent anywhere
-          unless you turn on an optional feature (AI assistance or sync) and say where it goes.
+    <StepFrame
+      step="welcome"
+      heading={heading}
+      pose="wave"
+      line={
+        showGoal ? 'Pick a daily goal. Change it any time.' : 'Save, sort and review what you read.'
+      }
+      tip={{
+        label: 'About StudyVault',
+        text: 'Save quotes from web pages and PDFs, sort them into banks and review them as cards. Everything stays in this Chrome profile: no account, no server, no analytics.',
+      }}
+      nav={
+        <StepNav
+          next={{
+            label: 'Start',
+            busy: start.busy,
+            onClick: () => void start.run(),
+          }}
+        />
+      }
+    >
+      {showGoal ? (
+        <>
+          <PickCards
+            legend="Daily goal"
+            options={GOAL_PICKS}
+            value={`${shown}`}
+            columns={4}
+            onChange={(v) => setPicked(Number(v) as DailyGoal)}
+          />
+          <ul className="ob-chips" aria-label="How you earn XP">
+            <li className="ob-chips__label" aria-hidden="true">
+              Earn XP
+            </li>
+            {EARN.map(({ icon: Icon, label, xp, tone }) => (
+              <li key={label} className={`ob-chip sv-art--${tone}`}>
+                <Icon aria-hidden="true" strokeWidth={2.4} />
+                {label} +{xp}
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : data === undefined && !game.error ? (
+        <p className="sv-muted" role="status">
+          Loading your goal…
         </p>
-      </InlineNotice>
-      <p>
-        This short tour has {STEP_COUNT} steps and changes nothing until you press a button that
-        says what it does. You can skip it at any point and open it again from Settings.
-      </p>
-      <StepNav next={{ label: 'Start', onClick: onNext }} />
+      ) : (
+        <Tiles label="What StudyVault does" items={WHAT_IT_DOES} />
+      )}
+      {game.error ? (
+        <InlineNotice
+          tone="warning"
+          title="Daily goal unavailable"
+          action={<Button onClick={game.reload}>Retry</Button>}
+        >
+          {game.error} You can set it later in Settings.
+        </InlineNotice>
+      ) : null}
+      <ul className="ob-chips ob-chips--quiet" aria-label="Your privacy">
+        {PROMISES.map(({ icon: Icon, label }) => (
+          <li key={label} className="ob-chip ob-chip--quiet">
+            <Icon aria-hidden="true" strokeWidth={2.4} />
+            {label}
+          </li>
+        ))}
+      </ul>
+      {start.error ? (
+        <InlineNotice
+          tone="error"
+          title="Your goal was not saved"
+          action={
+            start.retryable ? (
+              <Button busy={start.busy} onClick={start.retry}>
+                Retry
+              </Button>
+            ) : undefined
+          }
+        >
+          {start.error}
+        </InlineNotice>
+      ) : null}
     </StepFrame>
   );
 }
@@ -193,22 +550,91 @@ export function WelcomeStep({ heading, onNext }: Flow & { heading: RefObjectLike
 // 2. Privacy choices
 // ---------------------------------------------------------------------------------------------
 
-function Setting({
-  title,
-  badge,
+/** A setting as a card: art tile, two-word label, one short line, (i) with the detail, switch. */
+function SwitchCard({
+  icon: Icon,
+  tone,
+  label,
+  hint,
+  detail,
+  checked,
+  testId,
+  onChange,
+}: {
+  icon: LucideIcon;
+  tone: ArtTone;
+  label: string;
+  hint: string;
+  detail: string;
+  checked: boolean;
+  testId: string;
+  onChange(next: boolean): void;
+}) {
+  const id = useId();
+  return (
+    <div className="ob-tcard">
+      <span className={`ob-tcard__art sv-art--${tone}`} aria-hidden="true">
+        <Icon strokeWidth={2.4} />
+      </span>
+      <span className="ob-tcard__text">
+        <label htmlFor={id} className="ob-tcard__label">
+          {label}
+        </label>
+        <span className="ob-tcard__hint">{hint}</span>
+      </span>
+      <InfoTip label={`About ${label.toLowerCase()}`} align="end">
+        {detail}
+      </InfoTip>
+      <span className="sv-check">
+        <input
+          id={id}
+          type="checkbox"
+          className="sv-switch"
+          checked={checked}
+          data-testid={testId}
+          aria-describedby={`${id}-detail`}
+          onChange={(e) => onChange(e.target.checked)}
+        />
+      </span>
+      {/* The whole explanation, spoken with the switch; seen through the (i). */}
+      <span id={`${id}-detail`} hidden>
+        {detail}
+      </span>
+    </div>
+  );
+}
+
+/** An optional feature or list as a tile linking to its Settings section. */
+function StatusTile({
+  icon: Icon,
+  label,
+  href,
   children,
 }: {
-  title: string;
-  badge: ReactNode;
+  icon: LucideIcon;
+  label: string;
+  href: string;
   children: ReactNode;
 }) {
   return (
-    <li className="ob-card sv-stack sv-stack--tight">
-      <h3 className="ob-card__title">
-        {title} {badge}
-      </h3>
-      {children}
+    <li>
+      <a className="ob-stat" href={href} target="_blank" rel="noreferrer">
+        <Icon aria-hidden="true" strokeWidth={2.4} className="ob-stat__icon" />
+        <span className="ob-stat__label">{label}</span>
+        <span className="ob-stat__value">{children}</span>
+        <span className="sv-vh"> (opens Settings in a new tab)</span>
+      </a>
     </li>
+  );
+}
+
+function OnOff({ on, testId }: { on: boolean; testId: string }) {
+  return (
+    <span data-testid={testId}>
+      <Badge tone={on ? 'warning' : 'success'} glyph={on ? '!' : '✓'}>
+        {on ? 'On' : 'Off'}
+      </Badge>
+    </span>
   );
 }
 
@@ -220,97 +646,60 @@ export function PrivacyStep({
   onNext,
 }: Flow & { heading: RefObjectLike; settings: Settings; update: Update }) {
   const { write, error } = useWriter(update);
-  const ai = settings.features.ai;
-  const sync = settings.features.sync;
+  const { ai, sync } = settings.features;
   return (
-    <StepFrame step="privacy" heading={heading}>
-      <p>
-        These are the choices that decide what leaves or stays visible. The safe answer is already
-        selected for every one of them. Changes here are saved straight away.
-      </p>
-      <ul className="sv-stack">
-        <Setting
-          title="AI assistance"
-          badge={
-            <span data-testid={TID.aiStatus}>
-              <Badge tone={ai ? 'warning' : 'success'} glyph={ai ? '!' : '✓'}>
-                {ai ? 'On' : 'Off'}
-              </Badge>
-            </span>
-          }
-        >
-          <p>
-            {ai
-              ? 'AI assistance is on because you turned it on in Settings. Review its provider, key and limits there.'
-              : 'Off. StudyVault sends nothing to any AI provider and every other feature works the same.'}{' '}
-            It is never turned on from this tour: in Settings you see exactly which highlights would
-            be sent, and to which address, before anything leaves this device.
-          </p>
-          <p>
-            <a href={settingsPath('ai')} target="_blank" rel="noreferrer">
-              AI settings (opens in a new tab)
-            </a>
-          </p>
-        </Setting>
-        <Setting
-          title="Sync between devices"
-          badge={
-            <span data-testid={TID.syncStatus}>
-              <Badge tone={sync ? 'warning' : 'success'} glyph={sync ? '!' : '✓'}>
-                {sync ? 'On' : 'Off'}
-              </Badge>
-            </span>
-          }
-        >
-          <p>
-            {sync
-              ? 'Sync is on because you turned it on in Settings.'
-              : 'Off. Your data stays on this device.'}{' '}
-            There is no StudyVault server: sync only ever talks to a server you or someone you trust
-            runs, after you sign in there yourself.
-          </p>
-          <p>
-            <a href={settingsPath('sync')} target="_blank" rel="noreferrer">
-              Sync settings (opens in a new tab)
-            </a>
-          </p>
-        </Setting>
-        <li className="ob-card sv-stack">
-          <h3 className="ob-card__title">Private windows</h3>
-          <Check
-            label="Save highlights from private windows"
-            hint="Off by default. Highlights saved in a private (incognito) window are stored in your normal Chrome profile and stay after you close the window, so the window leaves a trace. Chrome also only runs StudyVault in private windows if you allow it on the extension's details page."
-            checked={settings.allowIncognitoCapture}
-            testId={TID.privateWindows}
-            onChange={(allowIncognitoCapture) => write((s) => ({ ...s, allowIncognitoCapture }))}
-          />
-        </li>
-        <li className="ob-card sv-stack">
-          <h3 className="ob-card__title">Highlights on web pages</h3>
-          <Check
-            label="Show highlights on pages"
-            hint="On by default, so a passage you saved is marked when you come back. The marks are drawn through the page's shared highlight list, so scripts that a site itself runs can read which passages you marked, and each one's colour and kind. They cannot read your notes, banks or anything else. Turn this off to keep saving and reviewing without marking pages."
-            checked={settings.paintHighlights}
-            testId={TID.paintHighlights}
-            onChange={(paintHighlights) => write((s) => ({ ...s, paintHighlights }))}
-          />
-        </li>
-        <li className="ob-card sv-stack sv-stack--tight">
-          <h3 className="ob-card__title">Sites where StudyVault stays off</h3>
-          <p>
-            Your deny list has {plural(settings.denyList.length, 'site')}. StudyVault is switched
-            off on these sites and all of their subdomains: no toolbar, no highlights, nothing
-            saved. {DENY_LIST_SCOPE_NOTE}
-          </p>
-          <p>
-            <a href={settingsPath('site-access')} target="_blank" rel="noreferrer">
-              Edit the deny list (opens in a new tab)
-            </a>
-          </p>
-        </li>
-      </ul>
+    <StepFrame
+      step="privacy"
+      heading={heading}
+      line="The safe answer is already selected."
+      tip={{
+        label: 'About these choices',
+        text: 'Changes save at once and can be changed later in Settings. AI and sync are never turned on from this tour.',
+      }}
+      nav={<StepNav onBack={onBack} next={{ label: 'Next', onClick: onNext }} />}
+    >
+      <div className="ob-tcards">
+        <SwitchCard
+          icon={VenetianMask}
+          tone="violet"
+          label="Private windows"
+          hint="Save in incognito too"
+          detail="Off by default. Highlights saved in a private (incognito) window are stored in your normal Chrome profile and stay after you close the window, so the window leaves a trace. Chrome also only runs StudyVault in private windows if you allow it on the extension's details page."
+          checked={settings.allowIncognitoCapture}
+          testId={TID.privateWindows}
+          onChange={(allowIncognitoCapture) => write((s) => ({ ...s, allowIncognitoCapture }))}
+        />
+        <SwitchCard
+          icon={Highlighter}
+          tone="sun"
+          label="Show highlights"
+          hint="Mark saved passages"
+          detail="On by default, so a passage you saved is marked when you come back. The marks are drawn through the page's shared highlight list, so scripts that a site itself runs can read which passages you marked, and each one's colour and kind. They cannot read your notes, banks or anything else. Turn this off to keep saving and reviewing without marking pages."
+          checked={settings.paintHighlights}
+          testId={TID.paintHighlights}
+          onChange={(paintHighlights) => write((s) => ({ ...s, paintHighlights }))}
+        />
+      </div>
+      <div className="ob-stats">
+        <ul className="ob-stats__list" aria-label="Optional features">
+          <StatusTile icon={Sparkles} label="AI" href={settingsPath('ai')}>
+            <OnOff on={ai} testId={TID.aiStatus} />
+          </StatusTile>
+          <StatusTile icon={RefreshCw} label="Sync" href={settingsPath('sync')}>
+            <OnOff on={sync} testId={TID.syncStatus} />
+          </StatusTile>
+          <StatusTile icon={Ban} label="Blocked sites" href={settingsPath('site-access')}>
+            <Badge tone="neutral">{plural(settings.denyList.length, 'site')}</Badge>
+          </StatusTile>
+        </ul>
+        <InfoTip label="About AI, sync and blocked sites" align="end">
+          {ai || sync
+            ? 'You turned on AI or sync in Settings; review them there. '
+            : 'AI and sync stay off until you set them up in Settings; there is no StudyVault server. '}
+          StudyVault stays off on blocked sites and their subdomains. {DENY_LIST_SCOPE_NOTE}
+        </InfoTip>
+      </div>
       {error}
-      <StepNav onBack={onBack} next={{ label: 'Next', onClick: onNext }} />
     </StepFrame>
   );
 }
@@ -319,47 +708,81 @@ export function PrivacyStep({
 // 3. Site access
 // ---------------------------------------------------------------------------------------------
 
-export function AccessStep({ heading, onBack, onNext }: Flow & { heading: RefObjectLike }) {
+export type Access = 'tab' | 'site' | 'all';
+
+const ACCESS_PICKS: PickOption<Access>[] = [
+  { value: 'tab', label: 'This tab', hint: 'When you click', icon: MousePointerClick, tone: 'sun' },
+  { value: 'site', label: 'One site', hint: 'Every visit', icon: AppWindow, tone: 'primary' },
+  // The broadest grant gets a plain globe and a caution tone, never a "safe" shield.
+  { value: 'all', label: 'All sites', hint: 'Everywhere', icon: Globe, tone: 'warning' },
+];
+
+/** Where each level is switched on later: two taps, drawn as a path (the popup's own labels). */
+const ACCESS_HOW: Record<Access, Array<{ icon: LucideIcon; label: string }>> = {
+  tab: [
+    { icon: Puzzle, label: 'Toolbar icon' },
+    { icon: Power, label: 'Turn on' },
+  ],
+  site: [
+    { icon: Puzzle, label: 'Toolbar icon' },
+    { icon: Check, label: 'Always on' },
+  ],
+  all: [
+    { icon: SettingsIcon, label: 'Settings' },
+    { icon: Globe, label: 'Site access' },
+  ],
+};
+
+/** `access` is held by the tour, so Back keeps it and the last step can show it. */
+export function AccessStep({
+  heading,
+  access,
+  onAccess,
+  onBack,
+  onNext,
+}: Flow & { heading: RefObjectLike; access: Access; onAccess(access: Access): void }) {
   return (
-    <StepFrame step="access" heading={heading}>
-      <p>
-        StudyVault reads a page only after you ask. There are three levels, from narrowest to
-        widest:
-      </p>
-      <dl className="ob-modes">
-        <div>
-          <dt>This tab</dt>
-          <dd>
-            Click the StudyVault toolbar button and choose &ldquo;Activate on this tab&rdquo;. It
-            works in that tab until you navigate away or reload. No extra permission is needed.
-          </dd>
-        </div>
-        <div>
-          <dt>This site</dt>
-          <dd>
-            In the popup choose &ldquo;Always enable on&hellip;&rdquo;. Chrome asks about that one
-            site, and your highlights come back every time you visit it.
-          </dd>
-        </div>
-        <div>
-          <dt>All sites</dt>
-          <dd>
-            In Settings, &ldquo;Enable on all sites&rdquo;. StudyVault then starts by itself on
-            every http and https page except the sites on your deny list. Most people do not need
-            this.
-          </dd>
-        </div>
-      </dl>
-      <InlineNotice tone="success" title="Nothing is requested during this tour">
-        Chrome shows its own permission prompt only when you press one of those buttons, and you can
-        take access back at any time in Settings.
-      </InlineNotice>
-      <p className="sv-muted">
-        PDFs: Chrome&apos;s built-in PDF viewer cannot be marked up by any extension. Use
-        &ldquo;Open in StudyVault reader&rdquo; (in the popup, or right-click a PDF link) to read
-        and highlight a PDF in StudyVault&apos;s own reader.
-      </p>
-      <StepNav onBack={onBack} next={{ label: 'Next', onClick: onNext }} />
+    <StepFrame
+      step="access"
+      heading={heading}
+      line="Nothing is requested during this tour."
+      tip={{
+        label: 'About site access',
+        text: 'StudyVault reads a page only after you ask, and Chrome shows its own prompt for a site or for all sites. Take access back any time in Settings. For PDFs, use Open in StudyVault reader.',
+      }}
+      nav={<StepNav onBack={onBack} next={{ label: 'Next', onClick: onNext }} />}
+    >
+      <PickCards
+        legend="Site access"
+        options={ACCESS_PICKS}
+        value={access}
+        columns={3}
+        onChange={onAccess}
+      />
+      <div className="ob-how">
+        <span className="ob-how__label">Later</span>
+        <ol className="ob-how__path" aria-label="How to turn it on">
+          {ACCESS_HOW[access].map(({ icon: Icon, label }, i) => (
+            <li key={label} className="ob-how__stop">
+              {i > 0 ? <ArrowRight aria-hidden="true" className="ob-how__arrow" /> : null}
+              <span className="ob-chip ob-chip--quiet">
+                <Icon aria-hidden="true" strokeWidth={2.4} />
+                {label}
+              </span>
+            </li>
+          ))}
+        </ol>
+        {access === 'all' ? (
+          <a
+            className="sv-chunky sv-chunky--secondary sv-chunky--sm"
+            href={settingsPath('site-access')}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Open Settings<span className="sv-vh"> (new tab)</span>
+          </a>
+        ) : null}
+      </div>
     </StepFrame>
   );
 }
@@ -391,6 +814,80 @@ async function exclusive<T>(run: () => Promise<T>): Promise<T> {
   return navigator.locks ? navigator.locks.request('studyvault-onboarding-presets', run) : run();
 }
 
+const PRESET_LOOK: Record<PresetId, { label: string; icon: LucideIcon; tone: ArtTone }> = {
+  blank: { label: 'Blank', icon: Inbox, tone: 'neutral' },
+  general: { label: 'General study', icon: GraduationCap, tone: 'primary' },
+  medicine: { label: 'Medicine', icon: Stethoscope, tone: 'danger' },
+  radiology: { label: 'Radiology', icon: ScanLine, tone: 'violet' },
+};
+
+const PRESET_PICKS: PickOption<PresetId>[] = BANK_PRESETS.map((p) => ({
+  value: p.id,
+  ...PRESET_LOOK[p.id],
+  hint: p.bank ? plural(plannedFolderCount(p, new Set()), 'folder') : 'Inbox only',
+  testId: TID.preset(p.id),
+}));
+
+/**
+ * The preset's folders as nested checkbox lists, so the hierarchy is in the markup (screen readers
+ * hear the nesting) and not only in the indent. A row under an unticked parent is disabled and
+ * dimmed; why is spoken with it.
+ */
+function FolderChecklist({
+  label,
+  rows,
+  parentKey,
+  included,
+  uid,
+  onToggle,
+}: {
+  label?: string;
+  rows: readonly PreviewRow[];
+  parentKey: string | null;
+  included: ReadonlySet<string>;
+  uid: string;
+  onToggle(key: string, on: boolean): void;
+}) {
+  const parentOn = parentKey === null || included.has(parentKey);
+  return (
+    <ul className="ob-tree" aria-label={label}>
+      {rows
+        .filter((row) => row.parentKey === parentKey)
+        .map((row) => {
+          const id = `${uid}-${row.key}`;
+          return (
+            <li key={row.key}>
+              <span className={`ob-tree__row${parentOn ? '' : ' ob-tree__row--off'}`}>
+                <input
+                  id={id}
+                  type="checkbox"
+                  checked={included.has(row.key)}
+                  disabled={!parentOn}
+                  data-testid={TID.node(row.key)}
+                  onChange={(e) => onToggle(row.key, e.target.checked)}
+                />
+                <label htmlFor={id}>
+                  {row.name}
+                  {row.depth === 0 ? <span className="sv-muted sv-small"> (bank)</span> : null}
+                  {!parentOn ? <span className="sv-vh"> (left out with its parent)</span> : null}
+                </label>
+              </span>
+              {row.hasChildren ? (
+                <FolderChecklist
+                  rows={rows}
+                  parentKey={row.key}
+                  included={included}
+                  uid={uid}
+                  onToggle={onToggle}
+                />
+              ) : null}
+            </li>
+          );
+        })}
+    </ul>
+  );
+}
+
 export function BanksStep({
   heading,
   state,
@@ -416,6 +913,8 @@ export function BanksStep({
   const included = includedKeys(rows, excluded);
   const planned = plannedFolderCount(preset, excluded);
   const [done, setDone] = useState<ApplyResult | null>(null);
+  // Folders start folded away; a tour resumed with folders left out shows them.
+  const [treeOpen] = useState(excludedList.length > 0);
 
   const create = useAction(async () => {
     const result = await exclusive(() => applyPreset(preset, excluded, ports));
@@ -434,83 +933,72 @@ export function BanksStep({
   };
 
   return (
-    <StepFrame step="banks" heading={heading}>
-      <p>
-        A bank is a collection of highlights, and folders organise it. Pick a starting point, adjust
-        it, and StudyVault creates it for you. You can rename, move or delete anything later in the
-        dashboard.
-      </p>
-      <fieldset className="ob-fieldset">
-        <legend>Starting point</legend>
-        <div className="sv-stack sv-stack--tight">
-          {BANK_PRESETS.map((p) => (
-            <label key={p.id} className="sv-check ob-choice">
-              <input
-                type="radio"
-                name={`${uid}-preset`}
-                value={p.id}
-                checked={preset.id === p.id}
-                data-testid={TID.preset(p.id)}
-                onChange={() => change(() => onPreset(p.id))}
-              />
-              <span>
-                {p.label} <span className="sv-muted sv-small">{p.description}</span>
-              </span>
-            </label>
-          ))}
-        </div>
-      </fieldset>
+    <StepFrame
+      step="banks"
+      heading={heading}
+      line="Pick one. Rename or delete it later."
+      tip={{
+        label: 'About banks',
+        text: 'A bank holds your highlights and folders sort it. Anything that already exists is kept and never duplicated. The Inbox is always there for quick saves.',
+      }}
+      nav={
+        creates && !done ? (
+          <StepNav
+            onBack={onBack}
+            next={{
+              label: 'Create bank',
+              icon: Plus,
+              testId: TID.create,
+              busy: create.busy,
+              ...(nothingSelected ? { disabledReason: 'Tick at least the bank itself.' } : {}),
+              onClick: () => void create.run(),
+            }}
+            also={
+              <ChunkyButton size="lg" variant="ghost" onClick={onNext}>
+                Skip step
+              </ChunkyButton>
+            }
+          />
+        ) : (
+          <StepNav onBack={onBack} next={{ label: 'Next', onClick: onNext }} />
+        )
+      }
+    >
+      <PickCards
+        legend="Starter bank"
+        options={PRESET_PICKS}
+        value={preset.id}
+        columns={4}
+        onChange={(id) => change(() => onPreset(id))}
+      />
 
       {creates ? (
-        <fieldset className="ob-fieldset">
-          <legend>What will be created</legend>
-          <p className="sv-muted sv-small">
-            Untick anything you do not want. Unticking a folder leaves out the folders inside it
-            too.
+        <div className="ob-plan">
+          <p className="ob-plan__line" data-testid={TID.plan}>
+            <Library aria-hidden="true" strokeWidth={2.4} />
+            <span>
+              {nothingSelected
+                ? 'Nothing is selected, so nothing will be created.'
+                : `"${preset.bank!.name}" with ${plural(planned, 'folder')}`}
+            </span>
           </p>
-          <ul className="ob-tree" aria-label={`Preview of ${preset.bank!.name}`}>
-            {rows.map((row) => {
-              const parentOn = row.parentKey === null || included.has(row.parentKey);
-              const on = included.has(row.key);
-              const id = `${uid}-${row.key}`;
-              return (
-                <li
-                  key={row.key}
-                  className="ob-tree__row"
-                  style={{ paddingInlineStart: `${row.depth * 20}px` }}
-                >
-                  <input
-                    id={id}
-                    type="checkbox"
-                    checked={on}
-                    disabled={!parentOn}
-                    data-testid={TID.node(row.key)}
-                    onChange={(e) =>
-                      change(() => onExcluded(setIncluded(excludedList, row.key, e.target.checked)))
-                    }
-                  />
-                  <label htmlFor={id}>
-                    {row.name}
-                    {row.depth === 0 ? <span className="sv-muted sv-small"> (bank)</span> : null}
-                    {!parentOn ? (
-                      <span className="sv-muted sv-small"> (left out with its parent)</span>
-                    ) : null}
-                  </label>
-                </li>
-              );
-            })}
-          </ul>
-          <p className="sv-small" data-testid={TID.plan}>
-            {nothingSelected
-              ? 'Nothing is selected, so nothing will be created.'
-              : `Creates the bank "${preset.bank!.name}" with ${plural(planned, 'folder')}. Anything that already exists is kept and not duplicated.`}
-          </p>
-        </fieldset>
-      ) : (
-        <p className="sv-muted">
-          Nothing will be created. Your Inbox is always there for quick saves.
-        </p>
-      )}
+          <details className="ob-folders" open={treeOpen}>
+            <summary className="ob-disclose">
+              <FolderTree aria-hidden="true" strokeWidth={2.4} />
+              Choose folders
+              <ChevronDown aria-hidden="true" strokeWidth={2.4} className="ob-disclose__chev" />
+            </summary>
+            <FolderChecklist
+              label={`Preview of ${preset.bank!.name}`}
+              rows={rows}
+              parentKey={null}
+              included={included}
+              uid={uid}
+              onToggle={(key, on) => change(() => onExcluded(setIncluded(excludedList, key, on)))}
+            />
+          </details>
+        </div>
+      ) : null}
 
       {done ? (
         <InlineNotice tone="success" live title="Done">
@@ -532,26 +1020,6 @@ export function BanksStep({
           {create.error} Whatever was created is kept, and trying again adds only what is missing.
         </InlineNotice>
       ) : null}
-
-      {creates && !done ? (
-        <StepNav
-          onBack={onBack}
-          next={{
-            label: 'Create the bank and folders',
-            testId: TID.create,
-            busy: create.busy,
-            ...(nothingSelected ? { disabledReason: 'Tick at least the bank itself.' } : {}),
-            onClick: () => void create.run(),
-          }}
-          also={
-            <Button variant="ghost" onClick={onNext}>
-              Skip this step
-            </Button>
-          }
-        />
-      ) : (
-        <StepNav onBack={onBack} next={{ label: 'Next', onClick: onNext }} />
-      )}
     </StepFrame>
   );
 }
@@ -560,16 +1028,49 @@ export function BanksStep({
 // 5. Theme and density
 // ---------------------------------------------------------------------------------------------
 
-const THEMES = [
-  { id: 'system', label: 'Match my system', hint: 'Follows your operating system setting.' },
-  { id: 'light', label: 'Light', hint: 'Always light.' },
-  { id: 'dark', label: 'Dark', hint: 'Always dark.' },
-] as const;
+const THEME_PICKS: PickOption<Settings['theme']>[] = [
+  {
+    value: 'system',
+    label: 'System',
+    hint: 'Match my device',
+    icon: Monitor,
+    tone: 'neutral',
+    testId: TID.theme('system'),
+  },
+  {
+    value: 'light',
+    label: 'Light',
+    hint: 'Always light',
+    icon: Sun,
+    tone: 'sun',
+    testId: TID.theme('light'),
+  },
+  {
+    value: 'dark',
+    label: 'Dark',
+    hint: 'Always dark',
+    icon: Moon,
+    tone: 'violet',
+    testId: TID.theme('dark'),
+  },
+];
 
-const DENSITIES = [
-  { id: 'comfortable', label: 'Comfortable', hint: 'More space around rows and buttons.' },
-  { id: 'compact', label: 'Compact', hint: 'Fits more highlights on screen.' },
-] as const;
+const DENSITY_PICKS: PickOption<Settings['density']>[] = [
+  {
+    value: 'comfortable',
+    label: 'Comfortable',
+    icon: Rows2,
+    tone: 'primary',
+    testId: TID.density('comfortable'),
+  },
+  {
+    value: 'compact',
+    label: 'Compact',
+    icon: Rows4,
+    tone: 'primary',
+    testId: TID.density('compact'),
+  },
+];
 
 export function LookStep({
   heading,
@@ -578,60 +1079,39 @@ export function LookStep({
   onBack,
   onNext,
 }: Flow & { heading: RefObjectLike; settings: Settings; update: Update }) {
-  const uid = useId();
   const { write, error } = useWriter(update);
   return (
-    <StepFrame step="look" heading={heading}>
-      <fieldset className="ob-fieldset">
-        <legend>Theme</legend>
-        <div className="sv-stack sv-stack--tight">
-          {THEMES.map((t) => (
-            <label key={t.id} className="sv-check ob-choice">
-              <input
-                type="radio"
-                name={`${uid}-theme`}
-                checked={settings.theme === t.id}
-                data-testid={TID.theme(t.id)}
-                onChange={() => write((s) => ({ ...s, theme: t.id }))}
-              />
-              <span>
-                {t.label} <span className="sv-muted sv-small">{t.hint}</span>
-              </span>
-            </label>
-          ))}
-        </div>
-      </fieldset>
-      <fieldset className="ob-fieldset">
-        <legend>Density</legend>
-        <div className="sv-stack sv-stack--tight">
-          {DENSITIES.map((d) => (
-            <label key={d.id} className="sv-check ob-choice">
-              <input
-                type="radio"
-                name={`${uid}-density`}
-                checked={settings.density === d.id}
-                data-testid={TID.density(d.id)}
-                onChange={() => write((s) => ({ ...s, density: d.id }))}
-              />
-              <span>
-                {d.label} <span className="sv-muted sv-small">{d.hint}</span>
-              </span>
-            </label>
-          ))}
-        </div>
-        <p className="sv-muted sv-small">
-          Density applies to the dashboard and to the toolbar on pages. Colours for each highlight
-          kind can be changed in Settings.
-        </p>
-      </fieldset>
+    <StepFrame
+      step="look"
+      heading={heading}
+      line="It changes right away."
+      tip={{
+        label: 'About the look',
+        text: 'Density applies to the dashboard and to the toolbar on pages. Colours for each highlight kind can be changed in Settings.',
+      }}
+      nav={<StepNav onBack={onBack} next={{ label: 'Next', onClick: onNext }} />}
+    >
+      <PickCards
+        legend="Theme"
+        showLegend
+        options={THEME_PICKS}
+        value={settings.theme}
+        columns={3}
+        onChange={(theme) => write((s) => ({ ...s, theme }))}
+      />
+      <PickPills
+        legend="Density"
+        options={DENSITY_PICKS}
+        value={settings.density}
+        onChange={(density) => write((s) => ({ ...s, density }))}
+      />
       {error}
-      <StepNav onBack={onBack} next={{ label: 'Next', onClick: onNext }} />
     </StepFrame>
   );
 }
 
 // ---------------------------------------------------------------------------------------------
-// 6. Keyboard shortcuts
+// 6. Try it: how to save, and the keys Chrome reports
 // ---------------------------------------------------------------------------------------------
 
 export function KeysStep({ heading, onBack, onNext }: Flow & { heading: RefObjectLike }) {
@@ -640,51 +1120,78 @@ export function KeysStep({ heading, onBack, onNext }: Flow & { heading: RefObjec
     // chrome:// pages cannot be linked from an extension page; they can be opened as a new tab.
     await browser.tabs.create({ url: shortcutsPageUrl(navigator.userAgent) });
   });
+  const quickSave = pickCommands(commands ?? [], [COMMAND.quickSave])[0]?.shortcut;
+  const how: Array<{ icon: LucideIcon; tone: ArtTone; label: string; key?: string }> = [
+    { icon: TextSelect, tone: 'primary', label: 'Select text' },
+    { icon: Bookmark, tone: 'sun', label: 'Press Save', ...(quickSave ? { key: quickSave } : {}) },
+    { icon: Library, tone: 'success', label: 'Find it later' },
+  ];
   return (
-    <StepFrame step="keys" heading={heading}>
-      <p>
-        These keys work from any tab. They are read from Chrome right now, so a key you changed or
-        cleared there is shown as it is. Chrome decides which keys an extension may use.
-      </p>
-      {error ? (
-        <InlineNotice
-          tone="error"
-          title="Could not read the current shortcuts"
-          action={<Button onClick={retry}>Retry</Button>}
-        >
-          {error}
-        </InlineNotice>
-      ) : commands === null ? (
-        <p className="sv-muted">Reading the current shortcuts…</p>
-      ) : (
-        <ul className="ob-keys" aria-label="Keyboard shortcuts" data-testid={TID.shortcuts}>
-          {commands.map((c) => (
-            <li key={c.name} className="ob-keys__row">
-              <span className="sv-grow">{c.description || c.name}</span>
-              <Kbd shortcut={c.shortcut} />
-            </li>
-          ))}
-          {IN_PAGE_KEYS.map((k) => (
-            <li key={k.keys} className="ob-keys__row">
-              <span className="sv-grow">{k.action} (while the page has focus)</span>
-              <Kbd shortcut={k.keys} />
-            </li>
-          ))}
-        </ul>
-      )}
-      <div className="sv-stack sv-stack--tight">
+    <StepFrame
+      step="keys"
+      heading={heading}
+      pose="wave"
+      line="On a page you turned on, select text and save it."
+      tip={{
+        label: 'About shortcuts',
+        text: 'These keys work from any tab. They are read from Chrome, which decides which keys an extension may use.',
+      }}
+      nav={<StepNav onBack={onBack} next={{ label: 'Next', onClick: onNext }} />}
+    >
+      <Tiles label="How to save" items={how} numbered />
+
+      <details className="ob-keys">
+        <summary className="ob-disclose">
+          <Keyboard aria-hidden="true" strokeWidth={2.4} />
+          All shortcuts
+          <ChevronDown aria-hidden="true" strokeWidth={2.4} className="ob-disclose__chev" />
+        </summary>
+        {error ? (
+          <InlineNotice
+            tone="error"
+            title="Could not read the current shortcuts"
+            action={<Button onClick={retry}>Retry</Button>}
+          >
+            {error}
+          </InlineNotice>
+        ) : commands === null ? (
+          <p className="sv-muted" role="status">
+            Reading the current shortcuts…
+          </p>
+        ) : (
+          <ul className="ob-keys__list" aria-label="Keyboard shortcuts" data-testid={TID.shortcuts}>
+            {commands.map((c) => (
+              <li key={c.name} className="ob-keys__row">
+                <span className="sv-grow">{c.description || c.name}</span>
+                <Kbd shortcut={c.shortcut} />
+              </li>
+            ))}
+            {IN_PAGE_KEYS.map((k) => (
+              <li key={k.keys} className="ob-keys__row">
+                <span className="sv-grow">{k.action} (while the page has focus)</span>
+                <Kbd shortcut={k.keys} />
+              </li>
+            ))}
+          </ul>
+        )}
         <div>
-          <Button busy={open.busy} onClick={() => void open.run()}>
-            Change shortcuts in Chrome
-          </Button>
+          <ChunkyButton
+            size="sm"
+            icon={SettingsIcon}
+            aria-busy={open.busy || undefined}
+            onClick={() => {
+              if (!open.busy) void open.run();
+            }}
+          >
+            Change keys
+          </ChunkyButton>
         </div>
         {open.error ? (
           <InlineNotice tone="error" title="Could not open the shortcuts page">
             {open.error}
           </InlineNotice>
         ) : null}
-      </div>
-      <StepNav onBack={onBack} next={{ label: 'Next', onClick: onNext }} />
+      </details>
     </StepFrame>
   );
 }
@@ -696,14 +1203,18 @@ export function KeysStep({ heading, onBack, onNext }: Flow & { heading: RefObjec
 export function DoneStep({
   heading,
   state,
+  access,
   onBack,
   onFinish,
 }: {
   heading: RefObjectLike;
   state: OnboardingState;
+  /** The site-access card picked in this visit; null when the tour resumed past it. */
+  access: Access | null;
   onBack(): void;
   onFinish(): void;
 }) {
+  const game = useGame();
   const { commands } = useShortcuts();
   /** The window this tour is in: null while asking, 'unknown' when Chrome did not say. */
   const [windowId, setWindowId] = useState<number | 'unknown' | null>(null);
@@ -729,63 +1240,106 @@ export function DoneStep({
     await browser.sidePanel.open({ windowId });
     setOpened(true);
   });
-  const panelKey = pickCommands(commands ?? [], [COMMAND.openSidePanel])[0];
+  const mode = useAction((on: boolean) => setGameMode(on));
+  const panelKey = pickCommands(commands ?? [], [COMMAND.openSidePanel])[0]?.shortcut;
   const applied = state.applied;
+  const data = game.data;
+  const goal = data?.ready && data.mode ? data.goal.value : null;
+  const GoalIcon = goal ? GOAL_LOOK[goal].icon : null;
+  const site = ACCESS_PICKS.find((a) => a.value === access);
 
   return (
-    <StepFrame step="done" heading={heading}>
-      {applied ? (
-        <p data-testid={TID.summary}>
-          {applied.createdBank
-            ? `Your bank "${applied.bankName}" is ready with ${plural(applied.createdFolders, 'folder')}.`
-            : `Your bank "${applied.bankName}" is ready.`}
+    <StepFrame
+      step="done"
+      heading={heading}
+      pose="cheer"
+      center
+      nav={
+        <StepNav
+          onBack={onBack}
+          next={{
+            label: 'Finish',
+            variant: 'sun',
+            icon: Check,
+            testId: TID.finish,
+            onClick: onFinish,
+          }}
+        />
+      }
+    >
+      {goal || site || applied ? (
+        <ul className="ob-chips ob-chips--center" aria-label="Your choices">
+          {goal && GoalIcon ? (
+            <li className="ob-chip ob-chip--lg sv-art--primary">
+              <GoalIcon aria-hidden="true" strokeWidth={2.4} />
+              {GOAL_NAMES[goal]} · {goal} XP a day
+            </li>
+          ) : null}
+          {site ? (
+            <li className="ob-chip ob-chip--lg sv-art--sun">
+              <site.icon aria-hidden="true" strokeWidth={2.4} />
+              {site.label}
+            </li>
+          ) : null}
+          {applied ? (
+            <li className="ob-chip ob-chip--lg sv-art--success" data-testid={TID.summary}>
+              <Library aria-hidden="true" strokeWidth={2.4} />
+              {applied.createdBank
+                ? `${applied.bankName} · ${plural(applied.createdFolders, 'folder')}`
+                : applied.bankName}
+            </li>
+          ) : null}
+        </ul>
+      ) : null}
+
+      {data ? (
+        <div className="ob-game">
+          <span className="ob-tcard__art sv-art--sun" aria-hidden="true">
+            <Gamepad2 strokeWidth={2.4} />
+          </span>
+          <AsyncSwitch
+            checked={data.mode}
+            label="Game mode"
+            hint={data.mode ? 'XP, streaks, badges' : 'Plain mode'}
+            onChange={(on) => mode.run(on)}
+          />
+        </div>
+      ) : null}
+      {mode.error ? (
+        <InlineNotice tone="error" title="Your change was not saved">
+          {mode.error}
+        </InlineNotice>
+      ) : null}
+
+      <div className="ob-panel">
+        <ChunkyButton
+          icon={PanelRight}
+          data-testid={TID.openPanel}
+          aria-busy={open.busy || undefined}
+          {...(windowId === null ? { disabledReason: 'Looking up this window…' } : {})}
+          onClick={() => {
+            if (!open.busy) void open.run();
+          }}
+        >
+          Open side panel
+        </ChunkyButton>
+        {panelKey ? <Kbd shortcut={panelKey} /> : null}
+        <InfoTip label="Other ways to open it">
+          Click the StudyVault icon in the Chrome toolbar (pin it from the puzzle-piece menu if you
+          do not see it), then choose Open side panel.
+        </InfoTip>
+      </div>
+      {opened ? (
+        <p role="status" className="ob-chip ob-chip--lg sv-art--success">
+          <Check aria-hidden="true" strokeWidth={3} />
+          The side panel is open next to this tab.
         </p>
       ) : null}
-      <h3>Open the side panel</h3>
-      <p>The side panel is where you read, edit and organise what you save while you browse.</p>
-      <ol className="ob-steps">
-        <li>
-          Click the StudyVault icon in the Chrome toolbar (pin it from the puzzle-piece menu if you
-          do not see it), then choose <strong>Open side panel</strong>.
-        </li>
-        <li>
-          Or press <Kbd shortcut={panelKey?.shortcut ?? ''} /> from any tab.
-        </li>
-        <li>
-          Select text on a page you have enabled and use the small StudyVault toolbar to save it.
-        </li>
-      </ol>
-      <div className="sv-stack sv-stack--tight">
-        <div>
-          <Button
-            data-testid={TID.openPanel}
-            busy={open.busy}
-            {...(windowId === null ? { disabledReason: 'Looking up this window…' } : {})}
-            onClick={() => void open.run()}
-          >
-            Open the side panel now
-          </Button>
-        </div>
-        {opened ? (
-          <p role="status" className="sv-muted">
-            The side panel is open next to this tab.
-          </p>
-        ) : null}
-        {open.error ? (
-          <InlineNotice tone="error" title="Could not open the side panel">
-            {open.error} You can open it from the toolbar icon instead.
-          </InlineNotice>
-        ) : null}
-      </div>
-      <StepNav
-        onBack={onBack}
-        next={{ label: 'Finish', testId: TID.finish, onClick: onFinish }}
-        also={
-          <Button variant="ghost" onClick={() => void openDashboard()}>
-            Open the dashboard
-          </Button>
-        }
-      />
+      {open.error ? (
+        <InlineNotice tone="error" title="Could not open the side panel">
+          {open.error} You can open it from the toolbar icon instead.
+        </InlineNotice>
+      ) : null}
     </StepFrame>
   );
 }

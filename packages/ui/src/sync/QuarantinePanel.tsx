@@ -1,8 +1,11 @@
 import { useId, useState } from 'react';
+import { Ban } from 'lucide-react';
 import { RETRYABLE_REASONS, type QuarantinedOp } from '@sync';
 import { Badge } from '../Badge';
 import { Button } from '../Button';
-import { EmptyState, InlineNotice } from '../Notice';
+import { EmptyState } from '../design/EmptyState';
+import { InfoTip } from '../design/InfoTip';
+import { InlineNotice } from '../Notice';
 import { useAction, useAsync } from '../hooks';
 import { useSyncApi } from './api';
 import { REASON_TEXT, entityLabel } from './labels';
@@ -20,21 +23,21 @@ function Item({
 }) {
   const local = item.id.startsWith(LOCAL_PREFIX);
   return (
-    <li className="sv-stack sv-stack--tight" data-testid={`quarantine-item-${item.id}`}>
-      <div className="sv-row">
+    <li className="sv-sync-item sd-stack" data-testid={`quarantine-item-${item.id}`}>
+      <div className="sd-row">
         <strong>{entityLabel(item.entityType)}</strong>
         <Badge tone={local ? 'info' : 'warning'}>
           {local ? 'Kept on this device only' : 'From the server'}
         </Badge>
         {RETRYABLE_REASONS.has(item.reason) ? <Badge tone="info">May work later</Badge> : null}
       </div>
-      <p>{REASON_TEXT[item.reason]}</p>
-      {item.detail ? <p className="sv-muted sv-small">{item.detail}</p> : null}
-      <p className="sv-muted sv-small">
+      <p className="sv-sync-item__text">{REASON_TEXT[item.reason]}</p>
+      {item.detail ? <p className="sd-line">{item.detail}</p> : null}
+      <p className="sd-line">
         {new Date(item.at).toLocaleString()}
         {item.entityId ? ` · ${item.entityId}` : ''}
       </p>
-      <div className="sv-row">
+      <div className="sd-row">
         <Button busy={busy} data-testid="quarantine-dismiss" onClick={onDismiss}>
           {local ? 'Dismiss this note' : 'Ignore it on this device'}
         </Button>
@@ -74,16 +77,19 @@ export function QuarantinePanel({ refreshKey = 0 }: { refreshKey?: number | stri
   });
 
   return (
-    <section
-      className="sv-stack sv-stack--tight"
-      aria-labelledby={headingId}
-      data-testid="quarantine-panel"
-    >
-      <h3 id={headingId}>Not exchanged{items.length > 0 ? ` (${items.length})` : ''}</h3>
-      <p className="sv-muted sv-small">
-        Changes that were refused or could not be sent, and why. Your own data is never changed by a
-        refused change.
-      </p>
+    <section className="sd-card" aria-labelledby={headingId} data-testid="quarantine-panel">
+      <div className="sd-row">
+        <span className="sd-tile sd-tile--sm sv-art--neutral" aria-hidden="true">
+          <Ban strokeWidth={2.4} />
+        </span>
+        <h3 id={headingId} className="sd-card__title sd-grow">
+          Not exchanged{items.length > 0 ? ` (${items.length})` : ''}
+        </h3>
+        <InfoTip label="About changes not exchanged" align="end">
+          Changes that were refused or could not be sent, and why. Your own data is never changed by
+          a refused change.
+        </InfoTip>
+      </div>
       <p role="status" className="sv-sr">
         {said}
       </p>
@@ -96,12 +102,19 @@ export function QuarantinePanel({ refreshKey = 0 }: { refreshKey?: number | stri
           {list.error}
         </InlineNotice>
       ) : list.loading ? (
-        <p className="sv-muted">Loading&hellip;</p>
+        <p className="sd-line">Loading&hellip;</p>
       ) : items.length === 0 ? (
-        <EmptyState title="Nothing was refused">Every change was exchanged or applied.</EmptyState>
+        <EmptyState
+          pose="sleep"
+          mascotSize={56}
+          heading="h4"
+          title="Nothing was refused"
+          text="Every change was exchanged or applied."
+          className="sv-sync-empty"
+        />
       ) : (
         <>
-          <div className="sv-row">
+          <div className="sd-row">
             <Button
               busy={retry.busy}
               data-testid="quarantine-retry"
@@ -121,7 +134,7 @@ export function QuarantinePanel({ refreshKey = 0 }: { refreshKey?: number | stri
               {dismiss.error}
             </InlineNotice>
           ) : null}
-          <ul className="sv-stack">
+          <ul className="sd-stack sv-sync-list">
             {items.map((item) => (
               <Item
                 key={item.id}

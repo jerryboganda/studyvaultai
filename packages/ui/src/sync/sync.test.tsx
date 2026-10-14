@@ -185,6 +185,18 @@ function mount(fake: ReturnType<typeof fakeApi>) {
 }
 
 const byId = (id: string) => screen.getByTestId(id);
+const next = () => userEvent.click(byId('sync-setup-flow-next'));
+
+/** The setup wizard: what is shared -> server -> sign-in provider -> last look (ack, Turn on). */
+async function fillSetup(o: { server?: string; ack?: boolean } = {}) {
+  await userEvent.click(await screen.findByTestId('sync-setup-flow-next'));
+  await userEvent.type(byId('sync-server-url'), o.server ?? 'https://sync.example.org');
+  await next();
+  await userEvent.type(byId('sync-issuer'), 'https://id.example.org');
+  await userEvent.type(byId('sync-client-id'), 'studyvault');
+  await next();
+  if (o.ack !== false) await userEvent.click(byId('sync-ack'));
+}
 
 function conflict(over: Partial<ConflictRecord> = {}): ConflictRecord {
   return {
@@ -263,6 +275,11 @@ describe('turning sync on', () => {
     expect(text).toMatch(/operator of that server can read/i);
     expect(text).toMatch(/not end-to-end\s+encryption/i);
     expect(text).toMatch(/never sent/i);
+    // the first step of the wizard, with the short version up front
+    expect(screen.getByRole('heading', { name: 'What is shared' })).toBeInTheDocument();
+    await next();
+    await userEvent.type(byId('sync-server-url'), 'https://sync.example.org');
+    await next();
     expect(byId('sync-redirect-url').textContent).toMatch(/chromiumapp\.org/);
   });
 
@@ -295,22 +312,35 @@ describe('turning sync on', () => {
   it('cannot be turned on without the acknowledgement, and says why', async () => {
     const fake = fakeApi(view());
     mount(fake);
-    const button = await screen.findByTestId('sync-enable');
-    expect(button.getAttribute('aria-disabled')).toBe('true');
-    expect(button.getAttribute('title')).toMatch(/understand where your data will go/);
-    await userEvent.click(button);
+    await fillSetup({ ack: false });
+    await userEvent.click(byId('sync-enable'));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /understand where your data will go/,
+    );
     expect(fake.api.requestPermissions).not.toHaveBeenCalled();
+    // ticking it is enough
+    await userEvent.click(byId('sync-ack'));
+    await userEvent.click(byId('sync-enable'));
+    await waitFor(() => expect(fake.api.requestPermissions).toHaveBeenCalledTimes(1));
   });
 
   it('validates the addresses before Chrome is asked for anything', async () => {
     const fake = fakeApi(view());
     mount(fake);
-    await userEvent.type(await screen.findByTestId('sync-server-url'), 'http://remote.example.org');
-    await userEvent.type(byId('sync-issuer'), 'https://id.example.org');
-    await userEvent.type(byId('sync-client-id'), 'studyvault');
-    await userEvent.click(byId('sync-ack'));
-    await userEvent.click(byId('sync-enable'));
-    expect(await screen.findByRole('alert')).toHaveTextContent(/https/);
+    await userEvent.click(await screen.findByTestId('sync-setup-flow-next'));
+    await userEvent.type(byId('sync-server-url'), 'http://remote.example.org');
+    await next();
+    // Next stays on the step, says why at the field, and moves focus there
+    expect((await screen.findAllByRole('alert'))[0]).toHaveTextContent(/https/);
+    expect(byId('sync-server-url').getAttribute('aria-invalid')).toBe('true');
+    expect(document.activeElement).toBe(byId('sync-server-url'));
+    expect(screen.queryByTestId('sync-issuer')).toBeNull();
+    // the sign-in step checks its two fields the same way
+    await userEvent.clear(byId('sync-server-url'));
+    await userEvent.type(byId('sync-server-url'), 'https://sync.example.org');
+    await next();
+    await next();
+    expect((await screen.findAllByRole('alert'))[0]).toHaveTextContent(/sign-in provider/i);
     expect(fake.api.requestPermissions).not.toHaveBeenCalled();
     expect(fake.calls).toEqual([]);
   });
@@ -318,10 +348,7 @@ describe('turning sync on', () => {
   it('asks Chrome first (from the click), then saves the settings and turns sync on', async () => {
     const fake = fakeApi(view());
     mount(fake);
-    await userEvent.type(await screen.findByTestId('sync-server-url'), 'https://sync.example.org');
-    await userEvent.type(byId('sync-issuer'), 'https://id.example.org');
-    await userEvent.type(byId('sync-client-id'), 'studyvault');
-    await userEvent.click(byId('sync-ack'));
+    await fillSetup();
     await userEvent.click(byId('sync-enable'));
     await waitFor(() => expect(fake.calls).toEqual(['requestPermissions', 'configure', 'enable']));
     expect(fake.api.requestPermissions).toHaveBeenCalledWith({
@@ -338,10 +365,7 @@ describe('turning sync on', () => {
     const requestPermissions = vi.fn(() => prompt);
     const fake = fakeApi(view(), { requestPermissions });
     mount(fake);
-    await userEvent.type(await screen.findByTestId('sync-server-url'), 'https://sync.example.org');
-    await userEvent.type(byId('sync-issuer'), 'https://id.example.org');
-    await userEvent.type(byId('sync-client-id'), 'studyvault');
-    await userEvent.click(byId('sync-ack'));
+    await fillSetup();
     const enable = byId('sync-enable');
     expect(screen.queryByTestId('sync-enable-status')).toBeNull();
     await userEvent.click(enable);
@@ -360,10 +384,7 @@ describe('turning sync on', () => {
   it('a declined prompt changes nothing', async () => {
     const fake = fakeApi(view(), { requestPermissions: vi.fn(async () => false) });
     mount(fake);
-    await userEvent.type(await screen.findByTestId('sync-server-url'), 'https://sync.example.org');
-    await userEvent.type(byId('sync-issuer'), 'https://id.example.org');
-    await userEvent.type(byId('sync-client-id'), 'studyvault');
-    await userEvent.click(byId('sync-ack'));
+    await fillSetup();
     await userEvent.click(byId('sync-enable'));
     expect(await screen.findByText(/did not grant the permissions/)).toBeInTheDocument();
     expect(fake.api.configure).not.toHaveBeenCalled();
@@ -403,7 +424,7 @@ describe('connected', () => {
       view({ ...ON, signedIn: true, account: 'user-1', pending: 3, lastSyncAt: null }),
     );
     mount(fake);
-    expect(await screen.findByTestId('sync-status')).toHaveTextContent('Up to date.');
+    expect(await screen.findByTestId('sync-status')).toHaveTextContent('Up to date');
     expect(byId('sync-pending')).toHaveTextContent('3 changes waiting to upload');
     expect(byId('sync-last-sync')).toHaveTextContent('never');
     await userEvent.click(byId('sync-now'));
@@ -416,7 +437,9 @@ describe('connected', () => {
     mount(fake);
     await screen.findByTestId('sync-status');
     fake.publish({ status: 'offline' });
-    await waitFor(() => expect(byId('sync-status')).toHaveTextContent(/cannot be reached/));
+    await waitFor(() => expect(byId('sync-status')).toHaveTextContent('Offline'));
+    // one chip, and one line that says what it means
+    expect(byId('sync-status-card')).toHaveTextContent(/cannot be reached/);
     fake.publish({ running: true });
     await waitFor(() => expect(byId('sync-status')).toHaveTextContent('Syncing'));
   });
@@ -536,7 +559,7 @@ describe('end-to-end encryption card', () => {
     mount(fake);
     const setup = await screen.findByTestId('e2ee-setup');
     expect(byId('e2ee-mode')).toHaveTextContent(/not end-to-end encryption/i);
-    expect(screen.getByText(/lost passphrase means lost synced data/i)).toBeInTheDocument();
+    expect(screen.getByText('No reset if lost')).toBeInTheDocument();
     expect(setup.getAttribute('title')).toMatch(/stronger passphrase/);
 
     await userEvent.type(byId('e2ee-passphrase'), 'correct horse battery staple');
@@ -617,7 +640,7 @@ describe('the encryption decision', () => {
     expect(await screen.findByTestId('sync-awaiting-choice')).toHaveTextContent(
       /has not sent anything yet/,
     );
-    expect(byId('sync-status')).toHaveTextContent(/Nothing has been uploaded yet/);
+    expect(byId('sync-status')).toHaveTextContent('Choose protection');
     const note = byId('e2ee-choice-note');
     expect(note).toHaveTextContent(/does not send anything until you choose/);
     expect(note).toHaveTextContent(/operator of the sync server/);
@@ -638,6 +661,12 @@ describe('the encryption decision', () => {
   it('uploading without encryption needs the acknowledgement, and then does exactly that', async () => {
     const fake = fakeApi(view(WAITING));
     mount(fake);
+    // two picture cards: the passphrase is offered first, no passphrase is the other card
+    expect(
+      ((await screen.findByTestId('e2ee-choice-passphrase')) as HTMLInputElement).checked,
+    ).toBe(true);
+    expect(screen.queryByTestId('e2ee-upload-plain')).toBeNull();
+    await userEvent.click(byId('e2ee-choice-plain'));
     const upload = await screen.findByTestId('e2ee-upload-plain');
     expect(upload).toHaveTextContent('Upload without end-to-end encryption');
     expect(upload.getAttribute('aria-disabled')).toBe('true');

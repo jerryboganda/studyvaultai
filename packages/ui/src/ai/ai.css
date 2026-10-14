@@ -1,24 +1,69 @@
-/* AI surfaces. Tokens and base components come from tokens.css / components.css. */
+/* AI surfaces. Sunny tokens and base components come from tokens.css / components.css. */
 .ai-box {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
   padding: var(--sv-space-3);
-  border: 1px solid var(--sv-border-strong);
-  border-radius: var(--sv-radius-sm);
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-md);
   background: var(--sv-surface);
 }
 .ai-box--target {
-  border-color: var(--sv-info);
-  background: var(--sv-info-bg);
+  border-color: var(--sv-primary);
+  background: var(--sv-primary-soft);
 }
 .ai-dialog {
   width: min(46rem, calc(100vw - 2 * var(--sv-space-4)));
 }
+.ai-dlg__title {
+  display: flex;
+  align-items: center;
+  gap: var(--sv-space-2);
+}
+/* Where the text goes: one clear card at the top of the consent dialog. */
+.ai-dest {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sv-space-3);
+  padding: var(--sv-space-3);
+  border: 2px solid var(--sv-primary);
+  border-radius: var(--sv-radius-lg);
+  background: var(--sv-primary-soft);
+  color: var(--sv-ink);
+}
+.ai-dest__tile {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  background: var(--sv-surface);
+}
+.ai-dest__tile svg {
+  width: 24px;
+  height: 24px;
+}
+.ai-dest__body {
+  display: flex;
+  /* Takes the row; in a narrow panel it wraps under the tile instead of squeezing beside it. */
+  flex: 1 1 14rem;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+  min-width: 0;
+}
+.ai-dest__title {
+  margin: 0;
+  font-size: var(--sv-text-md);
+  overflow-wrap: anywhere;
+}
 .ai-outbound {
   max-height: 16rem;
   margin: 0;
-  padding: var(--sv-space-2);
-  border: 1px solid var(--sv-border-strong);
-  border-radius: var(--sv-radius-sm);
-  background: var(--sv-surface);
+  padding: var(--sv-space-3);
+  border: 2px solid var(--sv-line-strong);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface-2);
   font-family: var(--sv-font-mono);
   font-size: var(--sv-text-xs);
   white-space: pre-wrap;
@@ -37,27 +82,64 @@
   display: flex;
   flex-direction: column;
   gap: var(--sv-space-2);
+  min-width: 0;
   padding: var(--sv-space-3);
-  border: 1px solid var(--sv-border-strong);
-  border-radius: var(--sv-radius-md);
-  background: var(--sv-surface-raised);
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-lg);
+  background: var(--sv-surface);
+  box-shadow: 0 3px 0 var(--sv-border);
+}
+.ai-card__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sv-space-2);
+}
+.ai-card__head h3 {
+  margin: 0;
+  font-size: var(--sv-text-md);
+  font-weight: 800;
+}
+.ai-card__tile {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+}
+.ai-card__tile svg {
+  width: 18px;
+  height: 18px;
+}
+/* Chip rows (draft meta, consent details, estimate). */
+.ai-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sv-space-1);
+  min-width: 0;
+}
+.ai-meta .sd-chip {
+  flex-shrink: 1;
+  overflow-wrap: anywhere;
 }
 .ai-item {
   display: flex;
   flex-direction: column;
   gap: var(--sv-space-2);
   padding-block-start: var(--sv-space-2);
-  border-block-start: 1px dashed var(--sv-border-strong);
+  border-block-start: 2px dashed var(--sv-border);
 }
 .ai-cite {
   margin: 0;
 }
 .ai-flag {
   margin: 0;
-  padding: var(--sv-space-1) var(--sv-space-2);
-  border-inline-start: 3px solid var(--sv-warning);
-  background: var(--sv-warning-bg);
-  color: var(--sv-warning);
+  padding: var(--sv-space-2) var(--sv-space-3);
+  border-inline-start: 4px solid var(--sv-warning-ink);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-warning-soft);
+  color: var(--sv-warning-ink);
 }
 .ai-pre {
   white-space: pre-wrap;
@@ -68,6 +150,7 @@
 }
 .ai-number {
   width: 8rem;
+  max-width: 100%;
 }
 .ai-outline {
   margin: 0;
@@ -77,4 +160,216 @@
 }
 .ai-outline--l3 {
   margin-inline-start: calc(2 * var(--sv-space-4));
+}
+.ai-inline-icon {
+  width: 16px;
+  height: 16px;
+  vertical-align: -3px;
+}
+
+/* AI off: the mascot, one line and the switch. */
+.ai-off__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sv-space-4);
+}
+.ai-off__title {
+  margin: 0;
+  font-size: var(--sv-text-lg);
+  font-weight: 800;
+}
+
+/* Today's requests as a bar. */
+.ai-usage {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sv-space-2);
+}
+.ai-usage .sv-meter {
+  flex: 1 1 8rem;
+  min-width: 6rem;
+}
+.ai-usage__num {
+  font-size: var(--sv-text-sm);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.ai-estimate {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+}
+
+/* Blocks inside "Advanced". */
+.ai-block {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+  padding: var(--sv-space-3);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface-2);
+}
+.ai-block__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sv-space-2);
+  margin: 0;
+  font-size: var(--sv-text-md);
+  font-weight: 800;
+}
+.ai-block__title svg {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  color: var(--sv-violet-ink);
+}
+.ai-block__title .sv-infotip svg {
+  color: inherit;
+}
+.ai-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(10rem, 100%), 1fr));
+  gap: var(--sv-space-2) var(--sv-space-3);
+}
+.ai-keyrow {
+  align-items: flex-end;
+}
+.ai-ledger {
+  display: grid;
+  gap: var(--sv-space-2);
+  margin: 0;
+}
+.ai-ledger__row {
+  display: grid;
+  grid-template-columns: minmax(8rem, 12rem) 1fr;
+  align-items: center;
+  gap: var(--sv-space-2);
+}
+.ai-ledger__row dt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-sm);
+  font-weight: 800;
+}
+.ai-ledger__row dt svg {
+  width: 16px;
+  height: 16px;
+}
+.ai-ledger__row dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sv-space-2);
+  margin: 0;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+.ai-ledger__row dd .sv-meter {
+  flex: 1 1 8rem;
+  min-width: 6rem;
+}
+@container (max-width: 420px) {
+  .ai-ledger__row {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* The action chips on a highlight. */
+.ai-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+  min-width: 0;
+}
+.ai-actions__title {
+  display: flex;
+  align-items: center;
+  gap: var(--sv-space-2);
+  margin: 0;
+  font-size: var(--sv-text-md);
+  font-weight: 800;
+}
+.ai-actions__title > svg {
+  width: 18px;
+  height: 18px;
+  color: var(--sv-violet-ink);
+}
+.ai-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sv-space-1);
+}
+.ai-chip.sv-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 4px 12px;
+  border-radius: var(--sv-radius-pill);
+  font-size: var(--sv-text-sm);
+}
+.ai-chip svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--sv-violet-ink);
+}
+.ai-chip[aria-disabled='true'] svg {
+  color: inherit;
+}
+
+/* Which provider each task starts with: a compact grid of selects. */
+.ai-routes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(14rem, 100%), 1fr));
+  gap: var(--sv-space-2) var(--sv-space-3);
+  min-width: 0;
+  margin: 0;
+  padding: var(--sv-space-3);
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface);
+}
+.ai-routes > legend,
+.ai-routes > p,
+.ai-routes > .sv-notice {
+  grid-column: 1 / -1;
+}
+.ai-routes > legend {
+  float: left;
+  width: 100%;
+  padding: 0;
+}
+.ai-off__row > .sd-stack {
+  flex: 1 1 16rem;
+}
+.ai-dest__sub {
+  margin: 0;
+}
+.ai-fallbacks > li {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface);
+  overflow-wrap: anywhere;
+}
+/* A badge on its own line keeps its natural width (the card is a flex column). */
+.ai-card .sv-badge {
+  align-self: flex-start;
+}
+
+/* Focus lands here after the setup closes (programmatic, not a control). */
+.ai-status__title:focus {
+  outline: none;
+}
+.ai-dlg__title:focus {
+  outline: none;
 }

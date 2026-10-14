@@ -1,16 +1,64 @@
 import { useCallback, useEffect, useId, useState } from 'react';
-import { assertSecureEndpoint, normaliseBaseUrl } from '@sync';
-import { Badge } from '../Badge';
+import './sync.css';
+import {
+  CircleCheck,
+  CloudOff,
+  CloudUpload,
+  Database,
+  Eye,
+  FileText,
+  Globe,
+  Highlighter,
+  History,
+  KeyRound,
+  Layers,
+  Library,
+  LogIn,
+  LogOut,
+  NotebookPen,
+  Power,
+  RefreshCw,
+  ScanText,
+  Server,
+  ServerOff,
+  ShieldCheck,
+  Timer,
+  TriangleAlert,
+  UserRound,
+  type LucideIcon,
+} from 'lucide-react';
+import { assertSecureEndpoint, normaliseBaseUrl, type SyncStatus } from '@sync';
 import { Button } from '../Button';
 import { ConfirmDialog } from '../ConfirmDialog';
+import { ChunkyButton } from '../design/Buttons';
+import { InfoTip } from '../design/InfoTip';
+import { Stepper } from '../design/Stepper';
+import { VaultBuddy } from '../design/VaultBuddy';
 import { InlineNotice } from '../Notice';
 import { useAction } from '../hooks';
 import { errorMessage } from '../text';
+import {
+  Chip,
+  Disclosure,
+  Fact,
+  Facts,
+  SectionHead,
+  StepError,
+  StepFlow,
+  type ChipTone,
+  type FlowStep,
+} from '../backup/kit';
 import { useSyncApi } from './api';
 import { ConflictsPanel } from './ConflictsPanel';
-import { NEVER_UPLOADED, PROVIDER_LEARNS, SERVER_STILL_SEES, syncedGroups } from './consent';
+import {
+  NEVER_UPLOADED,
+  PROVIDER_LEARNS,
+  SERVER_STILL_SEES,
+  syncedGroups,
+  type SyncedGroup,
+} from './consent';
 import { EncryptionCard } from './EncryptionCard';
-import { STATUS_TEXT } from './labels';
+import { STATUS_DETAIL, STATUS_TEXT } from './labels';
 import type { SyncConfigInput, SyncStatusView } from './protocol';
 import { QuarantinePanel } from './QuarantinePanel';
 
@@ -85,12 +133,14 @@ export function validateSyncInput(raw: SyncConfigInput): Validated {
 
 // ---------------------------------------------------------------------------------------------
 
+/** A wizard field: when invalid, the step's error (shown once, under the step) describes it. */
 function TextField({
   label,
   value,
   onChange,
   testId,
-  error,
+  invalid = false,
+  errorId,
   hint,
   placeholder,
 }: {
@@ -98,11 +148,14 @@ function TextField({
   value: string;
   onChange(v: string): void;
   testId: string;
-  error?: string | undefined;
+  invalid?: boolean;
+  /** The step error's id, when this field is the one it names. */
+  errorId?: string | undefined;
   hint?: string;
   placeholder?: string;
 }) {
   const id = useId();
+  const described = [hint ? `${id}-note` : '', errorId ?? ''].filter(Boolean).join(' ');
   return (
     <div className="sv-field">
       <label className="sv-label" htmlFor={id}>
@@ -117,31 +170,56 @@ function TextField({
         autoComplete="off"
         spellCheck={false}
         data-testid={testId}
-        aria-invalid={error ? true : undefined}
-        aria-describedby={error || hint ? `${id}-note` : undefined}
+        aria-invalid={invalid || undefined}
+        aria-describedby={described || undefined}
         onChange={(e) => onChange(e.target.value)}
       />
-      {error || hint ? (
-        <p
-          id={`${id}-note`}
-          className={error ? 'sv-small' : 'sv-muted sv-small'}
-          role={error ? 'alert' : undefined}
-        >
-          {error ?? hint}
+      {hint ? (
+        <p id={`${id}-note`} className="sv-muted sv-small">
+          {hint}
         </p>
       ) : null}
     </div>
   );
 }
 
+/** The server as a short chip: its host (the full address is in the setup). */
+function serverHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
 function formatTime(ms: number | null): string {
   return ms === null ? 'never' : new Date(ms).toLocaleString();
 }
 
+/** Tile names (<= 2 words); the consent text keeps the full names and details. */
+const GROUP_SHORT: Partial<Record<SyncedGroup['id'], string>> = {
+  pages: 'Page addresses',
+  organisation: 'Banks and tags',
+  scans: 'Scanned text',
+};
+
+const GROUP_ICON: Record<SyncedGroup['id'], LucideIcon> = {
+  highlights: Highlighter,
+  pages: Globe,
+  organisation: Library,
+  notes: NotebookPen,
+  flashcards: Layers,
+  history: History,
+  pdfs: FileText,
+  scans: ScanText,
+  other: Database,
+};
+
+/** The full consent text, kept whole (the setup steps show the short version and this). */
 function Explanation() {
   const { groups } = syncedGroups();
   return (
-    <div className="sv-stack sv-stack--tight" data-testid="sync-explanation">
+    <div className="sd-stack" data-testid="sync-explanation">
       <p>
         Sync keeps your study data the same on every device you sign in on. It is off by default and
         StudyVault works fully without it. If you turn it on, this is what is uploaded:
@@ -186,6 +264,27 @@ function Explanation() {
   );
 }
 
+/** What is uploaded, as icon tiles; the details stay one click away. */
+function SharedTiles() {
+  const { groups } = syncedGroups();
+  return (
+    <ul className="sv-sync-tiles" aria-label="What is uploaded">
+      {groups.map((g) => {
+        const Icon = GROUP_ICON[g.id] ?? Database;
+        return (
+          <li key={g.id}>
+            <span className="sv-sync-tile__icon sv-art--primary" aria-hidden="true">
+              <Icon strokeWidth={2.4} />
+            </span>
+            <span>{GROUP_SHORT[g.id] ?? g.label}</span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/** Turning sync on as a wizard: what is shared, the server, the sign-in provider, a last look. */
 function SetupForm({
   status,
   onStatus,
@@ -198,97 +297,173 @@ function SetupForm({
   const [issuer, setIssuer] = useState(status.config?.issuer ?? '');
   const [clientId, setClientId] = useState(status.config?.clientId ?? '');
   const [ack, setAck] = useState(false);
-  const [errors, setErrors] = useState<
-    Partial<Record<'serverUrl' | 'issuer' | 'clientId', string>>
-  >({});
+  const [index, setIndex] = useState(0);
   const [declined, setDeclined] = useState(false);
+
+  const checked = validateSyncInput({ serverUrl, issuer, clientId });
+  const errors = checked.ok ? {} : checked.errors;
 
   const turnOn = useAction(async () => {
     setDeclined(false);
-    const checked = validateSyncInput({ serverUrl, issuer, clientId });
-    if (!checked.ok) {
-      setErrors(checked.errors);
-      return;
-    }
-    setErrors({});
+    const valid = validateSyncInput({ serverUrl, issuer, clientId });
+    if (!valid.ok) return;
     // First await in the click handler: Chrome's permission prompt needs the user gesture.
     const granted = await api.requestPermissions({
       permissions: ['identity', 'alarms'],
-      origins: checked.origins,
+      origins: valid.origins,
     });
     if (!granted) {
       setDeclined(true);
       return;
     }
-    await api.configure(checked.input);
+    await api.configure(valid.input);
     onStatus(await api.enable());
   });
 
+  const steps: FlowStep[] = [
+    {
+      id: 'shared',
+      title: 'What is shared',
+      content: (
+        <>
+          <p className="sd-line">Uploaded only after you sign in and choose how it is protected.</p>
+          <SharedTiles />
+          <div className="sd-row">
+            <Chip icon={ServerOff}>No StudyVault server</Chip>
+            <Chip icon={Eye} tone="warning">
+              Readable without passphrase
+            </Chip>
+            <Chip icon={FileText}>PDF files stay</Chip>
+          </div>
+          <Disclosure summary="Every detail" icon={ShieldCheck}>
+            <Explanation />
+          </Disclosure>
+        </>
+      ),
+    },
+    {
+      id: 'server',
+      title: 'Sync server',
+      validate: () => errors.serverUrl ?? null,
+      inlineError: true,
+      content: ({ error, errorId }) => (
+        <>
+          <p className="sd-line">A server you or someone you trust runs.</p>
+          <TextField
+            label="Sync server address"
+            value={serverUrl}
+            onChange={setServerUrl}
+            testId="sync-server-url"
+            invalid={!!error}
+            errorId={error ? errorId : undefined}
+            placeholder="https://sync.example.org"
+            hint="https only (http for localhost)."
+          />
+          {error ? <StepError id={errorId}>{error}</StepError> : null}
+        </>
+      ),
+    },
+    {
+      id: 'signin',
+      title: 'Sign-in provider',
+      validate: () => errors.issuer ?? errors.clientId ?? null,
+      inlineError: true,
+      content: ({ error, errorId }) => (
+        <>
+          <p className="sd-line">
+            Your OpenID Connect provider.{' '}
+            <InfoTip label="About the sign-in provider">
+              Register a public client (no secret) for the authorization-code flow with PKCE, and
+              add the redirect address below. {PROVIDER_LEARNS}
+            </InfoTip>
+          </p>
+          <TextField
+            label="Provider address"
+            value={issuer}
+            onChange={setIssuer}
+            testId="sync-issuer"
+            invalid={!!error && !!errors.issuer}
+            errorId={error && errors.issuer ? errorId : undefined}
+            placeholder="https://id.example.org"
+          />
+          {error && errors.issuer ? <StepError id={errorId}>{error}</StepError> : null}
+          <TextField
+            label="Client id"
+            value={clientId}
+            onChange={setClientId}
+            testId="sync-client-id"
+            invalid={!!error && !!errors.clientId}
+            errorId={error && !errors.issuer && errors.clientId ? errorId : undefined}
+          />
+          {error && !errors.issuer ? <StepError id={errorId}>{error}</StepError> : null}
+          <p className="sd-line">
+            Redirect address: <code data-testid="sync-redirect-url">{status.redirectUrl}</code>
+          </p>
+        </>
+      ),
+    },
+    {
+      id: 'check',
+      title: 'Looks good?',
+      validate: () => (ack ? null : 'Confirm that you understand where your data will go.'),
+      inlineError: true,
+      content: ({ error, errorId }) => (
+        <>
+          <Facts>
+            <Fact icon={Server} label="Sync server">
+              {serverUrl.trim()}
+            </Fact>
+            <Fact icon={LogIn} label="Sign-in provider">
+              {issuer.trim()}
+            </Fact>
+            <Fact icon={KeyRound} label="Client id">
+              {clientId.trim()}
+            </Fact>
+          </Facts>
+          <label className="sv-check">
+            <input
+              type="checkbox"
+              checked={ack}
+              data-testid="sync-ack"
+              aria-invalid={error ? true : undefined}
+              aria-describedby={error ? errorId : undefined}
+              onChange={(e) => setAck(e.target.checked)}
+            />
+            <span>
+              I understand that my study data will be sent to the server above once I choose how it
+              is protected, and that its operator can read it unless I set a sync passphrase.
+            </span>
+          </label>
+          {error ? <StepError id={errorId}>{error}</StepError> : null}
+          <p className="sd-line">
+            Chrome then asks to allow these two addresses, the sign-in window and a timer.
+          </p>
+          {turnOn.busy ? (
+            <p className="sd-progress__line" role="status" data-testid="sync-enable-status">
+              Turning on sync… Chrome may ask you to allow access first.
+            </p>
+          ) : null}
+        </>
+      ),
+    },
+  ];
+
   return (
-    <div className="sv-stack" data-testid="sync-setup">
-      <Explanation />
-      <div className="sv-stack sv-stack--tight">
-        <TextField
-          label="Sync server address"
-          value={serverUrl}
-          onChange={setServerUrl}
-          testId="sync-server-url"
-          error={errors.serverUrl}
-          placeholder="https://sync.example.org"
-          hint="https only. Plain http is accepted for localhost (development) only."
-        />
-        <TextField
-          label="Sign-in provider (OpenID Connect issuer)"
-          value={issuer}
-          onChange={setIssuer}
-          testId="sync-issuer"
-          error={errors.issuer}
-          placeholder="https://id.example.org"
-        />
-        <TextField
-          label="Client id"
-          value={clientId}
-          onChange={setClientId}
-          testId="sync-client-id"
-          error={errors.clientId}
-          hint="A public client (no secret) registered with your provider for the authorization-code flow with PKCE."
-        />
-        <p className="sv-small">
-          Register this redirect address with your provider:{' '}
-          <code data-testid="sync-redirect-url">{status.redirectUrl}</code>
-        </p>
-      </div>
-
-      <label className="sv-check">
-        <input
-          type="checkbox"
-          checked={ack}
-          data-testid="sync-ack"
-          onChange={(e) => setAck(e.target.checked)}
-        />
-        <span>
-          I understand that my study data will be sent to the server above once I choose how it is
-          protected, and that its operator can read it unless I set a sync passphrase.
-        </span>
-      </label>
-
-      <div className="sv-row">
-        <Button
-          variant="primary"
-          busy={turnOn.busy}
-          disabledReason={ack ? undefined : 'Confirm that you understand where your data will go.'}
-          data-testid="sync-enable"
-          onClick={() => void turnOn.run()}
-        >
-          Turn on sync&hellip;
-        </Button>
-        {turnOn.busy ? (
-          <span className="sv-small sv-muted" role="status" data-testid="sync-enable-status">
-            Turning on sync… Chrome may ask you to allow access to the server and the sign-in
-            provider first.
-          </span>
-        ) : null}
-      </div>
+    <div className="sd-stack" data-testid="sync-setup">
+      <StepFlow
+        label="Sync setup"
+        steps={steps}
+        index={index}
+        onIndex={setIndex}
+        testId="sync-setup-flow"
+        finish={{
+          label: 'Turn on sync',
+          icon: Power,
+          testId: 'sync-enable',
+          busy: turnOn.busy,
+          onClick: () => void turnOn.run(),
+        }}
+      />
       {declined ? (
         <InlineNotice tone="warning" title="Chrome did not grant the permissions">
           Nothing was changed and sync is still off.
@@ -428,6 +603,35 @@ function DeleteServerDialog({ onCancel, onConfirm }: { onCancel(): void; onConfi
   );
 }
 
+const STATUS_LOOK: Record<SyncStatus, { tone: ChipTone; icon: LucideIcon }> = {
+  disabled: { tone: 'neutral', icon: Power },
+  idle: { tone: 'success', icon: CircleCheck },
+  syncing: { tone: 'info', icon: RefreshCw },
+  offline: { tone: 'warning', icon: CloudOff },
+  backoff: { tone: 'warning', icon: Timer },
+  auth_required: { tone: 'warning', icon: LogIn },
+  locked: { tone: 'warning', icon: KeyRound },
+  awaiting_encryption_choice: { tone: 'warning', icon: ShieldCheck },
+  resync_required: { tone: 'danger', icon: TriangleAlert },
+  account_mismatch: { tone: 'danger', icon: UserRound },
+  error: { tone: 'danger', icon: TriangleAlert },
+};
+
+/** The one status chip: the words always say what the colour says. */
+function StatusChip({ status, main = false }: { status: SyncStatusView; main?: boolean }) {
+  const look = status.running ? STATUS_LOOK.syncing : STATUS_LOOK[status.status];
+  return (
+    <Chip icon={look.icon} tone={look.tone}>
+      <span data-testid={main ? 'sync-status' : undefined}>
+        {status.running ? 'Syncing…' : STATUS_TEXT[status.status]}
+      </span>
+    </Chip>
+  );
+}
+
+/** The steps after "Turn on": sign in, choose protection, first sync. */
+const JOURNEY = ['Turn on', 'Sign in', 'Protect', 'Sync'];
+
 function Connected({
   status,
   onStatus,
@@ -496,76 +700,74 @@ function Connected({
   const canSync = status.signedIn && status.status !== 'locked' && !awaitingChoice;
   const attentionKey = `${status.attention.conflicts}:${status.attention.quarantined}:${status.lastSyncAt ?? 0}`;
   const outsideEnabledNeeds = status.permissions.missingOrigins;
+  const journey = !status.signedIn ? 1 : awaitingChoice ? 2 : status.lastSyncAt === null ? 3 : 4;
+  const detail = status.running ? null : STATUS_DETAIL[status.status];
 
   return (
-    <div className="sv-stack" data-testid="sync-connected">
-      <div className="sv-stack sv-stack--tight" aria-live="polite">
-        <div className="sv-row">
-          <Badge
-            tone={
-              status.status === 'idle'
-                ? 'success'
-                : status.status === 'error' ||
-                    status.status === 'resync_required' ||
-                    status.status === 'account_mismatch'
-                  ? 'danger'
-                  : 'warning'
-            }
-          >
-            <span data-testid="sync-status">
-              {status.running ? 'Syncing…' : STATUS_TEXT[status.status]}
-            </span>
-          </Badge>
+    <div className="sd-stack" data-testid="sync-connected">
+      {journey < 4 ? (
+        <div className="sd-card sv-sync-journey" data-testid="sync-journey">
+          <p className="sv-wiz__eyebrow">Almost there</p>
+          <Stepper steps={JOURNEY} current={Math.min(journey, 3)} label="Sync setup" />
+          <ol className="sv-sync-steps">
+            {JOURNEY.map((name, i) => (
+              <li key={name} data-state={i < journey ? 'done' : i === journey ? 'now' : 'next'}>
+                {i < journey ? (
+                  <CircleCheck aria-hidden="true" strokeWidth={2.6} />
+                ) : (
+                  <span aria-hidden="true">{i + 1}</span>
+                )}
+                {name}
+                <span className="sv-vh">
+                  {i < journey ? ' (done)' : i === journey ? ' (current step)' : ''}
+                </span>
+              </li>
+            ))}
+          </ol>
         </div>
-        <p>
-          Last synced: <span data-testid="sync-last-sync">{formatTime(status.lastSyncAt)}</span>
-          {' · '}
-          <span data-testid="sync-pending">
-            {status.pending === 0
-              ? 'nothing waiting to upload'
-              : `${status.pending} change${status.pending === 1 ? '' : 's'} waiting to upload`}
-          </span>
-        </p>
-        {status.lastError && status.status !== 'idle' ? (
-          <p className="sv-muted sv-small" data-testid="sync-error">
-            {status.lastError.message}
-          </p>
-        ) : null}
-      </div>
-
-      {status.problem ? (
-        <InlineNotice tone="error" title="Sync cannot start">
-          {status.problem}
-        </InlineNotice>
       ) : null}
 
-      {awaitingChoice ? (
-        <InlineNotice tone="warning" title="Nothing is uploaded until you choose" live>
-          <span data-testid="sync-awaiting-choice">
-            You are signed in, but StudyVault has not sent anything yet. Set a passphrase, or choose
-            to upload without end-to-end encryption, in the encryption section below.
-          </span>
-        </InlineNotice>
-      ) : null}
-
-      {status.scheduling === 'while-awake' ? (
-        <InlineNotice tone="info" title="No background timer" live>
-          <span data-testid="sync-scheduling-note">
-            Chrome has not given StudyVault the timer permission, so sync runs when you change
-            something, when the browser starts, and when you press Sync now.
-          </span>
-        </InlineNotice>
-      ) : null}
-
-      <div className="sv-stack sv-stack--tight">
-        <h3>Account</h3>
-        <p data-testid="sync-account">
-          {status.signedIn
-            ? `Signed in${status.account ? ` as ${status.account}` : ''}.`
-            : 'Not signed in.'}
-          {status.config ? ` Server: ${status.config.serverUrl}` : ''}
-        </p>
-        <div className="sv-row">
+      <div className="sd-card" data-testid="sync-status-card">
+        <div className="sd-stack" aria-live="polite">
+          <div className="sd-row">
+            <span className="sd-tile sd-tile--sm sv-art--primary" aria-hidden="true">
+              <RefreshCw strokeWidth={2.4} />
+            </span>
+            <StatusChip status={status} main />
+            <span className="sd-line">
+              Last sync: <span data-testid="sync-last-sync">{formatTime(status.lastSyncAt)}</span>
+            </span>
+          </div>
+          {detail ? <p className="sd-line">{detail}</p> : null}
+          <div className="sd-row">
+            <Chip icon={CloudUpload} tone={status.pending === 0 ? 'neutral' : 'info'}>
+              <span data-testid="sync-pending">
+                {status.pending === 0
+                  ? 'nothing waiting to upload'
+                  : `${status.pending} change${status.pending === 1 ? '' : 's'} waiting to upload`}
+              </span>
+            </Chip>
+            <Chip icon={UserRound} tone={status.signedIn ? 'neutral' : 'warning'}>
+              <span data-testid="sync-account">
+                {status.signedIn
+                  ? `Signed in${status.account ? ` as ${status.account}` : ''}`
+                  : 'Not signed in.'}
+              </span>
+            </Chip>
+            {status.config ? (
+              <Chip icon={Server}>
+                <span className="sv-vh">Server: </span>
+                {serverHost(status.config.serverUrl)}
+              </Chip>
+            ) : null}
+          </div>
+          {status.lastError && status.status !== 'idle' ? (
+            <p className="sd-line" data-testid="sync-error">
+              {status.lastError.message}
+            </p>
+          ) : null}
+        </div>
+        <div className="sd-row">
           {status.signedIn ? (
             <>
               <Button
@@ -583,11 +785,16 @@ function Connected({
                 data-testid="sync-now"
                 onClick={() => void syncNow.run()}
               >
-                Sync now
+                <RefreshCw aria-hidden="true" className="sv-sync-btnicon" /> Sync now
               </Button>
-              <Button data-testid="sync-sign-out" onClick={() => setSigningOut(true)}>
-                Sign out&hellip;
-              </Button>
+              <ChunkyButton
+                variant="ghost"
+                icon={LogOut}
+                data-testid="sync-sign-out"
+                onClick={() => setSigningOut(true)}
+              >
+                Sign out…
+              </ChunkyButton>
             </>
           ) : needsOrigins.length > 0 || outsideEnabledNeeds.length > 0 ? (
             <Button
@@ -611,7 +818,7 @@ function Connected({
               data-testid="sync-sign-in"
               onClick={() => void signIn.run()}
             >
-              Sign in
+              <LogIn aria-hidden="true" className="sv-sync-btnicon" /> Sign in
             </Button>
           )}
         </div>
@@ -626,11 +833,37 @@ function Connected({
           </InlineNotice>
         ) : null}
         {note ? (
-          <p role="status" data-testid="sync-note">
+          <p role="status" className="sd-line" data-testid="sync-note">
             {note}
           </p>
         ) : null}
       </div>
+
+      {status.problem ? (
+        <InlineNotice tone="error" title="Sync cannot start">
+          {status.problem}
+        </InlineNotice>
+      ) : null}
+
+      {awaitingChoice ? (
+        <InlineNotice tone="warning" title="Nothing uploaded yet" live>
+          <span data-testid="sync-awaiting-choice">
+            StudyVault has not sent anything yet. Pick a protection below.
+          </span>
+        </InlineNotice>
+      ) : null}
+
+      {status.scheduling === 'while-awake' ? (
+        <InlineNotice tone="info" title="No background timer" live>
+          <span data-testid="sync-scheduling-note">
+            Sync runs when you change something, when the browser starts and on Sync now.{' '}
+            <InfoTip label="Why no timer">
+              Chrome has not given StudyVault the timer permission, so it cannot wake up on its own
+              to sync in the background.
+            </InfoTip>
+          </span>
+        </InlineNotice>
+      ) : null}
 
       {status.status === 'resync_required' ? (
         <InlineNotice
@@ -646,9 +879,8 @@ function Connected({
             </Button>
           }
         >
-          The server&apos;s data was erased, restored or replaced. Nothing was changed on this
-          device. Sending your data again puts it back on the server; items changed on another
-          device in the meantime may be overwritten by what this device holds.
+          It was erased, restored or replaced; nothing changed here. Sending again may overwrite
+          newer edits made on another device.
         </InlineNotice>
       ) : null}
 
@@ -662,8 +894,8 @@ function Connected({
             </Button>
           }
         >
-          Nothing was uploaded or merged. You can sign out and sign in with the original account, or
-          attach this device&apos;s data to the account you are signed in with now.
+          Nothing was uploaded or merged. Sign in with the original account, or attach this data to
+          the one you use now.
         </InlineNotice>
       ) : null}
 
@@ -676,17 +908,18 @@ function Connected({
       />
 
       {status.notSynced.length > 0 ? (
-        <p className="sv-muted sv-small" data-testid="sync-not-synced">
+        <p className="sd-line" data-testid="sync-not-synced">
           Not synchronised yet: {status.notSynced.join(', ')}. These stay on this device only.
         </p>
       ) : null}
 
-      <ConflictsPanel refreshKey={attentionKey} />
-      <QuarantinePanel refreshKey={attentionKey} />
+      <div className="sv-sync-pair">
+        <ConflictsPanel refreshKey={attentionKey} />
+        <QuarantinePanel refreshKey={attentionKey} />
+      </div>
 
-      <div className="sv-stack sv-stack--tight">
-        <h3>Turn off or delete</h3>
-        <div className="sv-row">
+      <Disclosure summary="Turn off or delete" icon={Power} testId="sync-danger">
+        <div className="sd-row">
           <Button busy={turnOff.busy} data-testid="sync-disable" onClick={() => void turnOff.run()}>
             Turn sync off
           </Button>
@@ -701,21 +934,18 @@ function Connected({
             Delete my data from the server&hellip;
           </Button>
           {turnOff.busy ? (
-            <span className="sv-small sv-muted" role="status" data-testid="sync-disable-status">
+            <span className="sd-line" role="status" data-testid="sync-disable-status">
               Turning sync off…
             </span>
           ) : null}
         </div>
-        <p className="sv-muted sv-small">
-          Turning sync off keeps everything on this device and removes the sign-in from this
-          browser.
-        </p>
+        <p className="sd-line">Turning off keeps everything here and removes the sign-in.</p>
         {turnOff.error || deleteData.error || reupload.error || rebind.error ? (
           <InlineNotice tone="error" title="That did not work">
             {turnOff.error ?? deleteData.error ?? reupload.error ?? rebind.error}
           </InlineNotice>
         ) : null}
-      </div>
+      </Disclosure>
 
       {signingOut ? (
         <SignOutDialog
@@ -748,17 +978,29 @@ function Connected({
 }
 
 /**
- * Settings section for optional sync: the explanation and consent, server and provider setup,
- * sign-in and sign-out, status and "sync now", end-to-end encryption, conflicts, refused changes,
- * and deleting what the server holds. Every control either works or is disabled with its reason.
+ * Settings section for optional sync: the setup wizard (what is shared, server, sign-in provider,
+ * consent), then one status chip with the last sync time, sign-in, end-to-end encryption, conflicts,
+ * refused changes, and turning off or deleting what the server holds. Every control either works or
+ * is disabled with its reason.
  */
 export function SyncSection() {
   const headingId = useId();
   const { status, error, refresh, setStatus } = useSyncStatus();
 
   return (
-    <section className="sv-stack" aria-labelledby={headingId} data-testid="sync-section">
-      <h2 id={headingId}>Sync between devices (optional)</h2>
+    <section className="sd-section" aria-labelledby={headingId} data-testid="sync-section">
+      <SectionHead
+        icon={RefreshCw}
+        id={headingId}
+        title="Sync between devices"
+        line={
+          status === null || status.enabled ? null : (
+            <>
+              <Chip icon={Power}>Off</Chip> Optional. StudyVault works fully without it.
+            </>
+          )
+        }
+      />
       {error ? (
         <InlineNotice
           tone="error"
@@ -768,7 +1010,10 @@ export function SyncSection() {
           {error}
         </InlineNotice>
       ) : status === null ? (
-        <p className="sv-muted">Loading&hellip;</p>
+        <div className="sd-card sv-sync-loading" role="status">
+          <VaultBuddy pose="think" size={64} />
+          <p className="sd-line">Loading&hellip;</p>
+        </div>
       ) : status.enabled ? (
         <Connected status={status} onStatus={setStatus} refresh={refresh} />
       ) : (

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
+import { RotateCcw, Settings } from 'lucide-react';
 import {
   PdfOpenError,
   fetchPdf,
@@ -8,19 +9,23 @@ import {
   type FetchFailure,
   type PdfStore,
   type ReaderParams,
+  type SrcCheck,
 } from '@pdf';
 import { getSettings } from '@runtime';
 import { defaultSettings } from '@shared';
 import {
   Button,
+  ChunkyButton,
   InlineNotice,
   ToastProvider,
+  VaultBuddy,
   errorMessage,
+  isRetryable,
   useApplyTheme,
   useFocusRescue,
   useSettings,
 } from '@ui';
-import { DocumentView } from './DocumentView';
+import { DocumentView, openSettings } from './DocumentView';
 import { openSession, readLocalFile, type Session } from './loader';
 import type { OcrService } from './ocr';
 import { OpenPanel, type WebState } from './OpenPanel';
@@ -95,8 +100,16 @@ function ReaderBody({ store, ocr, params, privacy: askWindow }: ReaderProps) {
   const [flagOff, setFlagOff] = useState(false);
   const [phase, setPhase] = useState<Phase>({ t: 'idle' });
   const [fileError, setFileError] = useState<string | null>(null);
+  // The web address being opened: from `?src=` at first, or typed on the open screen.
+  const [src, setSrc] = useState<SrcCheck | null>(params.src);
   const [web, setWeb] = useState<WebState>({ t: 'none' });
   const [notice, setNotice] = useState<string | null>(null);
+  /** Reading a kept copy failed (not "there is none"): said as an error, with Retry when it can help. */
+  const [storedError, setStoredError] = useState<{
+    id: string;
+    message: string;
+    retryable: boolean;
+  } | null>(null);
   const [password, setPassword] = useState<PasswordRequest | null>(null);
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -104,6 +117,8 @@ function ReaderBody({ store, ocr, params, privacy: askWindow }: ReaderProps) {
   const current = useRef<Session | null>(null);
   const [label, setLabel] = useState('this PDF');
   const seq = useRef(0);
+  // Bumped by every open and by Cancel: work that finishes for an older ticket is dropped.
+  const ticket = useRef(0);
 
   const askPassword = useCallback(
     (reason: 'needed' | 'incorrect') =>
@@ -113,9 +128,11 @@ function ReaderBody({ store, ocr, params, privacy: askWindow }: ReaderProps) {
 
   const open = useCallback(
     async (bytes: Uint8Array, nameHint: string | null, originalUrl: string | null) => {
+      const mine = ++ticket.current;
       setLabel(nameHint ?? 'this PDF');
       setFileError(null);
       setNotice(null);
+      setStoredError(null);
       setPhase({ t: 'loading', stage: 'Opening' });
       try {
         // Decided when the document opens, from the window and the setting as they are now (a
@@ -133,14 +150,22 @@ function ReaderBody({ store, ocr, params, privacy: askWindow }: ReaderProps) {
           originalUrl,
           store,
           onPassword: askPassword,
-          onStage: (stage) => setPhase({ t: 'loading', stage }),
+          onStage: (stage) => {
+            if (mine === ticket.current) setPhase({ t: 'loading', stage });
+          },
           persist,
         });
+        // Cancelled while it was opening: the person is back on the open screen, so it stays there.
+        if (mine !== ticket.current) {
+          await session.doc.destroy().catch(() => undefined);
+          return;
+        }
         await current.current?.doc.destroy().catch(() => undefined);
         current.current = session;
         setPhase({ t: 'ready', session, page: params.page, highlight: params.highlight });
         setWeb({ t: 'none' });
       } catch (err) {
+        if (mine !== ticket.current) return;
         setPhase({ t: 'idle' });
         setFileError(describeOpenError(err));
       } finally {
@@ -153,32 +178,47 @@ function ReaderBody({ store, ocr, params, privacy: askWindow }: ReaderProps) {
   /** Open a kept copy by document id (the `?doc=` address and the stored-copies list). */
   const openStored = useCallback(
     async (id: string): Promise<void> => {
+      const mine = ++ticket.current;
+      setFileError(null);
+      setNotice(null);
+      setStoredError(null);
+      // Reading a large copy takes a moment: the person sees that it is being read.
+      setPhase({ t: 'loading', stage: 'Reading the stored copy' });
+      let bytes: Uint8Array | null = null;
       try {
         const blob = await store.getDocumentBytes?.(id);
-        const rec = await store.getDocument(id);
-        if (blob) {
-          await open(
-            new Uint8Array(await blob.arrayBuffer()),
-            rec?.title ?? null,
-            rec?.originalUrl ?? null,
-          );
-          return;
-        }
-      } catch {
-        /* fall through to the explanation below */
+        if (blob) bytes = new Uint8Array(await blob.arrayBuffer());
+      } catch (err) {
+        if (mine !== ticket.current) return;
+        setPhase({ t: 'idle' });
+        setStoredError({
+          id,
+          message: errorMessage(err, 'The stored copy could not be read.'),
+          retryable: isRetryable(err),
+        });
+        return;
       }
-      setNotice(
-        'StudyVault does not keep a copy of that PDF, so it cannot open it by itself. Choose the file again: your highlights are matched to it by its content and will reappear.',
-      );
+      if (mine !== ticket.current) return;
+      if (!bytes) {
+        setPhase({ t: 'idle' });
+        setNotice('No stored copy of that PDF. Choose the file again: your highlights come back.');
+        return;
+      }
+      // The title and address are a nicety: the copy opens without them.
+      const rec = await store.getDocument(id).catch(() => null);
+      if (mine !== ticket.current) return;
+      await open(bytes, rec?.title ?? null, rec?.originalUrl ?? null);
     },
     [open, store],
   );
 
   const openFile = useCallback(
     async (file: File) => {
+      const mine = ++ticket.current;
       setFileError(null);
       setPhase({ t: 'loading', stage: 'Reading the file' });
       const read = await readLocalFile(file);
+      if (mine !== ticket.current) return;
       if (!read.ok) {
         setPhase({ t: 'idle' });
         setFileError(
@@ -210,27 +250,44 @@ function ReaderBody({ store, ocr, params, privacy: askWindow }: ReaderProps) {
     }
   }, []);
 
-  const fetchWeb = useCallback(async () => {
-    const src = params.src;
-    if (!src?.ok) return;
-    abort.current?.abort();
-    const ac = new AbortController();
-    abort.current = ac;
-    setWeb({ t: 'fetching', loaded: 0, total: null });
-    const res = await fetchPdf(src.url, {
-      signal: ac.signal,
-      onProgress: (loaded, total) => setWeb({ t: 'fetching', loaded, total }),
-      // A redirect may end only on the origin that was asked for or on one the person allowed.
-      isOriginGranted: (pattern) => browser.permissions.contains({ origins: [pattern] }),
-    });
-    // The transfer is over, whether it worked or not: hand back what it was given access for.
-    await handBack();
-    if (!res.ok) {
-      if (res.failure.kind !== 'aborted') setWeb({ t: 'failed', failure: res.failure });
-      return;
-    }
-    await open(res.bytes, src.host, src.url);
-  }, [handBack, open, params.src]);
+  const fetchWeb = useCallback(
+    async (target: SrcCheck | null = src) => {
+      if (!target?.ok) return;
+      abort.current?.abort();
+      const ac = new AbortController();
+      abort.current = ac;
+      setWeb({ t: 'fetching', loaded: 0, total: null });
+      const res = await fetchPdf(target.url, {
+        signal: ac.signal,
+        onProgress: (loaded, total) => setWeb({ t: 'fetching', loaded, total }),
+        // A redirect may end only on the origin that was asked for or on one the person allowed.
+        isOriginGranted: (pattern) => browser.permissions.contains({ origins: [pattern] }),
+      });
+      // The transfer is over, whether it worked or not: hand back what it was given access for.
+      await handBack();
+      if (!res.ok) {
+        if (res.failure.kind !== 'aborted') setWeb({ t: 'failed', failure: res.failure });
+        return;
+      }
+      await open(res.bytes, target.host, target.url);
+    },
+    [handBack, open, src],
+  );
+
+  /** An address to open: fetched at once when the site is already allowed, else explained first. */
+  const startWeb = useCallback(
+    async (target: SrcCheck) => {
+      setSrc(target);
+      setWeb({ t: 'none' });
+      if (!target.ok) return;
+      const has = await browser.permissions
+        .contains({ origins: [target.pattern] })
+        .catch(() => false);
+      if (has) void fetchWeb(target);
+      else setWeb({ t: 'need-permission' });
+    },
+    [fetchWeb],
+  );
 
   /**
    * Click handler. `requestOrigins` issues its permission calls before any await, so the click's
@@ -238,7 +295,6 @@ function ReaderBody({ store, ocr, params, privacy: askWindow }: ReaderProps) {
    */
   const allowAndOpen = useCallback(
     (extra: string[] = []) => {
-      const src = params.src;
       if (!src?.ok) return;
       void requestOrigins(browser.permissions, [src.pattern, ...extra]).then(
         ({ granted, fresh }) => {
@@ -259,7 +315,7 @@ function ReaderBody({ store, ocr, params, privacy: askWindow }: ReaderProps) {
         },
       );
     },
-    [fetchWeb, params.src],
+    [fetchWeb, src],
   );
 
   // First load: what the address asked for.
@@ -277,15 +333,7 @@ function ReaderBody({ store, ocr, params, privacy: askWindow }: ReaderProps) {
         await openStored(params.doc);
         return;
       }
-      const src = params.src;
-      if (src?.ok) {
-        const has = await browser.permissions
-          .contains({ origins: [src.pattern] })
-          .catch(() => false);
-        if (!live) return;
-        if (has) void fetchWeb();
-        else setWeb({ t: 'need-permission' });
-      }
+      if (params.src?.ok) await startWeb(params.src);
     })();
     return () => {
       live = false;
@@ -369,11 +417,15 @@ function ReaderBody({ store, ocr, params, privacy: askWindow }: ReaderProps) {
           onOpenAnother={closeDocument}
         />
       ) : phase.t === 'loading' ? (
-        <main className="sv-open" aria-busy="true" data-testid="pdf-loading">
+        <main className="sv-open sv-open--busy" aria-busy="true" data-testid="pdf-loading">
+          <VaultBuddy pose="think" size={132} />
           <h1>Opening…</h1>
-          <p role="status">{phase.stage}…</p>
+          <p className="sv-open__line" role="status">
+            {phase.stage}…
+          </p>
           <Button
             onClick={() => {
+              ticket.current++;
               abort.current?.abort();
               setPhase({ t: 'idle' });
             }}
@@ -382,30 +434,55 @@ function ReaderBody({ store, ocr, params, privacy: askWindow }: ReaderProps) {
           </Button>
         </main>
       ) : flagOff ? (
-        <main className="sv-open" data-testid="pdf-disabled">
-          <h1>The PDF reader is turned off</h1>
-          <p className="sv-muted">
-            The PDF reader feature is switched off in StudyVault's settings, so nothing was opened
-            or downloaded.
-          </p>
+        <main className="sv-open sv-open--busy" data-testid="pdf-disabled">
+          <VaultBuddy pose="sleep" size={132} />
+          <h1>Reader is off</h1>
+          <p className="sv-open__line">Nothing was opened or downloaded.</p>
+          <ChunkyButton variant="primary" icon={Settings} onClick={openSettings}>
+            Open settings
+          </ChunkyButton>
         </main>
       ) : (
         <OpenPanel
-          src={params.src}
+          src={src}
           web={web}
           fileError={fileError}
           notice={
             <>
               {policy.reason ? (
                 <InlineNotice tone="warning" live title="Nothing is being saved">
-                  {policy.reason} You can still open and read a PDF: its record, highlights and
-                  recognised text are not stored.
+                  {policy.reason}
+                </InlineNotice>
+              ) : null}
+              {storedError ? (
+                <InlineNotice
+                  tone="error"
+                  title="Could not open the stored copy"
+                  action={
+                    storedError.retryable ? (
+                      <Button
+                        onClick={() => void openStored(storedError.id)}
+                        data-testid="pdf-stored-retry"
+                      >
+                        <RotateCcw aria-hidden="true" />
+                        Retry
+                      </Button>
+                    ) : undefined
+                  }
+                >
+                  {storedError.message}
                 </InlineNotice>
               ) : null}
               {notice ? <InlineNotice tone="info">{notice}</InlineNotice> : null}
             </>
           }
           onFile={(f) => void openFile(f)}
+          onOpenLink={(check) => void startWeb(check)}
+          onClearLink={() => {
+            abort.current?.abort();
+            setSrc(null);
+            setWeb({ t: 'none' });
+          }}
           onAllowAndOpen={allowAndOpen}
           fileInputRef={inputRef}
           copies={<StoredCopies store={store} onOpen={(id) => void openStored(id)} />}
@@ -413,7 +490,11 @@ function ReaderBody({ store, ocr, params, privacy: askWindow }: ReaderProps) {
       )}
       {dragging ? (
         <div className="sv-drop" role="status" data-testid="pdf-drop">
-          Drop a PDF to open it. It is read on this device and not uploaded.
+          <div className="sv-drop__card">
+            <VaultBuddy pose="cheer" size={120} />
+            <p className="sv-drop__title">Drop to open</p>
+            <p className="sv-drop__line">It is read on this device and not uploaded.</p>
+          </div>
         </div>
       ) : null}
       {password ? (

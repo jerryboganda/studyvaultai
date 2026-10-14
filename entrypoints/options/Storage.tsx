@@ -1,9 +1,13 @@
-import { useId, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
+import { BookOpen, Database, FileText, HardDrive, Trash2, X } from 'lucide-react';
 import { getStorageUsage, listDocuments, removeDocumentBytes } from '@storage';
 import {
   Button,
   ConfirmDialog,
+  IconButton,
   InlineNotice,
+  ProgressRing,
+  VaultBuddy,
   plural,
   useAction,
   useAsync,
@@ -12,6 +16,7 @@ import {
 } from '@ui';
 import { formatBytes } from '@ui/backup/format';
 import { storageLabel, storageRows } from './model';
+import { Card } from './ui';
 
 /**
  * What StudyVault keeps on this device, measured now from the real database, and the one thing a
@@ -20,7 +25,6 @@ import { storageLabel, storageRows } from './model';
  * address.
  */
 export function Storage({ syncOn }: { syncOn: boolean }) {
-  const uid = useId();
   const { announce } = useToast();
   const epoch = useDataEpoch();
   const usage = useAsync(() => getStorageUsage(), [], [epoch]);
@@ -42,21 +46,14 @@ export function Storage({ syncOn }: { syncOn: boolean }) {
   const cached = (docs.data ?? []).filter((d) => d.cachedBytes !== null);
   const listedBytes = cached.reduce((n, d) => n + (d.cachedBytes ?? 0), 0);
   const unlisted = u ? Math.max(0, u.cachedPdfBytes - listedBytes) : 0;
-  const percent =
-    u?.estimate?.usage != null && u.estimate.quota
-      ? (u.estimate.usage / u.estimate.quota) * 100
-      : null;
+  const used = u?.estimate?.usage ?? null;
+  const quota = u?.estimate?.quota ?? null;
+  const percent = used !== null && quota ? (used / quota) * 100 : null;
+  const rows = u ? storageRows(u.rows) : [];
+  const biggest = rows[0]?.count ?? 0;
 
   return (
-    <section className="sv-stack" aria-labelledby={`${uid}-h`} data-testid="storage-section">
-      <h2 id={`${uid}-h`}>Storage</h2>
-      <p>
-        Everything StudyVault keeps is stored in this Chrome profile, on this device
-        {syncOn ? ' (sync, which you turned on, also keeps a copy on your server)' : ''}. The
-        numbers below are counted from this device&apos;s database when the page opens and when
-        something changes.
-      </p>
-
+    <div className="opt-stack" data-testid="storage-section">
       {usage.error ? (
         <InlineNotice
           tone="error"
@@ -64,86 +61,107 @@ export function Storage({ syncOn }: { syncOn: boolean }) {
           action={
             usage.retryable ? (
               <Button busy={usage.refreshing} onClick={usage.refresh}>
-                Try again
+                Retry
               </Button>
             ) : undefined
           }
         >
           {usage.error}
         </InlineNotice>
-      ) : u ? (
-        <>
-          <dl className="opt-stats">
-            <div>
-              <dt>Items stored</dt>
-              <dd data-testid="storage-total-rows">{u.totalRows.toLocaleString('en')}</dd>
-            </div>
-            <div>
-              <dt>Space used by StudyVault</dt>
-              <dd data-testid="storage-usage">
-                {u.estimate?.usage != null ? formatBytes(u.estimate.usage) : 'Not reported'}
-              </dd>
-              {u.estimate?.quota != null ? (
-                <dd className="sv-muted sv-small">
-                  of about {formatBytes(u.estimate.quota)} Chrome allows
-                  {percent !== null
-                    ? ` (${percent < 0.1 ? 'under 0.1' : percent.toFixed(1)}%)`
-                    : ''}
-                </dd>
-              ) : null}
-            </div>
-            <div>
-              <dt>Stored PDF copies</dt>
-              <dd data-testid="storage-pdf-bytes">{formatBytes(u.cachedPdfBytes)}</dd>
-              <dd className="sv-muted sv-small">{plural(u.cachedPdfCount, 'file')}</dd>
-            </div>
-          </dl>
-          <p className="sv-muted sv-small">
-            Space used is Chrome&apos;s own estimate for everything this extension stores, including
-            search data kept for speed, so it can be larger than the items alone.
-          </p>
-
-          {storageRows(u.rows).length === 0 ? (
-            <p className="sv-muted">Nothing is stored yet.</p>
-          ) : (
-            <table className="opt-table" data-testid="storage-table">
-              <caption className="sv-label">What is stored</caption>
-              <thead>
-                <tr>
-                  <th scope="col">Kind</th>
-                  <th scope="col" className="opt-table__num">
-                    Count
-                  </th>
-                </tr>
-              </thead>
-              <tbody>
-                {storageRows(u.rows).map(({ table, count }) => (
-                  <tr key={table}>
-                    <th scope="row">{storageLabel(table)}</th>
-                    <td className="opt-table__num">{count.toLocaleString('en')}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </>
+      ) : !u ? (
+        <div className="opt-loading">
+          <VaultBuddy pose="think" size={64} />
+          <p className="sv-muted">Measuring…</p>
+        </div>
       ) : (
-        <p className="sv-muted">Measuring…</p>
+        <>
+          <Card
+            title="Space used"
+            icon={HardDrive}
+            tone="warning"
+            info={`Chrome's own estimate for everything StudyVault stores on this device, search data included, so it can be more than the items alone.${syncOn ? ' Sync also keeps a copy on your server.' : ''}`}
+          >
+            <div className="opt-space">
+              {percent !== null ? (
+                <ProgressRing
+                  value={Math.round(percent * 10) / 10}
+                  max={100}
+                  label="Space used"
+                  unit="percent of what Chrome allows"
+                  tone="primary"
+                  size={128}
+                  stroke={14}
+                >
+                  {/* The bytes are in "Space used" beside it; the ring shows the share. */}
+                  <span className="opt-ring__num opt-ring__num--sm">
+                    {percent < 0.1 ? '<0.1%' : `${percent.toFixed(1)}%`}
+                  </span>
+                  <span className="opt-ring__of">used</span>
+                </ProgressRing>
+              ) : null}
+              <dl className="opt-facts">
+                <div>
+                  <dt>Space used</dt>
+                  <dd data-testid="storage-usage">
+                    {used !== null ? formatBytes(used) : 'Not reported'}
+                  </dd>
+                  {quota !== null ? (
+                    <dd className="sv-muted sv-small">of about {formatBytes(quota)}</dd>
+                  ) : null}
+                </div>
+                <div>
+                  <dt>Items stored</dt>
+                  <dd data-testid="storage-total-rows">{u.totalRows.toLocaleString('en')}</dd>
+                </div>
+                <div>
+                  <dt>PDF copies</dt>
+                  <dd data-testid="storage-pdf-bytes">{formatBytes(u.cachedPdfBytes)}</dd>
+                  <dd className="sv-muted sv-small">{plural(u.cachedPdfCount, 'file')}</dd>
+                </div>
+              </dl>
+            </div>
+          </Card>
+
+          <Card title="What is stored" icon={Database} tone="primary">
+            {rows.length === 0 ? (
+              <p className="sv-muted">Nothing is stored yet.</p>
+            ) : (
+              <table className="opt-table" data-testid="storage-table">
+                <caption className="sv-vh">What is stored</caption>
+                <thead>
+                  <tr>
+                    <th scope="col">Kind</th>
+                    <th scope="col" className="opt-table__num">
+                      Count
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map(({ table, count }) => (
+                    <tr key={table}>
+                      <th scope="row">
+                        {storageLabel(table)}
+                        <span className="opt-table__bar" aria-hidden="true">
+                          <span style={{ width: `${Math.max(2, (count / biggest) * 100)}%` }} />
+                        </span>
+                      </th>
+                      <td className="opt-table__num">{count.toLocaleString('en')}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </Card>
+        </>
       )}
 
-      <div
-        className="opt-card sv-stack sv-stack--tight"
-        role="group"
-        aria-labelledby={`${uid}-pdf`}
+      <Card
+        title="Stored PDF copies"
+        icon={BookOpen}
+        tone="violet"
+        headingRef={heading}
+        info="A copy is kept only when you choose “Keep a copy in StudyVault” in the reader. Removing it frees the space; highlights, notes and recognised text stay, and the PDF opens again from its file or address."
       >
-        <h3 id={`${uid}-pdf`} ref={heading} tabIndex={-1}>
-          Stored PDF copies
-        </h3>
-        <p>
-          A copy of a PDF is kept only when you choose &ldquo;Keep a copy in StudyVault&rdquo; in
-          the reader. Removing it frees the space; your highlights, notes and recognised text stay,
-          and you can open the PDF again from its file or address.
-        </p>
         {docs.error ? (
           <InlineNotice
             tone="error"
@@ -151,7 +169,7 @@ export function Storage({ syncOn }: { syncOn: boolean }) {
             action={
               docs.retryable ? (
                 <Button busy={docs.refreshing} onClick={docs.refresh}>
-                  Try again
+                  Retry
                 </Button>
               ) : undefined
             }
@@ -161,28 +179,32 @@ export function Storage({ syncOn }: { syncOn: boolean }) {
         ) : docs.loading ? (
           <p className="sv-muted">Reading the stored copies…</p>
         ) : cached.length === 0 ? (
-          <p data-testid="no-cached-pdfs">No PDF copies are stored.</p>
+          <p className="opt-line" data-testid="no-cached-pdfs">
+            No PDF copies are stored.
+          </p>
         ) : (
           <>
-            <ul className="opt-list" data-testid="cached-pdfs">
+            <ul className="opt-rows" data-testid="cached-pdfs">
               {cached.map((d) => {
                 const title = d.document.title || 'Untitled PDF';
                 return (
-                  <li key={d.document.id} className="opt-item">
-                    <span className="sv-grow sv-wrap" dir="auto">
-                      {title}{' '}
-                      <span className="sv-muted sv-small">
-                        · {formatBytes(d.cachedBytes ?? 0)} ·{' '}
-                        {plural(d.highlightCount, 'highlight')}
+                  <li key={d.document.id} className="opt-rowitem">
+                    <FileText aria-hidden="true" strokeWidth={2.4} className="opt-rowitem__icon" />
+                    <span className="opt-rowitem__text" dir="auto">
+                      {title}
+                      <span className="opt-rowitem__meta">
+                        {formatBytes(d.cachedBytes ?? 0)} · {plural(d.highlightCount, 'highlight')}
                       </span>
                     </span>
-                    <Button
-                      busy={clear.busy}
-                      aria-label={`Remove the stored copy of ${title}`}
-                      onClick={() => void clear.run([d.document.id], title)}
-                    >
-                      Remove copy
-                    </Button>
+                    <IconButton
+                      icon={X}
+                      tipSide="left"
+                      label={`Remove the stored copy of ${title}`}
+                      aria-disabled={clear.busy || undefined}
+                      onClick={() => {
+                        if (!clear.busy) void clear.run([d.document.id], title);
+                      }}
+                    />
                   </li>
                 );
               })}
@@ -194,15 +216,16 @@ export function Storage({ syncOn }: { syncOn: boolean }) {
                 data-testid="clear-all-cache"
                 onClick={() => setConfirmAll(true)}
               >
-                Remove all stored copies…
+                <Trash2 aria-hidden="true" strokeWidth={2.6} className="opt-btnicon" />
+                Remove all copies
               </Button>
             </div>
           </>
         )}
         {unlisted > 0 ? (
           <p className="sv-muted sv-small">
-            {formatBytes(unlisted)} more belongs to PDFs that are no longer in your library. It is
-            removed when you delete all data.
+            {formatBytes(unlisted)} more belongs to PDFs no longer in your library. Delete all data
+            removes it.
           </p>
         ) : null}
         {clear.error ? (
@@ -212,7 +235,7 @@ export function Storage({ syncOn }: { syncOn: boolean }) {
             action={
               clear.retryable ? (
                 <Button busy={clear.busy} onClick={clear.retry}>
-                  Try again
+                  Retry
                 </Button>
               ) : undefined
             }
@@ -220,7 +243,7 @@ export function Storage({ syncOn }: { syncOn: boolean }) {
             {clear.error}
           </InlineNotice>
         ) : null}
-      </div>
+      </Card>
 
       {confirmAll ? (
         <ConfirmDialog
@@ -243,6 +266,6 @@ export function Storage({ syncOn }: { syncOn: boolean }) {
           <p>Highlights, notes, recognised text and the PDF records are not touched.</p>
         </ConfirmDialog>
       ) : null}
-    </section>
+    </div>
   );
 }

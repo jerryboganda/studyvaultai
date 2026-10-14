@@ -1,8 +1,11 @@
 import { useId, useState } from 'react';
+import { GitCompareArrows } from 'lucide-react';
 import type { ConflictRecord } from '@sync';
 import { Badge } from '../Badge';
 import { Button } from '../Button';
-import { EmptyState, InlineNotice } from '../Notice';
+import { EmptyState } from '../design/EmptyState';
+import { InfoTip } from '../design/InfoTip';
+import { InlineNotice } from '../Notice';
 import { useAction, useAsync } from '../hooks';
 import { useSyncApi } from './api';
 import type { ConflictDecision } from './protocol';
@@ -73,16 +76,21 @@ function ConflictCard({
       aria-labelledby={titleId}
       data-testid={`conflict-${conflict.id}`}
     >
-      <div className="sv-row">
-        <h3 id={titleId}>{what}</h3>
+      <div className="sd-row">
+        <h4 id={titleId} className="sv-sync-conflict__title">
+          {what}
+        </h4>
         <Badge tone="warning">Needs your decision</Badge>
       </div>
 
       {isText ? (
         <>
-          <p>
-            This was changed on this device and on another one before either saw the other. Both
-            versions are kept here until you decide; nothing has been thrown away.
+          <p className="sd-line">
+            Changed here and on another device at once: nothing has been thrown away.{' '}
+            <InfoTip label="About this conflict">
+              Neither device saw the other change first. Both versions are kept here until you
+              decide.
+            </InfoTip>
             {shown === 'remote'
               ? " The item currently shows the other device's version."
               : shown === 'local'
@@ -150,7 +158,7 @@ function ConflictCard({
                   )
                 }
               >
-                Keep this device&apos;s version
+                Keep this device
               </Button>
               <Button
                 busy={resolve.busy}
@@ -162,7 +170,7 @@ function ConflictCard({
                   )
                 }
               >
-                Use the other device&apos;s version
+                Use other device
               </Button>
               <Button
                 data-testid="conflict-edit"
@@ -202,7 +210,7 @@ function ConflictCard({
               data-testid="conflict-keep-deleted"
               onClick={() => void resolve.run({ choice: 'keep_deleted' }, 'Left it deleted.')}
             >
-              Let it stay deleted
+              Keep it deleted
             </Button>
           </div>
         </>
@@ -261,16 +269,19 @@ export function ConflictsPanel({ refreshKey = 0 }: { refreshKey?: number | strin
   const items = list.data ?? [];
 
   return (
-    <section
-      className="sv-stack sv-stack--tight"
-      aria-labelledby={headingId}
-      data-testid="conflicts-panel"
-    >
-      <h3 id={headingId}>Conflicts{items.length > 0 ? ` (${items.length})` : ''}</h3>
-      <p className="sv-muted sv-small">
-        When the same text is edited on two devices at once, StudyVault keeps both versions here
-        instead of silently choosing.
-      </p>
+    <section className="sd-card" aria-labelledby={headingId} data-testid="conflicts-panel">
+      <div className="sd-row">
+        <span className="sd-tile sd-tile--sm sv-art--warning" aria-hidden="true">
+          <GitCompareArrows strokeWidth={2.4} />
+        </span>
+        <h3 id={headingId} className="sd-card__title sd-grow">
+          Conflicts{items.length > 0 ? ` (${items.length})` : ''}
+        </h3>
+        <InfoTip label="About conflicts" align="end">
+          When the same text is edited on two devices at once, StudyVault keeps both versions here
+          instead of silently choosing.
+        </InfoTip>
+      </div>
       <p role="status" className="sv-sr">
         {said}
       </p>
@@ -283,11 +294,18 @@ export function ConflictsPanel({ refreshKey = 0 }: { refreshKey?: number | strin
           {list.error}
         </InlineNotice>
       ) : list.loading ? (
-        <p className="sv-muted">Loading&hellip;</p>
+        <p className="sd-line">Loading&hellip;</p>
       ) : items.length === 0 ? (
-        <EmptyState title="No conflicts">Nothing needs a decision.</EmptyState>
+        <EmptyState
+          pose="sleep"
+          mascotSize={56}
+          heading="h4"
+          title="No conflicts"
+          text="Nothing needs a decision."
+          className="sv-sync-empty"
+        />
       ) : (
-        <ul className="sv-stack">
+        <ul className="sd-stack sv-sync-list">
           {items.map((c) => (
             <ConflictCard
               key={c.id}

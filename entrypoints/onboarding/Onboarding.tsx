@@ -1,9 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { browser } from 'wxt/browser';
+import { House, RotateCw, Settings as SettingsIcon, X } from 'lucide-react';
 import {
-  Button,
+  ChunkyButton,
   InlineNotice,
+  Stepper,
   ToastProvider,
+  VaultBuddy,
   errorMessage,
   useAction,
   useApplyTheme,
@@ -11,13 +14,14 @@ import {
 } from '@ui';
 import { settingsPath } from '@ui/shell/paths';
 import {
+  ONBOARDING_STEPS,
   getOnboardingState,
   writeOnboardingState,
   type OnboardingState,
   type OnboardingStep,
 } from '@ui/shell/onboardingState';
 import { openDashboard } from '@ui/vault/dashboardLink';
-import { STEP_COUNT, nextStep, prevStep, startStep, stepIndex } from './model';
+import { STEP_TITLES, nextStep, prevStep, startStep, stepIndex } from './model';
 import { findPreset, pruneExcluded, type ApplyResult } from './presets';
 import {
   AccessStep,
@@ -27,6 +31,7 @@ import {
   LookStep,
   PrivacyStep,
   WelcomeStep,
+  type Access,
 } from './Steps';
 import { TID } from './testids';
 
@@ -126,6 +131,8 @@ function Tour() {
   const heading = useRef<HTMLHeadingElement>(null);
   const [moved, setMoved] = useState<OnboardingStep | null>(null);
   const [over, setOver] = useState<'skipped' | 'completed' | null>(null);
+  // Not stored (it changes nothing by itself): kept for this visit so Back and the summary show it.
+  const [access, setAccess] = useState<Access | null>(null);
 
   // The stored step until a button moves on (a tour in progress resumes where it stopped).
   const step = moved ?? (tour.state ? startStep(tour.state) : null);
@@ -161,31 +168,37 @@ function Tour() {
 
   if (tour.error || global.error) {
     return (
-      <div className="ob" data-testid={TID.root}>
-        <InlineNotice
-          tone="error"
-          title="The welcome tour could not start"
-          action={
-            <Button
-              onClick={() => {
-                if (tour.error) tour.retry();
-                if (global.error) global.retry();
-              }}
-            >
-              Retry
-            </Button>
-          }
-        >
-          {tour.error ?? global.error}
-        </InlineNotice>
-      </div>
+      <Canvas>
+        <main className="ob__card ob__card--center">
+          <VaultBuddy pose="think" size={120} />
+          <h1 className="ob__title">Tour didn’t start</h1>
+          <p className="ob__line" role="alert">
+            {tour.error ?? global.error}
+          </p>
+          <ChunkyButton
+            variant="primary"
+            icon={RotateCw}
+            onClick={() => {
+              if (tour.error) tour.retry();
+              if (global.error) global.retry();
+            }}
+          >
+            Retry
+          </ChunkyButton>
+        </main>
+      </Canvas>
     );
   }
   if (!tour.state || !global.settings || step === null) {
     return (
-      <div className="ob" data-testid={TID.root}>
-        <p className="sv-muted">Loading…</p>
-      </div>
+      <Canvas>
+        <div className="ob__card ob__card--center">
+          <VaultBuddy pose="think" size={120} />
+          <p className="sv-muted" role="status">
+            Loading…
+          </p>
+        </div>
+      </Canvas>
     );
   }
   if (over) return <Over kind={over} />;
@@ -201,23 +214,29 @@ function Tour() {
   };
 
   return (
-    <div className="ob" data-testid={TID.root}>
-      <header className="ob__head">
-        <div className="sv-grow">
-          <h1>Welcome to StudyVault AI</h1>
-          <p className="sv-muted sv-small" data-testid={TID.progress}>
-            Step {index + 1} of {STEP_COUNT}
-          </p>
+    <Canvas>
+      <main className="ob__card">
+        <h1 className="sv-vh">Welcome to StudyVault AI</h1>
+        <div className="ob__top">
+          <div className="ob__progress" data-testid={TID.progress}>
+            <Stepper
+              steps={ONBOARDING_STEPS.map((s) => STEP_TITLES[s])}
+              current={index}
+              label="Welcome tour"
+            />
+          </div>
+          <ChunkyButton
+            size="sm"
+            variant="ghost"
+            aria-label="Skip the tour"
+            aria-busy={closing || undefined}
+            data-testid={TID.skip}
+            onClick={skip}
+          >
+            Skip
+          </ChunkyButton>
         </div>
-        <Button variant="ghost" busy={closing} data-testid={TID.skip} onClick={skip}>
-          Skip the tour
-        </Button>
-      </header>
-      <div className="ob__bar" role="presentation">
-        <span style={{ width: `${((index + 1) / STEP_COUNT) * 100}%` }} />
-      </div>
 
-      <main className="ob__main sv-stack">
         {tour.saveError ? (
           <InlineNotice tone="warning" title="Your place was not saved">
             {tour.saveError} The tour still works; if you close this tab you will start again.
@@ -225,7 +244,9 @@ function Tour() {
         ) : null}
         {step === 'welcome' ? <WelcomeStep {...flow} /> : null}
         {step === 'privacy' ? <PrivacyStep {...flow} settings={settings} update={update} /> : null}
-        {step === 'access' ? <AccessStep {...flow} /> : null}
+        {step === 'access' ? (
+          <AccessStep {...flow} access={access ?? 'tab'} onAccess={setAccess} />
+        ) : null}
         {step === 'banks' ? (
           <BanksStep
             {...flow}
@@ -265,11 +286,23 @@ function Tour() {
           <DoneStep
             heading={heading}
             state={state}
+            access={access}
             onBack={() => go(prevStep(step))}
             onFinish={finish}
           />
         ) : null}
       </main>
+    </Canvas>
+  );
+}
+
+/** The page backdrop: a dot grid and a rising sun, both decorative. */
+function Canvas({ children }: { children: ReactNode }) {
+  return (
+    <div className="ob sv-ui" data-testid={TID.root}>
+      <div className="ob__dots" aria-hidden="true" />
+      <div className="ob__sun" aria-hidden="true" />
+      {children}
     </div>
   );
 }
@@ -285,34 +318,38 @@ function Over({ kind }: { kind: 'skipped' | 'completed' }) {
   const title = useRef<HTMLHeadingElement>(null);
   useEffect(() => title.current?.focus(), []);
   return (
-    <div className="ob" data-testid={TID.root}>
-      <main className="ob__main sv-stack" data-testid={done ? TID.finished : TID.skipped}>
-        <h1 ref={title} tabIndex={-1} className="ob__heading">
-          {done ? 'You are all set' : 'Tour skipped'}
+    <Canvas>
+      <main className="ob__card ob__card--center" data-testid={done ? TID.finished : TID.skipped}>
+        <VaultBuddy pose={done ? 'cheer' : 'wave'} size={150} />
+        <h1 ref={title} tabIndex={-1} className="ob__title">
+          {done ? 'All set!' : 'Tour skipped'}
         </h1>
-        <p>
-          {done
-            ? 'StudyVault is ready. Select text on any page you have enabled to save your first highlight.'
-            : 'Nothing else was changed. Any choice you already made in the tour is saved.'}
+        <p className="ob__line">
+          {done ? 'Happy studying.' : 'You can open this tour again any time from Settings.'}
         </p>
-        <p className="sv-muted">
-          You can open this tour again any time from Settings (the button at the top of the page).
-        </p>
-        <div className="sv-row">
-          <Button variant="primary" onClick={() => void openDashboard()}>
-            Open the dashboard
-          </Button>
+        <div className="ob__actions">
+          <ChunkyButton variant="primary" icon={House} onClick={() => void openDashboard()}>
+            Open dashboard
+          </ChunkyButton>
           <a
-            className="sv-btn sv-btn--secondary"
+            className="sv-chunky sv-chunky--secondary sv-chunky--md"
             href={settingsPath()}
             target="_blank"
             rel="noreferrer"
           >
-            Open settings
+            <SettingsIcon aria-hidden="true" className="sv-chunky__icon" strokeWidth={2.5} />
+            Settings<span className="sv-vh"> (opens in a new tab)</span>
           </a>
-          <Button busy={close.busy} onClick={() => void close.run()}>
-            Close this tab
-          </Button>
+          <ChunkyButton
+            variant="ghost"
+            icon={X}
+            aria-busy={close.busy || undefined}
+            onClick={() => {
+              if (!close.busy) void close.run();
+            }}
+          >
+            Close tab
+          </ChunkyButton>
         </div>
         {close.error ? (
           <InlineNotice tone="error" title="Could not close this tab">
@@ -320,6 +357,6 @@ function Over({ kind }: { kind: 'skipped' | 'completed' }) {
           </InlineNotice>
         ) : null}
       </main>
-    </div>
+    </Canvas>
   );
 }

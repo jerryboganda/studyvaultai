@@ -1,96 +1,515 @@
-/* Welcome tour: one readable column in a tab; reflows to a 320 px viewport and 200% zoom. */
+/*
+ * Welcome tour (UX_DESIGN 7.5): one centred card (max 760 px) on the canvas, with a dot grid and a
+ * sunburst behind it (decorative, hidden in high contrast). Reflows to 320 px and 200% zoom.
+ */
+/* The card's top stays put from step to step (centring it made the whole card jump on Next). */
 .ob {
-  max-width: 640px;
-  margin: 0 auto;
-  padding: var(--sv-space-5) var(--sv-space-4) var(--sv-space-6);
-  font-size: var(--sv-text-md);
-}
-.ob__head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
-  gap: var(--sv-space-2);
-}
-.ob__head h1 {
-  font-size: 1.375rem;
-}
-.ob__bar {
-  height: 4px;
-  margin: var(--sv-space-3) 0 var(--sv-space-5);
-  border-radius: 999px;
-  background: var(--sv-border);
+  position: relative;
+  display: grid;
+  align-content: start;
+  justify-items: center;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: clamp(16px, 9vh, 96px) 16px 32px;
   overflow: hidden;
+  background: var(--sv-canvas);
 }
-.ob__bar span {
-  display: block;
-  height: 100%;
-  background: var(--sv-accent);
-}
-.ob__main {
-  gap: var(--sv-space-4);
-}
-.ob__step {
-  gap: var(--sv-space-4);
-}
-.ob__heading {
-  font-size: 1.125rem;
-}
-/* The heading takes focus when the step changes: a quiet ring, never a stray outline on mouse use. */
-.ob__heading:focus {
-  outline: none;
-}
-.ob__heading:focus-visible {
-  outline: 2px solid var(--sv-focus);
-  outline-offset: 2px;
-}
-.ob__nav {
-  margin-top: var(--sv-space-2);
-}
-.ob a.sv-btn {
+.ob a.sv-chunky {
   text-decoration: none;
 }
-.ob-card {
-  padding: var(--sv-space-4);
-  border: 1px solid var(--sv-border);
-  border-radius: var(--sv-radius-md);
-  background: var(--sv-surface-raised);
+.ob .sv-chunky[aria-busy='true'] {
+  cursor: progress;
 }
-.ob-card__title {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--sv-space-2);
-  font-size: var(--sv-text-md);
+
+/* Backdrop motifs: a vault-door dot grid and a rising sun (a deep-blue moon in dark). */
+.ob__dots,
+.ob__sun {
+  position: absolute;
+  pointer-events: none;
 }
-.ob-fieldset {
-  margin: 0;
-  padding: 0;
-  border: 0;
-  min-width: 0;
+.ob__dots {
+  top: 28px;
+  left: 28px;
+  width: 260px;
+  height: 220px;
+  background-image: radial-gradient(
+    color-mix(in srgb, var(--sv-primary) 24%, transparent) 2.5px,
+    transparent 3px
+  );
+  background-size: 22px 22px;
+  mask-image: linear-gradient(135deg, #000 25%, transparent 80%);
 }
-.ob-fieldset legend {
-  padding: 0;
-  margin-bottom: var(--sv-space-2);
-  font-weight: 700;
+.ob__sun {
+  right: -150px;
+  bottom: -190px;
+  width: 520px;
+  height: 520px;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, var(--sv-glow) 0 30%, transparent 30.5%),
+    repeating-conic-gradient(var(--sv-glow) 0 7deg, transparent 7deg 20deg);
+  mask-image: radial-gradient(circle, #000 52%, transparent 70%);
 }
-.ob-modes {
+@media (forced-colors: active), (prefers-contrast: more) {
+  .ob__dots,
+  .ob__sun {
+    display: none;
+  }
+}
+/* Forced colours paint the (transparent) tick on every card: keep it on the picked one only. */
+@media (forced-colors: active) {
+  .ob .sv-choice:not(:has(> input:checked)) .sv-choice__check svg {
+    visibility: hidden;
+  }
+}
+
+.ob__card {
+  position: relative;
   display: flex;
   flex-direction: column;
-  gap: var(--sv-space-3);
-  margin: 0;
+  gap: 20px;
+  width: min(760px, 100%);
+  min-width: 0;
+  padding: 22px 32px 18px;
+  border: 2px solid var(--sv-border);
+  border-radius: 28px;
+  background: var(--sv-surface);
+  box-shadow:
+    0 6px 0 var(--sv-border),
+    var(--sv-shadow);
 }
-.ob-modes dt {
-  font-weight: 700;
+.ob__card--center {
+  align-items: center;
+  gap: 14px;
+  padding: 40px 32px;
+  text-align: center;
 }
-.ob-modes dd {
+.ob__top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.ob__progress {
+  flex: 1;
+  min-width: 0;
+}
+
+/* ---------- One step ---------- */
+.ob__step {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  min-height: 420px;
+}
+.ob__body {
+  display: grid;
+  flex: 1;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: 16px;
+  min-width: 0;
+}
+.ob__intro {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+.ob__buddy {
+  flex: none;
+}
+.ob__bubble {
+  position: relative;
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 14px 18px;
+  border: 2px solid var(--sv-border);
+  border-radius: 20px;
+  background: var(--sv-surface-2);
+}
+.ob__bubble::before {
+  position: absolute;
+  top: calc(50% - 8px);
+  left: -9px;
+  width: 14px;
+  height: 14px;
+  border-bottom: 2px solid var(--sv-border);
+  border-left: 2px solid var(--sv-border);
+  background: var(--sv-surface-2);
+  transform: rotate(45deg);
+  content: '';
+}
+.ob__titleRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.ob__step--center .ob__titleRow {
+  justify-content: center;
+}
+.ob__title {
   margin: 0;
-  color: var(--sv-text-muted);
+  font-size: 1.75rem;
+  font-weight: 900;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+}
+/* Focused by script on each step so screen readers hear the new title: no stray ring. */
+.ob__title:focus {
+  outline: none;
+  box-shadow: none;
+}
+.ob__line {
+  margin: 0;
+  color: var(--sv-ink-2);
+}
+.ob__step--center .ob__hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+}
+.ob__step--center .ob__body {
+  justify-items: center;
+}
+.ob__step--center .ob__body > * {
+  max-width: 100%;
+}
+.ob__card--center > * {
+  max-width: 100%;
+}
+.ob__nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  padding-top: 14px;
+  border-top: 2px solid var(--sv-border);
+}
+.ob__spacer {
+  flex: 1;
+}
+.ob__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+/* ---------- Picture cards, legends, chips ---------- */
+.ob-legend {
+  margin-bottom: 8px;
+  padding: 0;
+  font-size: var(--sv-text-sm);
+  font-weight: 800;
+}
+/*
+ * The radio covers its whole card (transparent), so the card's surface is the radio itself: a
+ * pointer, a test driver or assistive tech that clicks "the radio" hits it, never the label around it.
+ */
+.ob-pick__input {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  border-radius: inherit;
+  opacity: 0;
+  cursor: pointer;
+}
+/* Pill radios for a small second choice (density). */
+.ob-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.ob-pill {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  min-height: 44px;
+  margin-bottom: 3px;
+  padding: 8px 16px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-pill);
+  background: var(--sv-surface);
+  box-shadow: 0 3px 0 var(--sv-border);
+  font-weight: 800;
+  cursor: pointer;
+}
+.ob-pill svg {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  color: var(--sv-primary);
+}
+.ob-pill:hover {
+  border-color: var(--sv-primary);
+}
+.ob-pill .ob-pill__tick {
+  display: none;
+  width: 16px;
+  height: 16px;
+}
+.ob-pill:has(> input:checked) {
+  border-color: var(--sv-primary);
+  background: var(--sv-primary-soft);
+  box-shadow: 0 3px 0 var(--sv-primary-edge);
+  color: var(--sv-primary-soft-ink);
+}
+.ob-pill:has(> input:checked) .ob-pill__tick {
+  display: block;
+}
+.ob-pill:has(> input:focus-visible) {
+  outline: var(--sv-focus-width) solid var(--sv-focus);
+  outline-offset: 2px;
+}
+.ob-tag {
+  justify-self: center;
+  margin-top: 4px;
+  padding: 1px 8px;
+  border-radius: var(--sv-radius-pill);
+  background: var(--sv-sun-soft);
+  color: var(--sv-sun-soft-ink);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+}
+.ob-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ob-chips__label {
+  color: var(--sv-ink-2);
+  font-size: 0.8125rem;
+  font-weight: 800;
+}
+.ob-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: var(--sv-radius-pill);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+}
+.ob-chip svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+.ob-chip--quiet {
+  border: 2px solid var(--sv-border);
+  background: var(--sv-surface-2);
+  color: var(--sv-ink-2);
+}
+.ob-chip--lg {
+  padding: 5px 12px;
+  font-size: var(--sv-text-sm);
+}
+
+/* ---------- Privacy: switch cards and status tiles ---------- */
+.ob-tcards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
+  gap: 12px;
+}
+.ob-tcard {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  margin-bottom: 4px;
+  padding: 14px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-lg);
+  background: var(--sv-surface);
+  box-shadow: 0 4px 0 var(--sv-border);
+}
+.ob-tcard__art {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 16px;
+}
+.ob-tcard__art svg {
+  width: 26px;
+  height: 26px;
+}
+.ob-tcard__text {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+}
+.ob-tcard__label {
+  font-size: var(--sv-text-md);
+  font-weight: 800;
+  cursor: pointer;
+}
+.ob-tcard__hint {
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-sm);
+}
+.ob-tcard .sv-check input.sv-switch {
+  margin-top: 0;
+}
+.ob-stats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* Equal tiles across the row, so the (i) sits right after the last one at any width. */
+.ob-stats__list {
+  display: grid;
+  flex: 1;
+  grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr));
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ob-stat {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  height: 100%;
+  min-height: 44px;
+  padding: 6px 12px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface-2);
+  color: var(--sv-ink);
+  font-weight: 800;
+  text-decoration: none;
+}
+.ob-stat:hover {
+  border-color: var(--sv-primary);
+}
+/* Label on the first line, its state under it: the same shape for every tile at any width. */
+.ob-stat__value {
+  display: flex;
+  flex-basis: 100%;
+}
+.ob-stat__icon {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: var(--sv-ink-2);
+}
+
+/* ---------- Site access: the "later" path ---------- */
+.ob-how {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 12px;
+  border-radius: var(--sv-radius-lg);
+  background: var(--sv-surface-2);
+}
+.ob-how__label {
+  color: var(--sv-ink-2);
+  font-size: 0.8125rem;
+  font-weight: 800;
+}
+.ob-how__path {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ob-how__stop {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ob-how__arrow {
+  width: 16px;
+  height: 16px;
+  color: var(--sv-ink-2);
+}
+.ob-how .ob-chip--quiet {
+  background: var(--sv-surface);
+  color: var(--sv-ink);
+}
+
+/* ---------- Banks: plan and folder tree ---------- */
+.ob-plan {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-lg);
+  background: var(--sv-surface-2);
+}
+.ob-plan__line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 800;
+}
+.ob-plan__line svg,
+.ob-disclose svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: var(--sv-primary);
+}
+/* A disclosure: icon, label and a chevron that turns when open (the native marker is hidden). */
+.ob-disclose {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  border-radius: var(--sv-radius-sm);
+  font-size: var(--sv-text-sm);
+  font-weight: 800;
+  list-style: none;
+  cursor: pointer;
+}
+.ob-disclose::-webkit-details-marker {
+  display: none;
+}
+.ob-disclose .ob-disclose__chev {
+  color: var(--sv-ink-2);
+  transition: transform var(--sv-motion);
+}
+details[open] > .ob-disclose .ob-disclose__chev {
+  transform: rotate(180deg);
 }
 .ob-tree {
   display: flex;
   flex-direction: column;
   gap: var(--sv-space-1);
-  margin: var(--sv-space-2) 0;
+  margin: var(--sv-space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+/* A nested list: indented, with a guide line down to its last row. */
+.ob-tree .ob-tree {
+  margin: var(--sv-space-1) 0 0 8px;
+  padding-inline-start: 18px;
+  border-inline-start: 2px solid var(--sv-border);
 }
 .ob-tree__row {
   display: flex;
@@ -98,29 +517,253 @@
   gap: var(--sv-space-2);
   min-height: 28px;
 }
+.ob-tree__row--off label {
+  color: var(--sv-ink-2);
+}
 .ob-tree__row input {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
   margin: 0;
   flex: none;
-  accent-color: var(--sv-accent);
+  accent-color: var(--sv-primary);
 }
-.ob-keys {
+
+/* ---------- Try it: three numbered tiles and the shortcut list ---------- */
+.ob-try {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ob-try__step {
   display: flex;
   flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  padding: 16px 10px 12px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-lg);
+  background: var(--sv-surface);
+  box-shadow: 0 4px 0 var(--sv-border);
+  text-align: center;
+}
+.ob-try__art {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: var(--sv-art);
+  height: var(--sv-art);
+  border-radius: 22px;
+}
+.ob-try__art svg {
+  width: 38px;
+  height: 38px;
+}
+.ob-try__num {
+  position: absolute;
+  top: -6px;
+  left: -6px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--sv-primary);
+  color: var(--sv-on-primary);
+  font-size: var(--sv-text-xs);
+  font-weight: 900;
+}
+.ob-try__label {
+  font-weight: 800;
+}
+/* Block, not grid: a closed details keeps its (empty) content box, which a grid gap would pad. */
+.ob-keys {
+  display: block;
+  padding: 8px 14px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-lg);
+  background: var(--sv-surface-2);
+}
+.ob-keys > :not(summary) {
+  margin-top: 8px;
+}
+.ob-keys__list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
+  column-gap: 20px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 .ob-keys__row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--sv-space-2);
-  padding: var(--sv-space-2) 0;
+  gap: 8px;
+  padding: 6px 0;
   border-bottom: 1px solid var(--sv-border);
+  font-size: var(--sv-text-sm);
 }
-.ob-steps {
-  padding-left: var(--sv-space-5);
-  list-style: decimal;
+
+/* ---------- Ready ---------- */
+.ob-game {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  margin-bottom: 4px;
+  padding: 10px 16px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-lg);
+  background: var(--sv-surface);
+  box-shadow: 0 4px 0 var(--sv-border);
+  text-align: left;
 }
-.ob-steps li + li {
-  margin-top: var(--sv-space-2);
+.ob-game .sv-check {
+  align-items: center;
+}
+.ob-game .sv-check input.sv-switch {
+  margin-top: 0;
+}
+.ob-game label {
+  font-weight: 800;
+}
+.ob-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+}
+
+/* ---------- Narrow: 320 px and 200% zoom ---------- */
+@media (max-width: 560px) {
+  .ob {
+    padding: 16px;
+  }
+  .ob__card {
+    padding: 16px 16px 14px;
+    border-radius: 22px;
+  }
+  .ob__card--center {
+    padding: 28px 16px;
+  }
+  .ob__step {
+    min-height: 0;
+  }
+  .ob__title {
+    font-size: 1.375rem;
+  }
+  .ob__intro {
+    gap: 12px;
+  }
+  .ob__intro .ob__buddy {
+    width: 56px;
+    height: 56px;
+  }
+  .ob__bubble {
+    padding: 10px 12px;
+  }
+}
+
+/* Phone width (and 200% zoom): rows instead of tiles, and the footer buttons share one line. */
+@media (max-width: 420px) {
+  .ob-tcard {
+    padding: 12px;
+  }
+  .ob-tcard__art {
+    display: none;
+  }
+  .ob-try__step {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 10px 12px;
+    text-align: left;
+  }
+  .ob-try__art {
+    width: 48px;
+    height: 48px;
+    border-radius: 16px;
+  }
+  .ob-try__art svg {
+    width: 26px;
+    height: 26px;
+  }
+  .ob__nav .sv-chunky,
+  .ob__nav > .sv-tipwrap {
+    flex: 1 1 auto;
+    padding-inline: 14px;
+  }
+  .ob__nav > .sv-tipwrap {
+    display: flex;
+    padding-inline: 0;
+  }
+  .ob__spacer {
+    display: none;
+  }
+}
+
+/* 200% zoom on a 320 px window (160 px): mascot above its bubble, tighter frame, Skip wraps. */
+@media (max-width: 240px) {
+  .ob {
+    padding: 8px;
+  }
+  .ob__card,
+  .ob__card--center {
+    padding: 12px 10px;
+  }
+  .ob__top {
+    flex-wrap: wrap;
+  }
+  .ob__progress {
+    flex-basis: 100%;
+  }
+  .ob__intro {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .ob__bubble {
+    max-width: 100%;
+  }
+  .ob__bubble::before {
+    display: none;
+  }
+  .ob__title {
+    font-size: 1rem;
+    overflow-wrap: anywhere;
+  }
+  .ob-game {
+    padding: 10px;
+  }
+  .ob-game .ob-tcard__art {
+    display: none;
+  }
+  /* Picture cards: room for whole words next to the tick. */
+  .ob .sv-choice {
+    padding: 8px 34px 8px 8px;
+  }
+  .ob .sv-choice__check {
+    right: 6px;
+  }
+  .ob .sv-choice__label {
+    font-size: 0.875rem;
+  }
+  .ob-pill {
+    gap: 6px;
+    padding: 8px;
+    font-size: 0.8125rem;
+  }
+  .ob-pill svg:not(.ob-pill__tick) {
+    display: none;
+  }
+  /* The tag may run into the tick's empty column rather than break mid-word. */
+  .ob .ob-tag {
+    padding-inline: 5px;
+    overflow-wrap: normal;
+  }
 }
