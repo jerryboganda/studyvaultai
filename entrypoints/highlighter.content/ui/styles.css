@@ -1,6 +1,9 @@
 /*
- * StudyVault in-page overlay. Injected into the shadow root by WXT (cssInjectionMode "ui"), which
- * rewrites :root to :host. Sizes are px on purpose: host pages change rem/em at will.
+ * StudyVault in-page overlay, Sunny Vault style (UX_DESIGN.md 7.6): system rounded font (never a web
+ * font in a page), 2px borders, rounder corners, a 3D edge on the filled buttons. Inlined into the
+ * shadow root by ui/index.tsx (?inline), so it is scoped there; :root rules of tokens.css match
+ * nothing inside a shadow root, :host and .sv-root carry the theme. Sizes are px on purpose: host
+ * pages change rem/em at will.
  */
 @import '../../../packages/ui/src/tokens.css';
 
@@ -20,7 +23,8 @@
 .sv-root {
   /* `all: initial` on the host resets color-scheme, so native controls need it set again. */
   color-scheme: light dark;
-  font: 13px/1.45 var(--sv-font);
+  /* --sv-font is the system rounded stack here (tokens.css sets it on :host). */
+  font: 600 13px/1.45 var(--sv-font);
   color: var(--sv-text);
   text-align: left;
   user-select: none;
@@ -141,7 +145,7 @@
 .sv-popover,
 .sv-toast {
   background: var(--sv-surface-raised);
-  border: 1px solid var(--sv-border);
+  border: 2px solid var(--sv-border);
   box-shadow: var(--sv-shadow);
 }
 
@@ -167,7 +171,7 @@
   max-width: 100%;
   padding: 2px var(--sv-space-2);
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 700;
   line-height: 1.45;
   white-space: nowrap;
   overflow: hidden;
@@ -185,7 +189,7 @@
   align-items: center;
   gap: 2px;
   padding: var(--sv-space-1);
-  border-radius: var(--sv-radius-md);
+  border-radius: 18px;
   max-width: 100%;
 }
 .sv-toolbar-item {
@@ -204,7 +208,7 @@
   width: 300px;
   /* No bottom padding: the pinned action row carries it. */
   padding: var(--sv-space-3) var(--sv-space-3) 0;
-  border-radius: var(--sv-radius-md);
+  border-radius: var(--sv-radius-lg);
   min-height: 0;
   overflow: hidden auto;
   overscroll-behavior: contain;
@@ -231,16 +235,17 @@
   margin: 0;
   padding: 0 var(--sv-space-2);
   font: inherit;
-  font-weight: 600;
+  font-weight: 700;
   line-height: 1;
   color: var(--sv-text);
   background: transparent;
-  border: 1px solid transparent;
+  border: 2px solid transparent;
   border-radius: var(--sv-radius-sm);
   cursor: pointer;
 }
+/* Soft blue, not a surface tone: in light the surfaces are all white, so only a tint shows. */
 .sv-btn:hover {
-  background: var(--sv-surface);
+  background: var(--sv-primary-soft);
 }
 .sv-btn[aria-disabled='true'] {
   opacity: 0.55;
@@ -256,8 +261,8 @@
 .sv-swatch {
   display: block;
   width: 16px;
-  height: 4px;
-  border-radius: 2px;
+  height: 5px;
+  border-radius: 3px;
 }
 /* The palette colours (amber on white is 2.2:1) cannot all reach 3:1, so the shape gets an edge that does. */
 .sv-swatch,
@@ -265,20 +270,54 @@
   box-shadow: 0 0 0 1px var(--sv-border-strong);
 }
 
-.sv-btn-primary {
-  color: var(--sv-accent-text);
-  background: var(--sv-accent);
+/*
+ * Filled buttons get the 3D edge (UX_DESIGN 2.7): a hard bottom shadow, reserved by margin so a press
+ * (down by the same 3px, edge to 0) never moves the layout. The edge is decoration only.
+ */
+.sv-btn-primary,
+.sv-btn-danger {
+  margin-bottom: 3px;
+  font-weight: 800;
+  color: var(--sv-on-primary);
 }
+.sv-btn-primary {
+  background: var(--sv-primary);
+  border-color: var(--sv-primary);
+  box-shadow: 0 3px 0 var(--sv-primary-edge);
+}
+.sv-btn-danger {
+  background: var(--sv-danger-fill);
+  border-color: var(--sv-danger-fill);
+  box-shadow: 0 3px 0 var(--sv-danger-edge);
+}
+/* Darker on hover, so the white label only gains contrast. */
 .sv-btn-primary:hover {
-  background: var(--sv-accent-hover);
+  background: var(--sv-primary);
+  filter: brightness(0.92);
+}
+.sv-btn-danger:hover {
+  background: var(--sv-danger-fill);
+  filter: brightness(0.92);
+}
+.sv-btn-primary:active,
+.sv-btn-danger:active {
+  transform: translateY(3px);
+  box-shadow: none;
+}
+/* The halo goes in front of the edge, never instead of it. */
+.sv-root .sv-btn-primary:focus {
+  box-shadow:
+    0 0 0 2px var(--sv-focus-halo),
+    0 3px 0 var(--sv-primary-edge);
+}
+.sv-root .sv-btn-danger:focus {
+  box-shadow:
+    0 0 0 2px var(--sv-focus-halo),
+    0 3px 0 var(--sv-danger-edge);
 }
 .sv-btn-text,
 .sv-btn-link {
   color: var(--sv-accent);
-}
-.sv-btn-danger {
-  color: var(--sv-danger);
-  border-color: var(--sv-danger);
 }
 .sv-icon-btn {
   min-width: 28px;
@@ -297,7 +336,7 @@
 .sv-field > label,
 .sv-field > .sv-label {
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 800;
   color: var(--sv-text-muted);
 }
 /* A button that sits under its field rather than stretching across it. */
@@ -326,7 +365,7 @@
   font: inherit;
   color: var(--sv-text);
   background: var(--sv-bg);
-  border: 1px solid var(--sv-border-strong);
+  border: 2px solid var(--sv-border-strong);
   border-radius: var(--sv-radius-sm);
 }
 
@@ -357,11 +396,12 @@
 /* Content --------------------------------------------------------------------------------- */
 .sv-quote {
   padding: 6px var(--sv-space-2);
-  font-size: 12px;
-  color: var(--sv-text-muted);
-  background: var(--sv-surface);
-  border-left: 3px solid var(--sv-accent);
-  border-radius: 2px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--sv-text);
+  background: var(--sv-sunk);
+  border-left: 4px solid var(--sv-accent);
+  border-radius: var(--sv-radius-sm);
   overflow-wrap: anywhere;
   display: -webkit-box;
   -webkit-box-orient: vertical;
@@ -408,9 +448,9 @@
   gap: 6px;
   padding: 2px 10px 2px 8px;
   font-size: 12px;
-  font-weight: 600;
-  background: var(--sv-surface);
-  border: 1px solid var(--sv-border);
+  font-weight: 800;
+  background: var(--sv-sunk);
+  border: 1px solid transparent;
   border-radius: 999px;
 }
 .sv-swatch-dot {
@@ -444,7 +484,7 @@
   max-width: 100%;
   padding: 6px 6px 6px var(--sv-space-3);
   border-left: 4px solid var(--sv-accent);
-  border-radius: var(--sv-radius-sm);
+  border-radius: var(--sv-radius-md);
   pointer-events: auto;
   animation: sv-in var(--sv-motion) ease-out;
 }
@@ -455,7 +495,7 @@
   border-left-color: var(--sv-danger);
 }
 .sv-toast-icon {
-  font-weight: 700;
+  font-weight: 900;
 }
 .sv-toast-success .sv-toast-icon {
   color: var(--sv-success);
@@ -475,7 +515,7 @@
 /* How a keyboard user reaches the action (Undo): the toast is not in the tab order of the page. */
 .sv-toast-hint {
   font-size: 12px;
-  font-weight: 400;
+  font-weight: 600;
   color: var(--sv-text-muted);
   overflow-wrap: anywhere;
 }
@@ -534,6 +574,11 @@
     animation: none !important;
     transition: none !important;
   }
+  /* No press travel: the edge still flattens, the button does not move. */
+  .sv-btn-primary:active,
+  .sv-btn-danger:active {
+    transform: none;
+  }
 }
 
 @media (forced-colors: active) {
@@ -551,7 +596,8 @@
     outline-color: Highlight;
     box-shadow: none;
   }
-  .sv-btn-primary {
+  .sv-btn-primary,
+  .sv-btn-danger {
     border-color: ButtonText;
   }
   .sv-swatch,

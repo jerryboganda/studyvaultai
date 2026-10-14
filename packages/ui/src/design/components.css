@@ -1,8 +1,8 @@
 /*
- * Sunny Vault components (design/*.tsx). Plain CSS on design/tokens.css; no <style> tags, no
- * style="" markup (geometry that depends on data is set through the CSSOM by React).
- * Class names avoid every legacy name in packages/ui/src/components.css (.sv-btn, .sv-card,
- * .sv-empty, .sv-tab...), so both files can load during the migration.
+ * Sunny Vault components (design/*.tsx). Plain CSS on tokens.css, loaded on every extension page
+ * through components.css (@import). No <style> tags, no style="" markup (geometry that depends on
+ * data is set through the CSSOM by React). Class names avoid every legacy name in
+ * components.css (.sv-btn, .sv-card, .sv-empty, .sv-tab...), so both sets live side by side.
  */
 
 /* ---------- Base ---------- */
