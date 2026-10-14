@@ -1,4 +1,15 @@
 import { useState, type MouseEvent } from 'react';
+import {
+  ChevronDown,
+  CopyCheck,
+  Flag,
+  FolderInput,
+  Palette,
+  Shapes,
+  Tags,
+  Trash,
+  X,
+} from 'lucide-react';
 import { COLOR_IDS, HIGHLIGHT_KINDS, KIND_LABELS, type ColorId, type HighlightKind } from '@shared';
 import { Button } from '@ui';
 import { PopupMenu, type MenuItem } from '@ui/vault';
@@ -78,14 +89,17 @@ export function BulkBar(props: BulkBarProps) {
       </p>
       {canSelectAll ? (
         <Button onClick={props.onSelectAllFiltered} data-testid="select-all-filtered">
+          <CopyCheck aria-hidden="true" className="dash-btn-icon" />
           Select all {totalMatching!.toLocaleString()} matching
         </Button>
       ) : null}
       <Button busy={busy} onClick={props.onMove} data-testid="bulk-move">
-        Move to…
+        <FolderInput aria-hidden="true" className="dash-btn-icon" />
+        Move
       </Button>
       <Button busy={busy} onClick={props.onTags} data-testid="bulk-tags">
-        Tags…
+        <Tags aria-hidden="true" className="dash-btn-icon" />
+        Tags
       </Button>
       <Button
         busy={busy}
@@ -94,7 +108,9 @@ export function BulkBar(props: BulkBarProps) {
         onClick={open('kind')}
         data-testid="bulk-kind"
       >
-        Kind ▾
+        <Shapes aria-hidden="true" className="dash-btn-icon" />
+        Kind
+        <ChevronDown aria-hidden="true" className="dash-btn-icon" />
       </Button>
       <Button
         busy={busy}
@@ -103,7 +119,9 @@ export function BulkBar(props: BulkBarProps) {
         onClick={open('color')}
         data-testid="bulk-color"
       >
-        Colour ▾
+        <Palette aria-hidden="true" className="dash-btn-icon" />
+        Colour
+        <ChevronDown aria-hidden="true" className="dash-btn-icon" />
       </Button>
       <Button
         busy={busy}
@@ -112,13 +130,17 @@ export function BulkBar(props: BulkBarProps) {
         onClick={open('priority')}
         data-testid="bulk-priority"
       >
-        Priority ▾
+        <Flag aria-hidden="true" className="dash-btn-icon" />
+        Priority
+        <ChevronDown aria-hidden="true" className="dash-btn-icon" />
       </Button>
       <Button variant="danger" busy={busy} onClick={props.onDelete} data-testid="bulk-delete">
-        Move to trash
+        <Trash aria-hidden="true" className="dash-btn-icon" />
+        Trash
       </Button>
       <Button variant="ghost" onClick={props.onClear} data-testid="bulk-clear">
-        Clear selection
+        <X aria-hidden="true" className="dash-btn-icon" />
+        Clear
       </Button>
       {menu ? (
         <PopupMenu

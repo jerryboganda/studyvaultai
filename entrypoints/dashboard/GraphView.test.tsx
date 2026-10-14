@@ -103,9 +103,12 @@ const rowText = (key: string) =>
   rows().find((r) => r.getAttribute('data-node') === key)?.textContent ?? '';
 
 describe('GraphView overview', () => {
-  it('says what to do when there are no links yet', async () => {
-    render(<Harness start={null} />);
+  it('says what to do when there are no links yet, with a way back to the banks', async () => {
+    const back = vi.fn();
+    render(<Harness start={null} onBack={back} />);
     expect(await screen.findByText('No links yet')).toBeTruthy();
+    await userEvent.click(screen.getByRole('button', { name: 'Open banks' }));
+    expect(back).toHaveBeenCalledTimes(1);
   });
 
   it('lists the most connected items and the groups instead of drawing everything', async () => {
@@ -375,7 +378,8 @@ describe('GraphView around an item', () => {
     const row = rows().find((r) => r.getAttribute('data-node') === `note:${loose.id}`)!;
     const open = within(row).getByTestId('connection-open');
     expect(open.getAttribute('aria-disabled')).toBe('true');
-    expect(open.getAttribute('title')).toMatch(/not attached to a highlight/);
+    const reason = document.getElementById(open.getAttribute('aria-describedby') ?? '');
+    expect(reason?.textContent).toMatch(/not attached to a highlight/);
     expect(row.textContent).toContain('Note');
     expect(row.textContent).toContain('A loose thought about platelets.');
   });

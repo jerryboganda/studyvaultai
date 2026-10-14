@@ -32,12 +32,33 @@ export function parseDeepLink(search: string): DeepLink {
   };
 }
 
-/** `?view=chat` opens the chat view, `?view=graph` the graph; anything else is the highlight list. */
-export function parseViewLink(search: string): 'chat' | 'graph' | 'syllabus' | 'rules' | null {
+/** Every view that has an address (`?view=`). */
+export const LINKED_VIEWS = [
+  'home',
+  'library',
+  'more',
+  'chat',
+  'graph',
+  'syllabus',
+  'rules',
+  'duplicates',
+  'trash',
+  'storage',
+] as const;
+export type LinkedView = (typeof LINKED_VIEWS)[number];
+
+/** `?view=chat` opens the chat view, `?view=library` the highlight list; null for anything else. */
+export function parseViewLink(search: string): LinkedView | null {
   const view = new URLSearchParams(search).get('view');
-  return view === 'chat' || view === 'graph' || view === 'syllabus' || view === 'rules'
-    ? view
-    : null;
+  return (LINKED_VIEWS as readonly string[]).includes(view ?? '') ? (view as LinkedView) : null;
+}
+
+/** The view a page opens on: `?view=`, else the list for a highlight, bank or query link, else Home. */
+export function initialView(search: string): LinkedView {
+  const link = parseDeepLink(search);
+  return (
+    parseViewLink(search) ?? (link.highlight || link.bank || link.q !== null ? 'library' : 'home')
+  );
 }
 
 /** `?view=syllabus&syllabus=<id>`: which syllabus the editor opens on (an id-shaped value only). */

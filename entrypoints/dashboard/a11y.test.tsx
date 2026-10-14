@@ -10,7 +10,7 @@ vi.setConfig({ testTimeout: 30_000 });
 beforeEach(() => {
   fakeBrowser.reset();
   window.localStorage.clear();
-  window.history.replaceState({}, '', '/dashboard.html');
+  window.history.replaceState({}, '', '/dashboard.html?view=library');
 });
 afterEach(cleanup);
 
@@ -66,6 +66,7 @@ describe('dashboard accessibility', () => {
   it('says which view is showing when a view button replaces the page under it', async () => {
     await open();
     expect(spoken()).not.toContain('Trash');
+    fireEvent.click(screen.getByTestId('nav-more'));
     fireEvent.click(screen.getByTestId('view-trash'));
     await screen.findByTestId('trash-view', undefined, WAIT);
     await waitFor(() => expect(spoken()).toContain('Trash'), WAIT);
@@ -148,8 +149,8 @@ describe('dashboard accessibility: narrow layouts, where the panes are panels ov
     const dash = screen.getByTestId('dashboard');
     fireEvent.click(screen.getByTestId('toggle-tree'));
     await waitFor(() => expect(dash.getAttribute('data-tree-open')).toBe('true'), WAIT);
-    fireEvent.click(screen.getByTestId('view-trash'));
-    await screen.findByTestId('trash-view', undefined, WAIT);
+    fireEvent.click(screen.getByTestId('nav-more'));
+    await screen.findByTestId('more-view', undefined, WAIT);
     expect(dash.getAttribute('data-tree-open')).toBe('false');
   });
 

@@ -5,6 +5,7 @@ import {
   MAX_FILING_RULE_NAME_CHARS,
   MAX_FILING_TAG_IDS,
   MAX_FILING_TEXT_CHARS,
+  SCHEMA_VERSION,
   decideFiling,
   filingMatchApplies,
   normalizeFilingHost,
@@ -148,6 +149,70 @@ export function formToInput(form: RuleForm): FilingRuleInput {
   };
 }
 
+/** The condition fields of a rule, in the order the wizard offers them. */
+export type ConditionKey =
+  'hosts' | 'urlPrefixes' | 'titleContains' | 'quoteContains' | 'kinds' | 'sourceTypes' | 'tagIds';
+export const CONDITION_KEYS: readonly ConditionKey[] = [
+  'hosts',
+  'urlPrefixes',
+  'titleContains',
+  'quoteContains',
+  'kinds',
+  'sourceTypes',
+  'tagIds',
+];
+
+/** The condition fields that hold at least one value (what an edited rule starts with). */
+export const usedConditions = (form: RuleForm): ConditionKey[] =>
+  CONDITION_KEYS.filter((k) => form[k].length > 0);
+
+/** The form with the values of the fields that were not picked left out (Back keeps them). */
+export function keepConditions(form: RuleForm, keys: readonly ConditionKey[]): RuleForm {
+  const out = { ...form };
+  for (const k of CONDITION_KEYS) if (!keys.includes(k)) out[k] = [];
+  return out;
+}
+
+/** The first picked field that has no value yet, so the wizard can ask for it. */
+export const firstEmptyCondition = (
+  form: RuleForm,
+  keys: readonly ConditionKey[],
+): ConditionKey | null => keys.find((k) => form[k].length === 0) ?? null;
+
+/** A name to offer when the person leaves it empty: the first condition, then the bank. */
+export function suggestName(form: RuleForm, bankName: string | null): string {
+  const first =
+    form.hosts[0] ??
+    form.urlPrefixes[0]?.replace(/^https?:\/\//, '') ??
+    form.titleContains[0] ??
+    form.quoteContains[0] ??
+    (form.kinds[0] ? KIND_LABELS[form.kinds[0]].label : undefined) ??
+    (form.sourceTypes[0] ? SOURCE_LABELS[form.sourceTypes[0]] : undefined);
+  const name = [first, bankName].filter(Boolean).join(' to ');
+  return name.slice(0, MAX_FILING_RULE_NAME_CHARS).trim();
+}
+
+/**
+ * The form as a stored rule, so "Try it" can run the real decision over the list with this rule in
+ * it: an edited rule keeps its id and place, a new one goes last (where creating puts it).
+ */
+export function draftRule(form: RuleForm, base: FilingRule | undefined, order: number): FilingRule {
+  const at = base?.updatedAt ?? new Date(0).toISOString();
+  return {
+    id: base?.id ?? 'rule-draft',
+    schemaVersion: SCHEMA_VERSION,
+    createdAt: base?.createdAt ?? at,
+    updatedAt: at,
+    deletedAt: null,
+    order: base?.order ?? order,
+    name: form.name.trim() || 'This rule',
+    enabled: true,
+    match: formToInput(form).match,
+    action: { bankId: form.bankId, folderId: form.folderId, addTagIds: form.addTagIds },
+    requireConfirm: form.requireConfirm,
+  };
+}
+
 export const hasConditions = (form: RuleForm): boolean =>
   form.hosts.length +
     form.urlPrefixes.length +
@@ -231,6 +296,25 @@ export function describeConditions(rule: Pick<FilingRule, 'match'>, names: Names
   return out;
 }
 
+/** The same conditions as short values per field, for the chips of a rule card. */
+export function conditionParts(
+  rule: Pick<FilingRule, 'match'>,
+  names: Names,
+): Array<{ key: ConditionKey; values: string[] }> {
+  const m = rule.match;
+  const q = (items: readonly string[] | undefined) => (items ?? []).map((s) => `“${s}”`);
+  const parts: Array<{ key: ConditionKey; values: string[] }> = [
+    { key: 'hosts', values: [...(m.hosts ?? [])] },
+    { key: 'urlPrefixes', values: [...(m.urlPrefixes ?? [])] },
+    { key: 'titleContains', values: q(m.titleContains) },
+    { key: 'quoteContains', values: q(m.quoteContains) },
+    { key: 'kinds', values: (m.kinds ?? []).map((k) => KIND_LABELS[k].label) },
+    { key: 'sourceTypes', values: (m.sourceTypes ?? []).map((s) => SOURCE_LABELS[s]) },
+    { key: 'tagIds', values: (m.tagIds ?? []).map(names.tag) },
+  ];
+  return parts.filter((p) => p.values.length > 0);
+}
+
 export function describePlace(
   rule: Pick<FilingRule, 'action'>,
   names: Names,
@@ -280,6 +364,25 @@ export const emptyTest = (): TestInput => ({
   sourceType: 'web',
   tagIds: [],
 });
+
+/**
+ * A first sample for "Try it", made of the rule being written: its first site (or address), title
+ * word, quote word, kind, source and tag. The wizard's test then shows a result straight away; the
+ * person can change any field to see what else would happen.
+ */
+export function sampleFor(form: RuleForm): Partial<TestInput> {
+  const host = form.hosts[0];
+  const url = host ? `https://${host}/` : (form.urlPrefixes[0] ?? '');
+  const out: Partial<TestInput> = {
+    url,
+    title: form.titleContains[0] ?? '',
+    quote: form.quoteContains[0] ?? '',
+    tagIds: form.tagIds.slice(0, 1),
+    sourceType: form.sourceTypes.length > 0 && !form.sourceTypes.includes('web') ? 'pdf' : 'web',
+  };
+  if (form.kinds[0]) out.kind = form.kinds[0];
+  return out;
+}
 
 export function testCandidate(input: TestInput): {
   candidate: FilingCandidate;

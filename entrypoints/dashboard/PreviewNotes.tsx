@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { Note } from '@shared';
 import { MAX_NOTE_BODY_CHARS, MAX_NOTE_TITLE_CHARS } from '@shared';
-import { Button, errorMessage, useAction, useToast } from '@ui';
+import { Button, InfoTip, errorMessage, useAction, useToast } from '@ui';
 import { Markdown } from '@ui/vault';
 import { useApi } from './api';
 import { DialogError } from './dialogs';
@@ -292,7 +292,10 @@ function NoteEditor({
         />
       )}
       <p className="sv-small sv-muted">
-        Raw HTML is shown as text, images are not loaded, and only http(s) links are active.
+        Markdown works.{' '}
+        <InfoTip label="About safe Markdown" side="top" align="start">
+          Raw HTML is shown as text, images are not loaded, and only http(s) links are active.
+        </InfoTip>
       </p>
       {save.error ? (
         <DialogError message={save.error} retry={save.retryable ? save.retry : undefined} />

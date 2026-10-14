@@ -1,4 +1,5 @@
 import { useImperativeHandle, useMemo, useRef, useState, type Ref } from 'react';
+import { Ellipsis, Plus } from 'lucide-react';
 import {
   COLOR_IDS,
   COLOR_SWATCH,
@@ -6,7 +7,7 @@ import {
   MAX_FOLDER_DEPTH,
   type ColorId,
 } from '@shared';
-import { Button, LOCAL_PREF_KEYS, errorMessage, plural, useToast } from '@ui';
+import { ChunkyButton, IconButton, LOCAL_PREF_KEYS, errorMessage, plural, useToast } from '@ui';
 import { PopupMenu, Tree, type MenuItem, type TreeHandle, type TreeKeyResult } from '@ui/vault';
 import type { DashboardApi } from './api';
 import {
@@ -17,6 +18,7 @@ import {
   PlacePicker,
   type Place,
 } from './dialogs';
+import { BankTile } from './BankCard';
 import { ALL_SCOPE, type Scope } from './filters';
 import { useBump, useLocalSet } from './hooks';
 import {
@@ -35,7 +37,6 @@ import {
 } from './treeData';
 
 type Dialog =
-  | { type: 'new-bank' }
   | { type: 'new-folder'; parent: NodeMeta }
   | { type: 'rename'; node: NodeMeta }
   | { type: 'delete'; node: NodeMeta }
@@ -64,11 +65,14 @@ export function BankPane({
   api,
   scope,
   onScope,
+  onNewBank,
   ref,
 }: {
   api: DashboardApi;
   scope: Scope;
   onScope(scope: Scope): void;
+  /** "New bank": the owner runs the new-bank wizard. */
+  onNewBank(): void;
   ref?: Ref<BankPaneHandle>;
 }) {
   const treeRef = useRef<TreeHandle>(null);
@@ -108,7 +112,7 @@ export function BankPane({
     const current = () => (selectedId ? built.meta.get(selectedId) : undefined);
     return {
       focusTree: () => treeRef.current?.focus(),
-      newBank: () => setDialog({ type: 'new-bank' }),
+      newBank: onNewBank,
       newFolder: () => {
         const node = current();
         if (!node) return false;
@@ -275,18 +279,45 @@ export function BankPane({
   };
 
   const menuNode = menu ? metaOf(menu.id) : undefined;
+  // Read together with the banks: no counts yet means the tree has not loaded.
+  const loading = data.counts === null;
 
   return (
-    <section className="dash-bankpane" aria-label="Banks">
+    <section className="dash-bankpane" aria-label="Banks" aria-busy={loading || undefined}>
       <div className="sv-row dash-bankpane__head">
         <h2 className="sv-grow">Banks</h2>
-        <Button onClick={() => setDialog({ type: 'new-bank' })} data-testid="new-bank">
+        {/* The tree's context menu, also for pointer users who do not right-click. */}
+        <IconButton
+          icon={Ellipsis}
+          size="sm"
+          // The tip is the only visible text: it says why while nothing is chosen.
+          label={selectedId ? 'Bank actions' : 'Bank actions: choose a bank first'}
+          aria-haspopup="menu"
+          aria-disabled={selectedId ? undefined : true}
+          aria-describedby={selectedId ? undefined : 'dash-bank-actions-why'}
+          onClick={(e) => {
+            if (!selectedId) return;
+            const r = e.currentTarget.getBoundingClientRect();
+            setMenu({ id: selectedId, at: { x: r.left, y: r.bottom + 4 } });
+          }}
+          data-testid="bank-actions"
+        />
+        <span id="dash-bank-actions-why" className="sv-vh">
+          Choose a bank or folder first.
+        </span>
+        <ChunkyButton size="sm" icon={Plus} onClick={onNewBank} data-testid="new-bank">
           New bank
-        </Button>
+        </ChunkyButton>
       </div>
-      {built.items.length === 0 ? (
+      {loading ? (
+        <ul className="dash-tree-skeleton" aria-label="Loading banks">
+          {[0, 1, 2, 3].map((i) => (
+            <li key={i} />
+          ))}
+        </ul>
+      ) : built.items.length === 0 ? (
         <p className="sv-muted sv-small" data-testid="tree-empty">
-          No banks yet. Save a highlight, or create a bank here.
+          No banks yet.
         </p>
       ) : (
         <Tree
@@ -309,19 +340,14 @@ export function BankPane({
             if (!node) return null;
             return (
               <>
-                {node.kind === 'bank' && node.color ? (
-                  <span
-                    className="dash-swatch"
-                    aria-hidden="true"
-                    style={{ background: COLOR_SWATCH[node.color].solid }}
-                  />
+                {node.kind === 'bank' ? (
+                  <BankTile name={node.name} icon={node.icon} color={node.color} size={28} />
                 ) : null}
-                {node.icon ? <span aria-hidden="true">{node.icon}</span> : null}
                 <span className="dash-tree__name" dir="auto">
                   {node.name}
                 </span>{' '}
                 {node.isInbox ? <span className="sv-sr">(protected) </span> : null}
-                <span className="dash-tree__count sv-muted sv-small">
+                <span className="dash-tree__count">
                   {node.count.toLocaleString()}{' '}
                   <span className="sv-sr">{node.count === 1 ? 'highlight' : 'highlights'}</span>
                 </span>
@@ -337,22 +363,6 @@ export function BankPane({
           items={menuItems(menuNode)}
           at={menu.at}
           onClose={() => setMenu(null)}
-        />
-      ) : null}
-
-      {dialog?.type === 'new-bank' ? (
-        <NameDialog
-          title="New bank"
-          label="Bank name"
-          confirmLabel="Create bank"
-          maxLength={NAME_LIMITS.bank}
-          onCancel={() => setDialog(null)}
-          onSubmit={async (name) => {
-            await api.createBank(name);
-            bump();
-            toast.push({ message: `Created bank ${name}.` });
-            setDialog(null);
-          }}
         />
       ) : null}
 

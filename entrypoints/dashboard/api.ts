@@ -1,6 +1,7 @@
 import { createContext, useContext } from 'react';
 import {
   createBank,
+  getAnalyticsInput,
   restoreHighlight,
   softDeleteHighlight,
   updateHighlight,
@@ -10,8 +11,10 @@ import {
   type VaultApi,
 } from '@storage';
 import type { BankLite, HighlightPatch, HighlightView } from '@shared';
+import type { DayBoundary } from '@study';
 import { storageLinks, type LinksPort } from '@ui/vault/Links';
 import type { MetaPort } from '@ui/vault/meta';
+import { bankStudyFrom, type BankStudy } from './homeModel';
 
 /**
  * Everything the dashboard asks of the vault, as one injectable object: the real @storage in the
@@ -73,6 +76,8 @@ export interface DashboardApi extends Pick<
   softDeleteHighlight(id: string): Promise<void>;
   restoreHighlight(id: string): Promise<HighlightView>;
   meta: MetaPort;
+  /** Cards and measured retention per bank id over the last year (the Home bank cards). */
+  bankStudy(o: { boundary: DayBoundary }): Promise<Record<string, BankStudy>>;
   /** Links between items (ADR-018). Without it the preview has no Links section. */
   links?: LinksPort;
 }
@@ -104,6 +109,8 @@ export const realApi: DashboardApi = {
   softDeleteHighlight,
   restoreHighlight,
   meta,
+  bankStudy: async ({ boundary }) =>
+    bankStudyFrom(await getAnalyticsInput({ boundary, sinceDays: 365 })),
   links: storageLinks,
 };
 

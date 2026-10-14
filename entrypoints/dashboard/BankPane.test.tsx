@@ -4,7 +4,7 @@ import { fakeBrowser } from 'wxt/testing/fake-browser';
 import { BankPane } from './BankPane';
 import { Harness } from './testHarness';
 import { FakeVault } from './testing';
-import { loadTreeData } from './treeData';
+import { EMPTY_TREE_DATA, loadTreeData } from './treeData';
 import type { Scope } from './filters';
 
 beforeEach(() => {
@@ -32,14 +32,15 @@ async function open(scope: Scope = { bankId: null, folderId: null }, nested = fa
   }
   const api = vault.api();
   const onScope = vi.fn();
+  const onNewBank = vi.fn();
   const tree = await loadTreeData(api);
   render(
     <Harness api={api} tree={tree}>
-      <BankPane api={api} scope={scope} onScope={onScope} />
+      <BankPane api={api} scope={scope} onScope={onScope} onNewBank={onNewBank} />
     </Harness>,
   );
   await screen.findByRole('tree');
-  return { vault, onScope };
+  return { vault, onScope, onNewBank };
 }
 
 const item = (name: string) => screen.getByRole('treeitem', { name: new RegExp(`^${name}\\b`) });
@@ -124,29 +125,42 @@ describe('BankPane tree', () => {
 });
 
 describe('BankPane operations', () => {
-  it('creates a bank from the toolbar', async () => {
-    const { vault } = await open();
+  it('hands "New bank" to the owner, who runs the wizard', async () => {
+    const { onNewBank, vault } = await open();
     fireEvent.click(screen.getByTestId('new-bank'));
-    fireEvent.change(within(dialog()).getByTestId('name-input'), { target: { value: 'Physics' } });
-    fireEvent.click(within(dialog()).getByTestId('dialog-confirm'));
-    await waitFor(() => expect(vault.called('createBank')).toHaveLength(1));
-    expect(vault.called('createBank')[0]!.args).toEqual(['Physics']);
-    await waitFor(() => expect(screen.queryByRole('dialog', { hidden: true })).toBeNull());
+    expect(onNewBank).toHaveBeenCalledTimes(1);
+    expect(vault.called('createBank')).toHaveLength(0);
   });
 
-  it('refuses an empty name and keeps the dialog open with the failure when saving fails', async () => {
-    const { vault } = await open();
-    fireEvent.click(screen.getByTestId('new-bank'));
-    const confirm = within(dialog()).getByTestId('dialog-confirm');
-    expect(confirm.getAttribute('aria-disabled')).toBe('true');
-    fireEvent.submit(within(dialog()).getByTestId('name-input').closest('form')!);
-    expect(vault.called('createBank')).toHaveLength(0);
+  it('shows a loading skeleton, never "No banks yet", while the tree is read', () => {
+    const api = new FakeVault().api();
+    render(
+      <Harness api={api} tree={EMPTY_TREE_DATA}>
+        <BankPane
+          api={api}
+          scope={{ bankId: null, folderId: null }}
+          onScope={vi.fn()}
+          onNewBank={vi.fn()}
+        />
+      </Harness>,
+    );
+    expect(screen.getByRole('list', { name: 'Loading banks' })).toBeTruthy();
+    expect(screen.queryByTestId('tree-empty')).toBeNull();
+  });
 
-    vault.fail.createBank = new Error('Storage is unavailable');
-    fireEvent.change(within(dialog()).getByTestId('name-input'), { target: { value: 'Physics' } });
-    fireEvent.click(confirm);
-    expect(await within(dialog()).findByText('Storage is unavailable')).toBeTruthy();
-    expect(screen.getByRole('dialog', { hidden: true })).toBeTruthy();
+  it('opens the actions of the current bank from its button, and says why it cannot otherwise', async () => {
+    await open();
+    // Nothing chosen: the name (and so the tip) says why it cannot act.
+    const actions = screen.getByRole('button', { name: 'Bank actions: choose a bank first' });
+    expect(actions.getAttribute('aria-disabled')).toBe('true');
+    fireEvent.click(actions);
+    expect(screen.queryByRole('menu')).toBeNull();
+    cleanup();
+
+    await open({ bankId: 'bank-chem', folderId: null });
+    fireEvent.click(screen.getByRole('button', { name: 'Bank actions' }));
+    const menu = screen.getByRole('menu', { name: 'Actions for Chemistry' });
+    expect(within(menu).getByRole('menuitem', { name: /Rename/ })).toBeTruthy();
   });
 
   it('renames a folder with F2', async () => {

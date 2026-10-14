@@ -75,12 +75,10 @@ export function sourceTarget(input: {
     return {
       kind: 'pdf',
       href: readerHref(source.documentId, input.pageNumber, input.highlightId),
-      label: input.pageNumber
-        ? `Open in the PDF reader at page ${input.pageNumber}`
-        : 'Open in the PDF reader',
+      label: input.pageNumber ? `Open page ${input.pageNumber}` : 'Open in reader',
     };
   }
   const href = webSourceHref(source.originalUrl, input.quote);
   if (!href) return { kind: 'none', reason: 'The original page has no reachable address.' };
-  return { kind: 'web', href, label: 'Open the original page at this passage' };
+  return { kind: 'web', href, label: 'Open source' };
 }

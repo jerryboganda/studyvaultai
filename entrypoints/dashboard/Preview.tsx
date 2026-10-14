@@ -1,5 +1,7 @@
 import { useId } from 'react';
+import { BookOpen, Filter, Flag, LocateFixed, Trash } from 'lucide-react';
 import {
+  COLOR_SWATCH,
   DEFAULT_PALETTE,
   HIGHLIGHT_KINDS,
   KIND_LABELS,
@@ -9,7 +11,9 @@ import {
 } from '@shared';
 import type { HighlightDetail, RelationRef } from '@storage';
 import {
+  BuddyEmptyState,
   Button,
+  InfoTip,
   InlineNotice,
   KindChip,
   ResolveBadge,
@@ -70,10 +74,13 @@ export function Preview(props: PreviewProps) {
   if (id === null) {
     return (
       <div className="dash-preview dash-preview--empty" data-testid="preview-empty">
-        <h2>Preview</h2>
-        <p className="sv-muted">
-          Choose a highlight to see its exact quote, where it came from, its notes and tags.
-        </p>
+        <BuddyEmptyState
+          pose="sleep"
+          heading="h2"
+          mascotSize={96}
+          title="Pick a highlight"
+          text="Its quote, source and notes show here."
+        />
       </div>
     );
   }
@@ -208,7 +215,15 @@ function PreviewBody({
         <div className="sv-row">
           <KindChip kind={highlight.kind} color={highlight.color} />
           <ResolveBadge status={highlight.resolveStatus} />
-          <span className="sv-small">Priority {highlight.priority}</span>
+          {state.attention && state.explanation ? (
+            <InfoTip label="About this status" align="start">
+              {state.explanation}
+            </InfoTip>
+          ) : null}
+          <span className="rrow__chip">
+            <Flag aria-hidden="true" strokeWidth={2.5} />
+            Priority {highlight.priority}
+          </span>
         </div>
         <h2 className="sv-wrap" dir="auto">
           {source.title || source.host || 'Untitled source'}
@@ -216,16 +231,20 @@ function PreviewBody({
       </header>
 
       <section className="dash-section" aria-labelledby={`${uid}-quote`}>
-        <h3 id={`${uid}-quote`}>
-          Original quote{' '}
-          <span className="sv-muted sv-small">(saved as captured; cannot be edited)</span>
-        </h3>
-        <blockquote className="sv-quote" dir="auto" data-testid="preview-quote">
+        <div className="sv-row dash-section__head">
+          <h3 id={`${uid}-quote`}>Original quote</h3>
+          <InfoTip label="About the quote" align="start">
+            Saved exactly as captured. It cannot be edited.
+          </InfoTip>
+        </div>
+        <blockquote
+          className="sv-quote dash-quote"
+          dir="auto"
+          data-testid="preview-quote"
+          style={{ borderInlineStartColor: COLOR_SWATCH[highlight.color].solid }}
+        >
           {highlight.exactQuote}
         </blockquote>
-        {state.attention && state.explanation ? (
-          <p className="sv-small sv-muted">{state.explanation}</p>
-        ) : null}
         <div className="sv-row">
           {target.kind === 'none' ? (
             <p className="sv-small sv-muted" data-testid="source-unavailable">
@@ -239,6 +258,11 @@ function PreviewBody({
               rel="noopener noreferrer"
               data-testid="open-source"
             >
+              {target.kind === 'pdf' ? (
+                <BookOpen aria-hidden="true" className="dash-btn-icon" />
+              ) : (
+                <LocateFixed aria-hidden="true" className="dash-btn-icon" />
+              )}
               {target.label}
             </a>
           )}
@@ -246,15 +270,16 @@ function PreviewBody({
             onClick={() => onFilterSource({ id: source.id, label: source.title || source.host })}
             data-testid="filter-source"
           >
+            <Filter aria-hidden="true" className="dash-btn-icon" />
             Only this source
           </Button>
+          {target.kind === 'web' ? (
+            <InfoTip label="About opening the source" align="end">
+              Chrome scrolls to the passage using the page’s own text. If the page changed or needs
+              sign-in, it opens at the top.
+            </InfoTip>
+          ) : null}
         </div>
-        {target.kind === 'web' ? (
-          <p className="sv-small sv-muted">
-            Chrome scrolls to the passage using the page’s own text. If the page changed or needs
-            sign-in, it opens at the top.
-          </p>
-        ) : null}
       </section>
 
       <section
@@ -262,7 +287,7 @@ function PreviewBody({
         aria-labelledby={`${uid}-prov`}
         data-testid="preview-provenance"
       >
-        <h3 id={`${uid}-prov`}>Provenance</h3>
+        <h3 id={`${uid}-prov`}>Details</h3>
         <dl className="dash-dl">
           <dt>Source</dt>
           <dd className="sv-wrap" dir="auto">
@@ -312,7 +337,7 @@ function PreviewBody({
       <PreviewLocations detail={detail} />
 
       <section className="dash-section" aria-labelledby={`${uid}-edit`}>
-        <h3 id={`${uid}-edit`}>Classification</h3>
+        <h3 id={`${uid}-edit`}>Kind and priority</h3>
         <div className="sv-row">
           <div className="sv-field dash-grow">
             <label className="sv-label" htmlFor={`${uid}-kind`}>
@@ -358,7 +383,7 @@ function PreviewBody({
         ) : null}
         <div className="sv-field">
           <label className="sv-label" htmlFor={`${uid}-comment`}>
-            Your comment (short, saved with the highlight)
+            Comment
           </label>
           <textarea
             id={`${uid}-comment`}
@@ -377,7 +402,7 @@ function PreviewBody({
               : comment.status.kind === 'saved'
                 ? 'Saved'
                 : comment.status.kind === 'dirty'
-                  ? 'Unsaved changes (saved automatically)'
+                  ? 'Saving soon…'
                   : comment.status.kind === 'error'
                     ? `Not saved: ${comment.status.message}`
                     : ''}
@@ -428,6 +453,7 @@ function PreviewBody({
 
       <section className="dash-section">
         <Button variant="danger" onClick={() => void trash()} data-testid="preview-trash">
+          <Trash aria-hidden="true" className="dash-btn-icon" />
           Move to trash
         </Button>
       </section>

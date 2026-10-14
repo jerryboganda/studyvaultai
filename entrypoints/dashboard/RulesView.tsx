@@ -1,12 +1,28 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import {
+  ArrowDown,
+  ArrowRight,
+  ArrowUp,
+  ChevronDown,
+  Copy,
+  FlaskConical,
+  Library,
+  MessageCircleQuestion,
+  Pencil,
+  Plus,
+  Power,
+  Tag,
+  Trash,
+  Workflow,
+  Zap,
+} from 'lucide-react';
 
 import type { FilingRule } from '@shared';
 import type { FilingRuleProblem } from '@storage';
 import {
   AsyncSwitch,
-  Badge,
-  Button,
-  EmptyState,
+  ChunkyButton,
+  InfoTip,
   InlineNotice,
   plural,
   useAction,
@@ -14,19 +30,21 @@ import {
   useToast,
 } from '@ui';
 import { useBump, useVaultQuery } from './hooks';
-import { RuleDialog } from './RuleDialog';
+import { Action, Chip, Empty, IconAction, Loading, ViewHead } from './moreKit';
+import { CONDITION_META, RuleDialog } from './RuleDialog';
 import { RuleTester } from './RuleTester';
-import { describeConditions, describeIssue, describePlace, type Names } from './rulesModel';
+import { conditionParts, describeIssue, describePlace, type Names } from './rulesModel';
 import { useRulesApi } from './rulesApi';
 import { flattenFolders, useTreeData } from './treeData';
+import './rules.css';
 
 const EMPTY_ASKED: ReadonlyMap<string, boolean> = new Map();
 
 /**
- * The filing-rules manager (docs/adr/017-filing-rules.md): the rules in the order they are tried, a
- * switch for the whole feature, a create/edit dialog, and a panel that tests what a rule would do.
- * Rules never act on imports, restores or sync; at capture the worker decides with the same pure
- * function the test panel uses.
+ * The filing-rules manager (docs/adr/017-filing-rules.md): the rules as cards in the order they are
+ * tried, a switch for the whole feature, the create/edit wizard, and a panel that tests what the
+ * rules would do. Rules never act on imports, restores or sync; at capture the worker decides with
+ * the same pure function the test panel uses.
  */
 export function RulesView() {
   const api = useRulesApi();
@@ -35,6 +53,7 @@ export function RulesView() {
   const bump = useBump();
   const { settings, update } = useSettings();
   const [editing, setEditing] = useState<FilingRule | 'new' | null>(null);
+  const [testing, setTesting] = useState(false);
 
   const state = useVaultQuery(async () => {
     const [rules, problems] = await Promise.all([api.listFilingRules(), api.checkFilingRules()]);
@@ -203,38 +222,60 @@ export function RulesView() {
     move(rule, e.key === 'ArrowUp' ? -1 : 1);
   };
 
-  return (
-    <section className="dash-panel" aria-labelledby="rules-title" data-testid="rules-view">
-      <h2 id="rules-title">Filing rules</h2>
-      <p className="sv-small sv-muted">
-        A rule suggests where a new highlight goes, or files it for you, when its page, title, text,
-        tags, kind or source match. The first matching rule in the list decides the bank and folder.
-        Rules look only at highlights you have just saved: never at imports or restored data, and
-        never at a bank you picked yourself in the toolbar.
-      </p>
+  const busyReason = act.busy ? 'Wait for the last change to finish.' : undefined;
 
-      <div className="sv-row rule-top">
-        <div className="sv-grow">
-          <AsyncSwitch
-            testId="rules-switch"
-            label="Use filing rules"
-            hint={
-              rules.length === 0
-                ? 'On by default. With no rule there is nothing to apply. Turn it off to keep rules without applying them.'
-                : 'Turn this off to keep your rules without applying any of them to new highlights. Private windows follow “Save from private windows” in Settings.'
+  return (
+    <section
+      className="dash-panel mv-view rules"
+      aria-labelledby="rules-title"
+      data-testid="rules-view"
+    >
+      <ViewHead
+        icon={Workflow}
+        title="Filing rules"
+        titleId="rules-title"
+        info={
+          <>
+            A rule suggests where a new highlight goes, or files it for you. The first matching rule
+            decides the bank. Rules skip imports, restored data and a bank you picked yourself.
+          </>
+        }
+        {...(rules.length > 0 ? { count: plural(rules.length, 'rule') } : {})}
+      >
+        {/* While the list is empty its empty state holds this button instead. */}
+        {state.data !== undefined && rules.length === 0 ? null : (
+          <Action
+            variant="primary"
+            icon={Plus}
+            data-testid="rule-new"
+            disabledReason={
+              state.error
+                ? 'The rules could not be read. Try again first.'
+                : state.data === undefined
+                  ? 'The rules are still loading.'
+                  : undefined
             }
-            checked={rulesOn}
-            onChange={(next) => toggleAll.run(next)}
-          />
-        </div>
-        <Button
-          variant="primary"
-          data-testid="rule-new"
-          disabledReason={state.data === undefined ? 'The rules are still loading.' : undefined}
-          onClick={() => setEditing('new')}
-        >
-          New rule
-        </Button>
+            onClick={() => setEditing('new')}
+          >
+            New rule
+          </Action>
+        )}
+      </ViewHead>
+
+      <div className="rule-master">
+        <span className="rule-master__icon sv-art--primary" aria-hidden="true">
+          <Power strokeWidth={2.4} />
+        </span>
+        <AsyncSwitch
+          testId="rules-switch"
+          label="Use filing rules"
+          checked={rulesOn}
+          onChange={(next) => toggleAll.run(next)}
+        />
+        <InfoTip label="About the rules switch" align="end">
+          Off keeps your rules but applies none to new highlights. Private windows follow “Save from
+          private windows” in Settings.
+        </InfoTip>
       </div>
       {toggleAll.error ? (
         <InlineNotice tone="error" title="Your change was not saved">
@@ -243,55 +284,63 @@ export function RulesView() {
       ) : null}
       {!rulesOn && rules.length > 0 ? (
         <InlineNotice tone="warning" title="Filing rules are off">
-          Your rules are kept, but none is applied to a new highlight until you turn “Use filing
-          rules” back on.
+          Your rules are kept, but none is applied until you turn them back on.
         </InlineNotice>
       ) : null}
       {act.error ? (
         <InlineNotice
           tone="error"
           title="That did not work"
-          action={<Button onClick={act.clear}>Dismiss</Button>}
+          action={
+            <ChunkyButton size="sm" onClick={act.clear}>
+              Dismiss
+            </ChunkyButton>
+          }
         >
           {act.error}
         </InlineNotice>
       ) : null}
 
       {state.loading ? (
-        <p className="sv-muted dash-loading" role="status">
-          Loading the rules…
-        </p>
+        <Loading>Loading the rules…</Loading>
       ) : state.error ? (
         <InlineNotice
           tone="error"
           title="Could not read the rules"
-          action={<Button onClick={state.refresh}>Try again</Button>}
+          action={
+            <ChunkyButton size="sm" onClick={state.refresh}>
+              Try again
+            </ChunkyButton>
+          }
         >
           {state.error}
         </InlineNotice>
       ) : rules.length === 0 ? (
-        <EmptyState
-          title="No filing rules yet"
-          action={
-            <Button variant="primary" onClick={() => setEditing('new')}>
-              Create the first rule
-            </Button>
-          }
-        >
-          For example: everything saved from your course site goes to one bank, tagged for the
-          course.
-        </EmptyState>
+        <Empty
+          title="No rules yet"
+          text="Send pages from one site to one bank."
+          action={{
+            label: 'New rule',
+            icon: Plus,
+            onClick: () => setEditing('new'),
+            testId: 'rule-new',
+          }}
+        />
       ) : (
         <>
-          <p className="sv-small sv-muted">
-            {plural(rules.length, 'rule')}, tried from the top. Alt+Up and Alt+Down move the rule
-            you are on.
+          <p className="mv-line rule-line">
+            Tried from the top.
+            <InfoTip label="Reordering rules">
+              The first rule that matches decides the bank. Alt+Up and Alt+Down move the rule you
+              are on.
+            </InfoTip>
           </p>
           <ol className="rule-list" aria-label="Filing rules, in the order they are tried">
             {rules.map((rule, index) => {
-              const conditions = describeConditions(rule, names);
+              const parts = conditionParts(rule, names);
               const place = describePlace(rule, names);
               const issues = issuesOf.get(rule.id) ?? [];
+              const on = asked.get(rule.id) ?? rule.enabled;
               return (
                 <li
                   key={rule.id}
@@ -301,107 +350,150 @@ export function RulesView() {
                   data-enabled={rule.enabled ? 'true' : 'false'}
                   onKeyDown={(e) => onRowKey(rule, e)}
                 >
-                  <div className="sv-row rule-row__head">
+                  <div className="rule-row__head">
                     <span className="rule-row__rank" aria-hidden="true">
                       {index + 1}
                     </span>
-                    <strong className="sv-wrap" dir="auto" data-testid="rule-name-text">
+                    <strong className="rule-row__name" dir="auto" data-testid="rule-name-text">
                       {rule.name}
                     </strong>
-                    <Badge tone={rule.requireConfirm ? 'info' : 'warning'}>
-                      {rule.requireConfirm ? 'Asks first' : 'Files at once'}
-                    </Badge>
-                    {rule.enabled ? null : <Badge>Off</Badge>}
+                    <label className="sv-check rule-row__switch">
+                      <input
+                        type="checkbox"
+                        className="sv-switch"
+                        data-testid="rule-enabled-switch"
+                        aria-label={`On for rule ${rule.name}`}
+                        checked={on}
+                        aria-disabled={act.busy || undefined}
+                        onChange={(e) => {
+                          if (!act.busy) void setEnabled(rule, e.target.checked);
+                        }}
+                      />
+                      <span aria-hidden="true">{on ? 'On' : 'Off'}</span>
+                    </label>
                   </div>
-                  <p className="sv-small sv-wrap" dir="auto">
-                    <span className="sv-muted">When </span>
-                    {conditions.length > 0 ? conditions.join(' and ') : 'it has no condition'}
-                  </p>
-                  <p className="sv-small sv-wrap" dir="auto">
-                    <span className="sv-muted">Then file in </span>
-                    {place.where}
-                    {place.tags.length > 0 ? (
-                      <>
-                        <span className="sv-muted">, and add </span>
-                        {place.tags.join(', ')}
-                      </>
-                    ) : null}
+                  <p className="rule-row__summary" dir="auto">
+                    <span className="sv-vh">When </span>
+                    {parts.length > 0 ? (
+                      parts.map((p) => (
+                        <Chip
+                          key={p.key}
+                          icon={CONDITION_META[p.key].icon}
+                          prefix={CONDITION_META[p.key].label}
+                        >
+                          {p.values.join(' or ')}
+                        </Chip>
+                      ))
+                    ) : (
+                      <Chip tone="warning">No condition</Chip>
+                    )}
+                    <ArrowRight className="rule-row__arrow" aria-hidden="true" />
+                    <span className="sv-vh">, then file in </span>
+                    <Chip icon={Library} tone="primary">
+                      {place.where}
+                    </Chip>
+                    {place.tags.map((t) => (
+                      <Chip key={t} icon={Tag} prefix="Add tag">
+                        {t}
+                      </Chip>
+                    ))}
+                    <Chip
+                      icon={rule.requireConfirm ? MessageCircleQuestion : Zap}
+                      tone={rule.requireConfirm ? 'violet' : 'sun'}
+                    >
+                      {rule.requireConfirm ? 'Asks first' : 'Files at once'}
+                    </Chip>
                   </p>
                   {issues.map((issue) => (
                     <InlineNotice key={`${issue.field}:${issue.id}`} tone="warning">
                       {describeIssue(issue)}
                     </InlineNotice>
                   ))}
-                  <div className="sv-row" role="group" aria-label={`Actions for rule ${rule.name}`}>
-                    <label className="sv-check rule-row__switch">
-                      <input
-                        type="checkbox"
-                        data-testid="rule-enabled-switch"
-                        aria-label={`On for rule ${rule.name}`}
-                        checked={asked.get(rule.id) ?? rule.enabled}
-                        aria-disabled={act.busy || undefined}
-                        onChange={(e) => {
-                          if (!act.busy) void setEnabled(rule, e.target.checked);
-                        }}
-                      />
-                      <span>On</span>
-                    </label>
-                    <Button
-                      data-testid="rule-up"
-                      aria-label={`Move up: ${rule.name}`}
-                      disabledReason={index === 0 ? 'This rule is already first.' : undefined}
-                      onClick={() => move(rule, -1)}
-                    >
-                      Move up
-                    </Button>
-                    <Button
-                      data-testid="rule-down"
-                      aria-label={`Move down: ${rule.name}`}
-                      disabledReason={
-                        index === rules.length - 1 ? 'This rule is already last.' : undefined
-                      }
-                      onClick={() => move(rule, 1)}
-                    >
-                      Move down
-                    </Button>
-                    <Button
+                  <div
+                    className="rule-row__actions"
+                    role="group"
+                    aria-label={`Actions for rule ${rule.name}`}
+                  >
+                    <ChunkyButton
+                      size="sm"
+                      icon={Pencil}
                       data-testid="rule-edit"
                       aria-label={`Edit: ${rule.name}`}
                       onClick={() => setEditing(rule)}
                     >
                       Edit
-                    </Button>
-                    <Button
+                    </ChunkyButton>
+                    <IconAction
+                      icon={ArrowUp}
+                      data-testid="rule-up"
+                      label={`Move up: ${rule.name}`}
+                      disabledReason={index === 0 ? 'This rule is already first.' : busyReason}
+                      onClick={() => move(rule, -1)}
+                    />
+                    <IconAction
+                      icon={ArrowDown}
+                      data-testid="rule-down"
+                      label={`Move down: ${rule.name}`}
+                      disabledReason={
+                        index === rules.length - 1 ? 'This rule is already last.' : busyReason
+                      }
+                      onClick={() => move(rule, 1)}
+                    />
+                    <IconAction
+                      icon={Copy}
                       data-testid="rule-duplicate"
-                      aria-label={`Duplicate: ${rule.name}`}
-                      busy={act.busy}
+                      label={`Duplicate: ${rule.name}`}
+                      disabledReason={busyReason}
                       onClick={() => duplicate(rule)}
-                    >
-                      Duplicate
-                    </Button>
-                    <Button
-                      variant="danger"
+                    />
+                    <IconAction
+                      icon={Trash}
+                      className="mv-ibtn--danger"
                       data-testid="rule-delete"
-                      aria-label={`Delete: ${rule.name}`}
-                      busy={act.busy}
+                      label={`Delete: ${rule.name}`}
+                      disabledReason={busyReason}
                       onClick={() => remove(rule)}
-                    >
-                      Delete
-                    </Button>
+                    />
                   </div>
                 </li>
               );
             })}
           </ol>
+
+          <section className="mv-card rule-test-card" aria-labelledby="rule-test-title">
+            <h3 id="rule-test-title" className="mv-card__title">
+              <button
+                type="button"
+                className="rule-disclosure"
+                aria-expanded={testing}
+                aria-controls="rule-test-panel"
+                data-testid="rule-tester-toggle"
+                onClick={() => setTesting((t) => !t)}
+              >
+                <FlaskConical aria-hidden="true" strokeWidth={2.4} />
+                Test a rule
+                <ChevronDown className="rule-disclosure__chev" aria-hidden="true" />
+              </button>
+              <InfoTip label="About the test">
+                Paste what a highlight would look like and see which rules match. A rule never moves
+                a highlight when you pick a bank yourself, and only new highlights count.
+              </InfoTip>
+            </h3>
+            <div id="rule-test-panel" hidden={!testing}>
+              <RuleTester rules={rules} problems={problems} names={names} rulesOn={rulesOn} />
+            </div>
+          </section>
         </>
       )}
-
-      <RuleTester rules={rules} problems={problems} names={names} rulesOn={rulesOn} />
 
       {editing !== null ? (
         <RuleDialog
           api={api}
           rule={editing === 'new' ? undefined : editing}
+          rules={rules}
+          problems={problems}
+          names={names}
+          rulesOn={rulesOn}
           onCancel={() => setEditing(null)}
           onDone={(saved) => {
             setEditing(null);

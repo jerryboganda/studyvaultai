@@ -1,6 +1,7 @@
 import { useId, useRef, useState } from 'react';
+import { Eraser, ListChecks, MessagesSquare, Search, Send, Sparkles } from 'lucide-react';
 import type { StoredAiResult } from '@storage';
-import { Button, EmptyState, InlineNotice, useAction } from '@ui';
+import { BuddyEmptyState, InlineNotice, VaultBuddy, useAction } from '@ui';
 import {
   AiResultCard,
   ConsentPreviewDialog,
@@ -13,6 +14,7 @@ import {
   type AiChatTurn,
 } from '@ui/ai';
 import { EMPTY_FILTERS, toSearchQuery, type Scope } from './filters';
+import { Action, Chip, ViewHead } from './moreKit';
 import type { SearchLike } from './results';
 
 export interface ChatViewProps {
@@ -40,6 +42,13 @@ function historyOf(turns: readonly Turn[]): AiChatTurn[] {
       : [],
   );
 }
+
+/** The three steps of a question, drawn instead of explained: nothing leaves before step 3. */
+const STEPS = [
+  { icon: Search, label: 'Find passages', tone: 'primary' },
+  { icon: ListChecks, label: 'You pick', tone: 'violet' },
+  { icon: Send, label: 'Then send', tone: 'success' },
+] as const;
 
 /**
  * Chat with the highlights and notes of a bank, folder or tag. Retrieval is a search of the person's
@@ -110,95 +119,107 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
   })();
 
   return (
-    <section className="sv-stack" aria-labelledby={`${uid}-h`} data-testid="chat-view">
-      <h2 id={`${uid}-h`}>Chat with your notes (AI)</h2>
-      <p>
-        Ask a question and StudyVault finds the best-matching highlights and notes of{' '}
-        <strong data-testid="chat-scope">{where}</strong> on this device. You then see exactly which
-        passages and which text would be sent to your AI provider, can untick any of them, and
-        nothing is sent until you press Send. Choose a bank, folder or tag to narrow what is
-        searched.
-      </p>
-      <p className="sv-muted sv-small">
-        Answers are drafts: each one must quote your passages word for word, quotes that are not in
-        them are flagged, and when your notes do not answer the question the answer says so. Study
-        aid: verify against authoritative references.
-      </p>
+    <section
+      className="dash-panel mv-view chat"
+      aria-labelledby={`${uid}-h`}
+      data-testid="chat-view"
+    >
+      <ViewHead
+        icon={MessagesSquare}
+        tone="violet"
+        title="Chat with your notes"
+        titleId={`${uid}-h`}
+        info="Answers are drafts that must quote your passages word for word; a quote not in them is flagged. When your notes do not answer, it says so. The chat stays in this page only."
+        infoLabel="About chat answers"
+      />
 
-      <div className="sv-field">
-        <label className="sv-label" htmlFor={`${uid}-tag`}>
-          Only passages with this tag (optional)
+      <div className="chat-scope">
+        <Chip icon={Search} tone="primary">
+          Searching
+        </Chip>
+        <strong className="mv-wrap" data-testid="chat-scope">
+          {where}
+        </strong>
+        <label className="chat-scope__tag">
+          <span className="mv-label">Tag</span>
+          <select
+            className="sv-control"
+            data-testid="chat-tag"
+            value={tagId}
+            onChange={(e) => setTagId(e.target.value)}
+          >
+            <option value="">Any tag</option>
+            {tags.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
         </label>
-        <select
-          id={`${uid}-tag`}
-          className="sv-control ai-narrow"
-          data-testid="chat-tag"
-          value={tagId}
-          onChange={(e) => setTagId(e.target.value)}
-        >
-          <option value="">Any tag</option>
-          {tags.map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.name}
-            </option>
-          ))}
-        </select>
       </div>
 
-      <form
-        className="sv-stack sv-stack--tight"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (!blocker && !ask.busy) void ask.run();
-        }}
-      >
-        <div className="sv-field">
-          <label className="sv-label" htmlFor={`${uid}-q`}>
-            Your question
-          </label>
-          <textarea
-            id={`${uid}-q`}
-            className="sv-control"
-            data-testid="chat-question"
-            rows={3}
-            maxLength={500}
-            value={question}
-            disabled={ask.busy}
-            onChange={(e) => setQuestion(e.target.value)}
+      {turns.length === 0 ? (
+        <div className="mv-card chat-start">
+          <BuddyEmptyState
+            pose="wave"
+            mascotSize={96}
+            title="No questions yet"
+            text="Nothing is sent until you press Send."
           />
+          <ol className="chat-steps" aria-label="What happens when you ask">
+            {STEPS.map((s, i) => {
+              const Icon = s.icon;
+              return (
+                <li key={s.label} className="chat-step">
+                  <span className={`chat-step__art sv-art--${s.tone}`} aria-hidden="true">
+                    <Icon strokeWidth={2.4} />
+                  </span>
+                  <span className="chat-step__n" aria-hidden="true">
+                    {i + 1}
+                  </span>
+                  <span className="chat-step__label">{s.label}</span>
+                </li>
+              );
+            })}
+          </ol>
         </div>
-        <div className="sv-row sv-wrap">
-          <Button
-            type="submit"
-            variant="primary"
-            data-testid="chat-ask"
-            busy={ask.busy}
-            {...(blocker ? { disabledReason: blocker } : {})}
-          >
-            Find passages and preview
-          </Button>
-          <Button
-            data-testid="chat-clear"
-            {...(turns.length === 0
-              ? { disabledReason: 'There is no conversation to clear.' }
-              : {})}
-            onClick={() => {
-              setTurns([]);
-              setNote(null);
-            }}
-          >
-            Clear this conversation
-          </Button>
-        </div>
-        {blocker && question.trim() !== '' ? (
-          <p className="sv-muted sv-small" data-testid="chat-reason">
-            {blocker}
+      ) : (
+        <ol className="chat-turns" aria-label="Conversation" data-testid="chat-turns">
+          {turns.map((t) => (
+            <li key={t.saved.id} className="chat-turn" data-testid="chat-turn">
+              <p className="chat-bubble chat-bubble--you">
+                <span className="sv-vh">You asked: </span>
+                <span className="ai-pre">{t.question}</span>
+              </p>
+              <div className="chat-answer">
+                <span className="chat-answer__avatar" aria-hidden="true">
+                  <Sparkles strokeWidth={2.4} />
+                </span>
+                <div className="chat-answer__body">
+                  {t.saved.kind === 'explain' &&
+                  t.saved.output.answerState === 'insufficient_sources' ? (
+                    <InlineNotice tone="info" title="Cannot answer from your notes">
+                      <span data-testid="chat-cannot-answer">
+                        The passages found do not answer this question
+                        {t.saved.output.uncertainty ? `: ${t.saved.output.uncertainty}` : '.'}
+                      </span>
+                    </InlineNotice>
+                  ) : null}
+                  <AiResultCard result={t.saved} />
+                </div>
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
+
+      <div role="status" aria-live="polite" className="chat-status">
+        {ask.busy ? (
+          <p className="chat-thinking">
+            <VaultBuddy pose="think" size={48} />
+            <span>Searching your notes on this device…</span>
           </p>
         ) : null}
-      </form>
-
-      <div role="status" aria-live="polite">
-        {ask.busy ? <p>Searching your notes on this device…</p> : null}
         {note ? (
           <InlineNotice tone={note.tone}>
             <span data-testid="chat-note">{note.text}</span>
@@ -211,32 +232,60 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
         </InlineNotice>
       ) : null}
 
-      {turns.length === 0 ? (
-        <EmptyState title="No questions yet">
-          Your conversation stays in this page. Earlier turns are only ever sent when you tick them
-          in the preview.
-        </EmptyState>
-      ) : (
-        <ol className="ai-list" aria-label="Conversation" data-testid="chat-turns">
-          {turns.map((t) => (
-            <li key={t.saved.id} className="sv-stack sv-stack--tight" data-testid="chat-turn">
-              <p>
-                <strong>You asked:</strong> <span className="ai-pre">{t.question}</span>
-              </p>
-              {t.saved.kind === 'explain' &&
-              t.saved.output.answerState === 'insufficient_sources' ? (
-                <InlineNotice tone="info" title="Cannot answer from your notes">
-                  <span data-testid="chat-cannot-answer">
-                    The passages found do not answer this question
-                    {t.saved.output.uncertainty ? `: ${t.saved.output.uncertainty}` : '.'}
-                  </span>
-                </InlineNotice>
-              ) : null}
-              <AiResultCard result={t.saved} />
-            </li>
-          ))}
-        </ol>
-      )}
+      <form
+        className="mv-card chat-compose"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!blocker && !ask.busy) void ask.run();
+        }}
+      >
+        <label className="mv-label" htmlFor={`${uid}-q`}>
+          Your question
+        </label>
+        <textarea
+          id={`${uid}-q`}
+          className="sv-control chat-compose__q"
+          data-testid="chat-question"
+          rows={3}
+          maxLength={500}
+          value={question}
+          disabled={ask.busy}
+          placeholder="What causes heart failure?"
+          aria-describedby={blocker && question.trim() !== '' ? `${uid}-reason` : undefined}
+          onChange={(e) => setQuestion(e.target.value)}
+        />
+        <div className="chat-compose__bar">
+          {blocker && question.trim() !== '' ? (
+            <p id={`${uid}-reason`} className="mv-line mv-grow" data-testid="chat-reason">
+              {blocker}
+            </p>
+          ) : (
+            <span className="mv-grow" />
+          )}
+          <Action
+            variant="ghost"
+            icon={Eraser}
+            data-testid="chat-clear"
+            disabledReason={turns.length === 0 ? 'There is no conversation to clear.' : undefined}
+            onClick={() => {
+              setTurns([]);
+              setNote(null);
+            }}
+          >
+            Clear chat
+          </Action>
+          <Action
+            type="submit"
+            variant="primary"
+            icon={Search}
+            data-testid="chat-ask"
+            aria-busy={ask.busy || undefined}
+            disabledReason={blocker ?? (ask.busy ? 'Searching already.' : undefined)}
+          >
+            Find passages
+          </Action>
+        </div>
+      </form>
 
       {pending && cfg.data ? (
         <ConsentPreviewDialog

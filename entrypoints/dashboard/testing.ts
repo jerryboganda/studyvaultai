@@ -79,6 +79,8 @@ export class FakeVault {
   duplicates: DuplicateCluster[] = [];
   cachedPdfs: Array<{ id: string; title: string; bytes: number }> = [];
   purgeAt: string | null = null;
+  /** What `bankStudy` answers (cards and retention per bank id). */
+  study: Record<string, { cards: number; retention: number | null }> = {};
   seq = 0;
   /** The last stamp handed out, in epoch milliseconds. */
   clock = 0;
@@ -854,6 +856,10 @@ function buildApi(self: FakeVault): DashboardApi {
         cachedPdfCount: self.cachedPdfs.length,
         estimate: { usage: 5 * 1024 * 1024, quota: 1024 * 1024 * 1024 },
       };
+    },
+    bankStudy: async () => {
+      self.record('bankStudy');
+      return self.study;
     },
     meta: {
       get: async (key) => self.metaStore.get(key),

@@ -10,10 +10,12 @@ import {
   type ReactNode,
 } from 'react';
 import { browser } from 'wxt/browser';
+import { FolderTree, SlidersHorizontal, X } from 'lucide-react';
 import { DEFAULT_PALETTE, type ColorId, type HighlightKind } from '@shared';
 import {
   Button,
   ErrorBoundary,
+  IconButton,
   InlineNotice,
   LOCAL_PREF_KEYS,
   ToastProvider,
@@ -38,7 +40,7 @@ import { ApiProvider, realApi, useApi, type DashboardApi } from './api';
 import { BankPane, type BankPaneHandle } from './BankPane';
 import { DuplicatesView } from './DuplicatesView';
 import { ChatEntry } from './ChatEntry';
-import { parseDeepLink, parseSyllabusLink, parseViewLink } from './deepLink';
+import { initialView, parseDeepLink, parseSyllabusLink } from './deepLink';
 import {
   ALL_SCOPE,
   EMPTY_FILTERS,
@@ -52,13 +54,17 @@ import {
   useBump,
   useDataVersion,
   useDebounced,
-  useDismissibleDetails,
   useLocalPref,
   useVaultQuery,
 } from './hooks';
+import { HomeView } from './HomeView';
 import { LibraryView } from './LibraryView';
 import { rowId, useLibrary } from './library';
 import { extensionUrl } from './links';
+import { BackToMore, MORE_VIEW_LABELS, MoreGridTiles, moreTiles, type MoreView } from './MoreTiles';
+import { NewBankWizard } from './NewBankWizard';
+import { Rail, type RailItem } from './Rail';
+import { reviewPageUrl, useDueCount } from '@ui/review';
 import { Preview } from './Preview';
 import { SavedSearches, useSavedSearches } from './SavedSearches';
 import { SearchBar, ShortcutLegend } from './SearchBar';
@@ -67,18 +73,13 @@ import { StoragePanel } from './StoragePanel';
 import { EMPTY_TREE_DATA, TreeDataContext, loadTreeData, type TreeData } from './treeData';
 import { TrashView } from './TrashView';
 
-type View =
-  'library' | 'duplicates' | 'trash' | 'storage' | 'chat' | 'graph' | 'syllabus' | 'rules';
+type View = 'home' | 'library' | 'more' | MoreView;
 
 const VIEW_LABELS: Record<View, string> = {
+  home: 'Home',
   library: 'All highlights',
-  duplicates: 'Duplicate quotes',
-  trash: 'Trash',
-  storage: 'Storage',
-  chat: 'Chat with your notes',
-  graph: 'Knowledge graph',
-  syllabus: 'Syllabus',
-  rules: 'Filing rules',
+  more: 'More',
+  ...MORE_VIEW_LABELS,
 };
 
 // The graph and its layout are not carried until the view is opened (ADR-018).
@@ -154,7 +155,10 @@ function Workspace() {
   }, [contrast]);
 
   // --- navigation state ---------------------------------------------------------------------
-  const [view, setView] = useState<View>(() => parseViewLink(window.location.search) ?? 'library');
+  const [view, setView] = useState<View>(() => initialView(window.location.search));
+  // Banks and Search are the same list; the rail marks the one the user went to.
+  const [searchNav, setSearchNav] = useState(() => link.q !== null);
+  const [newBank, setNewBank] = useState(false);
   const [scope, setScope] = useState<Scope>(
     link.bank ? { bankId: link.bank, folderId: null } : ALL_SCOPE,
   );
@@ -172,6 +176,8 @@ function Workspace() {
 
   // --- vault data ---------------------------------------------------------------------------
   const tree = useVaultQuery<TreeData>(() => loadTreeData(api), []);
+  // One due count for the rail badge and the Home hero.
+  const due = useDueCount();
   const treeData = tree.data ?? EMPTY_TREE_DATA;
 
   // --- search host --------------------------------------------------------------------------
@@ -288,7 +294,6 @@ function Workspace() {
   const listRef = useRef<HTMLDivElement>(null);
   const previewRef = useRef<HTMLElement>(null);
   const topRef = useRef<HTMLElement>(null);
-  useDismissibleDetails(topRef);
   const bankRef = useRef<BankPaneHandle>(null);
   // A closed bulk bar or dialog takes its focused button with it: the list is where work continues.
   const rescueRef = useFocusRescue((lost) =>
@@ -303,12 +308,25 @@ function Workspace() {
     toast.announce(VIEW_LABELS[view]);
   }, [view, toast]);
 
-  const focusPane = useCallback((pane: 'tree' | 'search' | 'list' | 'preview') => {
-    if (pane === 'tree') {
+  const focusPane = useCallback((pane: 'tree' | 'search' | 'list' | 'preview' | 'nav' | 'main') => {
+    if (pane === 'nav') {
+      document
+        .querySelector<HTMLElement>('.dash-nav__item[aria-current="page"], .dash-nav__item')
+        ?.focus();
+    } else if (pane === 'main') {
+      mainPane()?.focus();
+    } else if (pane === 'tree') {
+      // The tree and the search box live in the list view.
+      setView('library');
       setTreeOpen(true);
       setTimeout(() => bankRef.current?.focusTree(), 0);
-    } else if (pane === 'search') searchRef.current?.focus();
-    else if (pane === 'list') listRef.current?.focus();
+    } else if (pane === 'search') {
+      setView('library');
+      setSearchNav(true);
+      // Already on screen in the list view; otherwise once that view has rendered.
+      if (searchRef.current) searchRef.current.focus();
+      else setTimeout(() => searchRef.current?.focus(), 0);
+    } else if (pane === 'list') listRef.current?.focus();
     else previewRef.current?.focus();
   }, []);
 
@@ -317,21 +335,24 @@ function Workspace() {
 
   const cyclePane = useCallback(
     (direction: 1 | -1) => {
-      const order = ['tree', 'search', 'list', 'preview'] as const;
+      const where = {
+        tree: '.dash-left',
+        search: '.dash-top',
+        list: '.dash-center',
+        preview: '.dash-right',
+        nav: '.dash-rail',
+        main: '.dash-center',
+      } as const;
+      const order =
+        view === 'library'
+          ? (['tree', 'search', 'list', 'preview', 'nav'] as const)
+          : (['main', 'nav'] as const);
       const active = document.activeElement;
-      const current = order.findIndex((p) =>
-        p === 'tree'
-          ? !!active?.closest('.dash-left')
-          : p === 'search'
-            ? !!active?.closest('.dash-top')
-            : p === 'list'
-              ? !!active?.closest('.dash-center')
-              : !!active?.closest('.dash-right'),
-      );
+      const current = order.findIndex((p) => !!active?.closest(where[p]));
       const next = order[(current + direction + order.length) % order.length]!;
       focusPane(next);
     },
-    [focusPane],
+    [focusPane, view],
   );
 
   // Global keys. Ctrl/Cmd+K works everywhere; the single-key shortcuts only outside text fields.
@@ -352,7 +373,7 @@ function Workspace() {
       if (typing || e.ctrlKey || e.metaKey || e.altKey || singleKeys === 'off') return;
       if (e.key === '/') {
         e.preventDefault();
-        searchRef.current?.focus();
+        focusPane('search');
       } else if (e.key === '?') {
         e.preventDefault();
         setLegend(true);
@@ -360,7 +381,7 @@ function Workspace() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [cyclePane, singleKeys]);
+  }, [cyclePane, focusPane, singleKeys]);
 
   // --- saved searches -----------------------------------------------------------------------
   const saved = useSavedSearches(api.meta);
@@ -368,8 +389,34 @@ function Workspace() {
   // --- actions ------------------------------------------------------------------------------
   const goLibrary = useCallback((next?: Scope) => {
     setView('library');
+    setSearchNav(false);
     if (next) setScope(next);
     setTreeOpen(false);
+  }, []);
+
+  const openSettings = useCallback(() => {
+    void browser.runtime
+      .openOptionsPage()
+      .catch((err: unknown) =>
+        toast.push({ tone: 'error', message: errorMessage(err, 'Could not open the settings.') }),
+      );
+  }, [toast]);
+
+  const goRail = useCallback(
+    (item: RailItem) => {
+      if (item === 'home') setView('home');
+      else if (item === 'more') setView('more');
+      else if (item === 'banks') goLibrary();
+      else focusPane('search');
+      setTreeOpen(false);
+    },
+    [goLibrary, focusPane],
+  );
+
+  const showMoreView = useCallback((v: MoreView) => {
+    if (v === 'graph') setGraphCentre(undefined);
+    setView(v);
+    setTreeOpen(false); // the panel would otherwise stay over the view just chosen
   }, []);
 
   // A syllabus topic leads to the list of what it is made of: one bank, or a search that matches
@@ -412,6 +459,21 @@ function Workspace() {
     const needSelection =
       needLibrary ?? (lib.selectedCount === 0 ? 'Select highlights in the list first.' : undefined);
     const list: Command[] = [
+      { id: 'view-home', label: 'Go home', group: 'Go to', run: () => setView('home') },
+      {
+        id: 'view-more',
+        label: 'Show more tools',
+        group: 'Go to',
+        keywords: 'exam cards stats backup imports reader sync',
+        run: () => setView('more'),
+      },
+      {
+        id: 'open-review',
+        label: 'Open the review page',
+        group: 'App',
+        keywords: 'study cards due flashcards',
+        run: () => window.open(reviewPageUrl(), '_blank', 'noopener'),
+      },
       {
         id: 'view-library',
         label: 'Show all highlights',
@@ -494,9 +556,10 @@ function Workspace() {
         label: 'Focus the preview',
         group: 'Focus',
         hint: 'F6',
+        disabledReason: needLibrary,
         run: () => focusPane('preview'),
       },
-      { id: 'bank-new', label: 'New bank…', group: 'Banks', run: () => bankRef.current?.newBank() },
+      { id: 'bank-new', label: 'New bank…', group: 'Banks', run: () => setNewBank(true) },
       {
         id: 'folder-new',
         label: 'New folder in the current bank or folder…',
@@ -607,6 +670,7 @@ function Workspace() {
         keywords: s.query,
         run: () => {
           setView('library');
+          setSearchNav(true);
           setText(s.query);
         },
       })),
@@ -647,19 +711,7 @@ function Workspace() {
         hint: '?',
         run: () => setLegend(true),
       },
-      {
-        id: 'open-settings',
-        label: 'Open StudyVault settings',
-        group: 'App',
-        run: () => {
-          void browser.runtime.openOptionsPage().catch((err: unknown) =>
-            toast.push({
-              tone: 'error',
-              message: errorMessage(err, 'Could not open the settings.'),
-            }),
-          );
-        },
-      },
+      { id: 'open-settings', label: 'Open StudyVault settings', group: 'App', run: openSettings },
       {
         id: 'open-reader',
         label: 'Open the PDF reader',
@@ -687,12 +739,24 @@ function Workspace() {
     goLibrary,
     focusPane,
     toast,
+    openSettings,
   ]);
 
   const searching = lib.mode === 'search';
-  const appearance = (
+  const inLibrary = view === 'library';
+  const kind = view === 'home' ? 'home' : inLibrary ? 'library' : 'page';
+  const railCurrent: RailItem =
+    view === 'home' ? 'home' : inLibrary ? (searchNav || searching ? 'search' : 'banks') : 'more';
+  const tiles = moreTiles(settings?.features ?? null);
+
+  const viewOptions = (
     <details className="dash-appearance">
-      <summary>View options</summary>
+      <summary className="dash-nav__item">
+        <SlidersHorizontal aria-hidden="true" strokeWidth={2.4} />
+        <span className="dash-nav__label">
+          View<span className="sv-vh"> options</span>
+        </span>
+      </summary>
       <div className="dash-appearance__body sv-stack sv-stack--tight">
         <div className="sv-field">
           <label className="sv-label" htmlFor="opt-theme">
@@ -759,7 +823,7 @@ function Workspace() {
             data-testid="opt-singlekeys"
             onChange={(e) => setSingleKeys(e.target.value as 'on' | 'off')}
           >
-            <option value="on">Search and help shortcuts on</option>
+            <option value="on">Shortcuts on</option>
             <option value="off">Shortcuts off</option>
           </select>
         </div>
@@ -767,8 +831,41 @@ function Workspace() {
     </details>
   );
 
+  const suspense = (what: string, node: ReactNode) => (
+    <Suspense
+      fallback={
+        <p className="sv-muted dash-loading" role="status">
+          Opening the {what}…
+        </p>
+      }
+    >
+      {node}
+    </Suspense>
+  );
+
   const center = (): ReactNode => {
     switch (view) {
+      case 'home':
+        return (
+          <HomeView
+            due={due}
+            onOpenBank={(bankId) => goLibrary({ bankId, folderId: null })}
+            onAllBanks={() => goLibrary(ALL_SCOPE)}
+            onNewBank={() => setNewBank(true)}
+            treeError={tree.error}
+            onRetryTree={tree.refresh}
+            more={<MoreGridTiles tiles={tiles} label="More tools" onView={showMoreView} />}
+          />
+        );
+      case 'more':
+        return (
+          <section className="dash-more" aria-labelledby="dash-more-h" data-testid="more-view">
+            <h1 id="dash-more-h" className="dash-h1">
+              More
+            </h1>
+            <MoreGridTiles tiles={tiles} label="More tools" onView={showMoreView} />
+          </section>
+        );
       case 'duplicates':
         return <DuplicatesView focusHighlightId={duplicateFocus} onShow={showHighlight} />;
       case 'trash':
@@ -776,46 +873,22 @@ function Workspace() {
       case 'storage':
         return <StoragePanel hostState={hostState} onRebuildIndex={() => void host.rebuild()} />;
       case 'graph':
-        return (
-          <Suspense
-            fallback={
-              <p className="sv-muted dash-loading" role="status">
-                Opening the graph…
-              </p>
-            }
-          >
-            <GraphView
-              centre={graphFocus}
-              onCentre={setGraphCentre}
-              onShow={showHighlight}
-              onBack={() => goLibrary()}
-            />
-          </Suspense>
+        return suspense(
+          'graph',
+          <GraphView
+            centre={graphFocus}
+            onCentre={setGraphCentre}
+            onShow={showHighlight}
+            onBack={() => goLibrary()}
+          />,
         );
       case 'syllabus':
-        return (
-          <Suspense
-            fallback={
-              <p className="sv-muted dash-loading" role="status">
-                Opening the syllabus…
-              </p>
-            }
-          >
-            <SyllabusView initialId={syllabusLink} onShowTopic={showTopic} />
-          </Suspense>
+        return suspense(
+          'syllabus',
+          <SyllabusView initialId={syllabusLink} onShowTopic={showTopic} />,
         );
       case 'rules':
-        return (
-          <Suspense
-            fallback={
-              <p className="sv-muted dash-loading" role="status">
-                Opening the filing rules…
-              </p>
-            }
-          >
-            <RulesView />
-          </Suspense>
-        );
+        return suspense('filing rules', <RulesView />);
       case 'chat':
         return (
           <ChatEntry
@@ -860,6 +933,7 @@ function Workspace() {
       <div
         ref={rescueRef}
         className="dash"
+        data-view={kind}
         data-density={density}
         data-tree-open={treeOpen ? 'true' : 'false'}
         data-preview-open={shown !== null || standaloneNote ? 'true' : 'false'}
@@ -869,25 +943,38 @@ function Workspace() {
           Skip to the main content
         </a>
 
-        <header ref={topRef} className="dash-top">
-          <div className="sv-row dash-top__row">
-            <Button
-              className="dash-tree-toggle"
-              aria-expanded={treeOpen}
-              aria-controls="dash-left"
-              id="dash-tree-toggle"
-              // Opening takes focus into the tree: at narrow widths the panel covers this button.
-              onClick={() => (treeOpen ? setTreeOpen(false) : focusPane('tree'))}
-              data-testid="toggle-tree"
-            >
-              Banks
-            </Button>
-            <h1 className="dash-title">StudyVault</h1>
-            <div className="dash-top__search sv-grow">
+        <Rail
+          current={railCurrent}
+          dueCount={due.count}
+          onGo={goRail}
+          onPalette={() => setPalette(true)}
+          onSettings={openSettings}
+          viewOptions={viewOptions}
+        />
+
+        {view !== 'home' ? (
+          <header ref={topRef} className="dash-top">
+            {inLibrary ? (
+              <Button
+                className="dash-tree-toggle"
+                aria-expanded={treeOpen}
+                aria-controls="dash-left"
+                id="dash-tree-toggle"
+                // Opening takes focus into the tree: at narrow widths the panel covers this button.
+                onClick={() => (treeOpen ? setTreeOpen(false) : focusPane('tree'))}
+                data-testid="toggle-tree"
+              >
+                <FolderTree aria-hidden="true" className="dash-btn-icon" />
+                Banks
+              </Button>
+            ) : null}
+            <h1 className="sv-vh">StudyVault</h1>
+            <div className="dash-top__search">
               <SearchBar
                 value={text}
                 onChange={(next) => {
                   setText(next);
+                  setSearchNav(true);
                   if (view !== 'library') setView('library');
                 }}
                 inputRef={searchRef}
@@ -898,157 +985,158 @@ function Workspace() {
                 onRebuild={() => void host.rebuild()}
               />
             </div>
-            <Button onClick={() => setPalette(true)} data-testid="open-palette">
-              Commands <span className="sv-kbd">Ctrl+K</span>
-            </Button>
-            {appearance}
-          </div>
-        </header>
+          </header>
+        ) : null}
 
-        <nav
-          id="dash-left"
-          className="dash-left"
-          aria-label="Banks, views and saved searches"
-          onKeyDown={(e) => {
-            // Narrow widths: the tree is a panel over the page. Escape closes it, back to its button.
-            if (e.key !== 'Escape' || e.defaultPrevented || !treeOpen) return;
-            if ((e.target as Element).closest('dialog')) return;
-            if (!(window.matchMedia?.('(max-width: 899px)').matches ?? false)) return;
-            setTreeOpen(false);
-            document.getElementById('dash-tree-toggle')?.focus();
-          }}
-        >
-          <ul className="dash-views">
-            {(Object.keys(VIEW_LABELS) as View[]).map((v) => (
-              <li key={v}>
-                <button
-                  type="button"
-                  className="dash-viewbtn"
-                  aria-current={
-                    view === v && (v !== 'library' || scope.bankId === null) ? 'page' : undefined
-                  }
-                  onClick={() => {
-                    if (v === 'library') goLibrary(ALL_SCOPE);
-                    else {
-                      if (v === 'graph') setGraphCentre(undefined);
-                      setView(v);
-                      setTreeOpen(false); // the panel would otherwise stay over the view just chosen
-                    }
-                  }}
-                  data-testid={`view-${v}`}
-                >
-                  {VIEW_LABELS[v]}
-                  {v === 'library' && treeData.counts ? (
-                    <span className="sv-muted sv-small">
-                      {' '}
-                      {treeData.counts.total.toLocaleString()}
-                    </span>
-                  ) : null}
-                </button>
-              </li>
-            ))}
-          </ul>
-          {tree.error ? (
-            <InlineNotice
-              tone="error"
-              title="Could not read your banks"
-              action={<Button onClick={tree.refresh}>Try again</Button>}
-            >
-              {tree.error}
-            </InlineNotice>
-          ) : (
-            <BankPane ref={bankRef} api={api} scope={scope} onScope={(next) => goLibrary(next)} />
-          )}
-          <SavedSearches
-            controller={saved}
-            currentText={text}
-            currentSort={lib.sort}
-            onRun={(s) => {
-              setView('library');
-              setText(s.query);
-              if (s.sort === 'updated') setSort('updated-desc');
-              else if (s.sort === 'priority') setSort('priority-desc');
-              else setSort('relevance');
+        {inLibrary ? (
+          <nav
+            id="dash-left"
+            className="dash-left"
+            aria-label="Banks and saved searches"
+            onKeyDown={(e) => {
+              // Narrow widths: the tree is a panel over the page. Escape closes it, back to its button.
+              if (e.key !== 'Escape' || e.defaultPrevented || !treeOpen) return;
+              if ((e.target as Element).closest('dialog')) return;
+              if (!(window.matchMedia?.('(max-width: 899px)').matches ?? false)) return;
+              setTreeOpen(false);
+              document.getElementById('dash-tree-toggle')?.focus();
             }}
-          />
-          <div className="dash-links sv-stack sv-stack--tight">
-            <Button
-              variant="ghost"
-              onClick={() =>
-                void browser.runtime.openOptionsPage().catch((err: unknown) =>
-                  toast.push({
-                    tone: 'error',
-                    message: errorMessage(err, 'Could not open settings.'),
-                  }),
-                )
-              }
+          >
+            {/* Narrow widths: the panel covers its own button, so it carries a way out. */}
+            <div className="dash-left__bar">
+              <IconButton
+                icon={X}
+                label="Close banks"
+                tipSide="left"
+                onClick={() => {
+                  setTreeOpen(false);
+                  document.getElementById('dash-tree-toggle')?.focus();
+                }}
+                data-testid="close-tree"
+              />
+            </div>
+            <button
+              type="button"
+              className="dash-all"
+              aria-current={scope.bankId === null ? 'page' : undefined}
+              onClick={() => goLibrary(ALL_SCOPE)}
+              data-testid="view-library"
             >
-              StudyVault settings
-            </Button>
-          </div>
-        </nav>
+              <span>All highlights</span>
+              {treeData.counts ? (
+                <span className="dash-count">{treeData.counts.total.toLocaleString()}</span>
+              ) : null}
+            </button>
+            {tree.error ? (
+              <InlineNotice
+                tone="error"
+                title="Could not read your banks"
+                action={<Button onClick={tree.refresh}>Try again</Button>}
+              >
+                {tree.error}
+              </InlineNotice>
+            ) : (
+              <BankPane
+                ref={bankRef}
+                api={api}
+                scope={scope}
+                onScope={(next) => goLibrary(next)}
+                onNewBank={() => setNewBank(true)}
+              />
+            )}
+            <SavedSearches
+              controller={saved}
+              currentText={text}
+              currentSort={lib.sort}
+              onRun={(s) => {
+                setView('library');
+                setSearchNav(true);
+                setText(s.query);
+                if (s.sort === 'updated') setSort('updated-desc');
+                else if (s.sort === 'priority') setSort('priority-desc');
+                else setSort('relevance');
+              }}
+            />
+          </nav>
+        ) : null}
 
         <main id="dash-center" className="dash-center" tabIndex={-1} aria-label={VIEW_LABELS[view]}>
           <BackupReminder />
+          {kind === 'page' && view !== 'more' ? (
+            <BackToMore onClick={() => setView('more')} />
+          ) : null}
           {center()}
         </main>
 
-        <aside
-          ref={previewRef}
-          className="dash-right"
-          aria-label="Preview"
-          tabIndex={-1}
-          data-testid="preview-pane"
-          onKeyDown={(e) => {
-            // Escape leaves the preview (it is an overlay on narrow screens) and returns to the list.
-            const inField = (e.target as HTMLElement).closest('input, textarea, select');
-            if (e.key === 'Escape' && !inField && !e.defaultPrevented) {
-              setShown(null);
-              focusPane('list');
-            }
-          }}
-        >
-          <div className="dash-right__bar">
-            <Button
-              onClick={() => {
+        {inLibrary ? (
+          <aside
+            ref={previewRef}
+            className="dash-right"
+            aria-label="Preview"
+            tabIndex={-1}
+            data-testid="preview-pane"
+            onKeyDown={(e) => {
+              // Escape leaves the preview (it is an overlay on narrow screens) and returns to the list.
+              const inField = (e.target as HTMLElement).closest('input, textarea, select');
+              if (e.key === 'Escape' && !inField && !e.defaultPrevented) {
                 setShown(null);
-                lib.setActiveKey(null);
-              }}
-              data-testid="close-preview"
-            >
-              Close preview
-            </Button>
-          </div>
-          {standaloneNote ? (
-            <div className="dash-preview" data-testid="preview-note-only">
-              <InlineNotice tone="info" title="A note without a highlight">
-                This note is not attached to a highlight, so there is no quote or source to show.
-              </InlineNotice>
+                focusPane('list');
+              }
+            }}
+          >
+            <div className="dash-right__bar">
+              <IconButton
+                icon={X}
+                label="Close preview"
+                tipSide="left"
+                onClick={() => {
+                  setShown(null);
+                  lib.setActiveKey(null);
+                }}
+                data-testid="close-preview"
+              />
             </div>
-          ) : (
-            <Preview
-              id={previewId}
-              paletteFor={paletteFor}
-              onFilterSource={(source) => {
-                setFilters((f) => ({ ...f, source }));
-                setView('library');
-              }}
-              onShow={showHighlight}
-              onReviewDuplicates={(id) => {
-                setDuplicateFocus(id);
-                setView('duplicates');
-              }}
-              onGone={() => {
-                setShown(null);
-                lib.setActiveKey(null);
-                bump();
-              }}
-              related={related}
-              links={links}
-            />
-          )}
-        </aside>
+            {standaloneNote ? (
+              <div className="dash-preview" data-testid="preview-note-only">
+                <InlineNotice tone="info" title="A note without a highlight">
+                  This note is not attached to a highlight, so there is no quote or source to show.
+                </InlineNotice>
+              </div>
+            ) : (
+              <Preview
+                id={previewId}
+                paletteFor={paletteFor}
+                onFilterSource={(source) => {
+                  setFilters((f) => ({ ...f, source }));
+                  setView('library');
+                }}
+                onShow={showHighlight}
+                onReviewDuplicates={(id) => {
+                  setDuplicateFocus(id);
+                  setView('duplicates');
+                }}
+                onGone={() => {
+                  setShown(null);
+                  lib.setActiveKey(null);
+                  bump();
+                }}
+                related={related}
+                links={links}
+              />
+            )}
+          </aside>
+        ) : null}
 
+        {newBank ? (
+          <NewBankWizard
+            onClose={() => setNewBank(false)}
+            onOpenBank={(bankId) => {
+              setNewBank(false);
+              goLibrary({ bankId, folderId: null });
+              setTimeout(() => bankRef.current?.focusTree(), 0);
+            }}
+          />
+        ) : null}
         {palette ? <CommandPalette commands={commands} onClose={() => setPalette(false)} /> : null}
         {legend ? (
           <Modal title="Keyboard shortcuts" onClose={() => setLegend(false)}>

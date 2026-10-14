@@ -1,4 +1,5 @@
-import { useId, useRef, type ReactNode } from 'react';
+import { useId, useRef, useState, type ReactNode } from 'react';
+import { ArrowUpDown, ChevronDown, FilterX, ListFilter, X } from 'lucide-react';
 import { HIGHLIGHT_KINDS, KIND_LABELS, type HighlightKind, type ResolveStatus } from '@shared';
 import { Button, describeResolveState } from '@ui';
 import type { TagWithCount } from '@storage';
@@ -35,7 +36,14 @@ function Group({
     <details className="dash-filter" data-testid={testId}>
       <summary>
         {label}
-        {active > 0 ? <span className="dash-filter__n"> ({active})</span> : null}
+        {active > 0 ? (
+          <span className="dash-filter__n">
+            <span className="sv-vh"> (</span>
+            {active}
+            <span className="sv-vh">)</span>
+          </span>
+        ) : null}
+        <ChevronDown aria-hidden="true" className="dash-filter__chev" strokeWidth={2.6} />
       </summary>
       <div className="dash-filter__body">{children}</div>
     </details>
@@ -49,7 +57,6 @@ export function FilterBar({
   sort,
   onSort,
   searching,
-  total,
 }: {
   filters: Filters;
   onChange(next: Filters): void;
@@ -57,7 +64,6 @@ export function FilterBar({
   sort: SortKey;
   onSort(next: SortKey): void;
   searching: boolean;
-  total: number | null;
 }) {
   const id = useId();
   const root = useRef<HTMLElement>(null);
@@ -67,10 +73,18 @@ export function FilterBar({
   const active = filterCount(filters);
   const tagName = (tagId: string) =>
     tags.find((t) => t.tag.id === tagId)?.tag.name ?? 'Unknown tag';
+  // Kind and Tags are always shown; the rest wait behind "More filters" unless one is in use.
+  const [more, setMore] = useState(false);
+  const advanced =
+    filters.priorities.length +
+    filters.statuses.length +
+    (filters.hasNote === null ? 0 : 1) +
+    (filters.dateFrom !== '' || filters.dateTo !== '' ? 1 : 0);
+  const showMore = more || advanced > 0;
 
   return (
     <section ref={root} className="dash-filters" aria-label="Filters and sorting">
-      <div className="sv-row">
+      <div className="dash-filters__row">
         <Group label="Kind" active={filters.kinds.length} testId="filter-kind">
           <fieldset className="opt-fieldset">
             <legend className="sv-sr">Kinds</legend>
@@ -84,44 +98,6 @@ export function FilterBar({
                 <span>
                   <span aria-hidden="true">{KIND_LABELS[kind].glyph}</span>{' '}
                   {KIND_LABELS[kind].label}
-                </span>
-              </label>
-            ))}
-          </fieldset>
-        </Group>
-
-        <Group label="Priority" active={filters.priorities.length} testId="filter-priority">
-          <fieldset className="opt-fieldset">
-            <legend className="sv-sr">Priorities</legend>
-            {[5, 4, 3, 2, 1].map((p) => (
-              <label key={p} className="sv-check">
-                <input
-                  type="checkbox"
-                  checked={filters.priorities.includes(p)}
-                  onChange={() => set({ priorities: toggled(filters.priorities, p) })}
-                />
-                <span>
-                  Priority {p}
-                  {p === 5 ? ' (highest)' : p === 1 ? ' (lowest)' : ''}
-                </span>
-              </label>
-            ))}
-          </fieldset>
-        </Group>
-
-        <Group label="Status" active={filters.statuses.length} testId="filter-status">
-          <fieldset className="opt-fieldset">
-            <legend className="sv-sr">Restore status</legend>
-            {STATUSES.map((s) => (
-              <label key={s} className="sv-check">
-                <input
-                  type="checkbox"
-                  checked={filters.statuses.includes(s)}
-                  onChange={() => set({ statuses: toggled(filters.statuses, s) })}
-                />
-                <span>
-                  <span aria-hidden="true">{describeResolveState(s).glyph}</span>{' '}
-                  {describeResolveState(s).label}
                 </span>
               </label>
             ))}
@@ -165,77 +141,133 @@ export function FilterBar({
             </>
           )}
         </Group>
-
-        <Group label="Note" active={filters.hasNote === null ? 0 : 1} testId="filter-note">
-          <div className="sv-field">
-            <label className="sv-label" htmlFor={`${id}-note`}>
-              Your note
-            </label>
-            <select
-              id={`${id}-note`}
-              className="sv-control"
-              value={filters.hasNote === null ? 'any' : filters.hasNote ? 'yes' : 'no'}
-              onChange={(e) =>
-                set({ hasNote: e.target.value === 'any' ? null : e.target.value === 'yes' })
-              }
-            >
-              <option value="any">Either</option>
-              <option value="yes">Has a note</option>
-              <option value="no">Has no note</option>
-            </select>
-          </div>
-        </Group>
-
-        <Group
-          label="Date"
-          active={filters.dateFrom !== '' || filters.dateTo !== '' ? 1 : 0}
-          testId="filter-date"
+        <button
+          type="button"
+          className="dash-filter-more"
+          aria-expanded={showMore}
+          aria-controls={`${id}-more`}
+          aria-disabled={advanced > 0 || undefined}
+          title={advanced > 0 ? 'Clear these filters to hide them.' : undefined}
+          onClick={() => {
+            if (advanced === 0) setMore(!more);
+          }}
+          data-testid="filter-more"
         >
-          <div className="sv-field">
-            <label className="sv-label" htmlFor={`${id}-datefield`}>
-              Date to filter by
-            </label>
-            <select
-              id={`${id}-datefield`}
-              className="sv-control"
-              value={filters.dateField}
-              onChange={(e) => set({ dateField: e.target.value as DateField })}
-            >
-              <option value="capturedAt">Captured</option>
-              <option value="updatedAt">Last updated</option>
-            </select>
-          </div>
-          <div className="sv-field">
-            <label className="sv-label" htmlFor={`${id}-from`}>
-              From (your local date)
-            </label>
-            <input
-              id={`${id}-from`}
-              type="date"
-              className="sv-control"
-              value={filters.dateFrom}
-              max={filters.dateTo || undefined}
-              onChange={(e) => set({ dateFrom: e.target.value })}
-            />
-          </div>
-          <div className="sv-field">
-            <label className="sv-label" htmlFor={`${id}-to`}>
-              Up to and including
-            </label>
-            <input
-              id={`${id}-to`}
-              type="date"
-              className="sv-control"
-              value={filters.dateTo}
-              min={filters.dateFrom || undefined}
-              onChange={(e) => set({ dateTo: e.target.value })}
-            />
-          </div>
-        </Group>
+          <ListFilter aria-hidden="true" strokeWidth={2.5} />
+          More filters
+          {advanced > 0 ? <span className="dash-filter__n">{advanced}</span> : null}
+        </button>
+        <div id={`${id}-more`} className="dash-filters__more" hidden={!showMore}>
+          <Group label="Priority" active={filters.priorities.length} testId="filter-priority">
+            <fieldset className="opt-fieldset">
+              <legend className="sv-sr">Priorities</legend>
+              {[5, 4, 3, 2, 1].map((p) => (
+                <label key={p} className="sv-check">
+                  <input
+                    type="checkbox"
+                    checked={filters.priorities.includes(p)}
+                    onChange={() => set({ priorities: toggled(filters.priorities, p) })}
+                  />
+                  <span>
+                    Priority {p}
+                    {p === 5 ? ' (highest)' : p === 1 ? ' (lowest)' : ''}
+                  </span>
+                </label>
+              ))}
+            </fieldset>
+          </Group>
 
-        <div className="sv-field dash-sort">
-          <label className="sv-label" htmlFor={`${id}-sort`}>
-            Sort by
+          <Group label="Status" active={filters.statuses.length} testId="filter-status">
+            <fieldset className="opt-fieldset">
+              <legend className="sv-sr">Restore status</legend>
+              {STATUSES.map((s) => (
+                <label key={s} className="sv-check">
+                  <input
+                    type="checkbox"
+                    checked={filters.statuses.includes(s)}
+                    onChange={() => set({ statuses: toggled(filters.statuses, s) })}
+                  />
+                  <span>
+                    <span aria-hidden="true">{describeResolveState(s).glyph}</span>{' '}
+                    {describeResolveState(s).label}
+                  </span>
+                </label>
+              ))}
+            </fieldset>
+          </Group>
+
+          <Group label="Note" active={filters.hasNote === null ? 0 : 1} testId="filter-note">
+            <div className="sv-field">
+              <label className="sv-label" htmlFor={`${id}-note`}>
+                Your note
+              </label>
+              <select
+                id={`${id}-note`}
+                className="sv-control"
+                value={filters.hasNote === null ? 'any' : filters.hasNote ? 'yes' : 'no'}
+                onChange={(e) =>
+                  set({ hasNote: e.target.value === 'any' ? null : e.target.value === 'yes' })
+                }
+              >
+                <option value="any">Either</option>
+                <option value="yes">Has a note</option>
+                <option value="no">Has no note</option>
+              </select>
+            </div>
+          </Group>
+
+          <Group
+            label="Date"
+            active={filters.dateFrom !== '' || filters.dateTo !== '' ? 1 : 0}
+            testId="filter-date"
+          >
+            <div className="sv-field">
+              <label className="sv-label" htmlFor={`${id}-datefield`}>
+                Date to filter by
+              </label>
+              <select
+                id={`${id}-datefield`}
+                className="sv-control"
+                value={filters.dateField}
+                onChange={(e) => set({ dateField: e.target.value as DateField })}
+              >
+                <option value="capturedAt">Captured</option>
+                <option value="updatedAt">Last updated</option>
+              </select>
+            </div>
+            <div className="sv-field">
+              <label className="sv-label" htmlFor={`${id}-from`}>
+                From (your local date)
+              </label>
+              <input
+                id={`${id}-from`}
+                type="date"
+                className="sv-control"
+                value={filters.dateFrom}
+                max={filters.dateTo || undefined}
+                onChange={(e) => set({ dateFrom: e.target.value })}
+              />
+            </div>
+            <div className="sv-field">
+              <label className="sv-label" htmlFor={`${id}-to`}>
+                Up to and including
+              </label>
+              <input
+                id={`${id}-to`}
+                type="date"
+                className="sv-control"
+                value={filters.dateTo}
+                min={filters.dateFrom || undefined}
+                onChange={(e) => set({ dateTo: e.target.value })}
+              />
+            </div>
+          </Group>
+        </div>
+
+        <div className="dash-sort">
+          <label className="dash-sort__label" htmlFor={`${id}-sort`}>
+            <ArrowUpDown aria-hidden="true" strokeWidth={2.5} />
+            Sort
           </label>
           <select
             id={`${id}-sort`}
@@ -305,13 +337,11 @@ export function FilterBar({
               onClick={() => onChange(EMPTY_FILTERS)}
               data-testid="clear-filters"
             >
-              Clear all filters
+              <FilterX aria-hidden="true" className="dash-btn-icon" />
+              Clear all
             </Button>
           </li>
         </ul>
-      ) : null}
-      {total === 0 && active > 0 && !searching ? (
-        <p className="sv-small sv-muted">No highlight matches these filters.</p>
       ) : null}
     </section>
   );
@@ -327,7 +357,7 @@ function Chip({ label, onRemove }: { label: string; onRemove(): void }) {
         onClick={onRemove}
         aria-label={`Remove filter ${label}`}
       >
-        <span aria-hidden="true">✕</span>
+        <X aria-hidden="true" strokeWidth={3} />
       </button>
     </li>
   );

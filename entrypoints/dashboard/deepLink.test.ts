@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { MAX_QUERY_LENGTH } from '@search';
-import { dashboardPath, parseDeepLink, parseViewLink } from './deepLink';
+import { dashboardPath, initialView, parseDeepLink, parseViewLink } from './deepLink';
 import { textFragment, webSourceHref } from './links';
 
 describe('parseDeepLink', () => {
@@ -35,11 +35,21 @@ describe('parseDeepLink', () => {
 });
 
 describe('parseViewLink', () => {
-  it('opens the chat view for view=chat and the highlight list for anything else', () => {
+  it('reads the views that have an address and ignores anything else', () => {
     expect(parseViewLink('?view=chat&bank=inbox-default')).toBe('chat');
-    expect(parseViewLink('?view=trash')).toBeNull();
+    expect(parseViewLink('?view=trash')).toBe('trash');
+    expect(parseViewLink('?view=library')).toBe('library');
     expect(parseViewLink('?view=<script>')).toBeNull();
     expect(parseViewLink('')).toBeNull();
+  });
+
+  it('opens Home by default and the list for a highlight, bank or query link', () => {
+    expect(initialView('')).toBe('home');
+    expect(initialView('?view=nope')).toBe('home');
+    expect(initialView('?bank=inbox-default')).toBe('library');
+    expect(initialView('?q=golgi')).toBe('library');
+    expect(initialView('?highlight=0192abcd-ef01')).toBe('library');
+    expect(initialView('?view=more&q=golgi')).toBe('more');
   });
 
   it('opens the graph for view=graph, around the highlight of the link', () => {

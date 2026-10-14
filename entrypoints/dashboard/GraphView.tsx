@@ -25,9 +25,31 @@ import {
   type WalkMove,
 } from '@shared/graph';
 import { describeEnds, loadGraph, type LinkEnd, type RelationRef } from '@storage';
-import { Button, EmptyState, InlineNotice, plural, truncate, useToast } from '@ui';
+import {
+  ArrowLeft,
+  Crosshair,
+  ExternalLink,
+  Library,
+  Link as LinkIcon,
+  Maximize,
+  Network,
+  Shapes,
+  ZoomIn,
+  ZoomOut,
+} from 'lucide-react';
+import {
+  BarMeter,
+  BuddyEmptyState,
+  ChunkyButton,
+  InfoTip,
+  InlineNotice,
+  plural,
+  truncate,
+  useToast,
+} from '@ui';
 import { KIND_NAME, TYPE_NAME, phrase } from '@ui/vault';
 import { useVaultQuery } from './hooks';
+import { Action, Chip, IconAction, Loading, Segments, ViewHead } from './moreKit';
 import './graph.css';
 
 /**
@@ -111,7 +133,8 @@ const EDGE_STYLE: Record<RelationType, EdgeStyle> = {
 };
 
 const GLYPH = { highlight: 'H', note: 'N', knowledgePoint: 'K' } as const;
-const SHAPE_WORDS = 'circle = highlight, square = note, diamond = knowledge point';
+const KEYS_HELP =
+  'Move onto an item with Tab, then: Right arrow goes to a linked item, Left goes back, Up and Down cycle through the items linked from the same place. Enter opens the item, C draws the graph around it, Escape returns to the list. + and − zoom, 0 fits the window.';
 
 type Described = Map<string, LinkEnd>;
 
@@ -215,19 +238,17 @@ export default function GraphView({ centre, onCentre, onShow, onBack }: GraphVie
   );
 
   const body = (): ReactNode => {
-    if (graph.loading) {
-      return (
-        <p className="sv-muted dash-loading" role="status">
-          Reading your links…
-        </p>
-      );
-    }
+    if (graph.loading) return <Loading>Reading your links…</Loading>;
     if (graph.error) {
       return (
         <InlineNotice
           tone="error"
           title="Could not read your links"
-          action={<Button onClick={graph.refresh}>Try again</Button>}
+          action={
+            <ChunkyButton size="sm" onClick={graph.refresh}>
+              Try again
+            </ChunkyButton>
+          }
         >
           {graph.error}
         </InlineNotice>
@@ -235,10 +256,12 @@ export default function GraphView({ centre, onCentre, onShow, onBack }: GraphVie
     }
     if (edges.length === 0 && centreKey === null) {
       return (
-        <EmptyState title="No links yet">
-          Open a highlight, choose Links, then Add link to connect it to another highlight, a note
-          or a knowledge point. The graph appears here.
-        </EmptyState>
+        <BuddyEmptyState
+          pose="sleep"
+          title="No links yet"
+          text="Open a highlight, then Links › Add link."
+          action={{ label: 'Open banks', icon: Library, onClick: onBack }}
+        />
       );
     }
     if (hood && centreKey !== null) {
@@ -248,7 +271,11 @@ export default function GraphView({ centre, onCentre, onShow, onBack }: GraphVie
           <InlineNotice
             tone="warning"
             title="This item is no longer available"
-            action={<Button onClick={() => onCentre(null)}>Show the overview</Button>}
+            action={
+              <ChunkyButton size="sm" onClick={() => onCentre(null)}>
+                Show the overview
+              </ChunkyButton>
+            }
           >
             It may be in the trash, or its highlight may be. Restore it from the Trash view to see
             its links again.
@@ -286,7 +313,7 @@ export default function GraphView({ centre, onCentre, onShow, onBack }: GraphVie
 
   return (
     <section
-      className="dash-panel dash-graph"
+      className="dash-panel dash-graph mv-view"
       aria-labelledby={`${uid}-title`}
       data-testid="graph-view"
       onKeyDown={(e) => {
@@ -296,7 +323,13 @@ export default function GraphView({ centre, onCentre, onShow, onBack }: GraphVie
         onBack();
       }}
     >
-      <h2 id={`${uid}-title`}>Knowledge graph</h2>
+      <ViewHead
+        icon={Network}
+        tone="violet"
+        title="Knowledge graph"
+        titleId={`${uid}-title`}
+        info="The links you made between highlights, notes and knowledge points. Pick an item to see what surrounds it; the Connections table holds the same links as text."
+      />
       {graph.data?.truncated ? (
         <InlineNotice tone="warning">
           You have more links than the graph can read at once; it shows the oldest 20,000.
@@ -447,42 +480,56 @@ function Neighbourhood({
 
   return (
     <>
-      <p className="sv-muted">
-        Around: <strong dir="auto">{truncate(centreText, 120)}</strong>
-      </p>
-      <div className="sv-row dash-graph__bar">
-        <Button onClick={onBack} data-testid="graph-back">
-          Back to the list
-        </Button>
-        <Button onClick={onOverview} data-testid="graph-overview">
-          Overview of the whole vault
-        </Button>
-        <fieldset className="dash-graph__depth">
-          <legend className="sv-label">How far</legend>
-          {([1, 2] as const).map((d) => (
-            <label key={d} className="sv-check">
-              <input
-                type="radio"
-                name={`${uid}-depth`}
-                checked={depth === d}
-                data-testid={`graph-depth-${d}`}
-                onChange={() => onDepth(d)}
-              />
-              <span>{d === 1 ? '1 link' : '2 links'}</span>
-            </label>
-          ))}
-        </fieldset>
+      <div className="graph-around">
+        <Chip icon={Crosshair} tone="violet">
+          Around
+        </Chip>
+        <strong className="mv-wrap" dir="auto">
+          {truncate(centreText, 120)}
+        </strong>
+      </div>
+      <div className="graph-bar">
+        <ChunkyButton size="sm" icon={ArrowLeft} onClick={onBack} data-testid="graph-back">
+          Back
+        </ChunkyButton>
+        <ChunkyButton size="sm" icon={Network} onClick={onOverview} data-testid="graph-overview">
+          Overview
+        </ChunkyButton>
+        <span className="graph-bar__group">
+          <span className="mv-label" aria-hidden="true">
+            How far
+          </span>
+          <Segments<1 | 2>
+            legend="How far"
+            options={[
+              { value: 1, label: '1 link', testId: 'graph-depth-1' },
+              { value: 2, label: '2 links', testId: 'graph-depth-2' },
+            ]}
+            value={depth}
+            onChange={onDepth}
+          />
+        </span>
       </div>
 
-      <p className="sv-small" role="status" data-testid="graph-summary">
-        {plural(hood.nodes.length, 'item')} and {plural(hood.edges.length, 'link')}
-        {hood.hidden > 0 ? `; ${hood.hidden} more within reach are not shown.` : '.'}
+      <p className="graph-stats" role="status" data-testid="graph-summary">
+        <Chip icon={Shapes} tone="primary">
+          {plural(hood.nodes.length, 'item')}
+        </Chip>{' '}
+        and{' '}
+        <Chip icon={LinkIcon} tone="violet">
+          {plural(hood.edges.length, 'link')}
+        </Chip>
+        {hood.hidden > 0 ? (
+          `; ${hood.hidden} more within reach are not shown.`
+        ) : (
+          <span className="sv-vh">.</span>
+        )}
       </p>
       {hood.hidden > 0 ? (
         <div>
-          <Button onClick={onMore} data-testid="graph-more">
+          <ChunkyButton size="sm" onClick={onMore} data-testid="graph-more">
             Show {Math.min(GRAPH_NODE_CAP, hood.hidden)} more ({total} within reach)
-          </Button>
+          </ChunkyButton>
         </div>
       ) : null}
       {hood.nodes.length === 1 ? (
@@ -491,27 +538,34 @@ function Neighbourhood({
         </InlineNotice>
       ) : null}
 
-      <section className="sv-stack sv-stack--tight" aria-labelledby={`${uid}-diagram`}>
-        <h3 id={`${uid}-diagram`}>Diagram</h3>
-        <p className="sv-small sv-muted" id={`${uid}-keys`}>
-          Move onto an item with Tab, then: Right arrow goes to a linked item, Left goes back, Up
-          and Down cycle through the items linked from the same place. Enter opens the item, C draws
-          the graph around it, Escape returns to the list. + and − zoom, 0 fits the window.
-        </p>
-        <div className="sv-row">
-          <Button onClick={() => zoomBy(1 / ZOOM_STEP)} data-testid="graph-zoom-out">
-            Zoom out
-          </Button>
-          <Button onClick={() => zoomBy(ZOOM_STEP)} data-testid="graph-zoom-in">
-            Zoom in
-          </Button>
-          <Button onClick={fit} data-testid="graph-fit">
-            Fit
-          </Button>
-          <span className="sv-small sv-muted" data-testid="graph-zoom">
-            {Math.round(zoom * 100)}%
+      <section className="mv-card graph-diagram" aria-labelledby={`${uid}-diagram`}>
+        <div className="graph-diagram__head">
+          <h3 id={`${uid}-diagram`} className="mv-card__title">
+            Diagram
+            <InfoTip label="Keyboard keys for the diagram">{KEYS_HELP}</InfoTip>
+          </h3>
+          <span className="graph-zoom">
+            <IconAction
+              icon={ZoomOut}
+              label="Zoom out"
+              onClick={() => zoomBy(1 / ZOOM_STEP)}
+              data-testid="graph-zoom-out"
+            />
+            <span className="mv-chip" data-testid="graph-zoom">
+              {Math.round(zoom * 100)}%
+            </span>
+            <IconAction
+              icon={ZoomIn}
+              label="Zoom in"
+              onClick={() => zoomBy(ZOOM_STEP)}
+              data-testid="graph-zoom-in"
+            />
+            <IconAction icon={Maximize} label="Fit" onClick={fit} data-testid="graph-fit" />
           </span>
         </div>
+        <p className="sv-vh" id={`${uid}-keys`}>
+          {KEYS_HELP}
+        </p>
         <div
           role="group"
           aria-label="Diagram of the links"
@@ -627,35 +681,71 @@ function Neighbourhood({
             })}
           </svg>
         </div>
-        <ul className="dash-graph__legend" aria-label="Types of link" data-testid="graph-legend">
+        <ul className="graph-legend" aria-label="Types of link" data-testid="graph-legend">
           {RELATION_TYPES.map((t) => (
-            <li key={t}>
-              <svg width="56" height="12" aria-hidden="true" focusable="false">
+            <li key={t} className="graph-legend__item">
+              <svg width="36" height="12" aria-hidden="true" focusable="false">
                 <line
                   x1="2"
                   y1="6"
-                  x2="54"
+                  x2="34"
                   y2="6"
                   className={`dash-graph__edge dash-graph__edge--${t}`}
                   strokeWidth={EDGE_STYLE[t].width}
                   strokeDasharray={EDGE_STYLE[t].dash || undefined}
                 />
               </svg>
-              <span>
-                <strong>{TYPE_NAME[t]}</strong>
-                <span className="sv-small sv-muted"> {EDGE_STYLE[t].words}</span>
-              </span>
+              <strong>{TYPE_NAME[t]}</strong>
+              <span className="sv-vh"> {EDGE_STYLE[t].words}</span>
             </li>
           ))}
-          <li className="sv-small sv-muted">Shapes: {SHAPE_WORDS}. A star marks the centre.</li>
+        </ul>
+        <ul className="graph-legend" aria-label="Kinds of item">
+          {(
+            [
+              ['highlight', 'Highlight'],
+              ['note', 'Note'],
+              ['knowledgePoint', 'Knowledge point'],
+              ['centre', 'Centre (star)'],
+            ] as const
+          ).map(([shape, name]) => (
+            <li key={shape} className="graph-legend__item">
+              <svg width="18" height="18" viewBox="-10 -10 20 20" aria-hidden="true">
+                {shape === 'note' ? (
+                  <rect
+                    className="graph-legend__shape graph-legend__shape--note"
+                    x={-7}
+                    y={-7}
+                    width={14}
+                    height={14}
+                    rx={2}
+                  />
+                ) : shape === 'knowledgePoint' ? (
+                  <polygon
+                    className="graph-legend__shape graph-legend__shape--kp"
+                    points="0,-9 9,0 0,9 -9,0"
+                  />
+                ) : (
+                  <circle
+                    className={`graph-legend__shape${shape === 'centre' ? ' graph-legend__shape--centre' : ''}`}
+                    r={7}
+                  />
+                )}
+              </svg>
+              <span>{name}</span>
+            </li>
+          ))}
         </ul>
       </section>
 
-      <section className="sv-stack sv-stack--tight" aria-labelledby={`${uid}-connections`}>
-        <h3 id={`${uid}-connections`}>Connections</h3>
-        <p className="sv-small sv-muted">
-          The same graph as a table, one row per item with what it is linked to.
-        </p>
+      <section className="mv-card" aria-labelledby={`${uid}-connections`}>
+        <h3 id={`${uid}-connections`} className="mv-card__title">
+          <Shapes className="graph-h-icon" aria-hidden="true" />
+          Connections
+          <InfoTip label="About the connections table">
+            The same graph as a table: one row per item, with what it is linked to.
+          </InfoTip>
+        </h3>
         <div className="dash-graph__tablewrap">
           <table className="dash-graph__table" data-testid="graph-connections">
             <caption className="sv-sr">Connections around {truncate(centreText, 80)}</caption>
@@ -675,21 +765,25 @@ function Neighbourhood({
                 return (
                   <tr key={key} data-testid="connection-row" data-node={key} data-depth={dist}>
                     <th scope="row">
-                      <span className="sv-badge">{KIND_NAME[end?.kind ?? 'highlight']}</span>{' '}
-                      <span className="sv-wrap" dir="auto">
+                      <Chip tone={dist === 0 ? 'violet' : 'neutral'}>
+                        {KIND_NAME[end?.kind ?? 'highlight']}
+                      </Chip>{' '}
+                      <span className="mv-wrap" dir="auto">
                         {truncate(textOf(described, key), 160)}
                       </span>
                       {end && (end.sourceTitle || end.host) ? (
-                        <span className="sv-small sv-muted sv-wrap" dir="auto">
+                        <span className="mv-meta mv-wrap" dir="auto">
                           {' '}
                           · {[end.sourceTitle, end.host].filter(Boolean).join(' · ')}
                         </span>
                       ) : null}
                     </th>
-                    <td>{dist === 0 ? 'Centre' : dist}</td>
+                    <td>
+                      <span className="graph-dist">{dist === 0 ? 'Centre' : dist}</span>
+                    </td>
                     <td>
                       {incident.length === 0 ? (
-                        <span className="sv-muted">No links in view</span>
+                        <span className="mv-meta">No links in view</span>
                       ) : (
                         <ul className="dash-graph__links">
                           {incident.map((e) => {
@@ -708,8 +802,10 @@ function Neighbourhood({
                       )}
                     </td>
                     <td>
-                      <div className="sv-row">
-                        <Button
+                      <div className="mv-row">
+                        <Action
+                          size="sm"
+                          icon={ExternalLink}
                           aria-label={`Open: ${short}`}
                           data-testid="connection-open"
                           disabledReason={
@@ -720,15 +816,17 @@ function Neighbourhood({
                           onClick={() => onOpen(key)}
                         >
                           Open
-                        </Button>
+                        </Action>
                         {dist === 0 ? null : (
-                          <Button
-                            aria-label={`Draw the graph around: ${short}`}
+                          <ChunkyButton
+                            size="sm"
+                            icon={Crosshair}
+                            aria-label={`Centre here: ${short}`}
                             data-testid="connection-centre"
                             onClick={() => onCentre(key)}
                           >
                             Centre here
-                          </Button>
+                          </ChunkyButton>
                         )}
                       </div>
                     </td>
@@ -762,70 +860,105 @@ function Overview({
 }) {
   const items = new Set(edges.flatMap((e) => [e.from, e.to])).size;
   const short = (key: string) => truncate(textOf(described, key), 100);
+  const largest = Math.max(1, ...groups.slice(0, 8).map((g) => g.keys.length));
   return (
     <>
-      <p className="sv-small" role="status" data-testid="graph-summary">
-        {plural(edges.length, 'link')} between {plural(items, 'item')}, in{' '}
-        {plural(groups.length, 'group')}. A graph of everything would be unreadable, so choose an
-        item to see what surrounds it.
+      <p className="graph-stats" role="status" data-testid="graph-summary">
+        <Chip icon={LinkIcon} tone="violet">
+          {plural(edges.length, 'link')}
+        </Chip>{' '}
+        between{' '}
+        <Chip icon={Shapes} tone="primary">
+          {plural(items, 'item')}
+        </Chip>
+        , in{' '}
+        <Chip icon={Network} tone="success">
+          {plural(groups.length, 'group')}
+        </Chip>
+        <span className="sv-vh">. Choose an item to see what surrounds it.</span>
       </p>
-      <section className="sv-stack sv-stack--tight" aria-labelledby="graph-top">
-        <h3 id="graph-top">Most connected items</h3>
-        <ol className="dash-graph__list" data-testid="graph-top">
-          {top.map(({ key, connections }) => (
-            <li key={key} className="sv-related__item" data-testid="graph-top-item" data-node={key}>
-              <p className="sv-wrap" dir="auto">
-                <span className="sv-badge">
-                  {KIND_NAME[described?.get(key)?.kind ?? 'highlight']}
-                </span>{' '}
-                {short(key)}
-              </p>
-              <p className="sv-small sv-muted">{plural(connections, 'connection')}</p>
-              <div>
-                <Button
-                  aria-label={`Draw the graph around: ${short(key)}`}
-                  data-testid="graph-centre"
-                  onClick={() => onCentre(key)}
-                >
-                  Show graph around this
-                </Button>
-              </div>
+      <section className="mv-card" aria-labelledby="graph-top">
+        <h3 id="graph-top" className="mv-card__title">
+          Most connected
+        </h3>
+        <ol className="graph-cards" data-testid="graph-top">
+          {top.map(({ key, connections }, i) => (
+            <li key={key} className="graph-item" data-testid="graph-top-item" data-node={key}>
+              <span className="graph-item__rank" aria-hidden="true">
+                {i + 1}
+              </span>
+              <span className="graph-item__body">
+                <span className="mv-row">
+                  <Chip>{KIND_NAME[described?.get(key)?.kind ?? 'highlight']}</Chip>
+                  <Chip icon={LinkIcon} tone="violet">
+                    {plural(connections, 'connection')}
+                  </Chip>
+                </span>
+                <span className="mv-wrap graph-item__text" dir="auto">
+                  {short(key)}
+                </span>
+              </span>
+              <ChunkyButton
+                size="sm"
+                icon={Network}
+                aria-label={`Show graph: ${short(key)}`}
+                data-testid="graph-centre"
+                onClick={() => onCentre(key)}
+              >
+                Show graph
+              </ChunkyButton>
             </li>
           ))}
         </ol>
       </section>
-      <section className="sv-stack sv-stack--tight" aria-labelledby="graph-groups">
-        <h3 id="graph-groups">Groups of linked items</h3>
-        <ol className="dash-graph__list" data-testid="graph-groups">
+      <section className="mv-card" aria-labelledby="graph-groups">
+        <h3 id="graph-groups" className="mv-card__title">
+          Groups
+          <InfoTip label="About groups">
+            Items that are linked to each other, directly or through others. The largest come first.
+          </InfoTip>
+        </h3>
+        <ol className="graph-cards" data-testid="graph-groups">
           {groups.slice(0, 8).map((g) => (
-            <li key={g.keys[0]} className="sv-related__item" data-testid="graph-group">
-              <p>
-                <strong>{plural(g.keys.length, 'item')}</strong>, {plural(g.links, 'link')}
-              </p>
-              <ul className="dash-graph__links">
-                {g.keys.slice(0, 3).map((key) => (
-                  <li key={key} className="sv-wrap" dir="auto">
-                    {short(key)}
-                  </li>
-                ))}
-                {g.keys.length > 3 ? (
-                  <li className="sv-muted">and {g.keys.length - 3} more</li>
-                ) : null}
-              </ul>
-              <div>
-                <Button
-                  aria-label={`Draw the graph around: ${short(g.keys[0]!)}`}
-                  data-testid="graph-group-centre"
-                  onClick={() => onCentre(g.keys[0]!)}
-                >
-                  Show graph around the most connected
-                </Button>
-              </div>
+            <li key={g.keys[0]} className="graph-item graph-item--group" data-testid="graph-group">
+              <span className="graph-item__body">
+                <span className="mv-row">
+                  <strong>{plural(g.keys.length, 'item')}</strong>
+                  <Chip icon={LinkIcon}>{plural(g.links, 'link')}</Chip>
+                </span>
+                <BarMeter
+                  value={g.keys.length}
+                  max={largest}
+                  label="Group size"
+                  valueText={plural(g.keys.length, 'item')}
+                  tone="violet"
+                  size="sm"
+                />
+                <ul className="graph-item__keys">
+                  {g.keys.slice(0, 3).map((key) => (
+                    <li key={key} className="mv-wrap" dir="auto">
+                      {short(key)}
+                    </li>
+                  ))}
+                  {g.keys.length > 3 ? (
+                    <li className="mv-meta">and {g.keys.length - 3} more</li>
+                  ) : null}
+                </ul>
+              </span>
+              <ChunkyButton
+                size="sm"
+                icon={Network}
+                aria-label={`Show graph: ${short(g.keys[0]!)}`}
+                data-testid="graph-group-centre"
+                onClick={() => onCentre(g.keys[0]!)}
+              >
+                Show graph
+              </ChunkyButton>
             </li>
           ))}
         </ol>
         {groups.length > 8 ? (
-          <p className="sv-small sv-muted">Showing the 8 largest of {groups.length} groups.</p>
+          <p className="mv-line">Showing the 8 largest of {groups.length} groups.</p>
         ) : null}
       </section>
     </>

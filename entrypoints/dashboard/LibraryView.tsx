@@ -1,12 +1,14 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type Ref } from 'react';
-import { Button, EmptyState, InlineNotice, useToast } from '@ui';
+import { ArrowRightLeft, BookOpen, FilterX, FolderInput, RotateCcw, SearchX } from 'lucide-react';
+import { BuddyEmptyState, Button, ChoiceCards, InlineNotice, useToast } from '@ui';
+import { extensionUrl } from './links';
 import { countLabel as plural } from './format';
 import { VirtualList } from '@ui/vault';
 import type { TagWithCount } from '@storage';
 import { BulkBar } from './BulkBar';
 import { ExplainDialog, FormDialog, PlacePicker, type Place } from './dialogs';
 import { FilterBar } from './FilterBar';
-import { filterCount, type Filters, type Scope, type SortKey } from './filters';
+import { EMPTY_FILTERS, filterCount, type Filters, type Scope, type SortKey } from './filters';
 import { rowId, type Library } from './library';
 import { ResultRowView } from './ResultRow';
 import { useBump } from './hooks';
@@ -91,9 +93,12 @@ export function LibraryView({
   const body = () => {
     if (lib.waitingForIndex) {
       return (
-        <EmptyState title="The search index is not ready yet">
-          Search needs the index. Clear the search box to keep browsing while it finishes.
-        </EmptyState>
+        <BuddyEmptyState
+          pose="think"
+          title="Search is warming up"
+          text="Clear the search to keep browsing meanwhile."
+          action={{ label: 'Clear search', icon: SearchX, onClick: onClearQuery }}
+        />
       );
     }
     if (lib.error && lib.rows.length === 0) {
@@ -101,7 +106,11 @@ export function LibraryView({
         <InlineNotice
           tone="error"
           title="Could not load your highlights"
-          action={<Button onClick={bump}>Try again</Button>}
+          action={
+            <Button onClick={bump}>
+              <RotateCcw aria-hidden="true" className="dash-btn-icon" /> Try again
+            </Button>
+          }
         >
           {lib.error}
         </InlineNotice>
@@ -118,24 +127,33 @@ export function LibraryView({
       const narrowed = filterCount(filters) > 0 || scope.bankId !== null;
       if (searching) {
         return (
-          <EmptyState
+          <BuddyEmptyState
             title={`No results for “${queryText.trim()}”`}
-            action={<Button onClick={onClearQuery}>Clear the search</Button>}
-          >
-            Check the spelling, remove a filter such as <code>bank:</code> or <code>tag:</code>, or
-            open “Syntax help” for what the search understands.
-          </EmptyState>
+            text="Check the spelling or remove a filter."
+            action={{ label: 'Clear search', icon: SearchX, onClick: onClearQuery }}
+          />
         );
       }
       return narrowed ? (
-        <EmptyState title="No highlights match these filters">
-          Try another bank or folder, or clear the filters.
-        </EmptyState>
+        <BuddyEmptyState
+          title="No matches"
+          text="Try another bank, or clear the filters."
+          action={
+            filterCount(filters) > 0
+              ? { label: 'Clear filters', icon: FilterX, onClick: () => onFilters(EMPTY_FILTERS) }
+              : undefined
+          }
+        />
       ) : (
-        <EmptyState title="Your vault is empty">
-          Select text on any page and save it with the selection toolbar, or open a PDF in the
-          reader. Saved highlights appear here.
-        </EmptyState>
+        <BuddyEmptyState
+          title="Nothing saved yet"
+          text="Select text on a page, then press Alt+S."
+          action={{
+            label: 'Open a PDF',
+            icon: BookOpen,
+            onClick: () => window.open(extensionUrl('pdf-reader.html'), '_blank', 'noopener'),
+          }}
+        />
       );
     }
     return (
@@ -186,7 +204,6 @@ export function LibraryView({
         sort={sort}
         onSort={onSort}
         searching={searching}
-        total={total}
       />
 
       <p id={descId} className="sv-small sv-muted dash-summary" data-testid="result-summary">
@@ -194,12 +211,27 @@ export function LibraryView({
           ? ' '
           : total !== null
             ? `${plural(total, searching ? 'result' : 'highlight')}${
-                lib.rows.length < total ? `, ${lib.rows.length.toLocaleString()} loaded` : ''
+                lib.rows.length < total ? ` · ${lib.rows.length.toLocaleString()} loaded` : ''
               }`
             : `${lib.rows.length.toLocaleString()} loaded`}
         {lib.loadingMore ? ' · loading more…' : ''}
-        {' · Space selects, Ctrl+A selects all loaded rows'}
+        <span className="sv-vh">{' · Space selects, Ctrl+A selects all loaded rows'}</span>
       </p>
+
+      {lib.error && lib.rows.length > 0 ? (
+        // Paging stopped on an error: say so instead of silently showing fewer rows.
+        <InlineNotice
+          tone="error"
+          title="Could not load more"
+          action={
+            <Button onClick={bump}>
+              <RotateCcw aria-hidden="true" className="dash-btn-icon" /> Try again
+            </Button>
+          }
+        >
+          {lib.error}
+        </InlineNotice>
+      ) : null}
 
       <BulkBar
         count={lib.selectedCount}
@@ -272,31 +304,32 @@ function MoveSelectionDialog({ lib, scopeBankId }: { lib: Library; scopeBankId: 
         bankLabel="Move to bank"
         folderLabel="Folder"
       />
-      <fieldset className="opt-fieldset">
-        <legend className="sv-label">How</legend>
-        {scopeBankId ? (
-          <label className="sv-check">
-            <input
-              type="radio"
-              name="move-mode"
-              checked={mode === 'from-here'}
-              onChange={() => setMode('from-here')}
-            />
-            <span>
-              Take them out of the bank you are viewing (they keep any other banks they are in)
-            </span>
-          </label>
-        ) : null}
-        <label className="sv-check">
-          <input
-            type="radio"
-            name="move-mode"
-            checked={mode === 'only-here'}
-            onChange={() => setMode('only-here')}
-          />
-          <span>File them only in the new place (removed from every other bank)</span>
-        </label>
-      </fieldset>
+      {scopeBankId ? (
+        <ChoiceCards
+          label="How"
+          columns={2}
+          value={mode}
+          onChange={setMode}
+          options={[
+            {
+              value: 'from-here',
+              label: 'From here',
+              hint: 'Other banks stay',
+              icon: ArrowRightLeft,
+            },
+            {
+              value: 'only-here',
+              label: 'Only there',
+              hint: 'Leaves other banks',
+              icon: FolderInput,
+              tone: 'warning',
+            },
+          ]}
+        />
+      ) : (
+        // Nothing is being viewed, so there is no choice: say what happens.
+        <p className="sv-small sv-muted">They leave every other bank.</p>
+      )}
     </FormDialog>
   );
 }
