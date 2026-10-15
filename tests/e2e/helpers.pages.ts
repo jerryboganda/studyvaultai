@@ -668,6 +668,8 @@ export async function layoutReport(page: Page, minTarget = 24): Promise<LayoutRe
     for (const el of Array.from(document.querySelectorAll<HTMLElement>(sel))) {
       const style = getComputedStyle(el);
       if (style.visibility === 'hidden' || style.display === 'none') continue;
+      // Not rendered (inside a closed <details>, whose content Chrome keeps laid out but hidden).
+      if (!el.checkVisibility()) continue;
       let box = el.getBoundingClientRect();
       if (box.width === 0 && box.height === 0) continue;
       const isToggle =

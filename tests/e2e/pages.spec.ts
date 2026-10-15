@@ -960,11 +960,26 @@ test.describe('side panel: Review tab', () => {
 // =============================================================================================
 
 test.describe('options: theme', () => {
+  // A fresh profile on a busy Windows runner has taken 26 s to start the extension and over 10 s
+  // for the settings page's first chrome.storage read (run 38757718307): allow for that cold start.
+  test.describe.configure({ timeout: 120_000 });
+
+  /**
+   * The Appearance view is drawn only once the settings are read ("Loading settings…" until then):
+   * wait for its h1, with room for that first read on a cold profile, before looking at the cards.
+   */
+  async function appearanceShown(options: Page): Promise<void> {
+    await expect(options.getByRole('heading', { level: 1, name: 'Appearance' })).toBeVisible({
+      timeout: 30_000,
+    });
+  }
+
   test('the theme choice persists and applies to options, popup, side panel and the in-page overlay', async ({
     env,
   }) => {
     const page = await openFixture(env, '/article.html');
     const options = await openExt(env, 'options', 'appearance');
+    await appearanceShown(options);
     const popup = await viewing(env, 'popup', page);
     const side = await viewing(env, 'sidepanel', page);
 
@@ -997,6 +1012,7 @@ test.describe('options: theme', () => {
 
     // Persisted: a fresh options tab and a brand-new popup come up dark; switching back goes light.
     const fresh = await openExt(env, 'options', 'appearance');
+    await appearanceShown(fresh);
     await expect(fresh.getByRole('radio', { name: /^Dark/ })).toBeChecked();
     await expect.poll(() => pageLuminance(fresh)).toBeLessThan(0.3);
     await pickCard(fresh.getByRole('radio', { name: /^Light/ }));
@@ -1007,6 +1023,7 @@ test.describe('options: theme', () => {
   // The choice is now named "System" ("Match device").
   test('"Match my system" follows prefers-color-scheme', async ({ env }) => {
     const options = await openExt(env, 'options', 'appearance');
+    await appearanceShown(options);
     await options.emulateMedia({ colorScheme: 'dark' });
     await expect(options.getByRole('radio', { name: /^System/ })).toBeChecked();
     await expect.poll(() => pageLuminance(options)).toBeLessThan(0.3);

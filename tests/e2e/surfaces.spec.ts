@@ -5,6 +5,9 @@ import { SETTINGS_SECTIONS } from '@ui/shell/paths';
 import { describeCommand } from '@ui/shortcuts';
 import { proseDoc } from '../fixtures/pdf/docs';
 import { startPdfServer, type PdfServer } from '../fixtures/pdf/server';
+import { enableAi } from './helpers.ai';
+import { openDisclosure } from './helpers.backup';
+import { pickCard } from './helpers.graph';
 import {
   expect,
   layoutReport,
@@ -105,6 +108,46 @@ async function setZoom(page: Page, factor: number): Promise<void> {
 // SETTINGS PAGE
 // =============================================================================================
 
+/**
+ * Every settings view, in rail and home-tile order (`OPTION_SECTIONS` of the options page), with
+ * its label: the view's h1 and its rail entry. Only the current view is on the page
+ * (`options.html#<id>`; no hash is the settings home). The `SETTINGS_SECTIONS` ids are a public
+ * deep-link contract and must all be here.
+ */
+const VIEWS = [
+  { id: 'game', label: 'Game' },
+  { id: 'site-access', label: 'Site access' },
+  { id: 'capture', label: 'Capture' },
+  { id: 'appearance', label: 'Appearance' },
+  { id: 'shortcuts', label: 'Shortcuts' },
+  { id: 'review', label: 'Review' },
+  { id: 'reminders', label: 'Reminders' },
+  { id: 'backup', label: 'Backup' },
+  { id: 'storage', label: 'Storage' },
+  { id: 'privacy', label: 'Privacy' },
+  { id: 'data', label: 'Your data' },
+  { id: 'ai', label: 'AI' },
+  { id: 'sync', label: 'Sync' },
+  { id: 'about', label: 'About' },
+] as const;
+type ViewId = (typeof VIEWS)[number]['id'];
+
+/**
+ * Show one settings view through the address, as a link or Back would (null: the home), and wait
+ * until it is drawn: its h1, and for a section its content (the sections that read the database
+ * mount one task after the settings). The h1 of AI, Sync and Backup is visually hidden
+ * (their own title card shows), so it is checked by text, not visibility.
+ */
+async function showView(page: Page, id: ViewId | null): Promise<void> {
+  await page.evaluate((hash) => {
+    window.location.hash = hash;
+  }, id ?? '');
+  const label = id ? VIEWS.find((v) => v.id === id)!.label : 'Settings';
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText(label);
+  if (id) await expect(page.locator(`[id="${id}"] > *`).first()).toBeVisible();
+  await expect(page.getByText(/^Loading/)).toHaveCount(0);
+}
+
 test.describe('options: section list', () => {
   test('is a landmark with deep links, one tab stop, arrow/Home/End keys and keyboard activation', async ({
     env,
@@ -113,15 +156,26 @@ test.describe('options: section list', () => {
     const nav = page.getByRole('navigation', { name: 'Settings sections' });
     await expect(nav).toBeVisible();
     const links = nav.getByRole('link');
-    await expect(links).toHaveText(SETTINGS_SECTIONS.map((s) => s.label));
+    // The home comes first, then one entry per view.
+    await expect(links).toHaveText(['Home', ...VIEWS.map((v) => v.label)]);
+    await expect(links).toHaveCount(VIEWS.length + 1);
     // The deep-link ids are a contract with the tour, the docs and other pages.
-    await expect(links).toHaveCount(11);
     for (const { id } of SETTINGS_SECTIONS) {
       await expect(nav.locator(`a[href="#${id}"]`)).toHaveCount(1);
+    }
+    // Each link opens its own view: the address, the view's h1 and section, the current mark.
+    for (const { id, label } of VIEWS) {
+      await nav.locator(`a[href="#${id}"]`).click();
+      await expect(page).toHaveURL(new RegExp(`options\\.html#${id}$`));
       const target = page.locator(`[id="${id}"]`);
       await expect(target).toHaveCount(1);
-      await expect(target.getByRole('heading', { level: 2 }).first()).toBeVisible();
+      await expect(page.getByRole('heading', { level: 1 })).toHaveText(label);
+      await expect(target.locator(':scope > *').first()).toBeVisible();
+      await expect(nav.locator('[aria-current="page"]')).toHaveAttribute('href', `#${id}`);
     }
+    await nav.getByRole('link', { name: 'Home' }).click();
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Settings');
+    await expect(nav.locator('[aria-current="page"]')).toHaveAttribute('href', '#');
 
     // One tab stop; the arrows move it and focus together.
     const stops = nav.locator('a[tabindex="0"]');
@@ -138,32 +192,45 @@ test.describe('options: section list', () => {
     await page.keyboard.press('ArrowUp'); // wraps
     await expect(links.last()).toBeFocused();
 
-    // Enter follows the link: the address and the current-location mark follow it.
+    // Enter follows the link: the address, the current mark and focus (the new view's h1) follow.
     await page.keyboard.press('Enter');
-    await expect(page).toHaveURL(/options\.html#data$/);
-    await expect(links.last()).toHaveAttribute('aria-current', 'location');
-    await expect(page.locator('#data').getByRole('heading', { level: 2 })).toBeInViewport();
+    await expect(page).toHaveURL(/options\.html#about$/);
+    await expect(links.last()).toHaveAttribute('aria-current', 'page');
+    const title = page.getByRole('heading', { level: 1 });
+    await expect(title).toHaveText('About');
+    await expect(title).toBeFocused();
+    await expect(title).toBeInViewport();
 
-    // Tab leaves the list after its one stop (it does not walk through 11 links).
+    // Tab leaves the list after its one stop (it does not walk through every link).
     await links.first().focus();
     await page.keyboard.press('Tab');
     await expect(nav.locator(':focus')).toHaveCount(0);
     expect(problemsOf(page)).toEqual([]);
   });
 
-  test('a section address opens scrolled to that section, even though sections load after settings', async ({
+  test('a section address opens that section, even though sections load after settings', async ({
     env,
   }) => {
     const page = await extPage(env, 'options.html#storage');
-    await expect(page.locator('#storage').getByRole('heading', { level: 2 })).toBeInViewport();
+    await expect(page.getByRole('heading', { level: 1 })).toHaveText('Storage');
+    await expect(page.getByRole('heading', { level: 1 })).toBeInViewport();
+    // Storage reads the database, so it mounts after the settings: its first card is there too.
+    await expect(
+      page.locator('#storage').getByRole('heading', { name: 'Space used' }),
+    ).toBeInViewport();
     await expect(
       page.getByRole('navigation', { name: 'Settings sections' }).locator('a[href="#storage"]'),
-    ).toHaveAttribute('aria-current', 'location');
-    // An unknown hash is ignored: no error, the page simply opens at the top.
+    ).toHaveAttribute('aria-current', 'page');
+    // An unknown hash is ignored: no error, the page simply opens at the top of the settings home,
+    // whose tiles lead to every section (no section is mounted on the home).
     const other = await extPage(env, 'options.html#not-a-section');
+    await expect(other.getByRole('heading', { level: 1 })).toHaveText('Settings');
     await expect(other.getByRole('heading', { level: 1 })).toBeVisible();
-    await expect(other.locator('#site-access')).toBeVisible();
+    await expect(other.getByRole('link', { name: /^Site access, / })).toBeVisible();
+    await expect(other.locator('#site-access')).toHaveCount(0);
     expect(await other.evaluate(() => window.scrollY)).toBe(0);
+    expect(problemsOf(page)).toEqual([]);
+    expect(problemsOf(other)).toEqual([]);
   });
 });
 
@@ -178,23 +245,31 @@ test.describe('options: sections explain themselves and honour their flags', () 
     const permissionsBefore = await (
       await extPage(env, 'options.html')
     ).evaluate(() => chrome.permissions.getAll());
-    const page = await openExt(env, 'options');
+    const page = await openExt(env, 'options', 'ai');
     const ai = page.locator('#ai');
     await expect(ai.getByRole('heading', { name: /AI assistance/ })).toBeVisible();
-    await expect(ai).toContainText('While this is off, StudyVault sends nothing anywhere');
+    // The explanation is one click away, under "What is sent".
+    await openDisclosure(ai, 'What is sent');
+    await expect(
+      ai.getByText('While AI is off, StudyVault sends nothing anywhere', { exact: false }),
+    ).toBeVisible();
     await expect(ai.getByRole('checkbox', { name: 'Turn on AI features' })).not.toBeChecked();
     await expect(ai.getByLabel('Provider address')).toHaveCount(0);
 
+    await showView(page, 'sync');
     const sync = page.locator('#sync');
     await expect(sync.getByRole('heading', { name: /Sync between devices/ })).toBeVisible();
+    // The setup starts on what is shared; the whole explanation is under "Every detail".
+    await expect(sync.getByRole('heading', { name: 'What is shared' })).toBeVisible();
+    await openDisclosure(sync, 'Every detail');
+    await expect(sync.getByTestId('sync-explanation')).toBeVisible();
     await expect(sync.getByTestId('sync-explanation')).toContainText(
       'There is no StudyVault server',
     );
     await expect(sync.getByTestId('sync-explanation')).toContainText('off by default');
-    await expect(sync.getByRole('button', { name: /Turn on sync/ })).toHaveAttribute(
-      'aria-disabled',
-      'true',
-    );
+    // "Turn on sync" is only offered on the setup's last step, after the server, the sign-in
+    // provider and the acknowledgement (it was a disabled button on the old single form).
+    await expect(sync.getByRole('button', { name: /Turn on sync/ })).toHaveCount(0);
     await expect(sync.getByRole('button', { name: /Sign in/ })).toHaveCount(0);
 
     // Let everything on the page settle, then: nothing left the browser, nothing was granted.
@@ -216,13 +291,18 @@ test.describe('options: sections explain themselves and honour their flags', () 
     env.context.on('request', (r) => {
       if (!/^(chrome-extension|data|blob|about):/.test(r.url())) external.push(r.url());
     });
-    const page = await openExt(env, 'options');
-    await page.getByRole('checkbox', { name: 'Turn on AI features' }).click();
+    const page = await openExt(env, 'options', 'ai');
+    // The switch, then: it is on, the setup wizard shows and `features.ai` is stored.
+    await enableAi(page);
+    const setup = page.getByTestId('ai-setup');
+    await expect(setup.getByRole('heading', { name: 'Pick a provider' })).toBeVisible();
+    await pickCard(page.getByTestId('ai-preset-custom'));
+    await setup.getByTestId('ai-setup-next').click();
     await expect(page.getByLabel('Provider address')).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Test connection' })).toHaveAttribute(
-      'aria-disabled',
-      'true',
-    );
+    // Nothing can be tested before a setup is saved: the wizard's last step is "Save and test",
+    // and the status card's "Test connection" does not exist yet.
+    await expect(page.getByRole('button', { name: 'Test connection' })).toHaveCount(0);
+    await expect(page.getByTestId('ai-test')).toHaveCount(0);
     await expect
       .poll(async () => (await storedSettings(page))?.features)
       .toMatchObject({
@@ -237,13 +317,14 @@ test.describe('options: sections explain themselves and honour their flags', () 
     env,
   }) => {
     const ext = await openExt(env, 'options');
+    // "Open review" is on the settings home; the switch and the study settings are under Review.
+    const openReview = ext.getByRole('button', { name: 'Open review' });
+    await expect(openReview).toBeVisible();
+    await expect(openReview).not.toHaveAttribute('aria-disabled', 'true');
+    await showView(ext, 'review');
     await expect(ext.getByRole('heading', { name: 'Review settings', exact: true })).toBeVisible();
-    await expect(ext.getByRole('button', { name: 'Open review' })).not.toHaveAttribute(
-      'aria-disabled',
-      'true',
-    );
 
-    const toggle = ext.getByRole('checkbox', { name: 'Show review in StudyVault' });
+    const toggle = ext.getByRole('checkbox', { name: 'Show review' });
     await toggle.click();
     await expect
       .poll(async () => (await storedSettings(ext))?.features)
@@ -251,10 +332,9 @@ test.describe('options: sections explain themselves and honour their flags', () 
         review: false,
       });
     await expect(ext.getByRole('heading', { name: 'Review settings', exact: true })).toHaveCount(0);
-    await expect(ext.getByRole('button', { name: 'Open review' })).toHaveAttribute(
-      'aria-disabled',
-      'true',
-    );
+    await expect(ext.getByRole('heading', { name: 'Review is off' })).toBeVisible();
+    await showView(ext, null);
+    await expect(openReview).toHaveAttribute('aria-disabled', 'true');
 
     // The popup follows without a reload: no count, no review button, dashboard still offered.
     const page = await openFixture(env, '/article.html', { activate: false });
@@ -264,14 +344,17 @@ test.describe('options: sections explain themselves and honour their flags', () 
     await expect(popup.getByTestId('popup-review')).toHaveCount(0);
 
     await ext.bringToFront();
+    await showView(ext, 'review');
     await toggle.click();
+    await expect(ext.getByRole('heading', { name: 'Review settings', exact: true })).toBeVisible();
     await expect(popup.getByTestId('popup-due')).toBeVisible();
   });
 
   test('density and the PDF reader switch persist across a reload', async ({ env }) => {
-    const ext = await openExt(env, 'options');
-    await ext.getByRole('radio', { name: /^Compact/ }).click();
-    await ext.getByRole('checkbox', { name: 'Use the StudyVault PDF reader' }).click();
+    const ext = await openExt(env, 'options', 'appearance');
+    await pickCard(ext.getByRole('radio', { name: /^Compact/ }));
+    await showView(ext, 'capture');
+    await ext.getByRole('checkbox', { name: 'PDF reader' }).click();
     await expect
       .poll(async () => storedSettings(ext))
       .toMatchObject({
@@ -279,23 +362,23 @@ test.describe('options: sections explain themselves and honour their flags', () 
         features: { pdfReader: false },
       });
     await ext.reload();
+    await expect(ext.getByRole('checkbox', { name: 'PDF reader' })).not.toBeChecked();
+    await showView(ext, 'appearance');
     await expect(ext.getByRole('radio', { name: /^Compact/ })).toBeChecked();
-    await expect(
-      ext.getByRole('checkbox', { name: 'Use the StudyVault PDF reader' }),
-    ).not.toBeChecked();
   });
 
   test('delete-all lives under Your data and Privacy lists the optional permissions', async ({
     env,
   }) => {
-    const ext = await openExt(env, 'options');
+    const ext = await openExt(env, 'options', 'data');
     await expect(
-      ext.locator('#data').getByRole('button', { name: /^Delete all StudyVault data/ }),
+      ext.locator('#data').getByRole('button', { name: /^Delete all data/ }),
     ).toBeVisible();
-    await expect(
-      ext.locator('#privacy').getByRole('button', { name: /^Delete all StudyVault data/ }),
-    ).toHaveCount(0);
+    await showView(ext, 'privacy');
     const privacy = ext.locator('#privacy');
+    await expect(privacy.getByRole('button', { name: /^Delete all/ })).toHaveCount(0);
+    // The permission list is one click away, under its own disclosure.
+    await openDisclosure(privacy, 'Permissions this extension holds');
     await expect(privacy.getByText('identity', { exact: true })).toBeVisible();
     await expect(privacy.getByText('alarms', { exact: true })).toBeVisible();
     await expect(privacy).toContainText('Everything stays on this device by default');
@@ -306,7 +389,7 @@ test.describe('options: storage', () => {
   test('shows counts from the real database and removes a stored PDF copy kept in the reader', async ({
     env,
   }) => {
-    const ext = await openExt(env, 'options');
+    const ext = await openExt(env, 'options', 'storage');
     const section = ext.locator('#storage');
     await expect(section.getByTestId('no-cached-pdfs')).toBeVisible();
     await expect(section.getByTestId('storage-pdf-bytes')).toHaveText('0 B');
@@ -357,33 +440,22 @@ test.describe('options: accessibility and reflow', () => {
       await page.emulateMedia({ colorScheme: scheme });
       await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
       await expect(page.getByText('Loading settings')).toHaveCount(0);
-      // Sections read their own data first (AI settings, sync status): wait for each heading.
-      for (const { id } of SETTINGS_SECTIONS) {
-        await expect(
-          page.locator(`[id="${id}"]`).getByRole('heading', { level: 2 }).first(),
-        ).toBeVisible();
-      }
-      // One scan of the whole page (every section is on it). Axe is slow on this much markup, so
-      // a failure is attributed to its section afterwards instead of scanning section by section.
-      await settleAnimations(page);
-      const { violations } = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
+      // One section is on the page at a time: the home, then each view in turn. A failure is
+      // attributed to its view.
       const report: string[] = [];
-      for (const v of violations) {
-        for (const node of v.nodes) {
-          const selector = node.target[node.target.length - 1];
-          const section = await page.evaluate(
-            (sel) =>
-              typeof sel === 'string'
-                ? (document.querySelector(sel)?.closest('main > div')?.id ?? 'outside the sections')
-                : 'unknown',
-            selector,
-          );
-          report.push(
-            `[${section}] ${v.id}: ${JSON.stringify(node.target)} ${node.html.slice(0, 120)}`,
-          );
+      for (const view of [null, ...VIEWS.map((v) => v.id)]) {
+        await showView(page, view);
+        await settleAnimations(page);
+        const { violations } = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
+        for (const v of violations) {
+          for (const node of v.nodes) {
+            report.push(
+              `[${view ?? 'home'}] ${v.id}: ${JSON.stringify(node.target)} ${node.html.slice(0, 120)}`,
+            );
+          }
         }
       }
-      expect(report, 'WCAG violations by section').toEqual([]);
+      expect(report, 'WCAG violations by view').toEqual([]);
     });
   }
 
@@ -393,8 +465,17 @@ test.describe('options: accessibility and reflow', () => {
       features: { review: false, pdfReader: true, ai: true, sync: false },
     });
     await page.reload();
+    await showView(page, 'ai');
+    // The setup form: its first step (the provider cards), then the address and model step.
+    const setup = page.getByTestId('ai-setup');
+    await expect(setup.getByRole('heading', { name: 'Pick a provider' })).toBeVisible();
+    expect(await violationsOf(page, '#ai')).toBe('');
+    await pickCard(page.getByTestId('ai-preset-custom'));
+    await setup.getByTestId('ai-setup-next').click();
     await expect(page.getByLabel('Provider address')).toBeVisible();
     expect(await violationsOf(page, '#ai')).toBe('');
+    await showView(page, 'review');
+    await expect(page.getByRole('heading', { name: 'Review is off' })).toBeVisible();
     expect(await violationsOf(page, '#review')).toBe('');
   });
 
@@ -402,26 +483,31 @@ test.describe('options: accessibility and reflow', () => {
     const page = await extPage(env, 'options.html');
     await page.setViewportSize({ width: 320, height: 700 });
     await expect(page.getByText('Loading settings')).toHaveCount(0);
-    for (const { id } of SETTINGS_SECTIONS) {
-      await expect(
-        page.locator(`[id="${id}"]`).getByRole('heading', { level: 2 }).first(),
-      ).toBeVisible();
-    }
     await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(320);
-    let report = await layoutReport(page);
-    expect(report.scrollWidth, 'no horizontal scroll at 320 px').toBeLessThanOrEqual(
-      report.innerWidth,
-    );
-    expect(report.offenders, report.offenders.join('\n')).toEqual([]);
+    // Every view: the home and each section, at 320 px and then at real 200% browser zoom.
+    const views = [null, ...VIEWS.map((v) => v.id)];
+    for (const view of views) {
+      await showView(page, view);
+      const report = await layoutReport(page);
+      expect(
+        report.scrollWidth,
+        `${view ?? 'home'}: no horizontal scroll at 320 px`,
+      ).toBeLessThanOrEqual(report.innerWidth);
+      expect(report.offenders, `${view ?? 'home'}: ${report.offenders.join('\n')}`).toEqual([]);
+    }
 
     // Real browser zoom: 320 -> 160 CSS px wide.
     await setZoom(page, 2);
     await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(160);
-    report = await layoutReport(page);
-    expect(report.scrollWidth, 'no horizontal scroll at 200% zoom').toBeLessThanOrEqual(
-      report.innerWidth,
-    );
-    expect(report.offenders, report.offenders.join('\n')).toEqual([]);
+    for (const view of views) {
+      await showView(page, view);
+      const report = await layoutReport(page);
+      expect(
+        report.scrollWidth,
+        `${view ?? 'home'}: no horizontal scroll at 200% zoom`,
+      ).toBeLessThanOrEqual(report.innerWidth);
+      expect(report.offenders, `${view ?? 'home'}: ${report.offenders.join('\n')}`).toEqual([]);
+    }
   });
 });
 
@@ -624,16 +710,27 @@ test.describe('welcome tour', () => {
     const page = await extPage(env, 'onboarding.html');
     await expect(step(page, 'welcome')).toBeVisible();
     await expect(page.getByRole('heading', { level: 2 })).toBeFocused();
-    await expect(page.getByText('Everything stays on this device by default')).toBeVisible();
+    // The privacy promise is now three chips ("On this device", "No account", "No tracking").
+    const promises = page.getByRole('list', { name: 'Your privacy' });
+    await expect(promises).toBeVisible();
+    await expect(promises).toContainText('On this device');
     expect(await stored(page)).toBeUndefined();
 
-    // From the heading, Tab reaches the primary action; Enter moves on and focus follows.
-    await page.keyboard.press('Tab');
-    await expect(page.getByRole('button', { name: 'Start' })).toBeFocused();
+    // From the heading, Tab reaches the primary action (past the (i) and the daily goal cards, a
+    // few stops at most); Enter moves on and focus follows.
+    const start = page.getByRole('button', { name: 'Start' });
+    for (let i = 0; i < 12 && !(await start.evaluate((b) => b === document.activeElement)); i++) {
+      await page.keyboard.press('Tab');
+    }
+    await expect(start).toBeFocused();
     await page.keyboard.press('Enter');
     await expect(step(page, 'privacy')).toBeVisible();
     await expect(page.getByRole('heading', { level: 2 })).toBeFocused();
-    await expect(page.getByTestId('ob-progress')).toHaveText('Step 2 of 7');
+    await expect(page.getByTestId('ob-progress')).toHaveText('2/7');
+    await expect(page.getByRole('progressbar', { name: 'Welcome tour progress' })).toHaveAttribute(
+      'aria-valuetext',
+      /^Step 2 of 7: /,
+    );
     expect(await stored(page)).toMatchObject({ status: 'pending', step: 'privacy' });
     expect(problemsOf(page)).toEqual([]);
   });
@@ -650,6 +747,8 @@ test.describe('welcome tour', () => {
     await expect(page.getByTestId('ob-paint-highlights')).toHaveAccessibleDescription(
       /scripts that a site itself runs can read which passages you marked/,
     );
+    // The starter blocked-sites note is behind the (i) next to the AI, Sync and Blocked tiles.
+    await page.getByRole('button', { name: 'About AI, sync and blocked sites' }).click();
     await expect(page.getByText(/starter list of common sign-in, mail, payment/)).toBeVisible();
 
     await page.getByTestId('ob-private-windows').click();
@@ -664,7 +763,8 @@ test.describe('welcome tour', () => {
     const page = await extPage(env, 'onboarding.html');
     const before = await page.evaluate(() => chrome.permissions.getAll());
     await walkTo(page, 'access');
-    for (const level of ['This tab', 'This site', 'All sites']) {
+    // "This site" is now "One site".
+    for (const level of ['This tab', 'One site', 'All sites']) {
       await expect(page.getByText(level, { exact: true })).toBeVisible();
     }
     await expect(page.getByText('Nothing is requested during this tour')).toBeVisible();
@@ -681,6 +781,8 @@ test.describe('welcome tour', () => {
     await walkTo(page, 'banks');
 
     await page.getByTestId('ob-preset-radiology').check();
+    // The folder checklist is folded away under "Choose folders".
+    await openDisclosure(step(page, 'banks'), 'Choose folders');
     const tree = page.getByRole('list', { name: 'Preview of Diagnostic Radiology' });
     await expect(tree.getByRole('checkbox')).toHaveCount(13);
     await page.getByTestId('ob-node-Diagnostic Radiology/Breast').uncheck();
@@ -768,6 +870,8 @@ test.describe('welcome tour', () => {
 
     await page.getByRole('button', { name: 'Next' }).click();
     await expect(step(page, 'keys')).toBeVisible();
+    // The full list is folded away under "All shortcuts".
+    await openDisclosure(step(page, 'keys'), 'All shortcuts');
     const commands = await page.evaluate(() => chrome.commands.getAll());
     const list = page.getByTestId('ob-shortcuts');
     for (const c of commands) {
@@ -783,6 +887,8 @@ test.describe('welcome tour', () => {
   test('finish opens the side panel from the click and completes the tour', async ({ env }) => {
     const page = await extPage(env, 'onboarding.html');
     await walkTo(page, 'done');
+    // The toolbar route is behind the (i) next to the button.
+    await page.getByRole('button', { name: 'Other ways to open it' }).click();
     await expect(page.getByText(/Click the StudyVault icon in the Chrome toolbar/)).toBeVisible();
 
     await page.getByTestId('ob-open-panel').click();
@@ -808,10 +914,11 @@ test.describe('welcome tour', () => {
     expect(await stored(page)).toMatchObject({ status: 'skipped' });
     expect(await vaultBanks(page)).toEqual([]);
 
-    // And it can be opened again from Settings: an open tour tab is brought forward, not doubled...
-    const ext = await openExt(env, 'options');
+    // And it can be opened again from Settings (About, button "Welcome tour"): an open tour tab is
+    // brought forward, not doubled...
+    const ext = await openExt(env, 'options', 'about');
     const before = env.context.pages().filter((p) => /onboarding\.html/.test(p.url())).length;
-    await ext.getByRole('button', { name: 'Show the welcome tour' }).click();
+    await ext.getByRole('button', { name: 'Welcome tour' }).click();
     await expect.poll(() => page.evaluate(() => document.visibilityState)).toBe('visible');
     expect(env.context.pages().filter((p) => /onboarding\.html/.test(p.url()))).toHaveLength(
       before,
@@ -820,7 +927,7 @@ test.describe('welcome tour', () => {
     await page.close();
     await ext.bringToFront();
     const opened = env.context.waitForEvent('page');
-    await ext.getByRole('button', { name: 'Show the welcome tour' }).click();
+    await ext.getByRole('button', { name: 'Welcome tour' }).click();
     const tour = await opened;
     await expect(tour).toHaveURL(/onboarding\.html$/);
     await expect(tour.getByTestId('ob-step-welcome')).toBeVisible();
@@ -835,8 +942,8 @@ test.describe('welcome tour', () => {
     const again = await extPage(env, 'onboarding.html');
     await expect(step(again, 'banks')).toBeVisible();
     await expect(again.getByTestId('ob-preset-general')).toBeChecked();
-    const ext = await openExt(env, 'options');
-    await expect(ext.getByRole('button', { name: 'Resume the welcome tour' })).toBeVisible();
+    const ext = await openExt(env, 'options', 'about');
+    await expect(ext.getByRole('button', { name: 'Resume tour' })).toBeVisible();
   });
 
   for (const scheme of ['light', 'dark'] as const) {
@@ -849,7 +956,11 @@ test.describe('welcome tour', () => {
       for (let i = 0; i < STEPS.length; i++) {
         const id = STEPS[i]!;
         await expect(step(page, id)).toBeVisible();
-        if (id === 'banks') await page.getByTestId('ob-preset-medicine').check();
+        if (id === 'banks') {
+          await page.getByTestId('ob-preset-medicine').check();
+          // The folder checklist is folded away: open it so its checkboxes are checked too.
+          await openDisclosure(step(page, 'banks'), 'Choose folders');
+        }
         expect(await violationsOf(page), `step ${id}`).toBe('');
         const report = await layoutReport(page);
         expect(report.scrollWidth, `step ${id} must not scroll horizontally`).toBeLessThanOrEqual(
@@ -857,9 +968,7 @@ test.describe('welcome tour', () => {
         );
         expect(report.offenders, `${id}: ${report.offenders.join('\n')}`).toEqual([]);
         if (i < STEPS.length - 1) {
-          await page
-            .getByRole('button', { name: /^(Start|Next|Create the bank and folders)$/ })
-            .click();
+          await page.getByRole('button', { name: /^(Start|Next|Create bank)$/ }).click();
           if (id === 'banks') {
             await expect(page.getByTestId('ob-applied')).toBeVisible();
             await page.getByRole('button', { name: 'Next' }).click();
