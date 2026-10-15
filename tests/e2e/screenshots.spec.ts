@@ -53,19 +53,20 @@ const MIN_BYTES = 1_500;
 const MIN_COLOURS = 8;
 
 /**
- * Copy that identifies each popup state: the same strings tests/e2e/pages.spec.ts and a11y.spec.ts
- * assert, each known to match exactly one element. One place to edit when the wording changes.
+ * What identifies each popup state: the same controls and copy tests/e2e/pages.spec.ts and
+ * a11y.spec.ts assert, each known to match exactly one element. One place to edit when it changes.
  */
 const POPUP_STATE = {
-  unsupported: 'StudyVault cannot run on this page',
-  inactive: 'StudyVault is not running on this tab',
-  active: 'Active on this tab only',
-  denied: 'StudyVault is off on localhost',
+  unsupported: (p: Page) => p.getByRole('heading', { name: "Can't run here" }),
+  inactive: (p: Page) => p.getByRole('button', { name: 'Turn on' }),
+  /** On for this tab only: the per-site "Always on" switch is shown, and off. */
+  active: (p: Page) => p.getByRole('switch', { name: 'Always on', checked: false }),
+  denied: (p: Page) => p.getByText('On your deny list', { exact: true }),
 };
 
-/** What an error page or a failure notice looks like in rendered text. */
+/** What an error page or a failure notice looks like in rendered text (the popup says "Can't ..."). */
 const FAILURE_TEXT =
-  /ERR_[A-Z_]{4,}|This (?:site|page) can.t be reached|isn.t working|^Not found: \/|\bcould not (?:show|check|read|load|open|save|update|create)\b/im;
+  /ERR_[A-Z_]{4,}|This (?:site|page) can.t be reached|isn.t working|^Not found: \/|\bcould not (?:show|check|read|load|open|save|update|create)\b|\bcan.t (?:check tab|read page|open (?:settings|page|panel|reader)|load saves|count cards)\b/im;
 
 // ---------------------------------------------------------------------------------------------
 // PNG inspection (8-bit RGB / RGBA, non-interlaced: what Chromium writes)
@@ -367,7 +368,7 @@ test.describe('release screenshots (real loaded extension)', () => {
     // 1. Unsupported: the popup opened as a tab is its own active tab (an extension page).
     const own = await openExt(env, 'popup');
     await own.setViewportSize(POPUP);
-    await expect(own.getByText(POPUP_STATE.unsupported)).toBeVisible();
+    await expect(POPUP_STATE.unsupported(own)).toBeVisible();
     await snap(own, {
       name: '07-popup-unsupported',
       surface: 'popup',
@@ -379,7 +380,7 @@ test.describe('release screenshots (real loaded extension)', () => {
     const page = await openFixture(env, '/article.html', { activate: false });
     const inactive = await viewing(env, 'popup', page);
     await inactive.setViewportSize(POPUP);
-    await expect(inactive.getByText(POPUP_STATE.inactive)).toBeVisible();
+    await expect(POPUP_STATE.inactive(inactive)).toBeVisible();
     await snap(inactive, {
       name: '08-popup-not-running',
       surface: 'popup',
@@ -392,7 +393,7 @@ test.describe('release screenshots (real loaded extension)', () => {
     await saveBlock(ext, page, '#p-intro', kindButton('formula'));
     const running = await viewing(env, 'popup', page);
     await running.setViewportSize(POPUP);
-    await expect(running.getByText(POPUP_STATE.active)).toBeVisible();
+    await expect(POPUP_STATE.active(running)).toBeVisible();
     await snap(running, {
       name: '09-popup-running',
       surface: 'popup',
@@ -408,7 +409,7 @@ test.describe('release screenshots (real loaded extension)', () => {
     });
     const denied = await viewing(env, 'popup', deniedPage);
     await denied.setViewportSize(POPUP);
-    await expect(denied.getByText(POPUP_STATE.denied)).toBeVisible();
+    await expect(POPUP_STATE.denied(denied)).toBeVisible();
     await snap(denied, {
       name: '10-popup-denied-site',
       surface: 'popup',
@@ -416,34 +417,38 @@ test.describe('release screenshots (real loaded extension)', () => {
     });
   });
 
-  test('settings page: every section', async ({ env }) => {
+  test('settings page: the home and every section', async ({ env }) => {
     const snap = shooter(env);
     const options = await openExt(env, 'options');
     await options.setViewportSize(DESKTOP);
-    await expect(options.getByRole('heading', { level: 1 })).toBeVisible();
+    await expect(options.getByRole('heading', { level: 1, name: 'Settings' })).toBeVisible();
     await expect(options.getByText('Loading settings')).toHaveCount(0);
+    await snap(options, {
+      name: '12-options-full-page',
+      surface: 'settings',
+      description: 'The settings home: a tile for every section, top to bottom.',
+      fullPage: true,
+    });
 
-    const ids = await options
-      .locator('nav a[href^="#"]')
+    // Each section is its own view (options.html#<id>): it is opened from the section navigation.
+    const nav = options.getByRole('navigation', { name: 'Settings sections' });
+    const ids = await nav
+      .locator('a[href^="#"]')
       .evaluateAll((links) =>
         links.map((a) => (a.getAttribute('href') ?? '').slice(1)).filter((id) => id !== ''),
       );
     expect(ids.length, 'the settings page lists its sections').toBeGreaterThan(0);
     for (const id of ids) {
+      await nav.locator(`a[href="#${id}"]`).click();
       const section = options.locator(`[id="${id}"]`);
       await expect(section).toBeVisible();
+      await expect(options.getByText('Loading settings')).toHaveCount(0);
       await snap(section, {
         name: `11-options-${slug(id) || 'section'}`,
         surface: 'settings',
         description: `Settings section "${id}".`,
       });
     }
-    await snap(options, {
-      name: '12-options-full-page',
-      surface: 'settings',
-      description: 'The whole settings page, top to bottom.',
-      fullPage: true,
-    });
   });
 
   test('dark mode: toolbar, side panel, popup and settings', async ({ env }) => {
@@ -552,6 +557,66 @@ test.describe('release screenshots (real loaded extension)', () => {
       surface: 'in-page toolbar',
       description: 'Toolbar over a selection at 200% browser zoom on a 1280 px window.',
       zoom: 2,
+    });
+  });
+
+  test('dashboard Home, a wizard step and a finished review session', async ({ env }) => {
+    const snap = shooter(env);
+    const ext = await openExt(env, 'options');
+    const page = await openFixture(env, '/article.html');
+    await saveBlock(ext, page, '#p-intro', kindButton('formula'));
+    await saveBlock(ext, page, '#p-refs', kindButton('exception'));
+
+    // A bare dashboard.html lands on Home.
+    const dashboard = await env.context.newPage();
+    await dashboard.setViewportSize(DESKTOP);
+    await dashboard.goto(`chrome-extension://${env.extensionId}/dashboard.html`);
+    const home = dashboard.getByTestId('home');
+    await expect(home.getByTestId('home-hero')).toContainText('Nothing due right now');
+    await expect(home.getByTestId('home-new-bank')).toBeVisible();
+    await expect(home.getByText(/^(Counting|Loading)/)).toHaveCount(0);
+    await snap(dashboard, {
+      name: '21-dashboard-home',
+      surface: 'dashboard',
+      description: 'Dashboard Home: greeting, cards due, today and the banks.',
+      fullPage: true,
+    });
+
+    // A wizard step: "Create cards" from a blank card, on its "Write the card" step.
+    const review = await env.context.newPage();
+    await review.setViewportSize(DESKTOP);
+    await review.goto(`chrome-extension://${env.extensionId}/review.html?view=create`);
+    const author = review.getByTestId('rv-author');
+    // The radio itself is visually hidden inside its card: the card is what gets clicked.
+    await author.getByText('Blank card', { exact: true }).click();
+    await expect(author.getByRole('radio', { name: /^Blank card/ })).toBeChecked();
+    await author.getByRole('button', { name: 'Next' }).click(); // card type: Q and A
+    await author.getByRole('button', { name: 'Next' }).click();
+    await expect(author.getByRole('heading', { name: 'Write the card' })).toBeVisible();
+    await author
+      .getByRole('textbox', { name: 'Question', exact: true })
+      .fill('Which node is the primary pacemaker of the heart?');
+    await author.getByRole('textbox', { name: 'Answer', exact: true }).fill('The sinoatrial node');
+    await snap(review, {
+      name: '22-wizard-write-card',
+      surface: 'review',
+      description: 'A wizard step: "Create cards", writing a question and answer with a preview.',
+    });
+    await author.getByRole('button', { name: 'Next' }).click(); // deck
+    await author.getByRole('button', { name: 'Create card' }).click();
+    await expect(author.getByRole('heading', { name: 'Card created!' })).toBeVisible();
+
+    // One new card answered Easy finishes the session.
+    await review.goto(`chrome-extension://${env.extensionId}/review.html`);
+    await review.getByTestId('rv-start-all').click();
+    await review.getByTestId('rv-reveal').click();
+    await review.getByTestId('rv-rate-4').click();
+    const summary = review.getByTestId('rv-summary');
+    await expect(summary.getByRole('heading', { name: 'Session complete!' })).toBeVisible();
+    await snap(review, {
+      name: '23-review-session-complete',
+      surface: 'review',
+      description: 'The done screen after a review session: what was answered and what comes next.',
     });
   });
 

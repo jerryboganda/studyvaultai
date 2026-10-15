@@ -27,12 +27,21 @@ const WCAG_TAGS = ['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'];
 /** The note button saves with the default kind and hands the note over to the side panel (ADR-005). */
 const NOTE_BUTTON = 'Save and add a note in the side panel';
 
-/** Toolbar buttons in DOM order; the kind buttons are named after the product's own kind labels. */
-const KIND_ORDER = [
-  'Save selection',
-  ...HIGHLIGHT_KINDS.map((kind) => `Save as ${KIND_LABELS[kind].label}`),
-  NOTE_BUTTON,
-  'More options',
+/** The bank chip names the bank every save from the toolbar goes to: the Inbox in a fresh vault. */
+const BANK_CHIP = 'Bank: Inbox';
+
+const KIND_BUTTONS = HIGHLIGHT_KINDS.map((kind) => `Save as ${KIND_LABELS[kind].label}`);
+
+/**
+ * Toolbar buttons in DOM order (UX_DESIGN 7.6): the seven kind dots, Save, Note, the bank chip, More.
+ * The kind buttons are named after the product's own kind labels.
+ */
+const KIND_ORDER = [...KIND_BUTTONS, 'Save selection', NOTE_BUTTON, BANK_CHIP, 'More options'];
+
+/** The roving tab stop starts on Save (the one-click default), so arrows visit from there on. */
+const ROVE_FROM_SAVE = [
+  ...KIND_ORDER.slice(KIND_ORDER.indexOf('Save selection')),
+  ...KIND_ORDER.slice(0, KIND_ORDER.indexOf('Save selection')),
 ];
 
 interface Violation {
@@ -94,6 +103,8 @@ async function pressFocusToolbar(env: Env, page: Page): Promise<void> {
 async function selectInFocusRegion(page: Page, text = 'phosphorylates glucose'): Promise<void> {
   await dragSelect(page, { selector: '#focus-p', text });
   await expect(bar(page)).toBeVisible();
+  // The chip reads just "Bank" until the bank list has loaded; the button order is final after that.
+  await expect(page.getByRole('button', { name: BANK_CHIP })).toBeVisible();
 }
 
 async function pageActiveId(page: Page): Promise<string> {
@@ -169,6 +180,19 @@ test.describe('overlay: axe WCAG 2.2 AA', () => {
         // ADR-005: pickers only. Nothing in the panel takes typed text.
         await expect(dialog.getByRole('textbox')).toHaveCount(0);
         expect(await overlayTextControls(page)).toEqual([]);
+        await expectNoViolations(page, OVERLAY_HOST);
+      });
+
+      test(`bank menu (${scheme})`, async ({ env }) => {
+        const page = await openFixture(env, '/article.html');
+        await page.emulateMedia({ colorScheme: scheme });
+        await tripleClick(page, '#p-intro');
+        await page.getByRole('button', { name: BANK_CHIP }).click();
+        const menu = page.getByRole('menu', { name: 'Save to bank' });
+        await expect(
+          menu.getByRole('menuitemradio', { name: 'Inbox', checked: true }),
+        ).toBeVisible();
+        await expect(menu.getByRole('menuitem', { name: 'New bank...' })).toBeVisible();
         await expectNoViolations(page, OVERLAY_HOST);
       });
 
@@ -261,6 +285,7 @@ test.describe('overlay: semantics', () => {
     const page = await openFixture(env, '/article.html');
     await tripleClick(page, '#p-intro');
     await expect(bar(page)).toBeVisible();
+    await expect(page.getByRole('button', { name: BANK_CHIP })).toBeVisible();
     const info = await bar(page).evaluate((el) => {
       const buttons = Array.from(el.querySelectorAll('button'));
       return {
@@ -311,15 +336,18 @@ test.describe('overlay: semantics', () => {
     await expect(page.getByRole('alert').filter({ hasText: 'Saved to Inbox' })).toHaveCount(0);
   });
 
-  test('only More options is a disclosure; it exposes its state and the dialog is named', async ({
+  test('only More options and the bank chip open popups; they expose their state and the popups are named', async ({
     env,
   }) => {
     const page = await openFixture(env, '/article.html');
     await tripleClick(page, '#p-intro');
     const note = page.getByRole('button', { name: NOTE_BUTTON });
     const more = page.getByRole('button', { name: 'More options' });
+    const chip = page.getByRole('button', { name: BANK_CHIP });
     // The note button is an action (save + hand over), not a panel: it has no expanded state.
     await expect(note).not.toHaveAttribute('aria-expanded', /.*/);
+    await expect(note).not.toHaveAttribute('aria-haspopup', /.*/);
+    await expect(more).toHaveAttribute('aria-haspopup', 'dialog');
     await expect(more).toHaveAttribute('aria-expanded', 'false');
     await more.click();
     await expect(more).toHaveAttribute('aria-expanded', 'true');
@@ -327,6 +355,16 @@ test.describe('overlay: semantics', () => {
     await more.click();
     await expect(more).toHaveAttribute('aria-expanded', 'false');
     await expect(page.getByRole('dialog', { name: 'Save with details' })).toHaveCount(0);
+
+    // The bank chip is a menu button.
+    await expect(chip).toHaveAttribute('aria-haspopup', 'menu');
+    await expect(chip).toHaveAttribute('aria-expanded', 'false');
+    await chip.click();
+    await expect(chip).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.getByRole('menu', { name: 'Save to bank' })).toBeVisible();
+    await chip.click();
+    await expect(chip).toHaveAttribute('aria-expanded', 'false');
+    await expect(page.getByRole('menu', { name: 'Save to bank' })).toHaveCount(0);
   });
 
   test('the full name of the hovered or focused button is shown in an aria-hidden caption', async ({
@@ -342,7 +380,7 @@ test.describe('overlay: semantics', () => {
     await expect(caption).not.toHaveText('Save as Exception');
     // Keyboard focus shows the same caption.
     await pressFocusToolbar(env, page);
-    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('Home');
     await page.keyboard.press('ArrowRight');
     await expect(caption).toHaveText('Save as Formula');
   });
@@ -366,20 +404,28 @@ test.describe('keyboard-only', () => {
     await expect(page.getByRole('button', { name: 'Save selection', exact: true })).toBeFocused();
     expect(await overlayFocusedLabel(page)).toBe('Save selection');
 
+    // From Save, Right walks Note, the bank chip and More, wraps to the first kind dot and comes
+    // round to Save again: every button once.
     const seen: string[] = [await overlayFocusedLabel(page)];
     for (let i = 0; i < KIND_ORDER.length - 1; i++) {
       await page.keyboard.press('ArrowRight');
       seen.push(await overlayFocusedLabel(page));
     }
-    expect(seen).toEqual(KIND_ORDER);
-
-    // Wrap-around, Home and End.
+    expect(seen).toEqual(ROVE_FROM_SAVE);
     await page.keyboard.press('ArrowRight');
     expect(await overlayFocusedLabel(page)).toBe('Save selection');
     await page.keyboard.press('ArrowLeft');
-    expect(await overlayFocusedLabel(page)).toBe('More options');
+    expect(await overlayFocusedLabel(page)).toBe(
+      KIND_ORDER[KIND_ORDER.indexOf('Save selection') - 1],
+    );
+
+    // Home and End, and wrap-around at both ends.
     await page.keyboard.press('Home');
-    expect(await overlayFocusedLabel(page)).toBe('Save selection');
+    expect(await overlayFocusedLabel(page)).toBe(KIND_ORDER[0]);
+    await page.keyboard.press('ArrowLeft');
+    expect(await overlayFocusedLabel(page)).toBe('More options');
+    await page.keyboard.press('ArrowRight');
+    expect(await overlayFocusedLabel(page)).toBe(KIND_ORDER[0]);
     await page.keyboard.press('End');
     expect(await overlayFocusedLabel(page)).toBe('More options');
 
@@ -448,7 +494,7 @@ test.describe('keyboard-only', () => {
     const page = await openFixture(env, '/compat-inline.html');
     await selectInFocusRegion(page);
     await pressFocusToolbar(env, page);
-    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('Home');
     await page.keyboard.press('ArrowRight');
     expect(await overlayFocusedLabel(page)).toBe('Save as Formula');
     await page.keyboard.press('Enter');
@@ -495,6 +541,8 @@ test.describe('keyboard-only', () => {
     await pressFocusToolbar(env, page);
     await page.keyboard.press('End');
     await page.keyboard.press('ArrowLeft');
+    expect(await overlayFocusedLabel(page)).toBe(BANK_CHIP);
+    await page.keyboard.press('ArrowLeft');
     expect(await overlayFocusedLabel(page)).toBe(NOTE_BUTTON);
     await page.keyboard.press('Enter');
 
@@ -523,16 +571,19 @@ test.describe('keyboard-only', () => {
     await expect(dialog.getByRole('combobox', { name: 'Bank' })).toBeVisible();
     await expect(dialog).toBeFocused();
 
-    const order = [
-      ['combobox', 'Bank'],
-      ['button', 'New bank...'],
-      ['combobox', 'Type'],
-      ['combobox', 'Priority'],
-    ] as const;
-    for (const [role, name] of order) {
-      await page.keyboard.press('Tab');
-      await expect(dialog.getByRole(role, { name })).toBeFocused();
-    }
+    await page.keyboard.press('Tab');
+    await expect(dialog.getByRole('combobox', { name: 'Bank' })).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(dialog.getByRole('button', { name: 'New bank...' })).toBeFocused();
+    // Kind and Priority are radio groups: one tab stop each, on the checked option.
+    await page.keyboard.press('Tab');
+    await expect(
+      dialog.getByRole('radiogroup', { name: 'Kind' }).getByRole('radio', { checked: true }),
+    ).toBeFocused();
+    await page.keyboard.press('Tab');
+    await expect(
+      dialog.getByRole('radiogroup', { name: 'Priority' }).getByRole('radio', { checked: true }),
+    ).toBeFocused();
     await page.keyboard.press('Tab');
     await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeFocused();
     await page.keyboard.press('Tab');
@@ -556,8 +607,15 @@ test.describe('keyboard-only', () => {
     await page.keyboard.press('Enter');
     const dialog = page.getByRole('dialog', { name: 'Save with details' });
     await expect(dialog).toBeFocused();
-    await dialog.getByRole('combobox', { name: 'Type' }).selectOption({ label: 'ƒ Formula' });
-    await dialog.getByRole('button', { name: 'Save', exact: true }).focus();
+    // Tab to the Kind group (after Bank and New bank...); an arrow key moves and chooses.
+    for (let i = 0; i < 3; i++) await page.keyboard.press('Tab');
+    await expect(dialog.getByRole('radio', { name: 'Essential fact' })).toBeFocused();
+    await page.keyboard.press('ArrowRight');
+    await expect(dialog.getByRole('radio', { name: 'Formula' })).toBeFocused();
+    await expect(dialog.getByRole('radio', { name: 'Formula' })).toBeChecked();
+    await page.keyboard.press('Tab'); // Priority
+    await page.keyboard.press('Tab');
+    await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeFocused();
     await page.keyboard.press('Enter');
     await expect(page.getByText('Saved to Inbox')).toBeVisible();
     const [h] = await storedHighlights(env, page);
@@ -594,17 +652,19 @@ test.describe('keyboard-only', () => {
     await expect(dialog).toBeVisible();
     await expect(dialog).toBeFocused();
     // Tab order stays inside the popover controls in reading order. The note is read-only text with
-    // an "Edit note in side panel" button where there used to be a textbox.
+    // an "Edit note in side panel" button where there used to be a textbox; Kind and Priority are
+    // radio groups with one tab stop each, on the checked option.
     const order = [
-      ['button', 'Close highlight details'],
-      ['button', 'Edit note in side panel'],
-      ['combobox', 'Type'],
-      ['combobox', 'Priority'],
-      ['button', 'Delete'],
-    ] as const;
-    for (const [role, name] of order) {
+      dialog.getByRole('button', { name: 'Close highlight details', exact: true }),
+      dialog.getByRole('button', { name: 'Edit note in side panel', exact: true }),
+      dialog.getByRole('radiogroup', { name: 'Kind' }).getByRole('radio', { checked: true }),
+      dialog.getByRole('radiogroup', { name: 'Priority' }).getByRole('radio', { checked: true }),
+      dialog.getByRole('button', { name: 'Delete', exact: true }),
+      dialog.getByRole('button', { name: 'Close', exact: true }),
+    ];
+    for (const control of order) {
       await page.keyboard.press('Tab');
-      await expect(dialog.getByRole(role, { name, exact: true })).toBeFocused();
+      await expect(control).toBeFocused();
     }
     await page.keyboard.press('Escape');
     await expect(dialog).toHaveCount(0);
@@ -668,18 +728,39 @@ test.describe('extension pages: axe WCAG 2.2 AA', () => {
   });
 
   for (const scheme of ['light', 'dark'] as const) {
-    test(`options.html (${scheme})`, async ({ env }) => {
+    test(`options.html: the settings home and every section (${scheme})`, async ({ env }) => {
+      test.slow(); // one axe scan per settings view
       const page = await extensionPage(env, 'options.html');
       await page.emulateMedia({ colorScheme: scheme });
-      await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+      await expect(page.getByRole('heading', { level: 1, name: 'Settings' })).toBeVisible();
       await expect(page.getByText('Loading settings')).toHaveCount(0);
       await expectNoViolations(page);
+
+      // Only the current section is on the page (options.html#<id>), so each one is shown and
+      // scanned in turn, through the links of the section navigation.
+      const nav = page.getByRole('navigation', { name: 'Settings sections' });
+      const ids = await nav
+        .locator('a[href^="#"]')
+        .evaluateAll((links) =>
+          links.map((a) => (a.getAttribute('href') ?? '').slice(1)).filter((id) => id !== ''),
+        );
+      expect(ids.length, 'the settings page lists its sections').toBeGreaterThanOrEqual(14);
+      for (const id of ids) {
+        await page.evaluate((hash) => (window.location.hash = hash), id);
+        await expect(page.locator(`[id="${id}"]`)).toBeVisible();
+        await expect(nav.locator(`a[href="#${id}"]`)).toHaveAttribute('aria-current', 'page');
+        await expect(page.getByText('Loading settings')).toHaveCount(0);
+        const violations = await axeViolations(page);
+        expect(violations, `options.html#${id}\n${format(violations)}`).toEqual([]);
+      }
     });
 
     test(`popup.html on a browser-internal tab (${scheme})`, async ({ env }) => {
       const page = await extensionPage(env, 'popup.html');
       await page.emulateMedia({ colorScheme: scheme });
       await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+      // Opened as a tab, the popup is its own active tab: an extension page it cannot run on.
+      await expect(page.getByRole('heading', { name: "Can't run here" })).toBeVisible();
       await expect(page.getByText('Checking this tab')).toHaveCount(0);
       await expectNoViolations(page);
     });
@@ -689,7 +770,8 @@ test.describe('extension pages: axe WCAG 2.2 AA', () => {
       await popup.emulateMedia({ colorScheme: scheme });
       const page = await openFixture(env, '/article.html', { activate: false });
       await page.bringToFront();
-      await expect(popup.getByRole('button', { name: 'Activate on this tab' })).toBeVisible();
+      await expect(popup.getByText('Off', { exact: true })).toBeVisible();
+      await expect(popup.getByRole('button', { name: 'Turn on' })).toBeVisible();
       await expectNoViolations(popup);
 
       await activate(env, page);
@@ -697,8 +779,12 @@ test.describe('extension pages: axe WCAG 2.2 AA', () => {
       await page.getByRole('button', { name: 'Save selection', exact: true }).click();
       await expect(page.getByText('Saved to Inbox')).toBeVisible();
       await page.bringToFront();
-      await expect(popup.getByText('Active on this tab only')).toBeVisible();
-      await expect(popup.getByText('Recent saves')).toBeVisible();
+      // Active on this tab only: the "Always on" switch is there and off.
+      await expect(popup.getByRole('switch', { name: 'Always on' })).not.toBeChecked();
+      await expect(popup.getByTestId('popup-page-count')).toHaveText('1 highlight on this page');
+      await expect(
+        popup.getByRole('region', { name: 'Recent saves' }).getByRole('listitem'),
+      ).toHaveCount(1);
       await expectNoViolations(popup);
     });
 
@@ -715,27 +801,40 @@ test.describe('extension pages: axe WCAG 2.2 AA', () => {
       await page.getByRole('button', { name: 'Save selection', exact: true }).click();
       await expect(page.getByText('Saved to Inbox')).toBeVisible();
       await page.bringToFront();
-      await expect(panel.getByText('Highlights on this page')).toBeVisible();
+      await expect(panel.getByRole('heading', { level: 3, name: /^On this page/ })).toBeVisible();
+      await expect(panel.getByRole('article')).toHaveCount(1);
       await expectNoViolations(panel);
 
-      // The "Recent" view of the same panel.
-      await panel.getByRole('tab', { name: /Recent/ }).click();
+      // The More tab, then its "Recent" page.
+      await panel.getByRole('tab', { name: 'More', exact: true }).click();
+      await expect(panel.getByRole('button', { name: 'Recent', exact: true })).toBeVisible();
+      await expectNoViolations(panel);
+      await panel.getByRole('button', { name: 'Recent', exact: true }).click();
+      await expect(panel.getByRole('heading', { level: 2, name: 'Recent' })).toBeVisible();
+      await expect(panel.getByRole('article')).toHaveCount(1);
       await expectNoViolations(panel);
     });
 
-    test(`sidepanel.html Banks tab, with and without a validation error (${scheme})`, async ({
+    test(`sidepanel.html Banks tab and the New bank wizard, with and without a validation error (${scheme})`, async ({
       env,
     }) => {
       const panel = await extensionPage(env, 'sidepanel.html');
       await panel.emulateMedia({ colorScheme: scheme });
       await panel.getByRole('tab', { name: 'Banks' }).click();
-      await expect(panel.getByRole('button', { name: 'Create bank' })).toBeVisible();
+      await expect(panel.getByRole('button', { name: 'New bank' })).toBeVisible();
       await expect(panel.getByRole('list', { name: 'Your banks' })).toBeVisible();
       await expectNoViolations(panel);
-      await panel.getByRole('button', { name: 'Create bank' }).click();
+
+      await panel.getByRole('button', { name: 'New bank' }).click();
+      const wizard = panel.getByRole('dialog', { name: 'New bank' });
+      await expect(wizard.getByLabel('Bank name')).toBeVisible();
+      await expectNoViolations(panel);
+      // Next without a name: the step says what is missing and marks the field.
+      await wizard.getByRole('button', { name: 'Next' }).click();
       await expect(
-        panel.getByRole('alert').filter({ hasText: 'Enter a name for the bank.' }),
+        wizard.getByRole('alert').filter({ hasText: 'Enter a name for the bank.' }),
       ).toBeVisible();
+      await expect(wizard.getByLabel('Bank name')).toHaveAttribute('aria-invalid', 'true');
       await expectNoViolations(panel);
     });
 
@@ -756,7 +855,10 @@ test.describe('extension pages: axe WCAG 2.2 AA', () => {
       const card = panel.getByRole('article');
       await expect(card).toHaveCount(1);
 
-      // A card with a tag chip, a rendered note, and both editors open.
+      // A card with its "More actions" drawer open, a tag chip, a rendered note, and both editors open.
+      await card.getByTestId('card-more').click();
+      await expect(card.getByTestId('card-more')).toHaveAttribute('aria-expanded', 'true');
+      await expect(card.getByTestId('card-drawer')).toBeVisible();
       await card.getByLabel('Add a tag').fill('exam pearl');
       await card.getByRole('button', { name: 'Add tag' }).click();
       await expect(card.getByRole('list', { name: 'Tags' })).toBeVisible();
@@ -781,7 +883,7 @@ test.describe('extension pages: axe WCAG 2.2 AA', () => {
 
       // Review: the empty state.
       await panel.getByRole('tab', { name: 'Review' }).click();
-      await expect(panel.getByText('No cards to review yet')).toBeVisible();
+      await expect(panel.getByRole('heading', { level: 3, name: 'No cards yet' })).toBeVisible();
       await expectNoViolations(panel);
     });
 
@@ -801,7 +903,10 @@ test.describe('extension pages: axe WCAG 2.2 AA', () => {
       });
       const page = await openFixture(env, '/article.html', { activate: false });
       await page.bringToFront();
-      await expect(popup.getByText('StudyVault is off on 127.0.0.1')).toBeVisible();
+      await expect(popup.getByRole('heading', { name: '127.0.0.1', exact: true })).toBeVisible();
+      await expect(popup.getByText('Not allowed', { exact: true })).toBeVisible();
+      await expect(popup.getByText('On your deny list', { exact: true })).toBeVisible();
+      await expect(popup.getByRole('button', { name: 'Allow this site' })).toBeVisible();
       await expect(popup.getByRole('button', { name: 'Open side panel' })).toBeVisible();
       await expectNoViolations(popup);
     });
