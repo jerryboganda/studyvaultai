@@ -247,6 +247,33 @@ describe('Tags and notes on a card, in the real vault', () => {
     );
     expect(await screen.findByText('Edited text')).toBeTruthy();
   });
+
+  it('a note editor kept open across a tab switch does not take the cursor from the search box', async () => {
+    const hl = await save('The sinoatrial node is the primary pacemaker of the heart.');
+    await open();
+    await openCard();
+    await userEvent.click(await screen.findByRole('button', { name: 'Add a note' }));
+    // Opening the editor by hand puts the cursor in it.
+    const editor = screen.getByLabelText('New study note (Markdown)');
+    expect(document.activeElement).toBe(editor);
+    await userEvent.type(editor, 'Rate 60-100');
+
+    // Search shows the same card under Recent, its editor restored from the card memory.
+    await userEvent.click(screen.getByRole('tab', { name: 'Search' }));
+    const restored = await screen.findByLabelText('New study note (Markdown)');
+    expect((restored as HTMLTextAreaElement).value).toBe('Rate 60-100');
+    expect(document.activeElement).not.toBe(restored);
+
+    await userEvent.click(queryBox());
+    await userEvent.type(queryBox(), 'sinoatrial');
+    expect((queryBox() as HTMLInputElement).value).toBe('sinoatrial');
+    expect((screen.getByLabelText('New study note (Markdown)') as HTMLTextAreaElement).value).toBe(
+      'Rate 60-100',
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId('search-result').getAttribute('data-highlight-id')).toBe(hl.id),
+    );
+  });
 });
 
 describe('Banks, folders and the bank filter in the real vault', () => {
