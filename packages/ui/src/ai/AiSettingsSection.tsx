@@ -13,6 +13,7 @@ import {
   Monitor,
   Network,
   Pencil,
+  Plus,
   PlugZap,
   Power,
   Save,
@@ -29,7 +30,10 @@ import {
   clearAiApiKey,
   getAiSettings,
   getCodexAuth,
+  AI_MAX_FALLBACKS,
+  newAiProfileId,
   setAiApiKey,
+  setAiProfileApiKey,
   updateAiSettings,
   type AiProviderId,
   type AiSettings,
@@ -311,6 +315,9 @@ export function AiSettingsSection() {
   const [step, setStep] = useState(0);
   const [preset, setPreset] = useState<Preset | null>(null);
   const [setupSaved, setSetupSaved] = useState(false);
+  // Adding another provider: the same wizard, writing a fallback profile instead of the primary one.
+  const [adding, setAdding] = useState(false);
+  const addedId = useRef<string | null>(null);
   const [justSetUp, setJustSetUp] = useState(false);
   // A click that replaces the screen it was on moves focus to the new screen's title (WCAG 2.4.3).
   const [focusWizard, setFocusWizard] = useState(false);
@@ -388,14 +395,101 @@ export function AiSettingsSection() {
   /** The wizard's form, its address check and whether the key step applies. */
   const formEndpoint = form ? checkAiEndpoint(form.provider, form.baseUrl) : null;
   const keySaved =
-    formEndpoint?.ok && config?.key.mask && config.key.origin === formEndpoint.origin
+    !adding && formEndpoint?.ok && config?.key.mask && config.key.origin === formEndpoint.origin
       ? config.key.mask
       : null;
   // The saved key is read after the settings: until then "no key saved" is only a guess.
-  const keyPending = config || cfg.error ? undefined : 'Checking for a saved key…';
+  const keyPending = adding || config || cfg.error ? undefined : 'Checking for a saved key…';
+
+  const leaveAdding = () => {
+    setAdding(false);
+    addedId.current = null;
+    setDraft(null);
+    setKeyInput('');
+    setPreset(null);
+    setStep(0);
+    setErrors([]);
+  };
+  const startAdding = () => {
+    if (!saved.data) return;
+    setFocusWizard(true);
+    setDraft({
+      ...toForm(saved.data),
+      provider: 'openai_compatible',
+      baseUrl: '',
+      model: '',
+      vendor: 'custom',
+      reasoningEffort: '',
+      authScheme: 'bearer',
+      jsonMode: true,
+      maxTokensParam: 'max_tokens',
+      priceIn: '',
+      priceOut: '',
+    });
+    addedId.current = null;
+    setKeyInput('');
+    setPreset(null);
+    setTest(null);
+    setJustSetUp(false);
+    setSetupSaved(false);
+    setErrors([]);
+    setStep(0);
+    setAdding(true);
+  };
+
+  /** Adding mode: creates (or, on a second press, updates) the fallback profile and its key. */
+  async function writeNewProvider(): Promise<boolean> {
+    if (!form || !formEndpoint?.ok || form.provider === 'codex_responses') return false;
+    const parsed = fromForm(form);
+    if (!parsed.ok) {
+      setErrors(parsed.errors);
+      return false;
+    }
+    setErrors([]);
+    const f = parsed.settings;
+    const vendorLabel = VENDORS[f.vendor].label;
+    let id = addedId.current;
+    await updateAiSettings((cur) => {
+      const existing = id ? cur.fallbacks.find((p) => p.id === id) : undefined;
+      if (!existing && cur.fallbacks.length >= AI_MAX_FALLBACKS) {
+        throw new Error(`You can add up to ${AI_MAX_FALLBACKS} more providers.`);
+      }
+      const profile = {
+        id: existing?.id ?? newAiProfileId(),
+        label: existing?.label ?? `${vendorLabel} ${cur.fallbacks.length + 1}`.slice(0, 40),
+        provider: f.provider as 'openai_compatible' | 'anthropic',
+        baseUrl: f.baseUrl,
+        model: f.model,
+        jsonMode: f.jsonMode,
+        maxTokensParam: f.maxTokensParam,
+        pricing: f.pricing,
+        vendor: f.vendor,
+        reasoningEffort: f.reasoningEffort,
+        authScheme: f.authScheme,
+        fallback: true,
+      };
+      id = profile.id;
+      return {
+        ...cur,
+        fallbacks: existing
+          ? cur.fallbacks.map((p) => (p.id === profile.id ? profile : p))
+          : [...cur.fallbacks, profile],
+      };
+    });
+    addedId.current = id;
+    if (id && keyInput.trim() !== '') {
+      await setAiProfileApiKey(id, keyInput, formEndpoint.origin);
+      setKeyInput('');
+    }
+    setSetupSaved(true);
+    saved.refresh();
+    cfg.refresh();
+    return true;
+  }
 
   /** Writes the wizard's answers: the settings, then the key typed for that address. */
   async function writeSetup(): Promise<boolean> {
+    if (adding) return writeNewProvider();
     if (!form || !formEndpoint?.ok) return false;
     const parsed = fromForm(form);
     if (!parsed.ok) {
@@ -418,6 +512,7 @@ export function AiSettingsSection() {
   const saveSetup = useAction(async () => {
     if (await writeSetup()) {
       focusStatus.current = true;
+      if (adding) leaveAdding();
       setEditing(false);
       setJustSetUp(true);
       setStep(0);
@@ -442,7 +537,7 @@ export function AiSettingsSection() {
           return;
         }
         const fresh = await loadAiConfig(true, env);
-        const r = await testAiConnection(fresh, env);
+        const r = await testAiConnection(fresh, env, undefined, addedId.current ?? undefined);
         setTest(
           r.ok
             ? {
@@ -567,7 +662,7 @@ export function AiSettingsSection() {
   }
 
   const configured = saved.data ? isConfigured(saved.data) : false;
-  const showWizard = !!form && (!configured || editing);
+  const showWizard = !!form && (adding || !configured || editing);
   const blocker = !config
     ? 'Reading the AI settings…'
     : dirty
@@ -601,7 +696,7 @@ export function AiSettingsSection() {
     ]),
   ].sort((a, b) => Number(a) - Number(b));
 
-  const steps: FlowStep[] = form
+  const allSteps: FlowStep[] = form
     ? [
         {
           id: 'provider',
@@ -632,14 +727,17 @@ export function AiSettingsSection() {
                   });
                 }
               }}
-              options={(Object.keys(PRESETS) as Preset[]).map((p) => ({
-                value: p,
-                label: PRESETS[p].label,
-                hint: PRESETS[p].hint,
-                icon: PRESETS[p].icon,
-                tone: PRESET_TONE[p],
-                testId: `ai-preset-${p}`,
-              }))}
+              options={(Object.keys(PRESETS) as Preset[])
+                // The ChatGPT login belongs to the main provider only.
+                .filter((p) => !(adding && p === 'chatgpt_codex'))
+                .map((p) => ({
+                  value: p,
+                  label: PRESETS[p].label,
+                  hint: PRESETS[p].hint,
+                  icon: PRESETS[p].icon,
+                  tone: PRESET_TONE[p],
+                  testId: `ai-preset-${p}`,
+                }))}
             />
           ),
         },
@@ -900,6 +998,9 @@ export function AiSettingsSection() {
         },
       ]
     : [];
+  // The daily limit is shared by every provider, so adding one skips that step.
+  const steps = allSteps.filter((st) => !(adding && st.id === 'limit'));
+  const doneNow = setupSaved && keyInput.trim() === '' && (adding || !dirty);
 
   return (
     <section className="sd-section" aria-labelledby={headId}>
@@ -936,20 +1037,21 @@ export function AiSettingsSection() {
       {showWizard ? (
         <>
           <StepFlow
-            label={configured ? 'Edit AI setup' : 'AI setup'}
+            label={adding ? 'Add another provider' : configured ? 'Edit AI setup' : 'AI setup'}
             steps={steps}
             index={step}
             onIndex={setStep}
             testId="ai-setup"
             autoFocus={focusWizard}
             finish={{
-              label: setupSaved && !dirty && keyInput.trim() === '' ? 'Done' : 'Save',
+              label: doneNow ? 'Done' : adding ? 'Add provider' : 'Save',
               icon: Save,
               testId: 'ai-setup-save',
               busy: saveSetup.busy,
               onClick: () => {
-                if (setupSaved && !dirty && keyInput.trim() === '') {
+                if (doneNow) {
                   focusStatus.current = true;
+                  if (adding) leaveAdding();
                   setEditing(false);
                   setJustSetUp(true);
                   setStep(0);
@@ -979,21 +1081,17 @@ export function AiSettingsSection() {
                 onClick={() => {
                   focusStatus.current = true;
                   setEditing(false);
-                  setDraft(null);
-                  setKeyInput('');
-                  setPreset(null);
-                  setStep(0);
-                  setErrors([]);
+                  leaveAdding();
                 }}
               >
-                Cancel editing
+                {adding ? 'Cancel' : 'Cancel editing'}
               </ChunkyButton>
             </div>
           ) : null}
         </>
       ) : null}
 
-      {form && configured && !editing ? (
+      {form && configured && !editing && !adding ? (
         <>
           <div className="sd-card" data-testid="ai-status">
             {justSetUp ? (
@@ -1049,6 +1147,16 @@ export function AiSettingsSection() {
                 </span>
               </Chip>
             </div>
+            {saved.data && saved.data.fallbacks.length > 0 ? (
+              <div className="sd-row" data-testid="ai-backups">
+                <span className="sd-line">Backups, tried in order:</span>
+                {saved.data.fallbacks.map((p) => (
+                  <Chip key={p.id} icon={PRESETS[vendorOf(p.vendor, p.provider, p.baseUrl)].icon}>
+                    {p.label}: {p.model}
+                  </Chip>
+                ))}
+              </div>
+            ) : null}
             {config ? (
               <div className="ai-usage">
                 <span className="sd-line">Today</span>
@@ -1105,6 +1213,16 @@ export function AiSettingsSection() {
               >
                 Edit setup
               </ChunkyButton>
+              {saved.data && saved.data.fallbacks.length < AI_MAX_FALLBACKS ? (
+                <ChunkyButton
+                  variant="ghost"
+                  icon={Plus}
+                  data-testid="ai-add-provider"
+                  onClick={startAdding}
+                >
+                  Add another provider
+                </ChunkyButton>
+              ) : null}
               <InfoTip label="About the test">
                 It sends one fixed message (&quot;Reply with the single word: OK&quot;) to{' '}
                 {origin ?? 'the provider'}. No study content is sent; it counts in the ledger.
