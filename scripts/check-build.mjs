@@ -157,8 +157,8 @@ const total = walk(prod)
 // subsets it needs) with its OFL licence and the Sunny stylesheets (~30 KB): ~7076 KB estimated against 6903 KB
 // measured in run 38560072781 (7093 KB measured after it). The redesigned review page and dashboard (Home,
 // wizards, charts, game UI, lucide icons) measured 7355 KB at 626591f (+262 KB: ~90 KB page CSS, ~84 KB page
-// code, ~37 KB shared components). The remaining surfaces are still landing: 7800 KB is an interim ceiling,
-// to be set to measured + ~3% once the redesign is complete.
+// code, ~37 KB shared components). With every surface redesigned the build measured 7578 KB (run 38748059185):
+// 7800 KB keeps ~3% headroom.
 const TOTAL_BUDGET_KB = 7800;
 if (total > TOTAL_BUDGET_KB * KB)
   fail(`total extension size ${Math.round(total / KB)} KB exceeds ${TOTAL_BUDGET_KB} KB`);
