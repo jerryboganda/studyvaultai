@@ -113,7 +113,9 @@ Examples:
 
 A state that needs data or clicks also has a script in `states.ts`. Its `prepare` runs after seeding
 and before mount, and its `run` drives the mounted page and waits for its result, so a missed click
-fails loudly.
+fails loudly. Wizard steps (the shared Wizard, the settings StepFlow and the dashboard JumpWizard all
+use `.sv-wiz`) are reached with `wizardTo(title)` and `wizardBackTo(title)`, which press Next or Back
+until the step heading reads `title`; `choose(label)` picks a picture card.
 
 ## Capture
 

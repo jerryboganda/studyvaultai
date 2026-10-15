@@ -1,4 +1,5 @@
 import {
+  KIND_LABELS,
   defaultSettings,
   type AnchorSet,
   type BankLite,
@@ -13,7 +14,7 @@ import type { CaptureHost, CaptureUi } from '../entrypoints/highlighter.content/
 import { mountCaptureUi } from '../entrypoints/highlighter.content/ui/mount';
 import overlayCss from '../entrypoints/highlighter.content/ui/styles.css?inline';
 import { findState } from './catalog';
-import { $, byText, frames, setValue, sleep, waitFor } from './dom';
+import { $, byText, frames, sleep, waitFor } from './dom';
 
 /**
  * The real in-page overlay (entrypoints/highlighter.content/ui) on a sample study page, one state
@@ -201,9 +202,11 @@ async function openPopover(over: Partial<HighlightView> = {}): Promise<HTMLEleme
   );
 }
 
+/** Picks the Weak area kind in the popover's kind row (radio buttons). */
 async function changeType(dialog: HTMLElement): Promise<void> {
-  const typeSelect = await waitFor(() => $<HTMLSelectElement>('select', dialog), 'Type select');
-  setValue(typeSelect, 'weak_area');
+  const name = KIND_LABELS.weak_area.label;
+  const radio = `.sv-kinds [role="radio"][aria-label="${name}"]`;
+  (await waitFor(() => $<HTMLElement>(radio, dialog), `the ${name} kind`)).click();
 }
 
 const STATES: Record<string, () => Promise<void>> = {
@@ -294,6 +297,12 @@ const STATES: Record<string, () => Promise<void>> = {
     await waitFor(() => byText('Deleting', 'p, span, div, button', dialog), '"Deleting"');
   },
   'toast-saved': () => saveAndToast(),
+  'toast-xp': async () => {
+    // Game mode on: the worker reports the quick save's XP and the toast shows "+2 XP".
+    host.save = async (req) => ({ ...created(req.kind, PHARM), xp: 2 });
+    await saveAndToast();
+    await waitFor(() => inOverlay('.sv-toast .sv-xp'), 'the +2 XP chip');
+  },
   'toast-note': () => saveAndToast(1, 'Save and add a note in the side panel'),
   'toast-error': async () => {
     host.save = async () => {

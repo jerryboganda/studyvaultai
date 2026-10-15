@@ -8,6 +8,7 @@ import {
   listPdfHighlights,
   listRecentHighlights,
   rescheduleCard,
+  setGameMode,
 } from '@storage';
 import { TAB_PRESETS } from './scenarios/tabs';
 import type { Surface } from './boot';
@@ -144,6 +145,12 @@ const syncAs = (view: Parameters<typeof fakeSync>[0], conflict = false): StateSc
     void (await scrollToText(conflict ? 'Conflicts (' : 'Sync between devices', 'h2, h3')),
 });
 
+/** Backup section: the task card `task` chosen (back up, restore, import or export). */
+const backupTask = (task: 'backup' | 'restore' | 'import' | 'export') => async () => {
+  await clickTestId(`backup-task-${task}`);
+  await waitFor(() => $(`${tid(`backup-panel-${task}`)}:not([hidden])`), `the ${task} panel`);
+};
+
 /** Restore wizard: chooses `file`, then shows the step with test id `step`. */
 const restoreWith =
   (
@@ -152,10 +159,38 @@ const restoreWith =
     then?: () => Promise<void>,
   ): StateScript['run'] =>
   async () => {
-    chooseFile(await scrollTo<HTMLInputElement>(tid('backup-import-file')), await file());
+    await backupTask('restore')();
+    chooseFile(
+      await waitFor(() => $<HTMLInputElement>(tid('backup-import-file')), 'the file input'),
+      await file(),
+    );
     await scrollTo(tid(step), 30_000);
     if (then) await then();
   };
+
+/** AI configured, "Edit setup" pressed: the setup flow at the step titled `title`. */
+const editAiAt = (title: string) => async () => {
+  // The saved key is read after the settings: before it, the key step asks for one.
+  await waitFor(() => $(tid('ai-key-mask')), 'the saved key');
+  await clickTestId('ai-edit-setup');
+  await wizardTo(title);
+};
+
+/** Sync setup flow (sync off) filled with sample addresses, at the step titled `title`. */
+const syncSetupAt = (title: string) => async () => {
+  await waitFor(() => $(tid('sync-setup-flow')), 'the sync setup');
+  const fill = async (id: string, value: string) =>
+    setValue(await waitFor(() => $<HTMLInputElement>(tid(id)), id), value);
+  for (const step of ['Sync server', 'Sign-in provider', 'Looks good?']) {
+    if (wizardTitle() === title) return;
+    await wizardTo(step);
+    if (step === 'Sync server') await fill('sync-server-url', 'https://sync.example.org');
+    if (step === 'Sign-in provider') {
+      await fill('sync-issuer', 'https://id.example.org');
+      await fill('sync-client-id', 'studyvault-gallery');
+    }
+  }
+};
 
 /** The scanned PDF opened in the reader (its copy is kept), first page drawn. */
 const scannedOpen: StateScript['prepare'] = async (setParam) =>
@@ -163,11 +198,114 @@ const scannedOpen: StateScript['prepare'] = async (setParam) =>
 const scannedBanner = () =>
   waitFor(() => byText('Scanned pages', 'p, div, strong, h2, h3'), 'the scanned banner', 30_000);
 
+/** The open wizard's step heading (shared Wizard, StepFlow and the dashboard's JumpWizard). */
+const wizardTitle = () => $('.sv-wiz__title')?.textContent?.trim() ?? null;
+
+/**
+ * Presses Next in the open wizard until its step heading reads `title`. Each step must already be
+ * valid: a step that refuses (its error shows) times out with that step's name.
+ */
+async function wizardTo(title: string): Promise<void> {
+  for (let i = 0; i < 10; i++) {
+    const now = await waitFor(wizardTitle, 'a wizard step');
+    if (now === title) return;
+    await clickText('Next', '.sv-wiz__nav button');
+    await waitFor(() => wizardTitle() !== now, `the step after "${now}"`);
+  }
+  throw new Error(`Gallery state: the wizard never reached "${title}"`);
+}
+
+/** Presses Back in the open wizard until its step heading reads `title`. */
+async function wizardBackTo(title: string): Promise<void> {
+  for (let i = 0; i < 10; i++) {
+    const now = await waitFor(wizardTitle, 'a wizard step');
+    if (now === title) return;
+    await clickText('Back', '.sv-wiz__nav button');
+    await waitFor(() => wizardTitle() !== now, `the step before "${now}"`);
+  }
+  throw new Error(`Gallery state: the wizard never went back to "${title}"`);
+}
+
+/** Picks the picture card labelled `label` (ChoiceCards: a visually hidden radio in a label). */
+async function choose(label: string): Promise<void> {
+  await click(
+    () => byText(label, '.sv-choice__label')?.closest<HTMLElement>('label') ?? null,
+    `the "${label}" choice`,
+  );
+  await waitFor(
+    () => byText(label, '.sv-choice__label')?.closest('label')?.querySelector('input:checked'),
+    `"${label}" chosen`,
+  );
+}
+
+/** Dashboard Home with today's progress counted (the XP ledger is built in the page first). */
+const homeReady = async () =>
+  void (await waitFor(
+    () => $('.home-today__game, .home-today__plain'),
+    "today's progress",
+    30_000,
+  ));
+
+/** Dashboard "New bank" wizard from Home, named "Dermatology", at the step titled `title`. */
+const newBankAt = (title: string) => async () => {
+  await homeReady(); // the cards behind the dialog settle first
+  await clickTestId('home-new-bank');
+  setValue(
+    await waitFor(() => $<HTMLInputElement>(tid('name-input')), 'the name field'),
+    'Dermatology',
+  );
+  await wizardTo(title);
+};
+
+/** Edits the first filing rule: the wizard opens on "Looks good?", then Back to `title`. */
+const editRule = (title: string) => async () => {
+  await clickTestId('rule-edit');
+  await waitFor(() => $(DIALOG), 'the rule wizard');
+  await wizardBackTo(title);
+};
+
+/** New syllabus wizard: "Paste outline" chosen and an outline pasted (the check shows). */
+async function syllabusPasted(): Promise<void> {
+  await clickTestId('syllabus-new');
+  await choose('Paste outline');
+  await wizardTo('Paste outline');
+  setValue(
+    await waitFor(() => $<HTMLTextAreaElement>(tid('syllabus-import-text')), 'the outline box'),
+    '# Renal medicine\n- Acid-base (weight 2)\n  - Metabolic acidosis\n  - Respiratory alkalosis\n- Acute kidney injury\n  - Prerenal causes\n- Electrolytes',
+  );
+  await waitFor(() => byText('topic', `${tid('syllabus-import-summary')} *`), 'the outline check');
+}
+
+/** Side panel: the first card's "More actions" drawer open (kind, tags, notes, links, AI). */
+async function openDrawer(): Promise<void> {
+  await clickTestId('card-more');
+  await waitFor(() => $(tid('card-drawer')), 'the card drawer');
+}
+
+/** Side panel Banks tab: "New bank" wizard named "Dermatology", at the step titled `title`. */
+const panelNewBankAt = (title: string) => async () => {
+  await clickText('New bank', '.sp-titlerow button');
+  const name = await waitFor(
+    () => $<HTMLInputElement>(`${DIALOG} .sv-textfield input`),
+    'the name field',
+  );
+  setValue(name, 'Dermatology');
+  await wizardTo(title);
+};
+
+/** Exam setup wizard: a custom count of 6 questions, at the "How many?" step. */
+async function examCount(): Promise<void> {
+  await waitFor(() => $(tid('rv-exam-setup')), 'the exam setup');
+  await wizardTo('How many?');
+  await choose('Custom');
+  setValue(await waitFor(() => $<HTMLInputElement>(tid('rv-exam-questions')), 'the count'), '6');
+}
+
 /** Exam setup -> a short exam started. */
 async function startExam(): Promise<void> {
-  const count = await waitFor(() => $<HTMLInputElement>(tid('rv-exam-questions')), 'the count');
-  setValue(count, '6');
-  await clickTestId('rv-exam-start');
+  await examCount();
+  await wizardTo('Looks good?');
+  await clickText('Start exam', '.sv-wiz__nav button');
   await waitFor(() => $(tid('rv-exam-run')), 'the exam', 20_000);
 }
 
@@ -190,9 +328,11 @@ async function finishExam(): Promise<void> {
   if (confirm) confirm.click();
   await waitFor(() => $(tid('rv-exam-marking')) ?? $(tid('rv-exam-results')), 'marking or results');
   if ($(tid('rv-exam-marking'))) {
-    const knew = [...document.querySelectorAll<HTMLElement>('label.rv-choice')].filter((l) =>
-      l.textContent?.includes('I knew it'),
-    );
+    const knew = [
+      ...document.querySelectorAll<HTMLElement>(
+        '[data-testid^="rv-exam-mark-"][data-testid$="-know"]',
+      ),
+    ];
     knew.filter((_, i) => i % 2 === 0).forEach((l) => l.querySelector('input')?.click());
     await frames();
     await clickTestId('rv-exam-mark-rest');
@@ -204,15 +344,20 @@ async function finishExam(): Promise<void> {
 export const SCRIPTS: Partial<Record<Surface, Record<string, StateScript>>> = {
   popup: {
     reminder,
+    game: { run: async () => void (await waitFor(() => $('.pp-game .sv-ring'), 'the goal ring')) },
+    'game-off': {
+      prepare: async () => setGameMode(false),
+      run: async () => void (await waitFor(() => $('.pp-game--plain'), "today's plain counts")),
+    },
     'deny-confirm': {
       run: async () => {
-        await clickText('Allow StudyVault on mail.google.com');
+        await clickText('Allow this site');
         await waitFor(() => byText('Keep it off'), 'the confirmation');
       },
     },
     activated: {
       run: async () => {
-        await clickText('Activate on this tab');
+        await clickText('Turn on', '.pp-site__acts button');
         await waitFor(() => byText('on this page', 'p, li, span, div'), 'the page counts');
       },
     },
@@ -247,8 +392,12 @@ export const SCRIPTS: Partial<Record<Surface, Record<string, StateScript>>> = {
         chip.scrollIntoView({ block: 'center' });
       },
     },
+    'card-drawer': { run: openDrawer },
+    'new-bank': { run: panelNewBankAt('Name it') },
+    'new-bank-review': { run: panelNewBankAt('Looks good?') },
     'card-links': {
       run: async () => {
+        await openDrawer();
         await click(() => byText('Show links'), 'Show links');
         const toggle = await waitFor(() => byText('Hide links'), 'the open links section');
         toggle.scrollIntoView({ block: 'start' });
@@ -269,6 +418,7 @@ export const SCRIPTS: Partial<Record<Surface, Record<string, StateScript>>> = {
     'ai-drafts': {
       prepare: aiConfigured,
       run: async () => {
+        await openDrawer();
         await clickTestId('card-ai-toggle');
         await scrollTo(tid('ai-actions'));
       },
@@ -276,6 +426,7 @@ export const SCRIPTS: Partial<Record<Surface, Record<string, StateScript>>> = {
     'ai-result': {
       prepare: aiConfigured,
       run: async () => {
+        await openDrawer();
         await clickTestId('card-ai-toggle');
         await clickTestId('ai-action-exam_pearl');
         await waitFor(() => $(tid('ai-consent-dialog')), 'the consent dialog');
@@ -314,13 +465,48 @@ export const SCRIPTS: Partial<Record<Surface, Record<string, StateScript>>> = {
       },
     },
     'rule-dialog': { run: clickThen(() => clickTestId('rule-new'), DIALOG) },
-    duplicates: {
-      run: clickThen(() => clickTestId('view-duplicates'), '[data-testid="duplicates-view"]'),
+    'rule-edit': { run: editRule('Looks good?') },
+    'rule-edit-try': { run: editRule('Try it') },
+    'rule-edit-file': { run: editRule('File into') },
+    'rule-edit-match': { run: editRule('What matches') },
+    'syllabus-wizard': { run: clickThen(() => clickTestId('syllabus-new'), DIALOG) },
+    'syllabus-wizard-paste': { run: syllabusPasted },
+    'syllabus-wizard-review': {
+      run: async () => {
+        await syllabusPasted();
+        await wizardTo('Looks good?');
+      },
     },
-    trash: { run: clickThen(() => clickTestId('view-trash'), '[data-testid="trash-view"]') },
-    storage: { run: clickThen(() => clickTestId('view-storage'), '[data-testid="storage-panel"]') },
     palette: { run: clickThen(() => clickTestId('open-palette'), DIALOG) },
-    'new-bank': { run: clickThen(() => clickTestId('new-bank'), DIALOG) },
+    'new-bank': {
+      run: async () => {
+        await homeReady();
+        await clickThen(() => clickTestId('home-new-bank'), DIALOG)();
+      },
+    },
+    'new-bank-icon': { run: newBankAt('Pick an icon') },
+    'new-bank-colour': { run: newBankAt('Pick a colour') },
+    'new-bank-review': { run: newBankAt('Looks good?') },
+    'new-bank-done': {
+      run: async () => {
+        await newBankAt('Looks good?')();
+        await clickText('Create bank', '.sv-wiz__nav button');
+        await waitFor(() => $(tid('new-bank-done')), 'the "Bank ready!" screen');
+      },
+    },
+    default: { run: homeReady },
+    'home-narrow': { run: homeReady },
+    'home-game-off': {
+      prepare: async () => setGameMode(false),
+      run: async () => void (await waitFor(() => $('.home-today__plain'), "today's plain counts")),
+    },
+    badges: {
+      run: async () => {
+        await homeReady();
+        await clickTestId('home-badges-all');
+        await waitFor(() => $(`dialog[open]${tid('badges-sheet')}`), 'the badges sheet');
+      },
+    },
     'chat-consent': { prepare: aiConfigured, run: askChat },
     'chat-answer': {
       prepare: aiConfigured,
@@ -341,18 +527,47 @@ export const SCRIPTS: Partial<Record<Surface, Record<string, StateScript>>> = {
   review: {
     session: {
       run: async () => {
-        await clickText('Study everything due');
-        await waitFor(() => byText('Show answer') ?? byText('Show the answer'), 'a card');
+        await clickTestId('rv-start-all');
+        await waitFor(() => $(tid('rv-reveal')), 'a card');
       },
     },
     answer: {
       run: async () => {
-        await clickText('Study everything due');
-        await click(
-          () => byText('Show answer') ?? byText('Show the answer'),
-          'the Show answer button',
-        );
-        await waitFor(() => byText('Again'), 'the rating buttons');
+        await clickTestId('rv-start-all');
+        await clickTestId('rv-reveal');
+        await waitFor(() => $(tid('rv-ratings')), 'the rating buttons');
+      },
+    },
+    'session-done': {
+      // The deck with the fewest cards due, every card answered Easy: the end-of-session screen.
+      run: async () => {
+        await waitFor(() => $(tid('rv-deck-picker')), 'the decks');
+        const due = (b: HTMLElement) => Number(/\((\d+)\)/.exec(b.textContent ?? '')?.[1] ?? 0);
+        const starts = [
+          ...document.querySelectorAll<HTMLButtonElement>('[data-testid^="rv-start-"]'),
+        ].filter((b) => b.dataset.testid !== 'rv-start-all' && due(b) > 0);
+        const smallest = starts.sort((a, b) => due(a) - due(b))[0];
+        if (!smallest) throw new Error('This scenario has no deck with cards due.');
+        smallest.click();
+        for (let i = 0; i < 200 && !$(tid('rv-summary')); i++) {
+          await waitFor(
+            () =>
+              $(tid('rv-summary')) ??
+              $(tid('rv-wait-now')) ??
+              $(`${tid('rv-ratings')} button`) ??
+              $(tid('rv-reveal')) ??
+              $(`${tid('rv-choices')} input`),
+            'the next card',
+          );
+          const next =
+            $(tid('rv-wait-now')) ??
+            $(tid('rv-rate-4')) ??
+            $(tid('rv-reveal')) ??
+            $<HTMLElement>(`${tid('rv-choices')} input`);
+          next?.click();
+          await frames();
+        }
+        await scrollTo(tid('rv-summary'), 30_000);
       },
     },
     'create-highlight': {
@@ -361,6 +576,19 @@ export const SCRIPTS: Partial<Record<Surface, Record<string, StateScript>>> = {
     'kp-editor': {
       prepare: async (setParam) => setParam('highlight', await richHighlightId()),
       run: async () => void (await scrollTo(tid('rv-kp-editor'))),
+    },
+    'exam-count': { run: examCount },
+    'exam-time': {
+      run: async () => {
+        await examCount();
+        await wizardTo('Time limit');
+      },
+    },
+    'exam-plan': {
+      run: async () => {
+        await examCount();
+        await wizardTo('Looks good?');
+      },
     },
     'exam-run': { run: startExam },
     'exam-results': {
@@ -371,8 +599,11 @@ export const SCRIPTS: Partial<Record<Surface, Record<string, StateScript>>> = {
     },
     'card-edit': {
       run: async () => {
-        await click(() => byText('Edit', `${tid('rv-browser')} button`), 'a card Edit button');
-        await scrollTo(`${tid('rv-browser')} ${tid('rv-editor')}`);
+        await click(
+          () => $(`${tid('rv-browser')} button[aria-label="Edit"]`),
+          'a card Edit button',
+        );
+        await waitFor(() => $(`dialog[open] ${tid('rv-editor')}`), 'the Edit card sheet');
       },
     },
     backlog: {
@@ -412,9 +643,45 @@ export const SCRIPTS: Partial<Record<Surface, Record<string, StateScript>>> = {
         notice.scrollIntoView({ block: 'center' });
       },
     },
-    'delete-dialog': { run: clickThen(() => clickText('Delete all StudyVault data…'), DIALOG) },
-    'all-sites-dialog': { run: clickThen(() => clickText('Enable on all sites'), DIALOG) },
+    'delete-dialog': { run: clickThen(() => clickText('Delete all data'), DIALOG) },
+    'site-wizard': { run: clickThen(() => clickText('Choose sites'), DIALOG) },
+    'site-wizard-sites': {
+      run: async () => {
+        await clickText('Choose sites');
+        await choose('Some sites');
+        await wizardTo('Which sites?');
+        for (const site of ['nejm.org', 'bmj.com']) {
+          const field = `${DIALOG} input[inputmode="url"]`;
+          setValue(await waitFor(() => $<HTMLInputElement>(field), 'the site field'), site);
+          await clickText('Add', `${DIALOG} button`);
+          await waitFor(() => byText(site, `${DIALOG} li`), site);
+        }
+      },
+    },
+    'all-sites-dialog': {
+      // Choose sites -> All sites -> what Chrome will be asked (the old confirmation dialog).
+      run: async () => {
+        await clickText('Choose sites');
+        await choose('All sites');
+        await wizardTo('Chrome asks');
+      },
+    },
+    'backup-restore': { run: backupTask('restore') },
+    'backup-import': { run: backupTask('import') },
+    'backup-export': { run: backupTask('export') },
     'ai-configured': { prepare: aiConfigured },
+    'ai-wizard-address': { prepare: aiConfigured, run: editAiAt('Address and model') },
+    'ai-wizard-key': { prepare: aiConfigured, run: editAiAt('API key') },
+    'ai-wizard-limit': { prepare: aiConfigured, run: editAiAt('Daily limit') },
+    'ai-wizard-save': { prepare: aiConfigured, run: editAiAt('Save and test') },
+    'sync-wizard-server': { run: syncSetupAt('Sync server') },
+    'sync-wizard-signin': { run: syncSetupAt('Sign-in provider') },
+    'sync-wizard-check': {
+      run: async () => {
+        await syncSetupAt('Looks good?')();
+        await clickTestId('sync-ack');
+      },
+    },
     'ai-test-success': {
       prepare: aiConfigured,
       run: async () => {
@@ -461,7 +728,11 @@ export const SCRIPTS: Partial<Record<Surface, Record<string, StateScript>>> = {
     },
     'import-anki': {
       run: async () => {
-        chooseFile(await scrollTo<HTMLInputElement>(tid('backup-external-file')), FILES.anki());
+        await backupTask('import')();
+        chooseFile(
+          await waitFor(() => $<HTMLInputElement>(tid('backup-external-file')), 'the file input'),
+          FILES.anki(),
+        );
         await scrollTo(tid('backup-external-review'), 20_000);
       },
     },
@@ -476,6 +747,12 @@ export const SCRIPTS: Partial<Record<Surface, Record<string, StateScript>>> = {
     },
   },
   onboarding: {
+    default: { run: async () => void (await waitFor(() => $('.ob-chips'), 'the daily goal')) },
+    'welcome-game-off': {
+      prepare: async () => setGameMode(false),
+      run: async () =>
+        void (await waitFor(() => $('[aria-label="What StudyVault does"]'), 'the tiles')),
+    },
     privacy: tourAt('privacy'),
     access: tourAt('access'),
     banks: tourAt('banks'),
@@ -486,13 +763,13 @@ export const SCRIPTS: Partial<Record<Surface, Record<string, StateScript>>> = {
     'banks-created': {
       prepare: tourAt('banks', 'medicine').prepare,
       run: async () => {
-        await clickText('Create the bank and folders');
+        await clickTestId('ob-create');
         await waitFor(() => byText('Done', 'p, div, strong'), 'the created bank');
       },
     },
     skipped: {
       run: async () => {
-        await clickText('Skip the tour');
+        await clickTestId('ob-skip');
         await waitFor(() => byText('Tour skipped', 'h1, h2'), '"Tour skipped"');
       },
     },
@@ -505,7 +782,7 @@ export const SCRIPTS: Partial<Record<Surface, Record<string, StateScript>>> = {
       run: async () => {
         const input = await waitFor(() => $<HTMLInputElement>(tid('pdf-file-input')), 'the input');
         chooseFile(input, await FILES.lockedPdf());
-        await waitFor(() => byText('This PDF is password protected', 'h2'), 'the password dialog');
+        await waitFor(() => byText('Password needed', 'h2'), 'the password dialog');
       },
     },
     scanned: {
