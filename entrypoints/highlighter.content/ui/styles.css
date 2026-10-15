@@ -127,9 +127,13 @@
  *
  * The toolbar appears while a double or triple click is still going on, right next to the word, and
  * a box that is still fading in already takes pointer events: it swallowed the next click. Until the
- * enter animation has finished it is click-through (sv-arm holds pointer-events: none for exactly
- * its duration, then the element's own value, auto, applies). Reduced motion turns every animation
- * off, so it is interactive at once.
+ * enter animation has finished the bar is click-through (sv-arm holds pointer-events: none for
+ * exactly its duration, then the bar's own value, auto, applies). Reduced motion turns every
+ * animation off, so it is interactive at once.
+ *
+ * Only the bar and its popups take clicks. The rest of the unit (the hidden caption row, the gaps,
+ * the width of a wider popup) is invisible, and as a hit target it sat over page text and swallowed
+ * clicks on the page's links.
  */
 .sv-unit {
   display: flex;
@@ -138,9 +142,16 @@
   gap: 6px;
   max-width: calc(100vw - 16px);
   max-height: calc(100vh - 16px);
-  animation:
-    sv-in var(--sv-motion) ease-out,
-    sv-arm var(--sv-motion) linear;
+  pointer-events: none;
+  animation: sv-in var(--sv-motion) ease-out;
+}
+.sv-unit .sv-toolbar,
+.sv-unit .sv-menu,
+.sv-unit .sv-panel {
+  pointer-events: auto;
+}
+.sv-unit .sv-toolbar {
+  animation: sv-arm var(--sv-motion) linear;
 }
 /* Above the selection the bar is the bottom row, next to the text, and a popup opens upward. */
 .sv-unit[data-placement='above'] {

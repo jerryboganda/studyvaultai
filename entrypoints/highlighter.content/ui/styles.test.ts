@@ -320,11 +320,14 @@ describe('reflow', () => {
 describe('toolbar is click-through while it animates in', () => {
   const css = stripComments(readCss(STYLES_CSS));
   const unit = declsFor(styles, '.sv-unit');
+  const bar = declsFor(styles, '.sv-unit .sv-toolbar');
 
   it('holds pointer-events: none for exactly the duration of the enter animation', () => {
-    const names = (unit.get('animation') ?? '').split(',').map((a) => a.trim());
+    const names = [unit, bar].flatMap((d) =>
+      (d.get('animation') ?? '').split(',').map((a) => a.trim()),
+    );
     const enter = names.find((a) => a.startsWith('sv-in '));
-    const arm = names.find((a) => a.startsWith('sv-arm '));
+    const arm = (bar.get('animation') ?? '').trim();
     expect(enter, 'enter animation').toBeDefined();
     expect(arm, 'click-through animation').toBeDefined();
     // Same duration token: the toolbar is interactive the moment it has finished appearing.
@@ -339,10 +342,19 @@ describe('toolbar is click-through while it animates in', () => {
     expect(block?.[1]?.replace(/\s+/g, ' ').trim()).toBe('from, to { pointer-events: none; }');
   });
 
-  it('is interactive afterwards: the unit itself never sets pointer-events', () => {
-    expect(unit.has('pointer-events')).toBe(false);
+  it('is interactive afterwards: the bar and its popups take clicks once armed', () => {
+    for (const sel of ['.sv-unit .sv-toolbar', '.sv-unit .sv-menu', '.sv-unit .sv-panel']) {
+      expect(declsFor(styles, sel).get('pointer-events'), sel).toBe('auto');
+    }
+    expect(bar.get('animation')).toMatch(/^sv-arm /);
+  });
+
+  // The unit is taller than the bar (the always-laid-out caption row and the gaps) and as wide as
+  // its widest child. Those empty boxes sat over page text and swallowed clicks on page links.
+  it('the empty parts of the unit (caption row, gaps) never take a click', () => {
+    expect(unit.get('pointer-events')).toBe('none');
     for (const rule of styles.filter((r) =>
-      r.selectors.some((s) => /(^|\s)\.sv-(unit|toolbar|panel)\b/.test(s)),
+      r.selectors.some((s) => /\.sv-(bar-group|caption)(?![\w-])/.test(s)),
     )) {
       expect(rule.decls.get('pointer-events'), rule.selectors.join(', ')).toBeUndefined();
     }
