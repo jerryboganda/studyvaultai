@@ -14,14 +14,18 @@ import {
   databaseNames,
   deleteAllData,
   downloadOf,
+  exportPanel,
   expectReview,
   expectSameVault,
   flippedTableByte,
   forgedZip64,
   metaValue,
   openBackupPage,
+  openDisclosure,
+  openSection,
   openWipeDialog,
   pageProblems,
+  pick,
   readArchive,
   refusal,
   rewriteTable,
@@ -31,6 +35,7 @@ import {
   selectReplace,
   setPassphrase,
   sha256Of,
+  showTask,
   snapshotVault,
   truncated,
   wipeDialog,
@@ -49,6 +54,7 @@ import {
   expectTotal,
   openControl,
   openDashboard,
+  openMoreView,
   readTable,
   type DatasetInput,
   type StoredHighlight,
@@ -292,11 +298,13 @@ test.describe('export, Delete all data, restore', () => {
 
     // ---- export ------------------------------------------------------------------------------
     const page = await openBackupPage(env);
-    // Before anything is pressed the panel already says what is and is not in the file.
+    // Before anything is pressed the panel already says what is and is not in the file (its
+    // "What is in the file" panel, on the first step of the backup).
+    await openDisclosure(exportPanel(page), 'What is in the file');
     const holds = page.getByTestId('backup-export-holds');
     await expect(holds).toContainText('banks, folders, tags, highlights');
     await expect(holds).toContainText('flashcards with their review history');
-    await expect(holds).toContainText('Nothing is uploaded');
+    await expect(holds).toContainText('never uploaded');
     const leavesOut = page.getByTestId('backup-export-leaves-out');
     await expect(leavesOut).toContainText('Not in the file:');
     await expect(leavesOut).toContainText('your settings');
@@ -375,7 +383,7 @@ test.describe('export, Delete all data, restore', () => {
     );
     expect(await storedSettings(page), 'settings are back to their defaults').toBeUndefined();
     const empty = await openDashboard(env, {}, { settle: false });
-    await expect(empty.getByText('Your vault is empty')).toBeVisible();
+    await expect(empty.getByText('Nothing saved yet')).toBeVisible();
     await empty.close();
 
     // ---- restore: read the dry run, choose replace, commit -----------------------------------
@@ -495,12 +503,21 @@ test.describe('export, Delete all data, restore', () => {
     const before = await snapshotVault(ctrl);
     const page = await openBackupPage(env);
 
-    // Turning encryption on without a matching passphrase and the acknowledgement is not possible.
+    // Turning encryption on without a matching passphrase and the acknowledgement is not possible:
+    // Next keeps the person on the passphrase step with the reason under the field, and "Back up
+    // now" is never offered.
     const panel = page.getByTestId('backup-export');
-    await panel.getByTestId('backup-export-pass-enable').check();
-    await expect(page.getByTestId('backup-export-problem')).toContainText('at least 8 characters');
-    await expect(panel.getByTestId('backup-export-start')).toHaveAttribute('aria-disabled', 'true');
-    await panel.getByTestId('backup-export-pass-enable').uncheck();
+    await pick(panel.getByTestId('backup-export-pass-enable'));
+    await panel.getByTestId('backup-export-flow-next').click();
+    await panel.getByTestId('backup-export-flow-next').click();
+    await expect(panel.getByRole('alert')).toContainText('at least 8 characters');
+    await expect(panel.getByTestId('backup-export-pass-value')).toHaveAttribute(
+      'aria-invalid',
+      'true',
+    );
+    await expect(panel.getByTestId('backup-export-start')).toHaveCount(0);
+    await panel.getByTestId('backup-export-flow-back').click();
+    await pick(panel.getByTestId('backup-export-pass-off'));
 
     const file = await createBackup(page, { passphrase: PASSPHRASE });
     expect(file.name).toMatch(/^studyvault-backup-\d{8}-\d{6}\.svbackup$/);
@@ -522,7 +539,7 @@ test.describe('export, Delete all data, restore', () => {
     await chooseBackup(page, file);
     const w = wizard(page);
     const ask = w.getByTestId('backup-import-passphrase');
-    await expect(ask).toContainText('This backup is encrypted');
+    await expect(ask).toContainText('This backup is locked');
     await ask.getByTestId('backup-import-pass').fill('this is not the passphrase');
     await ask.getByTestId('backup-import-unlock').click();
     await expect(ask).toContainText('That passphrase did not open the backup');
@@ -602,8 +619,8 @@ test.describe('export, Delete all data, restore', () => {
     });
     await bgData(ctrl, 'highlight.delete', { id: h2.id });
     const dash = await openDashboard(env);
-    await dash.getByTestId('view-trash').click();
-    await dash.getByTestId('trash-kind').selectOption('highlight');
+    await openMoreView(dash, 'trash');
+    await pick(dash.getByTestId('trash-kind').locator('input[value="highlight"]'));
     await dash.getByTestId('trash-select-all').click();
     await dash.getByTestId('trash-purge').click();
     await dialogOf(dash, /^Permanently delete 1 item/)
@@ -889,7 +906,7 @@ test.describe('export, Delete all data, restore', () => {
       `${left} items in the file did not match the data model and will be left out.`,
     );
     await w.getByTestId('backup-import-discard').click();
-    await expect(w.getByTestId('backup-import-file')).toBeVisible();
+    await expect(w.getByTestId('backup-import-drop')).toBeVisible();
     expectSameVault(await snapshotVault(ctrl), baseline, 'the vault after cancelling');
 
     // The other frozen archives, the newest one encrypted: same plain refusal, same untouched vault.
@@ -931,7 +948,7 @@ test.describe('export, Delete all data, restore', () => {
 
     const page = await openBackupPage(env);
     const copy = page.getByTestId('backup-safety-copy');
-    await expect(copy).toContainText('Copy made before the last update');
+    await expect(copy).toContainText('Copy from before the update');
     await expect(copy).toContainText('version 20 to 30');
     await expect(copy).toContainText(planted.sha256);
     await expect(copy).toContainText('4 highlights');
@@ -1028,6 +1045,7 @@ test.describe('export, Delete all data, restore', () => {
     const page = await openBackupPage(env);
     const ext = page.getByTestId('backup-external');
 
+    await showTask(page, 'import');
     await ext.getByTestId('backup-external-file').setInputFiles({
       name: 'lecture-notes.md',
       mimeType: 'text/markdown',
@@ -1118,6 +1136,8 @@ test.describe('export, Delete all data, restore', () => {
 
     const page = await openBackupPage(env);
     const readable = page.getByTestId('backup-readable');
+    // Layout, notes and the byte order mark are in the export's closed "Options" panel.
+    const options = () => openDisclosure(readable.getByTestId('readable-options'), 'Options');
     const prepare = async () => {
       await readable.getByTestId('readable-prepare').click();
       await expect(readable.getByTestId('readable-result')).toBeVisible();
@@ -1127,6 +1147,8 @@ test.describe('export, Delete all data, restore', () => {
     const live = [PHYSIO_ATP, PHYSIO_MEMBRANE, PHYSIO_PUMP];
 
     // Markdown, one combined file
+    await showTask(page, 'export');
+    await options();
     await readable.getByTestId('readable-layout-single').check();
     await prepare();
     await expect(readable.getByTestId('readable-summary')).toContainText('3 highlights in 1 file.');
@@ -1152,7 +1174,7 @@ test.describe('export, Delete all data, restore', () => {
     expect(memberText).not.toContain(TRASHED);
 
     // Markdown for one chosen bank only
-    await readable.getByTestId('readable-scope-banks').check();
+    await pick(readable.getByTestId('readable-scope-banks'));
     await readable.getByTestId(`readable-bank-${ds.id.bank('cardio')}`).check();
     await readable.getByTestId('readable-layout-single').check();
     await prepare();
@@ -1161,10 +1183,11 @@ test.describe('export, Delete all data, restore', () => {
     expect(cardioOnly).toContain(PHYSIO_ATP);
     expect(cardioOnly).toContain(PHYSIO_PUMP);
     expect(cardioOnly).not.toContain(PHYSIO_MEMBRANE);
-    await readable.getByTestId('readable-scope-all').check();
+    await pick(readable.getByTestId('readable-scope-all'));
 
     // CSV, with the byte order mark for spreadsheets
-    await readable.getByTestId('readable-format-csv').check();
+    await pick(readable.getByTestId('readable-format-csv'));
+    await options();
     await readable.getByTestId('readable-bom').check();
     await prepare();
     const csv = await download();
@@ -1176,7 +1199,7 @@ test.describe('export, Delete all data, restore', () => {
     expect(csvText).not.toContain(TRASHED);
 
     // Anki: the field mapping is shown before the download
-    await readable.getByTestId('readable-format-anki').check();
+    await pick(readable.getByTestId('readable-format-anki'));
     await prepare();
     await expect(readable.getByTestId('readable-anki-mapping')).toContainText('Becomes in Anki');
     await expect(readable.getByTestId('readable-summary')).toContainText(
@@ -1185,20 +1208,28 @@ test.describe('export, Delete all data, restore', () => {
     const anki = await download();
     expect(anki.bytes.toString('utf8')).toContain('What does the sodium potassium pump move?');
 
-    // The AI key is set through the real settings, then no backup carries it.
+    // The AI key is set through the real settings (the AI view's setup), then no backup carries it.
     const KEY = 'sk-e2e-canary-0123456789abcdef';
+    await openSection(page, 'ai');
     // The switch follows the stored setting (a worker round trip): click, then wait for it.
     await page.getByTestId('ai-enable').click();
     await expect(page.getByTestId('ai-enable')).toBeChecked();
-    await page.getByRole('button', { name: 'Use OpenAI' }).click();
-    await page.getByTestId('ai-save-settings').click();
-    await page.getByTestId('ai-key-input').fill(KEY);
-    await page.getByTestId('ai-key-save').click();
-    await expect(page.getByTestId('ai-key-mask')).toBeVisible();
+    const setup = page.getByTestId('ai-setup');
+    await pick(setup.getByTestId('ai-preset-openai'));
+    await setup.getByTestId('ai-setup-next').click();
+    await setup.getByTestId('ai-model').fill('gpt-4o-mini');
+    await setup.getByTestId('ai-setup-next').click();
+    await setup.getByTestId('ai-key-input').fill(KEY);
+    await setup.getByTestId('ai-setup-next').click(); // daily limit: the default
+    await setup.getByTestId('ai-setup-next').click(); // summary (nothing is tested or sent)
+    await setup.getByTestId('ai-setup-save').click();
+    await expect(page.getByTestId('ai-status').getByTestId('ai-key-mask')).toBeVisible();
     expect(
       await metaValue(ctrl, 'aiKey'),
       'the key is stored (in meta, outside backups)',
     ).toMatchObject({ apiKey: KEY });
+    await openSection(page, 'backup');
+    await expect(page.getByTestId('backup-section')).toBeVisible();
 
     const full = await createBackup(page);
     const archive = readArchive(full.bytes);
@@ -1300,11 +1331,24 @@ test.describe('export, Delete all data, restore', () => {
     const w = wizard(page);
 
     await checkAxe('backup section at rest');
+    // each of the other tools at rest (only the chosen one is shown)
+    for (const task of ['restore', 'import', 'export'] as const) {
+      await showTask(page, task);
+      await checkAxe(`${task} at rest`);
+    }
+    await showTask(page, 'backup');
 
-    // export: passphrase fields open, then the finished export with its facts and counts
-    await page.getByTestId('backup-export-pass-enable').check();
+    // export: passphrase step (with its error), then the finished export with its facts and counts
+    const panel = exportPanel(page);
+    await pick(panel.getByTestId('backup-export-pass-enable'));
+    await panel.getByTestId('backup-export-flow-next').click();
+    await expect(panel.getByTestId('backup-export-pass-value')).toBeVisible();
     await checkAxe('export with the passphrase fields open');
-    await page.getByTestId('backup-export-pass-enable').uncheck();
+    await panel.getByTestId('backup-export-flow-next').click();
+    await expect(panel.getByRole('alert')).toBeVisible();
+    await checkAxe('export: passphrase step with its error');
+    await panel.getByTestId('backup-export-flow-back').click();
+    await pick(panel.getByTestId('backup-export-pass-off'));
     const plain = await createBackup(page);
     await checkAxe('export finished');
     await page.getByTestId('backup-export-done').getByRole('button', { name: 'Done' }).click();
@@ -1349,15 +1393,17 @@ test.describe('export, Delete all data, restore', () => {
     await chooseAnother(page);
 
     // readable exports and external import
+    await showTask(page, 'export');
     const readable = page.getByTestId('backup-readable');
-    await readable.getByTestId('readable-format-anki').check();
+    await pick(readable.getByTestId('readable-format-anki'));
     await readable.getByTestId('readable-prepare').click();
     await expect(readable.getByTestId('readable-result')).toBeVisible();
     await checkAxe('readable export: Anki preview');
-    await readable.getByTestId('readable-scope-banks').check();
+    await pick(readable.getByTestId('readable-scope-banks'));
     await expect(readable.getByTestId('readable-banks')).toBeVisible();
     await checkAxe('readable export: choosing banks');
 
+    await showTask(page, 'import');
     const ext = page.getByTestId('backup-external');
     await ext.getByTestId('backup-external-file').setInputFiles({
       name: 'notes.md',
@@ -1372,10 +1418,17 @@ test.describe('export, Delete all data, restore', () => {
     await expect(ext.getByTestId('backup-needs-review')).toBeVisible();
     await checkAxe('import from Markdown: imported, needs review');
 
-    // the destructive confirmation (the whole page: the dialog is modal)
+    // the destructive flow (the whole page: the dialog is modal). Focus starts on the step title,
+    // never on the destructive button; the typed confirmation is its own step.
     await openWipeDialog(page);
-    await expect(wipeDialog(page).getByRole('button', { name: 'Cancel' })).toBeFocused();
+    const wipe = wipeDialog(page);
+    await expect(wipe.getByRole('heading', { name: 'What goes' })).toBeFocused();
     expect.soft(await axeViolations(page), 'axe violations: Delete all data dialog').toBe('');
+    await wipe.getByRole('button', { name: 'Next', exact: true }).click();
+    await expect(wipe.getByRole('heading', { name: 'Type to confirm' })).toBeFocused();
+    expect
+      .soft(await axeViolations(page), 'axe violations: Delete all data, typed confirmation')
+      .toBe('');
     await page.keyboard.press('Escape');
     await expect(wipeDialog(page)).toHaveCount(0);
     expect(

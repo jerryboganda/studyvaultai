@@ -8,6 +8,7 @@ import {
   expectSameVault,
   metaValue,
   openBackupPage,
+  openDisclosure,
   pageProblems,
   readArchive,
   setPassphrase,
@@ -94,6 +95,10 @@ async function seed(env: Env): Promise<Page> {
 
 const folderPanel = (page: Page): Locator => page.getByTestId('backup-folder');
 
+/** The card's closed panels: "Options" (copies, reminder, PDFs, passphrase) and "Last file". */
+const openOptions = (page: Page) => openDisclosure(folderPanel(page), 'Options');
+const openLastFile = (page: Page) => openDisclosure(folderPanel(page), 'Last file');
+
 async function chooseFolder(page: Page): Promise<void> {
   await stubFolderPicker(page);
   await folderPanel(page).getByTestId('backup-folder-choose').click();
@@ -125,6 +130,7 @@ test.describe('backup folder', () => {
 
     // ---- before a folder is chosen: what it is, said first; nothing asked ----------------------
     await expect(panel.getByTestId('backup-folder-choose')).toBeVisible();
+    await openDisclosure(panel, 'What Chrome allows');
     const note = panel.getByTestId('backup-folder-permission-note');
     await expect(note).toContainText('You give that permission for that one folder');
     await expect(note).toContainText('take it back at any time in Chrome’s site settings');
@@ -167,7 +173,8 @@ test.describe('backup folder', () => {
     for (const quote of QUOTES) expect(archive.everything).toContain(quote);
 
     const done = panel.getByTestId('backup-folder-done');
-    await expect(done).toContainText('read the file back from the folder and it matches');
+    await expect(done).toContainText('Read back and checked, byte for byte.');
+    await openLastFile(page);
     await expect(panel.getByTestId('backup-folder-sha')).toHaveText(sha256Of(bytes));
     await expect(panel.getByTestId('backup-folder-last-file')).toContainText(file);
     await expect(panel.getByTestId('backup-folder-last-file')).toContainText('not encrypted');
@@ -182,10 +189,12 @@ test.describe('backup folder', () => {
 
     // ---- the status survives a reload ----------------------------------------------------------
     await page.reload();
+    await openLastFile(page);
     await expect(panel.getByTestId('backup-folder-last-file')).toContainText(file);
     await expect(panel.getByTestId('backup-folder-name')).toHaveText(FOLDER);
 
     // ---- Delete all data: the handle and the status go; the folder is not StudyVault's to empty -
+    // (Delete all data is its own settings view now: the Backup view opens again, no page reload.)
     await deleteAllData(page);
     await expect(
       panel.getByTestId('backup-folder-choose'),
@@ -226,6 +235,7 @@ test.describe('backup folder', () => {
 
     await panel.getByTestId('backup-folder-choose').click();
     await expect(panel.getByTestId('backup-folder-name')).toHaveText(FOLDER);
+    await openOptions(page);
     await panel.getByTestId('backup-folder-keep').selectOption('2');
     await expect
       .poll(
@@ -264,6 +274,7 @@ test.describe('backup folder', () => {
     expect(plain).toMatch(/\.zip$/);
 
     // Encryption needs a confirmed passphrase and the acknowledgement; keep 1 so the plain one goes.
+    await openOptions(page);
     await panel.getByTestId('backup-folder-keep').selectOption('1');
     await panel.getByTestId('backup-folder-pass-enable').check();
     await expect(panel.getByTestId('backup-folder-now')).toHaveAttribute('aria-disabled', 'true');
@@ -334,6 +345,7 @@ test.describe('backup folder', () => {
     await expect(failed).toContainText('There is not enough free space for the backup');
     await expect(failed).toContainText('older backups there were not removed');
     expect(await folderNames(page), 'no empty or partial file, nothing pruned').toEqual([first]);
+    await openLastFile(page);
     await expect(panel.getByTestId('backup-folder-last-file')).toContainText(first);
 
     // the person frees space: a reload drops the patched write, the same button works
@@ -363,6 +375,7 @@ test.describe('backup folder', () => {
     await chooseFolder(page);
 
     // A 3-day interval, and a folder that was chosen ten days ago without a backup.
+    await openOptions(page);
     await panel.getByTestId('backup-folder-remind').selectOption('3');
     await expect
       .poll(
@@ -387,7 +400,10 @@ test.describe('backup folder', () => {
     await expect(reminder).toContainText(
       `No backup has been made to “${FOLDER}” yet; you chose it 10 days ago.`,
     );
-    await expect(reminder).toContainText('cannot back up by itself in the background');
+    // The why is behind the reminder's (i).
+    await reminder.getByRole('button', { name: 'Why a reminder' }).click();
+    await expect(reminder.getByText(/cannot back up by itself in the background/)).toBeVisible();
+    await page.keyboard.press('Escape');
     expect
       .soft(await axeViolations(page, '[data-testid="backup-reminder"]'), 'axe: reminder')
       .toBe('');
@@ -407,6 +423,7 @@ test.describe('backup folder', () => {
 
     const file = await backUpNow(page);
     await expect(page.getByTestId('backup-reminder')).toHaveCount(0);
+    await openLastFile(page);
     await expect(panel.getByTestId('backup-folder-last-file')).toContainText(file);
 
     // The dashboard follows (it re-reads on focus and on a data change).
@@ -415,6 +432,7 @@ test.describe('backup folder', () => {
     await expect(dash.getByTestId('backup-reminder')).toHaveCount(0);
 
     // A reminder turned off stays quiet however old the backup is.
+    await openOptions(page);
     await panel.getByTestId('backup-folder-remind').selectOption('0');
     await expect
       .poll(
@@ -438,8 +456,8 @@ test.describe('backup folder', () => {
     await expect(page.getByTestId('backup-section')).toBeVisible();
 
     const note = page.getByTestId('backup-folder-unsupported');
-    await expect(note).toContainText('does not give extensions a folder picker');
-    await expect(note).toContainText('Create backup file');
+    await expect(note).toContainText('no folder picker for extensions');
+    await expect(note).toContainText('Use “Back up now” above');
     await expect(page.getByTestId('backup-folder-choose')).toHaveCount(0);
     await expect(page.getByTestId('backup-folder-now')).toHaveCount(0);
     expect

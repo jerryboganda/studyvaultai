@@ -7,7 +7,7 @@ import { BackupError } from '@backup';
 import { getBackupFolder, getBackupFolderState, resetDbForTests } from '@storage';
 import type { BackupFolderPrefs, BackupFolderState } from '@storage';
 import { BackupFolder } from './BackupFolder';
-import { BACKUP_FOLDER_CHANGED, BackupReminder } from './BackupReminder';
+import { BACKUP_FOLDER_CHANGED, BACKUP_SHOW, BackupReminder } from './BackupReminder';
 import { BackupSection } from './BackupSection';
 import {
   createBackupDeps,
@@ -155,6 +155,18 @@ describe('BackupFolder: where the browser has no folder picker', () => {
     expect(screen.queryByTestId('backup-folder-now')).toBeNull();
     // the backup-file wizard is still there
     expect(screen.getByTestId('backup-export-flow')).toBeTruthy();
+  });
+});
+
+describe('BackupSection: Go to backup from the reminder', () => {
+  it('focuses the folder button even when Back up is already the chosen task', async () => {
+    const s = scripted(null);
+    render(<BackupSection appVersion="1.2.3" deps={depsWith(s.folder)} />);
+    const choose = await screen.findByTestId('backup-folder-choose', {}, LAZY);
+    act(() => {
+      window.dispatchEvent(new Event(BACKUP_SHOW));
+    });
+    await waitFor(() => expect(document.activeElement).toBe(choose));
   });
 });
 

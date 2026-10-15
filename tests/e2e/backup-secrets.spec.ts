@@ -27,6 +27,8 @@ import {
   createBackup,
   deleteAllData,
   openBackupPage,
+  openSection,
+  pick,
   readArchive,
   wizard,
 } from './helpers.backup';
@@ -187,20 +189,40 @@ test.describe('backups and the AI keys', () => {
       ).toEqual([aiDraft?.id]);
       await expectNoAiSecretsStored(backup, what);
 
-      // The AI section of the restored vault: the switch is the person's to turn on again, and
-      // then it shows no provider, no key and no fallback.
+      // The AI section of the restored vault (its own settings view): the switch is the person's
+      // to turn on again, and then it shows no provider, no key and no fallback. With nothing set
+      // up the section opens its setup wizard; the status card (Test, key chip, usage) and the
+      // "Advanced" panel (fallback providers, usage ledger) only exist once a provider is saved.
       await backup.reload();
+      await openSection(backup, 'ai');
       await expect(aiSwitch(backup)).toBeVisible();
       await expect(aiSwitch(backup)).not.toBeChecked();
       await enableAi(backup);
-      await expect(backup.getByTestId('ai-key-status')).toHaveText('No key saved.');
-      await expect(backup.getByTestId('ai-base-url')).toHaveValue('');
-      await expect(backup.getByTestId('ai-model')).toHaveValue('');
-      await expect(backup.getByTestId('ai-test')).toHaveAttribute('aria-disabled', 'true');
+      const setup = backup.getByTestId('ai-setup');
+      await expect(setup).toBeVisible();
+      await expect(backup.getByTestId('ai-status')).toHaveCount(0);
+      await expect(backup.getByTestId('ai-test')).toHaveCount(0);
+      await expect(backup.getByTestId('ai-advanced')).toHaveCount(0);
       await expect(profilesOf(backup)).toHaveCount(0);
-      await expect(backup.getByTestId('ai-fallbacks-empty')).toBeVisible();
-      await expect(backup.getByTestId('ai-ledger-requests')).toHaveText('0 of 30');
+      await expect(
+        setup.getByTestId('ai-provider-choice').locator('input:checked'),
+        'no provider is picked',
+      ).toHaveCount(0);
+      // "Other": the address and the model are empty ...
+      await pick(setup.getByTestId('ai-preset-custom'));
+      await setup.getByTestId('ai-setup-next').click();
+      await expect(setup.getByTestId('ai-base-url')).toHaveValue('');
+      await expect(setup.getByTestId('ai-model')).toHaveValue('');
+      // ... and with an address typed in (never saved), the key step has no saved key to show.
+      await setup.getByTestId('ai-base-url').fill('https://api.example.com/v1');
+      await setup.getByTestId('ai-model').fill('any-model');
+      await setup.getByTestId('ai-setup-next').click();
+      await expect(setup.getByTestId('ai-key-input')).toHaveValue('');
+      await expect(setup.getByTestId('ai-key-status')).toHaveCount(0);
+      await expect(setup.getByLabel('API key', { exact: true })).toBeVisible();
       await expectNoAiSecretsStored(backup, `${what}, AI switched on`);
+      await openSection(backup, 'backup');
+      await expect(backup.getByTestId('backup-section')).toBeVisible();
     };
 
     await deleteAllData(backup);
@@ -216,7 +238,7 @@ test.describe('backups and the AI keys', () => {
 
     await chooseBackup(backup, encrypted);
     const ask = wizard(backup).getByTestId('backup-import-passphrase');
-    await expect(ask).toContainText('This backup is encrypted');
+    await expect(ask).toContainText('This backup is locked');
     await ask.getByTestId('backup-import-pass').fill(PASSPHRASE);
     await ask.getByTestId('backup-import-unlock').click();
     await commitRestore(backup);

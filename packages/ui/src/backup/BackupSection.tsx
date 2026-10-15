@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Archive, ArchiveRestore, FileDown, FileInput } from 'lucide-react';
 import { watchSettings } from '@runtime';
 import './backup.css';
@@ -48,8 +48,8 @@ export function BackupSection({ appVersion, deps: override, onRestored }: Backup
   );
   const [syncOn, setSyncOn] = useState<boolean | null>(null);
   const [task, setTask] = useState<Task>('backup');
-  /** The reminder asked for the folder backup: focus its button once the panel shows. */
-  const focusFolder = useRef(false);
+  /** Bumped by each "Go to backup" from the reminder: focus the folder button, even if Back up is already chosen. */
+  const [focusAsk, setFocusAsk] = useState(0);
 
   useEffect(() => {
     let current = true;
@@ -68,18 +68,17 @@ export function BackupSection({ appVersion, deps: override, onRestored }: Backup
 
   useEffect(() => {
     const show = () => {
-      focusFolder.current = true;
       setTask('backup');
+      setFocusAsk((n) => n + 1);
     };
     window.addEventListener(BACKUP_SHOW, show);
     return () => window.removeEventListener(BACKUP_SHOW, show);
   }, []);
   useEffect(() => {
-    if (task !== 'backup' || !focusFolder.current) return;
-    focusFolder.current = false;
+    if (!focusAsk) return;
     const now = document.querySelector<HTMLElement>('[data-testid="backup-folder-now"]');
     (now ?? document.querySelector<HTMLElement>('[data-testid="backup-folder-choose"]'))?.focus();
-  });
+  }, [focusAsk]);
 
   return (
     <section className="sd-section bk" aria-labelledby="bk-title" data-testid="backup-section">
