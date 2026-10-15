@@ -89,6 +89,7 @@ test.describe('choosing Anthropic and keeping its key', () => {
       baseUrl: anthropic.baseUrl,
       model: ANTHROPIC_MODEL,
       preset: 'anthropic',
+      key: ANTHROPIC_KEY, // Anthropic always wants a key, even at a local address: the wizard asks
     });
     await expect(options.getByTestId('ai-endpoint-status')).toContainText(
       `Requests go to ${anthropic.origin} only.`,
@@ -100,15 +101,6 @@ test.describe('choosing Anthropic and keeping its key', () => {
     });
     expect(anthropic.seen, 'configuring a provider sends nothing').toEqual([]);
 
-    // Anthropic always wants a key, even at a local address: the test button says so.
-    await expect(options.getByTestId('ai-key-status')).toHaveText('No key saved');
-    const testButton = options.getByTestId('ai-test');
-    await expect(testButton).toHaveAttribute('aria-disabled', 'true');
-    await expect(testButton).toHaveAccessibleDescription(
-      'Add your API key in the AI settings first.',
-    );
-
-    await saveKey(options, ANTHROPIC_KEY);
     await expect(options.getByTestId('ai-key-status')).toContainText(maskOf(ANTHROPIC_KEY));
     await expect(options.getByTestId('ai-access-status')).toHaveText('allowed');
 

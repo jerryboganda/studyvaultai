@@ -873,7 +873,10 @@ test.describe('extension pages: axe WCAG 2.2 AA', () => {
       // Search: syntax help open, facets open, results, then "no results".
       await panel.getByRole('tab', { name: 'Search' }).click();
       await panel.getByRole('searchbox').fill('sinoatrial');
-      await expect(panel.getByTestId('search-results').getByRole('article')).toHaveCount(1);
+      // The index catches up with the edits above in the background: allow it the time (CI is slower).
+      await expect(panel.getByTestId('search-results').getByRole('article')).toHaveCount(1, {
+        timeout: 15_000,
+      });
       await panel.getByRole('button', { name: 'Search syntax' }).click();
       await panel.getByRole('button', { name: 'Narrow results' }).click();
       await expectNoViolations(panel);

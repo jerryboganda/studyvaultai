@@ -7,7 +7,6 @@ import {
   metaValue,
   openAdvanced,
   profilesOf,
-  saveKey,
   test as base,
 } from './helpers.aiExtras';
 
@@ -44,25 +43,26 @@ export const test = base.extend<{ anthropic: FakeProvider }>({
  */
 export async function configureAnthropic(
   options: Page,
-  cfg: { baseUrl: string; model?: string },
+  cfg: { baseUrl: string; model?: string; key?: string },
 ): Promise<void> {
   await configureProvider(options, {
     baseUrl: cfg.baseUrl,
     model: cfg.model ?? ANTHROPIC_MODEL,
     preset: 'anthropic',
+    ...(cfg.key ? { key: cfg.key } : {}),
   });
   expect(await metaValue(options, 'aiSettings')).toMatchObject({ provider: 'anthropic' });
 }
 
-/** Switch on, choose Anthropic at the fake's address, save the key. Sends nothing. */
+/** Switch on, choose Anthropic at the fake's address, give the key in the wizard. Sends nothing. */
 export async function setUpAnthropic(
   options: Page,
   anthropic: Pick<FakeProvider, 'baseUrl'>,
-  key: string | null = ANTHROPIC_KEY,
+  key: string = ANTHROPIC_KEY,
 ): Promise<void> {
   await enableAi(options);
-  await configureAnthropic(options, { baseUrl: anthropic.baseUrl });
-  if (key !== null) await saveKey(options, key);
+  // Anthropic always needs a key, even at a local address: the wizard asks for it.
+  await configureAnthropic(options, { baseUrl: anthropic.baseUrl, key });
 }
 
 /**
