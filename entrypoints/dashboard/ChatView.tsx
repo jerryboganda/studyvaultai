@@ -32,9 +32,12 @@ import {
   VENDORS,
   describeAiError,
   effortsFor,
+  AI_NOTE_PREFIX,
+  highlightIdsInScope,
   loadAiConfig,
   partialAnswer,
   previewAiTask,
+  semanticPassages,
   requestEndpointAccess,
   retrieveForChat,
   retrieveStudyItems,
@@ -117,6 +120,7 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
   );
   const [message, setMessage] = useState('');
   const [useNotes, setUseNotes] = useState(true);
+  const [smart, setSmart] = useState(true);
   const [tagId, setTagId] = useState('');
   const [phase, setPhase] = useState<'idle' | 'finding' | 'waiting'>('idle');
   const [note, setNote] = useState<{ tone: 'info' | 'warning' | 'error'; text: string } | null>(
@@ -212,16 +216,21 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
     setPartial('');
     setElapsed(0);
     abort.current = new AbortController();
+    const signal = abort.current.signal;
     try {
-      await runAiTask(config, env, {
-        kind: 'chat',
-        selection,
-        preview,
-        threadId,
-        prefer,
-        signal: abort.current.signal,
-        onDelta: (soFar) => setPartial(partialAnswer(soFar)),
-      });
+      // One send per conversation at a time across tabs, so two tabs cannot interleave turns.
+      const locks = typeof navigator === 'undefined' ? undefined : navigator.locks;
+      const send = () =>
+        runAiTask(config, env, {
+          kind: 'chat',
+          selection,
+          preview,
+          threadId,
+          prefer,
+          signal,
+          onDelta: (soFar) => setPartial(partialAnswer(soFar)),
+        });
+      await (locks ? locks.request(`sv-chat-${threadId}`, { signal }, send) : send());
       setMessage((m) => (m.trim() === text ? '' : m));
       setNote(null);
       const all = await getChatTurns(threadId);
@@ -327,9 +336,26 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
         });
         passages = found.passages;
         // Flashcards and knowledge points are not in the search index: matched separately.
-        const study = await retrieveStudyItems(`${before} ${text}`.trim());
+        const inScope = await highlightIdsInScope({
+          bankId: scope.bankId,
+          folderId: scope.folderId,
+          tagIds: tag ? [tag.id] : [],
+        });
+        const study = await retrieveStudyItems(`${before} ${text}`.trim(), 4, undefined, inScope);
         const seen = new Set(passages.map((p) => p.id));
         passages = [...passages, ...study.filter((p) => !seen.has(p.id))];
+        if (smart) {
+          // Passages that mean what the question means without sharing its words (on-device model).
+          const near = await semanticPassages({
+            question: `${before} ${text}`.trim(),
+            bankName: names.bank,
+            folderName: names.folder,
+            tagName: tag?.name ?? null,
+            inScope,
+            exclude: new Set(passages.map((p) => p.id)),
+          });
+          passages = [...passages, ...near].slice(0, 14);
+        }
       }
       const selection: AiSelection = {
         chunks: passages.map((p) => ({ id: p.id, kind: p.kind, text: p.text })),
@@ -414,7 +440,7 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
   const exportNote = useAction(async () => {
     if (!active || turns.length === 0) return;
     await createNote({
-      title: `AI chat: ${active.title || 'Chat'}`.slice(0, 200),
+      title: `${AI_NOTE_PREFIX} ${active.title || 'Chat'}`.slice(0, 200),
       body: asMarkdown(),
     });
     setNote({ tone: 'info', text: 'Saved as a note in your vault, marked as an AI conversation.' });
@@ -592,6 +618,17 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
                 Use my notes (<span data-testid="chat-scope">{where}</span>)
               </span>
             </label>
+            {useNotes ? (
+              <label className="chat-scope__notes">
+                <input
+                  type="checkbox"
+                  data-testid="chat-smart"
+                  checked={smart}
+                  onChange={(e) => setSmart(e.target.checked)}
+                />
+                <span>Match by meaning</span>
+              </label>
+            ) : null}
             {useNotes ? (
               <label className="chat-scope__tag">
                 <span className="mv-label">Tag</span>

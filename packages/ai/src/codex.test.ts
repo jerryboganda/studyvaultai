@@ -320,3 +320,71 @@ describe('streamed chat completions', () => {
     expect(JSON.parse(calls[1]!.init.body as string)).toMatchObject({ stream: false });
   });
 });
+
+describe('UBAG: a request that is still running is joined, not restarted', () => {
+  const stillRunning = () =>
+    json(
+      { error: { message: 'wait', type: 'timeout_error', code: 'wait_timeout', param: 'job_1' } },
+      504,
+    );
+
+  it('sends the same request again after a 504 and returns the finished answer', async () => {
+    calls.length = 0;
+    let n = 0;
+    const p = createOpenAICompatibleProvider({
+      baseUrl: 'https://ubag.example.test/v1/openai',
+      apiKey: 'op:pass-word',
+      authScheme: 'basic',
+      waitMs: 240000,
+      model: 'chatgpt_web',
+      fetch: fakeFetch(() => (n++ < 2 ? stillRunning() : ok())),
+    });
+    const out = await p.complete(req, {});
+    expect(out.text).toBe('{}');
+    expect(calls).toHaveLength(3);
+    // Byte-identical bodies: that is what lets the gateway recognise the running job.
+    expect(calls[1]!.init.body).toBe(calls[0]!.init.body);
+    expect(calls[2]!.init.body).toBe(calls[0]!.init.body);
+  });
+
+  it('gives up after the allowed number of joins, and never loops without the wait hint', async () => {
+    calls.length = 0;
+    const waiting = createOpenAICompatibleProvider({
+      baseUrl: 'https://ubag.example.test/v1/openai',
+      apiKey: 'op:pass-word',
+      waitMs: 240000,
+      waitRetries: 1,
+      model: 'm',
+      fetch: fakeFetch(stillRunning),
+    });
+    await expect(waiting.complete(req, {})).rejects.toMatchObject({ status: 504 });
+    expect(calls).toHaveLength(2);
+
+    calls.length = 0;
+    const plain = createOpenAICompatibleProvider({
+      baseUrl: 'https://api.example.test/v1',
+      apiKey: 'key-123456789',
+      model: 'm',
+      fetch: fakeFetch(stillRunning),
+    });
+    await expect(plain.complete(req, {})).rejects.toMatchObject({ status: 504 });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('stops joining when the person presses Stop', async () => {
+    calls.length = 0;
+    const controller = new AbortController();
+    const p = createOpenAICompatibleProvider({
+      baseUrl: 'https://ubag.example.test/v1/openai',
+      apiKey: 'op:pass-word',
+      waitMs: 240000,
+      model: 'm',
+      fetch: fakeFetch(() => {
+        controller.abort();
+        return stillRunning();
+      }),
+    });
+    await expect(p.complete(req, { signal: controller.signal })).rejects.toBeTruthy();
+    expect(calls).toHaveLength(1);
+  });
+});

@@ -299,6 +299,12 @@ export interface OpenAICompatibleConfig {
   /** Per-attempt facade deadline hint, ms (UBAG `ubag_wait_ms`). */
   waitMs?: number;
   /**
+   * With `waitMs`: how many times the SAME request is sent again after the gateway answers 504
+   * "still running". The gateway derives its idempotency key from the request, so a repeat joins the
+   * job that is already running instead of starting another browser run. Default 3.
+   */
+  waitRetries?: number;
+  /**
    * Stream the reply when the caller wants progress (`onDelta`). Default true; off for gateways that
    * cannot stream (UBAG drives a browser and answers once).
    */
@@ -437,7 +443,20 @@ export function createOpenAICompatibleProvider(cfg: OpenAICompatibleConfig): AiP
           ...(usage ? { usage } : {}),
         });
       }
-      const data = (await postJson(cfg.fetch, url, headers, body, signal, now)) as OpenAIReply;
+      let data: OpenAIReply;
+      for (let again = 0; ; again++) {
+        try {
+          data = (await postJson(cfg.fetch, url, headers, body, signal, now)) as OpenAIReply;
+          break;
+        } catch (e) {
+          const stillRunning =
+            cfg.waitMs &&
+            e instanceof AiError &&
+            e.status === 504 &&
+            again < (cfg.waitRetries ?? 3);
+          if (!stillRunning || signal?.aborted) throw e;
+        }
+      }
       return openaiResult(data);
     },
   };

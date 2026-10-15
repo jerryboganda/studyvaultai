@@ -13,10 +13,14 @@ import {
   cardPassage,
   knowledgePointPassage,
   listCards,
+  listHighlights,
   listKnowledgePoints,
   resolveAiSources,
   type AiSourceRef,
 } from '@storage';
+
+/** Title prefix of a note made from a conversation (see ChatView "Save as a note"). */
+export const AI_NOTE_PREFIX = 'AI chat:';
 
 /** Passages offered per question. The preview shows all of them; only ticked ones are sent. */
 export const CHAT_TOP_K = 8;
@@ -70,7 +74,7 @@ const labelOf = (ref: AiSourceRef): string =>
  */
 export async function retrieveForChat(
   index: PassageSearch,
-  args: { question: string; scope?: string; topK?: number },
+  args: { question: string; scope?: string; topK?: number; includeAiNotes?: boolean },
   resolve: (ids: readonly string[]) => Promise<Map<string, AiSourceRef>> = resolveAiSources,
 ): Promise<ChatRetrieval> {
   const query = retrievalQuery(args.question, args.scope ?? '');
@@ -82,6 +86,15 @@ export async function retrieveForChat(
   for (const r of refs) {
     const src = found.get(r.id);
     if (!src || src.deleted || src.text.trim() === '') continue;
+    // A chat saved as a note is the assistant's own words, not the person's study material: it is
+    // only offered back to a chat when asked for, so answers do not cite earlier answers.
+    if (
+      !args.includeAiNotes &&
+      src.kind === 'note' &&
+      src.sourceTitle?.startsWith(AI_NOTE_PREFIX)
+    ) {
+      continue;
+    }
     if (passages.length > 0 && chars + src.text.length > CHAT_MAX_CHARS) break;
     chars += src.text.length;
     passages.push({ id: src.id, kind: src.kind, text: src.text, label: labelOf(src) });
@@ -94,17 +107,25 @@ export interface StudyItem {
   id: string;
   kind: 'card' | 'knowledge_point';
   text: string;
+  /** The highlight it comes from; null for a free-standing card. Decides whether it is in scope. */
+  highlightId: string | null;
 }
 
 /** Live flashcards and knowledge points of the vault, as passages. */
 export async function loadStudyItems(): Promise<StudyItem[]> {
   const [cards, points] = await Promise.all([listCards({ limit: 2000 }), listKnowledgePoints()]);
   return [
-    ...cards.cards.map((c) => ({ id: c.id, kind: 'card' as const, text: cardPassage(c) })),
+    ...cards.cards.map((c) => ({
+      id: c.id,
+      kind: 'card' as const,
+      text: cardPassage(c),
+      highlightId: c.highlightId,
+    })),
     ...points.map((k) => ({
       id: k.id,
       kind: 'knowledge_point' as const,
       text: knowledgePointPassage(k),
+      highlightId: k.highlightId,
     })),
   ];
 }
@@ -128,12 +149,21 @@ export async function retrieveStudyItems(
   question: string,
   topK = 4,
   load: () => Promise<StudyItem[]> = loadStudyItems,
+  /**
+   * The highlights the chat is scoped to (a bank, folder or tag); null = everything. An item belongs
+   * to the scope through the highlight it was made from, so a free-standing card is only offered
+   * when the scope is everything.
+   */
+  inScope: ReadonlySet<string> | null = null,
 ): Promise<AiChatPassage[]> {
   const base = questionTerms(question);
   if (base.length === 0) return [];
   // One group per word of the question: the word, its stem and what an abbreviation spells out.
   const groups = base.map((t) => expandTerms([t], 6));
-  const items = await load();
+  const loaded = await load();
+  const items = inScope
+    ? loaded.filter((it) => it.highlightId !== null && inScope.has(it.highlightId))
+    : loaded;
   if (items.length === 0) return [];
   const docs = items.map((it) => ({ it, words: wordsOf(it.text) }));
   const df = groups.map((g) => docs.filter((d) => g.some((v) => d.words.has(v))).length);
@@ -189,4 +219,37 @@ export function partialAnswer(json: string): string {
     i += 1;
   }
   return out;
+}
+
+/** Upper bound on the highlights read to decide what is in a scope (500 per page, 20 pages). */
+const SCOPE_PAGES = 20;
+
+/**
+ * Ids of the live highlights in a bank, folder (with its subtree) and/or tag: the scope of a chat.
+ * Null when the scope is everything.
+ */
+export async function highlightIdsInScope(scope: {
+  bankId: string | null;
+  folderId: string | null;
+  tagIds: readonly string[];
+}): Promise<Set<string> | null> {
+  if (scope.bankId === null && scope.folderId === null && scope.tagIds.length === 0) return null;
+  const ids = new Set<string>();
+  let cursor: string | null = null;
+  for (let page = 0; page < SCOPE_PAGES; page++) {
+    const res: Awaited<ReturnType<typeof listHighlights>> = await listHighlights({
+      ...(scope.folderId !== null
+        ? { folderId: scope.folderId }
+        : scope.bankId !== null
+          ? { bankId: scope.bankId }
+          : {}),
+      ...(scope.tagIds.length > 0 ? { tagIds: [...scope.tagIds], tagMode: 'all' as const } : {}),
+      limit: 500,
+      cursor,
+    });
+    for (const item of res.items) ids.add(item.highlight.id);
+    if (!res.nextCursor) break;
+    cursor = res.nextCursor;
+  }
+  return ids;
 }

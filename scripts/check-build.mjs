@@ -142,8 +142,10 @@ for (const [rel, max] of budgets) {
 }
 // The OCR engine (wasm + traineddata, packages/ocr) is large by design and has its own budget below.
 const ocrDir = join(prod, 'ocr');
+// The on-device matching model (docs/adr/025) is data with its own exact-files budget below.
+const modelsDir = join(prod, 'models');
 const total = walk(prod)
-  .filter((f) => !f.startsWith(ocrDir + sep))
+  .filter((f) => !f.startsWith(ocrDir + sep) && !f.startsWith(modelsDir + sep))
   .reduce((n, f) => n + statSync(f).size, 0);
 // Phase 1 shipped ~1.1 MB. PDF.js (worker, CJK character maps, standard fonts) and the pages take the
 // non-OCR total to ~6.3 MB after the Preact content script (-200 KB, docs/adr/012). The finish wave
@@ -162,6 +164,32 @@ const total = walk(prod)
 const TOTAL_BUDGET_KB = 7800;
 if (total > TOTAL_BUDGET_KB * KB)
   fail(`total extension size ${Math.round(total / KB)} KB exceeds ${TOTAL_BUDGET_KB} KB`);
+
+// --- smart-matching model: exactly the audited files (docs/adr/025) -----------------------------
+const MODEL_FILES = {
+  'potion-base-8m-int8.bin': 'c5c497e9be7d6061ee550e1b742e34d57026835abcc89cdd0fa8bf006e1c6073',
+  'potion-base-8m-vocab.json': 'd4ab4b07a2a344ca0fe621703f599a1d146b741725eeeca03115c22169a73927',
+};
+if (!existsSync(modelsDir)) {
+  fail('models/ is missing from the build (public/models was not copied)');
+} else {
+  const shipped = readdirSync(modelsDir).sort();
+  const wanted = Object.keys(MODEL_FILES).sort();
+  if (shipped.join(',') !== wanted.join(',')) {
+    fail(`models/ holds "${shipped}" but ${wanted} are expected`);
+  } else {
+    for (const name of wanted) {
+      const digest = createHash('sha256')
+        .update(readFileSync(join(modelsDir, name)))
+        .digest('hex');
+      if (digest !== MODEL_FILES[name])
+        fail(`models/${name} digest ${digest} is not the audited one`);
+    }
+    const modelBytes = wanted.reduce((n, f) => n + statSync(join(modelsDir, f)).size, 0);
+    if (modelBytes > 9 * 1024 * KB)
+      fail(`models/ is ${Math.round(modelBytes / KB)} KB, budget 9216 KB`);
+  }
+}
 
 // --- OCR assets: exactly the audited files (packages/ocr/assets.manifest.json), within budget ---
 // Generated into public/ocr by scripts/copy-ocr-assets.mjs (WXT module modules/ocr-assets.ts).

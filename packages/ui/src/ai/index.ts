@@ -30,6 +30,8 @@ export { buildAccept, initialDraft, toMarkdown, type AiDraft } from './accept';
 export {
   CHAT_MAX_CHARS,
   CHAT_TOP_K,
+  AI_NOTE_PREFIX,
+  highlightIdsInScope,
   partialAnswer,
   retrieveForChat,
   retrieveStudyItems,
@@ -39,5 +41,6 @@ export {
   type ChatRetrieval,
 } from './chat';
 export { VENDORS, effortsFor } from './vendors';
+export { loadEmbedder, semanticPassages, type SemanticArgs } from './semantic';
 export { routeFor, configSecrets, type AiProfileConfig, type AiRoute } from './runtime';
 export { requestEndpointAccess } from './permission';

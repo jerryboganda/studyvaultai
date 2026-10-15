@@ -139,7 +139,8 @@ function guard(origin: string, inner: FetchLike): FetchLike {
 
 /** UBAG drives a real browser: a request can take minutes (its facade deadline is 240 s). */
 const UBAG_WAIT_MS = 240_000;
-const SLOW_TIMEOUT_MS = 270_000;
+// 240 s per wait, and the same request is joined up to three more times (16 minutes in all).
+const SLOW_TIMEOUT_MS = 17 * 60_000;
 const timeoutFor = (settings: AiProfileSettings): number | null =>
   settings.vendor === 'ubag'
     ? SLOW_TIMEOUT_MS

@@ -6,16 +6,19 @@ const items: StudyItem[] = [
   {
     id: 'card-1',
     kind: 'card',
+    highlightId: 'h-in',
     text: 'Flashcard question: What do ACE inhibitors do?\nAnswer: They block angiotensin converting enzyme.',
   },
   {
     id: 'card-2',
     kind: 'card',
+    highlightId: 'h-out',
     text: 'Flashcard question: Which drug is first-line for type 2 diabetes?\nAnswer: Metformin.',
   },
   {
     id: 'kp-1',
     kind: 'knowledge_point',
+    highlightId: null,
     text: 'Knowledge point: Heart failure reduces cardiac output.\nExam pearl: Diuretics relieve congestion.',
   },
 ];
@@ -59,5 +62,19 @@ describe('partialAnswer', () => {
       'Line one\nLine "two" \u00e9',
     );
     expect(partialAnswer('{"answer": "cut off\\')).toBe('cut off');
+  });
+});
+
+describe('scope', () => {
+  it('offers only items made from highlights in the scope, never a free-standing card', async () => {
+    const all = await retrieveStudyItems('ACE inhibitors metformin diabetes heart failure', 10, load);
+    expect(all.map((f) => f.id).sort()).toEqual(['card-1', 'card-2', 'kp-1']);
+    const scoped = await retrieveStudyItems(
+      'ACE inhibitors metformin diabetes heart failure',
+      10,
+      load,
+      new Set(['h-in']),
+    );
+    expect(scoped.map((f) => f.id)).toEqual(['card-1']);
   });
 });
