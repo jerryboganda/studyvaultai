@@ -82,9 +82,13 @@ describe('review page: deck picker', () => {
     // The done screen waits for the session to close (a busy CI box can be slow).
     const summary = await screen.findByTestId(TID.summary, {}, { timeout: 20_000 });
     await user.click(within(summary).getByRole('button', { name: 'Back to decks' }));
-    const start = await screen.findByTestId(TID.deckStartAll, {}, { timeout: 20_000 });
-    expect(start.getAttribute('aria-disabled')).toBe('true');
-    expect(reason(start)).toBe('Nothing is due right now.');
+    // The picker may come back with the old counts first. Query again on every try: a disabled
+    // ChunkyButton is wrapped in its tooltip span, so React replaces the <button> node.
+    await waitFor(
+      () => expect(screen.getByTestId(TID.deckStartAll).getAttribute('aria-disabled')).toBe('true'),
+      { timeout: 20_000 },
+    );
+    expect(reason(screen.getByTestId(TID.deckStartAll))).toBe('Nothing is due right now.');
     expect(screen.getByText('Nothing is due right now.', { selector: 'p' })).toBeTruthy();
   });
 
