@@ -1304,11 +1304,15 @@ test.describe('options: highlights on pages', () => {
 });
 
 test.describe('options: capture and private windows', () => {
+  // A stalled Windows runner can spend most of a minute before the settings are read (see theme).
+  test.describe.configure({ timeout: 120_000 });
   test('"Save from private windows" is off by default, explains the trade-off, and persists', async ({
     env,
   }) => {
     const ext = await openExt(env, 'options', 'capture');
     const box = ext.getByRole('checkbox', { name: 'Private windows', exact: true });
+    // The section is drawn only once the settings are read.
+    await expect(box).toBeVisible({ timeout: 30_000 });
     await expect(box).not.toBeChecked();
     // The trade-off: one line on the switch, the full sentence behind its (i).
     await expect(box).toHaveAccessibleDescription('Saves stay in your normal profile.');
@@ -1317,11 +1321,15 @@ test.describe('options: capture and private windows', () => {
     await expect(about).toHaveAccessibleDescription(/stay after the window closes/);
 
     await box.click();
-    await expect.poll(async () => (await storedSettings(ext))?.allowIncognitoCapture).toBe(true);
+    await expect
+      .poll(async () => (await storedSettings(ext))?.allowIncognitoCapture, { timeout: 15_000 })
+      .toBe(true);
     await ext.reload();
-    await expect(box).toBeChecked();
+    await expect(box).toBeChecked({ timeout: 30_000 });
     await box.click();
-    await expect.poll(async () => (await storedSettings(ext))?.allowIncognitoCapture).toBe(false);
+    await expect
+      .poll(async () => (await storedSettings(ext))?.allowIncognitoCapture, { timeout: 15_000 })
+      .toBe(false);
   });
 });
 
