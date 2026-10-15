@@ -68,6 +68,13 @@ const SOURCES: Choice<Source>[] = [
   { value: 'blank', label: 'Blank card', hint: 'Type it in', icon: PenLine, tone: 'violet' },
 ];
 
+/** Where a highlight came from, with the page of a PDF: provenance stays in sight (CLAUDE.md). */
+function sourceLine({ source, highlight }: HighlightListItem): string {
+  const name = source.title || source.host;
+  const at = highlight.anchorSet;
+  return at.type === 'pdf' ? `${name} · page ${at.pageNumber}` : name;
+}
+
 function defaultQuestion(item: HighlightListItem): string {
   const heading = item.highlight.headingContext?.trim();
   return heading ? `What does the source say about "${heading}"?` : '';
@@ -390,6 +397,9 @@ export function Author({ initialHighlightId }: { initialHighlightId: string | nu
               <Highlighter className="rvm-from__icon" aria-hidden="true" strokeWidth={2.4} />
               <p className="rvm-from__quote" dir="auto">
                 {truncate(chosenItem.highlight.exactQuote, 140)}
+                <span className="rvm-line rvm-from__src" dir="auto">
+                  {sourceLine(chosenItem)}
+                </span>
               </p>
               {from === 'type' ? (
                 <ChunkyButton
@@ -649,7 +659,7 @@ function PickRow({
           {truncate(item.highlight.exactQuote, 160)}
         </span>
         <span className="rvm-badges">
-          <span className="rvm-line">{item.source.title || item.source.host}</span>
+          <span className="rvm-line">{sourceLine(item)}</span>
           {item.banks.map((b) => (
             <Pill key={b.id}>{b.name}</Pill>
           ))}

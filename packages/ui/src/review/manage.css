@@ -794,6 +794,9 @@
   font-weight: 700;
   overflow-wrap: anywhere;
 }
+.rvm-from__src {
+  display: block;
+}
 .rvm-from svg.rvm-from__icon {
   width: 20px;
   height: 20px;

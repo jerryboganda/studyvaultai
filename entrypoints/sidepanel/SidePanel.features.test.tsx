@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, configure, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, configure, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { browser } from 'wxt/browser';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
@@ -446,6 +446,47 @@ describe('notes', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(await screen.findByText('Do not lose me')).toBeTruthy();
+  });
+
+  it('keeps the open drawer and what is being typed when the panel follows another tab and comes back', async () => {
+    rpc.tab['content.pageStatus'] = () => {
+      if (current.id !== 11) throw new StudyVaultError('unsupported_page', 'No receiver.');
+      return status();
+    };
+    store.reset([makeItem()]);
+    await open();
+    await openCard();
+    await userEvent.click(await screen.findByRole('button', { name: 'Add a note' }));
+    await userEvent.type(screen.getByLabelText('New study note (Markdown)'), 'Half a thought');
+    await userEvent.type(screen.getByLabelText('Add a tag'), 'renal');
+
+    // Another tab comes to the front (a blank page): its list replaces this page's cards.
+    const switchTo = async (tab: FakeTab) => {
+      current = tab;
+      await act(async () => {
+        await fakeBrowser.tabs.onActivated.trigger({ tabId: tab.id, windowId: 1 });
+      });
+    };
+    await switchTo({ id: 12, url: undefined, title: '' });
+    await waitFor(() => expect(screen.queryByRole('article')).toBeNull());
+    await switchTo({ id: 11, url: 'https://example.com/notes', title: 'Cell biology notes' });
+
+    const card = await screen.findByRole('article');
+    expect(within(card).getByTestId('card-more').getAttribute('aria-expanded')).toBe('true');
+    const editor = within(card).getByLabelText('New study note (Markdown)') as HTMLTextAreaElement;
+    expect(editor.value).toBe('Half a thought');
+    expect((within(card).getByLabelText('Add a tag') as HTMLInputElement).value).toBe('renal');
+    expect(store.calls.some((c) => c.fn === 'createNote')).toBe(false);
+
+    // Saved, the draft is done with: the editor closes and stays closed after the next remount.
+    await userEvent.click(within(card).getByRole('button', { name: 'Save note' }));
+    expect(await within(card).findByTestId('card-note')).toBeTruthy();
+    await switchTo({ id: 12, url: undefined, title: '' });
+    await waitFor(() => expect(screen.queryByRole('article')).toBeNull());
+    await switchTo({ id: 11, url: 'https://example.com/notes', title: 'Cell biology notes' });
+    const back = await screen.findByRole('article');
+    expect(within(back).queryByLabelText('New study note (Markdown)')).toBeNull();
+    expect(within(back).getByTestId('card-more').getAttribute('aria-expanded')).toBe('true');
   });
 
   it('keeps the first text area of a card for the quick note, so the hand-over still lands there', async () => {

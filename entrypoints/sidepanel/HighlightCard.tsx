@@ -54,6 +54,7 @@ import { IconAction } from './IconAction';
 import { extensionPageUrl, optionsUrl } from './links';
 import type { RevealAvailability } from './model';
 import { REVEAL_NOT_FOUND, sourceLinkFor } from './model';
+import { useCardMemory } from './useCardMemory';
 
 export const COMMENT_DEBOUNCE_MS = 600;
 // About four lines in a 320 px panel; the rest is one "Show full quote" away.
@@ -147,7 +148,7 @@ export function HighlightCard({
   const uid = useId();
   const { announce, push } = useToast();
   const [expanded, setExpanded] = useState(false);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useCardMemory(`${highlight.id}:open`, false);
   const [aiOpen, setAiOpen] = useState(false);
   const [revealNote, setRevealNote] = useState<{ ok: boolean; text: string } | null>(null);
   const state = describeResolveState(highlight.resolveStatus);
@@ -325,7 +326,7 @@ export function HighlightCard({
           aria-controls={drawerId}
           data-testid="card-more"
           className={open ? 'is-open' : undefined}
-          onClick={() => setOpen((v) => !v)}
+          onClick={() => setOpen(!open)}
         />
       </div>
 

@@ -3,6 +3,7 @@ import { MAX_NOTE_BODY_CHARS, type Note } from '@shared';
 import { Button, truncate, useAction, useToast } from '@ui';
 import { Markdown } from '@ui/vault';
 import { validateNoteBody } from './model';
+import { useCardMemory } from './useCardMemory';
 
 /** The Markdown notes of one highlight (the `notes` table), rendered safely and edited in place. */
 
@@ -27,8 +28,8 @@ export function CardNotes({
 }) {
   const uid = useId();
   const { announce } = useToast();
-  const [editing, setEditing] = useState<Editing>(null);
-  const [draft, setDraft] = useState('');
+  const [editing, setEditing] = useCardMemory<Editing>(`${highlightId}:note`, null);
+  const [draft, setDraft] = useCardMemory(`${highlightId}:noteDraft`, '');
   const [problem, setProblem] = useState<string | null>(null);
   const addWrap = useRef<HTMLDivElement>(null);
   const restoreFocus = useRef(false);

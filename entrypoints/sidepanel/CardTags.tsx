@@ -3,6 +3,7 @@ import { MAX_TAG_NAME_CHARS } from '@shared';
 import type { TagLite } from '@storage';
 import { Button, useAction, useToast } from '@ui';
 import { parseTagInput } from './model';
+import { useCardMemory } from './useCardMemory';
 
 /**
  * The tags of one highlight: chips with a remove button, and a field that adds a tag by name.
@@ -24,7 +25,7 @@ export function CardTags({
 }) {
   const uid = useId();
   const { announce } = useToast();
-  const [name, setName] = useState('');
+  const [name, setName] = useCardMemory(`${highlightId}:tag`, '');
   const [problem, setProblem] = useState<string | null>(null);
 
   const add = useAction(async (tag: string) => {

@@ -10,10 +10,10 @@ import {
   within,
 } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { listCards, listKnowledgePoints } from '@storage';
+import { listCards, listKnowledgePoints, savePdfHighlight, upsertDocument } from '@storage';
 import { freshDatabase, save } from '@storage/test-vault';
 import { ToastProvider } from '@ui';
-import { TID } from '@ui/review';
+import { TID, pickerItemId } from '@ui/review';
 import { Author } from './Author';
 
 function renderAuthor(highlightId: string | null) {
@@ -241,6 +241,59 @@ describe('create cards wizard', () => {
     await waitFor(async () => expect((await listCards()).total).toBe(1));
     const [card] = (await listCards()).cards;
     expect(card).toMatchObject({ highlightId: null, sourceQuote: null });
+  });
+
+  it('names the source of each highlight, and the page of a PDF one, in the list and on Card type', async () => {
+    const user = userEvent.setup();
+    const doc = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90';
+    const quote = 'The loop of Henle concentrates urine.';
+    await upsertDocument({
+      id: doc,
+      title: 'Renal physiology',
+      pageCount: 3,
+      byteLength: 2048,
+      originalUrl: null,
+      textStatus: 'text',
+    });
+    const { highlight: pdf } = await savePdfHighlight({
+      documentId: doc,
+      anchorSet: {
+        type: 'pdf',
+        textAlgorithm: 'sv-pdf-text-v1',
+        documentFingerprint: doc,
+        pageNumber: 2,
+        rotation: 0,
+        rects: [{ x: 0.1, y: 0.2, w: 0.5, h: 0.03 }],
+        textQuote: { exact: quote, prefix: '', suffix: '' },
+        textPosition: { start: 0, end: quote.length },
+        contentSignature: 'sig-1',
+        documentTextLength: 3000,
+      },
+      exactQuote: quote,
+      kind: 'essential',
+      color: 'amber',
+      bankId: null,
+      userComment: '',
+      priority: 3,
+      captureMethod: 'toolbar',
+    });
+    const web = await save('Aspirin irreversibly inhibits cyclooxygenase.');
+    renderAuthor(null);
+    await step('Start from');
+    await pick(user, 'A highlight');
+    await next(user);
+    await step('Pick a highlight');
+    const pdfRow = await screen.findByTestId(pickerItemId(pdf.id));
+    expect(pdfRow.textContent).toContain('Renal physiology · page 2');
+    // A web page has no pages: its row names the page title alone.
+    const webRow = screen.getByTestId(pickerItemId(web.id));
+    expect(webRow.textContent).toContain('Pharmacology notes');
+    expect(webRow.textContent).not.toMatch(/page \d/);
+
+    await user.click(within(pdfRow).getByRole('radio'));
+    await next(user);
+    await step('Card type');
+    expect(screen.getByText('Renal physiology · page 2')).toBeTruthy();
   });
 });
 

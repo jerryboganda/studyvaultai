@@ -918,7 +918,7 @@ test.describe('study session from a PDF', () => {
     expect(address.searchParams.get('highlight')).toBe(hl.id);
     expect(address.searchParams.get('doc')).toBeTruthy();
     // No copy of the file was kept, and the reader says so instead of pretending.
-    await expect(pdf.getByText(/does not keep a copy of that PDF/)).toBeVisible();
+    await expect(pdf.getByText(/No stored copy of that PDF/)).toBeVisible();
     // Choosing the same file again brings the saved highlight back, on page 2.
     await chooseFile(pdf, 'renal.pdf', bytes);
     await expect(pdf.getByTestId('pdf-viewer')).toBeVisible({ timeout: 90_000 });

@@ -92,6 +92,7 @@ import { PanelHeader } from './PanelHeader';
 import { SearchTab } from './Search';
 import { useFilingSuggestions } from './useFilingSuggestions';
 import { usePendingFocus } from './usePendingFocus';
+import { CardMemory } from './useCardMemory';
 
 const RECENT_LIMIT = 50;
 /** Newest saves shown under the empty Search box. */
@@ -101,9 +102,13 @@ const SEARCH_RECENT = 3;
 const panelContent = () => document.querySelector<HTMLElement>('[role="tabpanel"]');
 
 export function SidePanel() {
+  // Open drawers and half-typed notes outlive the card lists, which remount on every tab switch.
+  const [cardMemory] = useState(() => new Map<string, unknown>());
   return (
     <ToastProvider returnFocus={panelContent}>
-      <Panel />
+      <CardMemory.Provider value={cardMemory}>
+        <Panel />
+      </CardMemory.Provider>
     </ToastProvider>
   );
 }
