@@ -14,7 +14,8 @@ export type {
   Pricing,
   RetryPolicy,
 } from './deps';
-export { questionTerms, retrievalQuery, searchPassages } from './retrieve';
+export { expandTerms, questionTerms, retrievalQuery, searchPassages, stem } from './retrieve';
+export { contentTokens } from './candidates';
 export type { PassageRef, PassageSearch } from './retrieve';
 export {
   basicAuthHeader,

@@ -38,7 +38,8 @@ export const VERIFICATION_LABELS: Record<VerificationState, string> = {
 /** One user-approved passage: a saved highlight (exactQuote) or a note body. */
 export const SourceChunk = z.strictObject({
   id: ChunkId,
-  kind: z.enum(['highlight', 'note']),
+  /** `card` and `knowledge_point` are the person's own study items, offered like notes. */
+  kind: z.enum(['highlight', 'note', 'card', 'knowledge_point']),
   text: z.string().min(1).max(100_000),
 });
 export type SourceChunk = z.infer<typeof SourceChunk>;
@@ -328,12 +329,16 @@ export const Citation = z
   .strictObject({
     highlightId: ChunkId.optional(),
     noteId: ChunkId.optional(),
+    cardId: ChunkId.optional(),
+    knowledgePointId: ChunkId.optional(),
     /** Verbatim text that was found in the cited chunk as sent (after redaction). */
     quote: z.string().min(1).max(600),
   })
   .refine(
-    (c) => (c.highlightId === undefined) !== (c.noteId === undefined),
-    'exactly one of highlightId/noteId',
+    (c) =>
+      [c.highlightId, c.noteId, c.cardId, c.knowledgePointId].filter((v) => v !== undefined)
+        .length === 1,
+    'exactly one of highlightId/noteId/cardId/knowledgePointId',
   );
 export type Citation = z.infer<typeof Citation>;
 
@@ -433,7 +438,16 @@ export const AiRequestPreview = z.strictObject({
     z.strictObject({
       id: ChunkId,
       /** `question`, `claim`, `history` and `memory` blocks are sent too but are not citeable. */
-      kind: z.enum(['highlight', 'note', 'question', 'claim', 'history', 'memory']),
+      kind: z.enum([
+        'highlight',
+        'note',
+        'card',
+        'knowledge_point',
+        'question',
+        'claim',
+        'history',
+        'memory',
+      ]),
       originalChars: z.number().int().min(0),
       truncated: z.boolean(),
       /** Sanitised, truncated, NOT yet redacted: redaction offsets refer to this text. */

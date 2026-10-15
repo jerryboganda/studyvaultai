@@ -64,7 +64,7 @@ function citedSection(result: AiResult, sources: Sources): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const c of result.citations) {
-    const id = c.highlightId ?? c.noteId;
+    const id = c.highlightId ?? c.noteId ?? c.cardId ?? c.knowledgePointId;
     if (id === undefined || seen.has(id)) continue;
     seen.add(id);
     const ref = sources.get(id);

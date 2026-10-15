@@ -17,7 +17,10 @@ import {
   defaultAiSettings,
   listAiResults,
   listChatThreads,
+  listNotes,
+  newAiProfileId,
   setAiApiKey,
+  setAiProfileApiKey,
   setAiSettings,
 } from '@storage';
 import { freshDatabase, save } from '@storage/test-vault';
@@ -274,5 +277,86 @@ describe('the chat view', () => {
     await waitFor(() => expect(screen.queryByTestId('chat-thread')).toBeNull());
     expect(await listAiResults({ kind: 'chat' })).toHaveLength(0);
     expect(await listChatThreads()).toHaveLength(0);
+  });
+
+  it('uses the provider chosen for the conversation, and asks once more when the recipient changes', async () => {
+    const user = userEvent.setup();
+    await turnAi(true);
+    const backupId = newAiProfileId();
+    await setAiSettings({
+      ...defaultAiSettings(),
+      baseUrl: `${ORIGIN}/v1`,
+      model: 'chat-model',
+      fallbacks: [
+        {
+          id: backupId,
+          label: 'Backup',
+          provider: 'openai_compatible',
+          baseUrl: 'https://backup.example.test/v1',
+          model: 'backup-model',
+          jsonMode: true,
+          maxTokensParam: 'max_tokens',
+          vendor: 'custom',
+          reasoningEffort: '',
+          authScheme: 'bearer',
+          pricing: null,
+          fallback: true,
+        },
+      ],
+    });
+    await setAiApiKey(KEY, ORIGIN);
+    await setAiProfileApiKey(backupId, KEY, 'https://backup.example.test');
+    const main = createMockProvider([reply('general', [], 'From main.')], {
+      id: 'openai-compatible:api.example.test',
+      model: 'chat-model',
+    });
+    const backup = createMockProvider([reply('general', [], 'From backup.')], {
+      id: 'openai-compatible:backup.example.test',
+      model: 'backup-model',
+    });
+    const env: AiEnv = {
+      fetch: vi.fn(() => Promise.reject(new Error('no network'))) as never,
+      clock: {
+        ...systemClock(),
+        sha256: (t: string) => Promise.resolve(createHash('sha256').update(t).digest('hex')),
+      },
+      coordinator: createCoordinator(2),
+      online: () => true,
+      createProvider: ({ profileId }) => (profileId === 'primary' ? main : backup),
+    };
+    renderChat(env, fakeIndex([]));
+
+    await say(user, 'Hello main');
+    await consentOnce(user);
+    await screen.findByTestId('chat-turn');
+    expect(main.calls).toHaveLength(1);
+
+    // Same conversation, another provider: it must ask again, and the message goes to the backup.
+    const profile = screen.getByTestId('chat-profile');
+    await waitFor(() => expect((profile as HTMLSelectElement).disabled).toBe(false));
+    await user.selectOptions(profile, backupId);
+    await say(user, 'Hello backup');
+    await consentOnce(user);
+    await waitFor(() => expect(screen.getAllByTestId('chat-turn')).toHaveLength(2));
+    expect(backup.calls).toHaveLength(1);
+    expect(main.calls).toHaveLength(1);
+  });
+
+  it('shows the memory, lets it be cleared, and saves the chat as a note', async () => {
+    const user = userEvent.setup();
+    await turnAi(true);
+    await configure();
+    const { env } = envFor([reply('general', [], 'Hi.')]);
+    renderChat(env, fakeIndex([]));
+    await say(user, 'Hello');
+    await consentOnce(user);
+    await screen.findByTestId('chat-turn');
+
+    await user.click(screen.getByTestId('chat-export-note'));
+    expect((await screen.findByTestId('chat-note')).textContent).toContain('Saved as a note');
+    const notes = await listNotes();
+    expect(notes.some((n) => n.title.startsWith('AI chat:') && n.body.includes('Hi.'))).toBe(true);
+
+    expect(screen.getByTestId('chat-memory').textContent).toContain('nothing summarised yet');
   });
 });

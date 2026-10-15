@@ -12,6 +12,9 @@ copy it when a version is tagged.
 - Chat is a conversation: works with no study material, saved conversations that resume after a
   reload, a rolling summary as memory, and automatic retrieval from your highlights and notes with
   verbatim citations (ADR-024). Replaces the find-tick-send flow for chat.
+- Chat: flashcards and knowledge points are searched and cited; stems and study abbreviations improve
+  matching; per-conversation provider, model and reasoning effort; streamed answers; memory panel,
+  rename, download and save-as-note (ADR-024 addendum).
 - AI providers: UBAG gateway (OpenAI-compatible facade, HTTP Basic), NVIDIA NIM, OpenCode Go,
   OpenRouter and an unofficial ChatGPT (Codex) subscription login, each with a model dropdown (live
   list with curated fallback) and a reasoning-effort dropdown; ChatGPT quota and OpenRouter spend can

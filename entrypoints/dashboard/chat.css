@@ -129,3 +129,19 @@
   overflow-wrap: anywhere;
   font-size: var(--sv-text-xs);
 }
+.chat-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sv-space-2);
+}
+.chat-tools__title {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+.chat-memory {
+  flex-basis: 100%;
+}
+.chat-memory textarea {
+  width: 100%;
+}

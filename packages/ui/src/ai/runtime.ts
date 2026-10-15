@@ -182,7 +182,7 @@ function httpProvider(
     authScheme: settings.authScheme,
     reasoningEffort: settings.reasoningEffort,
     reasoningStyle: VENDORS[settings.vendor].reasoningStyle,
-    ...(settings.vendor === 'ubag' ? { waitMs: UBAG_WAIT_MS } : {}),
+    ...(settings.vendor === 'ubag' ? { waitMs: UBAG_WAIT_MS, streaming: false } : {}),
   });
 }
 
@@ -284,11 +284,32 @@ async function buildProfile(
   };
 }
 
+/** Per-provider setting overrides for one request (a chat's own model or reasoning effort). */
+export type AiOverrides = Record<
+  string,
+  Partial<Pick<AiProfileSettings, 'model' | 'reasoningEffort'>>
+>;
+
 export async function loadAiConfig(
   flagOn: boolean,
   env: AiEnv = defaultAiEnv(),
+  overrides: AiOverrides = {},
 ): Promise<AiConfig> {
-  const settings = await getAiSettings();
+  const stored = await getAiSettings();
+  const apply = <T extends AiProfileSettings>(id: string, s: T): T => {
+    const o = overrides[id];
+    return o
+      ? {
+          ...s,
+          ...(o.model ? { model: o.model } : {}),
+          ...(o.reasoningEffort === undefined ? {} : { reasoningEffort: o.reasoningEffort }),
+        }
+      : s;
+  };
+  const settings = {
+    ...apply(PRIMARY_PROFILE_ID, stored),
+    fallbacks: stored.fallbacks.map((p) => apply(p.id, p)),
+  };
   const budget = await getAiBudget(env.clock.now());
   const secrets: string[] = [];
   const primary = await buildProfile(
@@ -360,9 +381,12 @@ export interface AiRoute {
  * route it elsewhere), then every other provider that is set up and allowed to be a fallback, in list
  * order. Providers that are not set up are skipped, never guessed at.
  */
-export function routeFor(config: AiConfig, kind: AiTaskKind): AiRoute {
+export function routeFor(config: AiConfig, kind: AiTaskKind, prefer?: string | null): AiRoute {
   const all = config.profiles;
-  const chosen = all.find((p) => p.id === config.settings.routes[kind]) ?? all[0]!;
+  const chosen =
+    (prefer ? all.find((p) => p.id === prefer) : undefined) ??
+    all.find((p) => p.id === config.settings.routes[kind]) ??
+    all[0]!;
   const rest = all.filter((p) => p.id !== chosen.id && p.fallback);
   // The first provider is kept whenever it exists: a missing key is then a reason to show next to
   // Send, with the preview still readable, not a missing preview.
@@ -371,9 +395,14 @@ export function routeFor(config: AiConfig, kind: AiTaskKind): AiRoute {
 }
 
 /** Why a request cannot be sent right now (null = it can). Shown as the reason a button is disabled. */
-export function sendBlocker(config: AiConfig, env: AiEnv, kind?: AiTaskKind): string | null {
+export function sendBlocker(
+  config: AiConfig,
+  env: AiEnv,
+  kind?: AiTaskKind,
+  prefer?: string | null,
+): string | null {
   if (!config.flagOn) return 'AI features are turned off in the AI settings.';
-  const p = kind ? routeFor(config, kind).first : config.profiles[0]!;
+  const p = kind ? routeFor(config, kind, prefer).first : config.profiles[0]!;
   const named = (text: string) => (p.id === PRIMARY_PROFILE_ID ? text : `${p.label}: ${text}`);
   if (p.problem) return named(p.problem);
   if (p.key.state === 'missing') {
@@ -399,8 +428,8 @@ const targetOf = (p: AiProfileConfig): FallbackTarget => ({
 });
 
 /** Pipeline deps for one task: the first provider and the fallbacks behind it. */
-function routedDeps(config: AiConfig, kind: AiTaskKind) {
-  const route = routeFor(config, kind);
+function routedDeps(config: AiConfig, kind: AiTaskKind, prefer?: string | null) {
+  const route = routeFor(config, kind, prefer);
   const [first, ...rest] = route.targets;
   if (!first?.provider) return null;
   return {
@@ -417,11 +446,14 @@ export async function previewAiTask(
   kind: AiTaskKind,
   selection: AiSelection,
   edits?: RedactionEdits,
+  prefer?: string | null,
 ): Promise<AiRequestPreview> {
   if (!config.flagOn) throw new AiError('disabled');
-  const routed = routedDeps(config, kind);
+  const routed = routedDeps(config, kind, prefer);
   if (!routed)
-    throw new Error(sendBlocker(config, env, kind) ?? config.problem ?? 'AI is not set up.');
+    throw new Error(
+      sendBlocker(config, env, kind, prefer) ?? config.problem ?? 'AI is not set up.',
+    );
   return buildPreview(
     kind,
     selection,
@@ -444,6 +476,10 @@ export interface AiRunArgs {
   signal?: AbortSignal;
   /** `chat` only: the conversation the answer is saved under. */
   threadId?: string;
+  /** Try this provider first (a chat's own choice); the others still follow as fallbacks. */
+  prefer?: string | null;
+  /** Reply text so far, while a streaming provider answers (progress display only). */
+  onDelta?(textSoFar: string): void;
   onProgress?(event: LogEvent): void;
 }
 
@@ -485,7 +521,7 @@ function clean(err: unknown, secrets: readonly string[]): unknown {
 export async function runAiTask(config: AiConfig, env: AiEnv, args: AiRunArgs): Promise<AiRunDone> {
   const secrets = secretsFor(config);
   try {
-    const routed = config.flagOn ? routedDeps(config, args.kind) : null;
+    const routed = config.flagOn ? routedDeps(config, args.kind, args.prefer) : null;
     if (!routed) throw new AiError('disabled');
     const { first } = routed.route;
     if (first.key.state === 'missing' || first.key.state === 'other_origin') {
@@ -512,6 +548,7 @@ export async function runAiTask(config: AiConfig, env: AiEnv, args: AiRunArgs): 
         return slowest > 0 ? { timeoutMs: slowest } : {};
       })(),
       ...(args.onProgress ? { log: args.onProgress } : {}),
+      ...(args.onDelta ? { onDelta: args.onDelta } : {}),
     };
     let outcome;
     try {

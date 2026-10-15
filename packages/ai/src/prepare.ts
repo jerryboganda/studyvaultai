@@ -53,7 +53,8 @@ function invalid(detail: string, issues?: string[]): AiError {
 
 interface Piece {
   id: string;
-  kind: 'highlight' | 'note' | 'question' | 'claim' | 'history' | 'memory';
+  kind:
+    'highlight' | 'note' | 'card' | 'knowledge_point' | 'question' | 'claim' | 'history' | 'memory';
   original: string;
   text: string;
   truncated: boolean;
@@ -173,7 +174,7 @@ export async function prepare(
   }
 
   const chunkTexts = new Map<string, ChunkText>(
-    pieces.map((p) => [p.id, { id: p.id, kind: p.kind as 'highlight' | 'note', sent: p.sent }]),
+    pieces.map((p) => [p.id, { id: p.id, kind: p.kind as ChunkText['kind'], sent: p.sent }]),
   );
   const sentAll = [...pieces, ...extras].map((p) => p.sent).join('\n');
   const candidates =

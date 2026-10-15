@@ -36,3 +36,24 @@ asked for a real assistant: usable with no study material, with memory, cross-re
 - The conversation is now stored on the device and in backups (PRIVACY_CLAIMS P20b changes).
 - The per-message "tick each passage" review is gone for chat; the other AI actions keep it.
 - Summaries and general answers are model output: labelled unverified, never evidence.
+
+## Addendum (2026-10-16): study items, provider switch, streaming, memory panel
+- **Flashcards and knowledge points are retrievable.** They are not in the search index (its result
+  rows and filters assume highlights and notes); `retrieveStudyItems` scores them on the device from
+  `listCards` and `listKnowledgePoints` (word match with stems and spelled-out abbreviations, rarer
+  words count more) and offers the best four. `SourceChunk.kind` and `Citation` gain `card` and
+  `knowledge_point` (`cardId`, `knowledgePointId`); `resolveAiSources` resolves them, so a citation is
+  verified against the exact text that was sent (`cardPassage`, `knowledgePointPassage`).
+- **Keyword retrieval** adds light stemming and a small abbreviation table (HF, MI, DM, ACE...).
+  Matching is still lexical: no embeddings are bundled (a size, CSP and licence decision for the owner).
+- **Per-conversation provider, model and reasoning effort.** Stored on the thread meta; the request
+  prefers that provider (`prefer`) and still falls back in the usual order. The agreement stores a hash
+  of the recipient list: a different provider or model asks once more.
+- **Streaming.** OpenAI-compatible providers and the ChatGPT backend report the reply as it arrives
+  (`onDelta`), shown as "answer so far"; the finished reply is validated, grounded and saved exactly
+  as before. UBAG does not stream; the chat shows an elapsed timer, and Stop cancels the request (the
+  gateway cancels its job on disconnect).
+- **Memory panel, rename, export.** The rolling summary can be read, edited or cleared; a conversation
+  can be renamed, downloaded as Markdown or saved as a note titled "AI chat: ...". A saved note is the
+  person's own note afterwards and may be retrieved by later chats; the saved text says it is an AI
+  conversation.

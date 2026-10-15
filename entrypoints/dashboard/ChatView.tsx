@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import {
   createChatThread,
+  createNote,
   deleteAiResult,
   deleteChatThread,
   getChatTurns,
@@ -23,14 +24,20 @@ import {
   type ChatTurn,
 } from '@storage';
 import type { AiRequestPreview, AiSelection } from '@ai';
+import type { AiEffort } from '@storage';
 import { BuddyEmptyState, InlineNotice, VaultBuddy, useAction, useAsync, useDataEpoch } from '@ui';
 import {
   AiResultCard,
   configSecrets,
+  VENDORS,
   describeAiError,
+  effortsFor,
+  loadAiConfig,
+  partialAnswer,
   previewAiTask,
   requestEndpointAccess,
   retrieveForChat,
+  retrieveStudyItems,
   routeFor,
   runAiTask,
   sendBlocker,
@@ -38,6 +45,8 @@ import {
   useAiEnv,
   useAiFlag,
   type AiChatPassage,
+  type AiConfig,
+  type AiOverrides,
 } from '@ui/ai';
 import { EMPTY_FILTERS, toSearchQuery, type Scope } from './filters';
 import { Action, Chip, ViewHead } from './moreKit';
@@ -119,8 +128,21 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
     preview: AiRequestPreview;
     passages: AiChatPassage[];
     text: string;
+    key: string;
+    prefer: string | null;
   } | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  // The provider, model and effort picked just now: shown at once, saved with the conversation.
+  const [pick, setPick] = useState<{
+    threadId: string | null;
+    profileId: string | null;
+    model: string;
+    effort: AiEffort;
+  } | null>(null);
+  // The answer as it arrives (streaming providers) and how long the wait has been.
+  const [partial, setPartial] = useState('');
+  const [elapsed, setElapsed] = useState(0);
+  const [memoryDraft, setMemoryDraft] = useState<{ id: string; text: string } | null>(null);
   const abort = useRef<AbortController | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -134,14 +156,42 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
       ? `the bank "${names.bank}"`
       : 'all your highlights and notes';
   const busy = phase !== 'idle';
+  const stored = active
+    ? { profileId: active.profileId, model: active.model, effort: active.effort }
+    : { profileId: null as string | null, model: '', effort: '' as AiEffort };
+  const choice = pick && pick.threadId === activeId ? pick : { threadId: activeId, ...stored };
+  const setChoice = async (patch: Partial<typeof stored>) => {
+    setPick({ ...choice, ...patch, threadId: activeId });
+    if (active) {
+      await updateChatThread(active.id, patch);
+      threadsQ.refresh();
+    }
+  };
+  /** The configuration this conversation sends with: the stored one plus its own model and effort. */
+  const configFor = async (): Promise<AiConfig | null> => {
+    const base = cfg.data;
+    if (!base) return null;
+    const id = choice.profileId ?? routeFor(base, 'chat').first.id;
+    if (!choice.model && choice.effort === '') return base;
+    const overrides: AiOverrides = {
+      [id]: { ...(choice.model ? { model: choice.model } : {}), reasoningEffort: choice.effort },
+    };
+    return loadAiConfig(true, env, overrides);
+  };
 
   useEffect(() => {
     endRef.current?.scrollIntoView?.({ block: 'end' });
   }, [turns.length, phase, consent]);
+  useEffect(() => {
+    if (phase !== 'waiting') return undefined;
+    const started = Date.now();
+    const id = setInterval(() => setElapsed(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [phase]);
 
   const blocker = ((): string | null => {
     if (!flag.known || !cfg.data) return 'Reading the AI settings…';
-    const config = sendBlocker(cfg.data, env, 'chat');
+    const config = sendBlocker(cfg.data, env, 'chat', choice.profileId);
     if (config) return config;
     if (message.trim() === '') return 'Type a message first.';
     if (message.trim().length > MAX_MESSAGE)
@@ -151,14 +201,16 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
 
   /** Sends one prepared request and saves the answer in the thread. */
   const perform = async (
+    config: AiConfig,
     threadId: string,
     selection: AiSelection,
     preview: AiRequestPreview,
     text: string,
+    prefer: string | null,
   ) => {
-    const config = cfg.data;
-    if (!config) return;
     setPhase('waiting');
+    setPartial('');
+    setElapsed(0);
     abort.current = new AbortController();
     try {
       await runAiTask(config, env, {
@@ -166,15 +218,17 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
         selection,
         preview,
         threadId,
+        prefer,
         signal: abort.current.signal,
+        onDelta: (soFar) => setPartial(partialAnswer(soFar)),
       });
       setMessage((m) => (m.trim() === text ? '' : m));
       setNote(null);
       const all = await getChatTurns(threadId);
-      const fresh = (await listChatThreads()).find((t) => t.id === threadId) ?? null;
+      const saved = (await listChatThreads()).find((t) => t.id === threadId) ?? null;
       threadsQ.refresh();
       turnsQ.refresh();
-      await foldIntoSummary(threadId, all, fresh);
+      await foldIntoSummary(config, threadId, all, saved, prefer);
     } catch (e) {
       const view = describeAiError(e, configSecrets(config));
       setNote({
@@ -186,18 +240,19 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
       });
     } finally {
       abort.current = null;
+      setPartial('');
       setPhase('idle');
     }
   };
 
   /** The rolling memory: older turns become a short summary, sent with every later message. */
   const foldIntoSummary = async (
+    config: AiConfig,
     threadId: string,
     all: readonly ChatTurn[],
     thread: ChatThread | null,
+    prefer: string | null,
   ) => {
-    const config = cfg.data;
-    if (!config) return;
     const recent = recentTurns(all, thread);
     if (recent.length <= SUMMARISE_ABOVE) return;
     const old = recent.slice(0, recent.length - KEEP_RECENT);
@@ -208,8 +263,8 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
       ...(thread?.summary ? { memory: thread.summary } : {}),
     };
     try {
-      const preview = await previewAiTask(config, env, 'chat', selection);
-      const done = await runAiTask(config, env, { kind: 'chat', selection, preview });
+      const preview = await previewAiTask(config, env, 'chat', selection, undefined, prefer);
+      const done = await runAiTask(config, env, { kind: 'chat', selection, preview, prefer });
       const summary = done.saved.kind === 'chat' ? done.saved.output.answer : '';
       // The summary is memory, not a message of the conversation: it is not kept as a turn.
       await deleteAiResult(done.saved.id).catch(() => undefined);
@@ -226,12 +281,12 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
   };
 
   const submit = useAction(async () => {
-    const config = cfg.data;
     const text = message.trim();
-    if (!config || blocker || busy) return;
+    if (!cfg.data || blocker || busy) return;
     setNote(null);
+    const prefer = choice.profileId;
     // First await of the submit: Chrome's access prompt needs the user's gesture.
-    const patterns = routeFor(config, 'chat').targets.flatMap((t) =>
+    const patterns = routeFor(cfg.data, 'chat', prefer).targets.flatMap((t) =>
       t.endpoint.ok ? [t.endpoint.pattern] : [],
     );
     if (patterns.length > 0 && !(await requestEndpointAccess(patterns))) {
@@ -242,11 +297,16 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
       return;
     }
     setPhase('finding');
+    let config: AiConfig = cfg.data;
     try {
+      config = (await configFor()) ?? cfg.data;
       let thread = active;
       if (!thread) {
         const created = await createChatThread();
-        thread = { ...created, turns: 0 };
+        // The choice made before the first message becomes the conversation's own.
+        const own = { profileId: choice.profileId, model: choice.model, effort: choice.effort };
+        await updateChatThread(created.id, own);
+        thread = { ...created, ...own, turns: 0 };
         setActiveId(created.id);
       }
       const earlier = recentTurns(turns, thread);
@@ -266,6 +326,10 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
           topK: 10,
         });
         passages = found.passages;
+        // Flashcards and knowledge points are not in the search index: matched separately.
+        const study = await retrieveStudyItems(`${before} ${text}`.trim());
+        const seen = new Set(passages.map((p) => p.id));
+        passages = [...passages, ...study.filter((p) => !seen.has(p.id))];
       }
       const selection: AiSelection = {
         chunks: passages.map((p) => ({ id: p.id, kind: p.kind, text: p.text })),
@@ -273,13 +337,20 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
         ...(earlier.length > 0 ? { history: historyOf(earlier) } : {}),
         ...(thread.summary ? { memory: thread.summary } : {}),
       };
-      const preview = await previewAiTask(config, env, 'chat', selection);
-      if (!thread.consentedAt) {
-        setConsent({ threadId: thread.id, selection, preview, passages, text });
+      const preview = await previewAiTask(config, env, 'chat', selection, undefined, prefer);
+      // The agreement covers these recipients; another provider or model asks once more.
+      const key = (await env.clock.sha256(JSON.stringify(preview.recipients))).slice(0, 32);
+      if (thread.consentedAt && thread.consentedFor === null) {
+        // An agreement made before recipients were recorded: keep it and record them now.
+        await updateChatThread(thread.id, { consentedFor: key });
+        thread = { ...thread, consentedFor: key };
+      }
+      if (!thread.consentedAt || thread.consentedFor !== key) {
+        setConsent({ threadId: thread.id, selection, preview, passages, text, key, prefer });
         setPhase('idle');
         return;
       }
-      await perform(thread.id, selection, preview, text);
+      await perform(config, thread.id, selection, preview, text, prefer);
     } catch (e) {
       const view = describeAiError(e, configSecrets(config));
       setNote({ tone: 'error', text: `${view.title}: ${view.message}` });
@@ -290,10 +361,14 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
   const accept = useAction(async () => {
     if (!consent) return;
     const c = consent;
-    await updateChatThread(c.threadId, { consentedAt: new Date().toISOString() });
+    await updateChatThread(c.threadId, {
+      consentedAt: new Date().toISOString(),
+      consentedFor: c.key,
+    });
     setConsent(null);
     threadsQ.refresh();
-    await perform(c.threadId, c.selection, c.preview, c.text);
+    const config = (await configFor()) ?? cfg.data;
+    if (config) await perform(config, c.threadId, c.selection, c.preview, c.text, c.prefer);
   });
 
   const removeThread = useAction(async (id: string) => {
@@ -303,6 +378,56 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
     threadsQ.refresh();
   });
 
+  const rename = useAction(async (title: string) => {
+    if (!active) return;
+    await updateChatThread(active.id, { title });
+    threadsQ.refresh();
+  });
+  const saveMemory = useAction(async (text: string) => {
+    if (!active) return;
+    await updateChatThread(active.id, {
+      summary: text.trim().slice(0, 4000),
+      // Clearing the memory makes every turn count as recent again.
+      ...(text.trim() === '' ? { summarizedUpTo: null } : {}),
+    });
+    setMemoryDraft(null);
+    threadsQ.refresh();
+  });
+  /** The conversation as Markdown: what was asked and answered, and what the answers rested on. */
+  const asMarkdown = (): string =>
+    [
+      `# ${active?.title || 'Chat'}`,
+      '',
+      '> AI-generated conversation, unverified. Quoted passages come from your own notes.',
+      '',
+      ...turns.flatMap((t) => [
+        `**You:** ${t.question ?? ''}`,
+        '',
+        t.kind === 'chat' ? t.output.answer : '',
+        '',
+        ...(t.kind === 'chat' ? t.citations.map((c) => `> ${c.quote}`) : []),
+        '',
+      ]),
+    ]
+      .join('\n')
+      .trim();
+  const exportNote = useAction(async () => {
+    if (!active || turns.length === 0) return;
+    await createNote({
+      title: `AI chat: ${active.title || 'Chat'}`.slice(0, 200),
+      body: asMarkdown(),
+    });
+    setNote({ tone: 'info', text: 'Saved as a note in your vault, marked as an AI conversation.' });
+  });
+  const downloadMarkdown = () => {
+    const url = URL.createObjectURL(new Blob([asMarkdown()], { type: 'text/markdown' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${(active?.title || 'chat').replace(/[^\w-]+/g, '-').slice(0, 40)}.md`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const newChat = () => {
     setActiveId(null);
     setConsent(null);
@@ -310,7 +435,10 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
     setMessage('');
   };
 
-  const provider = cfg.data ? routeFor(cfg.data, 'chat').first : null;
+  const provider = cfg.data ? routeFor(cfg.data, 'chat', choice.profileId).first : null;
+  const efforts = provider
+    ? effortsFor(provider.settings.vendor, choice.model || provider.settings.model)
+    : [];
   const providerText = provider
     ? `${provider.settings.model || 'no model'}${provider.endpoint.ok ? ` · ${provider.endpoint.host}` : ''}`
     : '';
@@ -398,6 +526,61 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
             <Chip icon={Sparkles} tone="violet">
               <span data-testid="chat-provider">{providerText || 'AI provider'}</span>
             </Chip>
+            {cfg.data && cfg.data.profiles.length > 1 ? (
+              <label className="chat-scope__tag">
+                <span className="mv-label">Provider</span>
+                <select
+                  className="sv-control"
+                  data-testid="chat-profile"
+                  value={choice.profileId ?? routeFor(cfg.data, 'chat').first.id}
+                  disabled={busy}
+                  onChange={(e) => void setChoice({ profileId: e.target.value, model: '' })}
+                >
+                  {cfg.data.profiles.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.id === 'primary' ? 'Main' : p.label}: {p.settings.model || 'no model'}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            ) : null}
+            {provider ? (
+              <>
+                <label className="chat-scope__tag">
+                  <span className="mv-label">Model</span>
+                  <input
+                    className="sv-control"
+                    data-testid="chat-model"
+                    list={`${uid}-models`}
+                    value={choice.model || provider.settings.model}
+                    disabled={busy}
+                    onChange={(e) => void setChoice({ model: e.target.value })}
+                  />
+                  <datalist id={`${uid}-models`}>
+                    {VENDORS[provider.settings.vendor].curatedModels.map((m) => (
+                      <option key={m} value={m} />
+                    ))}
+                  </datalist>
+                </label>
+                <label className="chat-scope__tag">
+                  <span className="mv-label">Reasoning</span>
+                  <select
+                    className="sv-control"
+                    data-testid="chat-effort"
+                    value={choice.effort}
+                    disabled={busy || efforts.length === 0}
+                    onChange={(e) => void setChoice({ effort: e.target.value as AiEffort })}
+                  >
+                    <option value="">Default</option>
+                    {efforts.map((v) => (
+                      <option key={v} value={v}>
+                        {v}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            ) : null}
             <label className="chat-scope__notes">
               <input
                 type="checkbox"
@@ -428,6 +611,78 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
               </label>
             ) : null}
           </div>
+
+          {active ? (
+            <div className="chat-tools" data-testid="chat-tools">
+              <label className="chat-tools__title">
+                <span className="sv-vh">Conversation title</span>
+                <input
+                  className="sv-control"
+                  data-testid="chat-title"
+                  key={active.id}
+                  defaultValue={active.title}
+                  maxLength={80}
+                  onBlur={(e) => {
+                    if (e.target.value.trim() !== active.title) void rename.run(e.target.value);
+                  }}
+                />
+              </label>
+              <Action
+                variant="ghost"
+                data-testid="chat-export-note"
+                disabledReason={turns.length === 0 ? 'Nothing to save yet.' : undefined}
+                onClick={() => void exportNote.run()}
+              >
+                Save as a note
+              </Action>
+              <Action
+                variant="ghost"
+                data-testid="chat-export-md"
+                disabledReason={turns.length === 0 ? 'Nothing to download yet.' : undefined}
+                onClick={downloadMarkdown}
+              >
+                Download .md
+              </Action>
+              <details className="chat-memory" data-testid="chat-memory">
+                <summary>
+                  Memory ({active.summary ? 'a summary is kept' : 'nothing summarised yet'})
+                </summary>
+                <p className="mv-line">
+                  Older messages are folded into this short summary and sent with each new message
+                  so the assistant keeps context. It is written by the AI: read it, correct it or
+                  clear it.
+                </p>
+                <textarea
+                  className="sv-control"
+                  data-testid="chat-memory-text"
+                  rows={4}
+                  maxLength={4000}
+                  value={memoryDraft?.id === active.id ? memoryDraft.text : active.summary}
+                  onChange={(e) => setMemoryDraft({ id: active.id, text: e.target.value })}
+                />
+                <div className="chat-compose__bar">
+                  <Action
+                    variant="ghost"
+                    data-testid="chat-memory-clear"
+                    disabledReason={active.summary ? undefined : 'There is no summary to clear.'}
+                    onClick={() => void saveMemory.run('')}
+                  >
+                    Clear memory
+                  </Action>
+                  <Action
+                    variant="primary"
+                    data-testid="chat-memory-save"
+                    disabledReason={
+                      memoryDraft?.id === active.id ? undefined : 'Edit the summary first.'
+                    }
+                    onClick={() => void saveMemory.run(memoryDraft?.text ?? '')}
+                  >
+                    Save memory
+                  </Action>
+                </div>
+              </details>
+            </div>
+          ) : null}
 
           {turns.length === 0 && !consent ? (
             <div className="mv-card chat-start">
@@ -540,7 +795,11 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
               <p className="chat-thinking" data-testid="chat-thinking">
                 <VaultBuddy pose="think" size={48} />
                 <span>
-                  {phase === 'finding' ? 'Looking through your notes on this device…' : 'Thinking…'}
+                  {phase === 'finding'
+                    ? 'Looking through your notes on this device…'
+                    : elapsed >= 15
+                      ? `Still working… ${elapsed} s. Some providers (like UBAG) drive a real browser and can take a few minutes.`
+                      : 'Thinking…'}
                 </span>
                 {phase === 'waiting' ? (
                   <Action
@@ -552,6 +811,12 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
                     Stop
                   </Action>
                 ) : null}
+              </p>
+            ) : null}
+            {partial ? (
+              <p className="chat-bubble chat-partial" data-testid="chat-partial">
+                <span className="sv-vh">Answer so far: </span>
+                <span className="ai-pre">{partial}</span>
               </p>
             ) : null}
             {note ? (

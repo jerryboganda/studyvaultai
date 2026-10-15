@@ -960,8 +960,8 @@ export function createAiCache(): AiCache {
 
 export interface AiSourceRef {
   id: string;
-  kind: 'highlight' | 'note';
-  /** The immutable quote (highlight) or the note body. */
+  kind: 'highlight' | 'note' | 'card' | 'knowledge_point';
+  /** The immutable quote (highlight), the note body, a card's question and answer, or a knowledge point. */
   text: string;
   /** The page/document the passage came from (null for a note without one). */
   sourceId: string | null;
@@ -970,49 +970,109 @@ export interface AiSourceRef {
   deleted: boolean;
 }
 
-/** Resolves chunk ids (highlights, then notes) to what the vault holds. Unknown ids are absent. */
+/** What a flashcard says, as the passage the assistant may cite (the text is exactly what is sent). */
+export function cardPassage(c: Card): string {
+  if (c.cardType === 'cloze' && c.cloze) return `Flashcard (cloze): ${c.cloze.text}`;
+  if (c.cardType === 'mcq') {
+    const answer = c.choices?.find((x) => x.id === c.answerChoiceId)?.text;
+    return `Flashcard (multiple choice): ${c.front}${
+      answer
+        ? `
+Correct answer: ${answer}`
+        : ''
+    }`;
+  }
+  return `Flashcard question: ${c.front}
+Answer: ${c.back}`;
+}
+
+/** A knowledge point as one passage: its one-liner, exam pearl and misconception. */
+export function knowledgePointPassage(k: KnowledgePoint): string {
+  return [
+    `Knowledge point: ${k.shortOneLiner}`,
+    k.examPearl ? `Exam pearl: ${k.examPearl}` : '',
+    k.misconception ? `Common misconception: ${k.misconception}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+/** Resolves chunk ids (highlights, notes, cards, knowledge points) to what the vault holds. Unknown ids are absent. */
 export async function resolveAiSources(ids: readonly string[]): Promise<Map<string, AiSourceRef>> {
   const wanted = unique(ids);
   return withDb((db) =>
-    db.transaction('r', [db.highlights, db.notes, db.sources], async () => {
-      const out = new Map<string, AiSourceRef>();
-      if (wanted.length === 0) return out;
-      const highlights = (await db.highlights.bulkGet(wanted))
-        .map((r) => (r ? parseRow(Highlight, r, 'highlight') : null))
-        .filter(notNull);
-      const sources = await readSources(
-        db,
-        highlights.map((h) => h.sourceId),
-      );
-      for (const h of highlights) {
-        const s = sources.get(h.sourceId);
-        out.set(h.id, {
-          id: h.id,
-          kind: 'highlight',
-          text: h.exactQuote,
-          sourceId: h.sourceId,
-          sourceTitle: s?.title ?? null,
-          host: s?.host ?? null,
-          deleted: h.deletedAt !== null,
-        });
-      }
-      const rest = wanted.filter((id) => !out.has(id));
-      for (const row of await db.notes.bulkGet(rest)) {
-        const n = row ? parseRow(Note, row, 'note') : null;
-        if (n) {
-          out.set(n.id, {
-            id: n.id,
-            kind: 'note',
-            text: n.body,
-            sourceId: n.sourceId,
-            sourceTitle: n.title || null,
-            host: null,
-            deleted: n.deletedAt !== null,
+    db.transaction(
+      'r',
+      [db.highlights, db.notes, db.sources, db.cards, db.knowledgePoints],
+      async () => {
+        const out = new Map<string, AiSourceRef>();
+        if (wanted.length === 0) return out;
+        const highlights = (await db.highlights.bulkGet(wanted))
+          .map((r) => (r ? parseRow(Highlight, r, 'highlight') : null))
+          .filter(notNull);
+        const sources = await readSources(
+          db,
+          highlights.map((h) => h.sourceId),
+        );
+        for (const h of highlights) {
+          const s = sources.get(h.sourceId);
+          out.set(h.id, {
+            id: h.id,
+            kind: 'highlight',
+            text: h.exactQuote,
+            sourceId: h.sourceId,
+            sourceTitle: s?.title ?? null,
+            host: s?.host ?? null,
+            deleted: h.deletedAt !== null,
           });
         }
-      }
-      return out;
-    }),
+        const rest = wanted.filter((id) => !out.has(id));
+        for (const row of await db.notes.bulkGet(rest)) {
+          const n = row ? parseRow(Note, row, 'note') : null;
+          if (n) {
+            out.set(n.id, {
+              id: n.id,
+              kind: 'note',
+              text: n.body,
+              sourceId: n.sourceId,
+              sourceTitle: n.title || null,
+              host: null,
+              deleted: n.deletedAt !== null,
+            });
+          }
+        }
+        const study = wanted.filter((id) => !out.has(id));
+        for (const row of await db.cards.bulkGet(study)) {
+          const c = row ? parseRow(Card, row, 'card') : null;
+          if (c) {
+            out.set(c.id, {
+              id: c.id,
+              kind: 'card',
+              text: cardPassage(c),
+              sourceId: null,
+              sourceTitle: null,
+              host: null,
+              deleted: c.deletedAt !== null,
+            });
+          }
+        }
+        for (const row of await db.knowledgePoints.bulkGet(study.filter((id) => !out.has(id)))) {
+          const k = row ? parseRow(KnowledgePoint, row, 'knowledge point') : null;
+          if (k) {
+            out.set(k.id, {
+              id: k.id,
+              kind: 'knowledge_point',
+              text: knowledgePointPassage(k),
+              sourceId: null,
+              sourceTitle: null,
+              host: null,
+              deleted: k.deletedAt !== null,
+            });
+          }
+        }
+        return out;
+      },
+    ),
   );
 }
 

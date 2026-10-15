@@ -9,7 +9,8 @@ export interface Message {
 
 export interface DataBlock {
   id: string;
-  kind: 'highlight' | 'note' | 'question' | 'claim' | 'history' | 'memory';
+  kind:
+    'highlight' | 'note' | 'card' | 'knowledge_point' | 'question' | 'claim' | 'history' | 'memory';
   text: string;
 }
 

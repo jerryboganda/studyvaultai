@@ -242,8 +242,8 @@ const chat = defineTask({
   maxOutputTokens: 1_200,
   instructions: (ctx) =>
     'Reply to the message in the data block with kind="question" as a knowledgeable, friendly study ' +
-    'tutor. Data blocks with kind="highlight" or kind="note" are passages from the user\'s own study ' +
-    'material: use the ones that are relevant and cite the exact words you rely on in "evidence". Set ' +
+    'tutor. Data blocks with kind="highlight", "note", "card" or "knowledge_point" are passages from ' +
+    'the user\'s own study material (a card is one of their flashcards): use the ones that are relevant and cite the exact words you rely on in "evidence". Set ' +
     '"basis" to "notes" when the answer rests only on cited passages, "mixed" when you also add general ' +
     'knowledge, and "general" when no passage is relevant (evidence is then empty). Say plainly when you ' +
     'are not sure. ' +

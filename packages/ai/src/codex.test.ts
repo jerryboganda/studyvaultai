@@ -261,3 +261,62 @@ describe('Codex login', () => {
     });
   });
 });
+
+describe('streamed chat completions', () => {
+  const sse = (chunks: unknown[]) =>
+    new Response(
+      chunks.map((c) => `data: ${typeof c === 'string' ? c : JSON.stringify(c)}\n\n`).join(''),
+      { status: 200, headers: { 'content-type': 'text/event-stream' } },
+    );
+
+  it('streams the reply, reports progress and returns the assembled text', async () => {
+    calls.length = 0;
+    const seen: string[] = [];
+    const p = createOpenAICompatibleProvider({
+      baseUrl: 'https://api.example.test/v1',
+      apiKey: 'key-123456789',
+      model: 'm',
+      fetch: fakeFetch(() =>
+        sse([
+          { choices: [{ delta: { content: '{"answer":' } }] },
+          { choices: [{ delta: { content: ' "Hi"}' } }] },
+          { choices: [{ delta: {}, finish_reason: 'stop' }] },
+          { choices: [], usage: { prompt_tokens: 5, completion_tokens: 3 } },
+          '[DONE]',
+        ]),
+      ),
+    });
+    const out = await p.complete(req, { onDelta: (t) => seen.push(t) });
+    expect(out).toEqual({ text: '{"answer": "Hi"}', usage: { inputTokens: 5, outputTokens: 3 } });
+    expect(seen.at(-1)).toBe('{"answer": "Hi"}');
+    expect(JSON.parse(calls[0]!.init.body as string)).toMatchObject({ stream: true });
+  });
+
+  it('does not stream when the gateway cannot stream', async () => {
+    calls.length = 0;
+    const p = createOpenAICompatibleProvider({
+      baseUrl: 'https://api.example.test/v1',
+      apiKey: 'key-123456789',
+      model: 'm',
+      streaming: false,
+      fetch: fakeFetch(ok),
+    });
+    await p.complete(req, { onDelta: () => undefined });
+    expect(JSON.parse(calls[0]!.init.body as string)).toMatchObject({ stream: false });
+  });
+
+  it('asks again without streaming when the server rejects the stream option', async () => {
+    calls.length = 0;
+    let n = 0;
+    const p = createOpenAICompatibleProvider({
+      baseUrl: 'https://api.example.test/v1',
+      apiKey: 'key-123456789',
+      model: 'm',
+      fetch: fakeFetch(() => (n++ === 0 ? json({ error: { message: 'no stream' } }, 400) : ok())),
+    });
+    const out = await p.complete(req, { onDelta: () => undefined });
+    expect(out.text).toBe('{}');
+    expect(calls).toHaveLength(2);
+    expect(JSON.parse(calls[1]!.init.body as string)).toMatchObject({ stream: false });
+  });
+});

@@ -115,6 +115,8 @@ export interface PipelineDeps {
   retry?: RetryPolicy;
   timeoutMs?: number;
   log?: (e: LogEvent) => void;
+  /** Reply text so far, for providers that stream (progress display only). */
+  onDelta?: (textSoFar: string) => void;
   /** Extra exact strings to scrub from anything emitted (the pipeline itself never sees the key). */
   secrets?: readonly string[];
 }

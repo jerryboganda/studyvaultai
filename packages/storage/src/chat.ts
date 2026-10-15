@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { IsoDate } from '@shared';
 import { cmp, now, parseInput, signalChange } from './core';
 import { withDb, withWritableDb } from './db';
-import { listAiResults, type StoredAiResult } from './ai';
+import { AI_EFFORTS, listAiResults, type StoredAiResult } from './ai';
 
 /**
  * Saved conversations for "Chat". The turns are ordinary `aiResults` rows (kind `chat`, with a
@@ -24,6 +24,13 @@ export const ChatThreadMeta = z.strictObject({
   summarizedUpTo: IsoDate.nullable(),
   /** When the person accepted this conversation's sending rules (null = not yet). */
   consentedAt: IsoDate.nullable(),
+  /** Fingerprint of the recipients that agreement covered; another recipient asks again. */
+  consentedFor: z.string().max(80).nullable().default(null),
+  /** The provider (`primary` or a fallback id) this conversation uses; null = the usual route. */
+  profileId: z.string().max(40).nullable().default(null),
+  /** Model and reasoning effort for this conversation ('' = the provider's own setting). */
+  model: z.string().max(120).default(''),
+  effort: z.enum(AI_EFFORTS).default(''),
   createdAt: IsoDate,
   updatedAt: IsoDate,
 });
@@ -112,6 +119,10 @@ export async function listChatThreads(): Promise<ChatThread[]> {
       summarizedUpTo: m?.summarizedUpTo ?? null,
       // A restored conversation has no recorded agreement: ask again.
       consentedAt: m?.consentedAt ?? null,
+      consentedFor: m?.consentedFor ?? null,
+      profileId: m?.profileId ?? null,
+      model: m?.model ?? '',
+      effort: m?.effort ?? '',
       createdAt: m?.createdAt ?? first?.createdAt ?? stamp,
       updatedAt: turns.at(-1)?.createdAt ?? m?.updatedAt ?? stamp,
       turns: turns.length,
@@ -130,6 +141,10 @@ export async function createChatThread(title = ''): Promise<ChatThreadMeta> {
       summary: '',
       summarizedUpTo: null,
       consentedAt: null,
+      consentedFor: null,
+      profileId: null,
+      model: '',
+      effort: '',
       createdAt: stamp,
       updatedAt: stamp,
     },
@@ -140,7 +155,17 @@ export async function createChatThread(title = ''): Promise<ChatThreadMeta> {
 }
 
 export type ChatThreadPatch = Partial<
-  Pick<ChatThreadMeta, 'title' | 'summary' | 'summarizedUpTo' | 'consentedAt'>
+  Pick<
+    ChatThreadMeta,
+    | 'title'
+    | 'summary'
+    | 'summarizedUpTo'
+    | 'consentedAt'
+    | 'consentedFor'
+    | 'profileId'
+    | 'model'
+    | 'effort'
+  >
 >;
 
 /** Creates the row on first use, so a restored conversation can be renamed or agreed to. */
@@ -154,6 +179,10 @@ export async function updateChatThread(id: string, patch: ChatThreadPatch): Prom
       summary: '',
       summarizedUpTo: null,
       consentedAt: null,
+      consentedFor: null,
+      profileId: null,
+      model: '',
+      effort: '',
       createdAt: stamp,
       updatedAt: stamp,
     };

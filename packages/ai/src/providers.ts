@@ -32,7 +32,17 @@ export interface AiProvider {
    * hash includes it, so an address changed after the preview is not what was confirmed.
    */
   readonly origin?: string;
-  complete(req: AiCompletionRequest, opts: { signal?: AbortSignal }): Promise<AiCompletion>;
+  complete(
+    req: AiCompletionRequest,
+    opts: {
+      signal?: AbortSignal;
+      /**
+       * Receives the reply text so far, each time it grows, for providers that stream. The final
+       * `AiCompletion` is still what is validated and grounded; this is only for showing progress.
+       */
+      onDelta?: (textSoFar: string) => void;
+    },
+  ): Promise<AiCompletion>;
 }
 
 export type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -182,6 +192,86 @@ async function postJson(
 const num = (v: unknown): number =>
   typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.round(v) : 0;
 
+/**
+ * Reads a server-sent-event body line by line, handing every `data:` payload to `onData`. Stops at
+ * the size cap (a stream that never ends must not fill memory) and when `signal` aborts.
+ */
+async function readEventStream(
+  res: Response,
+  onData: (payload: string) => void,
+  signal: AbortSignal | undefined,
+): Promise<void> {
+  if (!res.body) {
+    for (const line of (await res.text()).split('\n')) {
+      if (line.startsWith('data:')) onData(line.slice(5).trim());
+    }
+    return;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let total = 0;
+  try {
+    for (;;) {
+      if (signal?.aborted) throw new AiError('aborted');
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > MAX_RESPONSE_CHARS * 2) {
+        throw new AiError('server_error', { status: res.status, detail: 'response too large' });
+      }
+      buffer += decoder.decode(value, { stream: true });
+      let nl = buffer.indexOf('\n');
+      while (nl >= 0) {
+        const line = buffer.slice(0, nl).replace(/\r$/, '');
+        buffer = buffer.slice(nl + 1);
+        if (line.startsWith('data:')) onData(line.slice(5).trim());
+        nl = buffer.indexOf('\n');
+      }
+    }
+    if (buffer.startsWith('data:')) onData(buffer.slice(5).trim());
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+/** POST that returns the live response (no body read), for streamed replies. */
+async function postStream(
+  fetchFn: FetchLike,
+  url: string,
+  headers: Record<string, string>,
+  body: unknown,
+  signal: AbortSignal | undefined,
+  nowMs: () => number,
+): Promise<Response> {
+  let res: Response;
+  try {
+    res = await fetchFn(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: signal ?? null,
+      redirect: 'error',
+      credentials: 'omit',
+      cache: 'no-store',
+      referrerPolicy: 'no-referrer',
+    });
+  } catch {
+    if (signal?.aborted) throw new AiError('aborted');
+    throw new AiError('network');
+  }
+  if (!res.ok) {
+    let parsed: unknown = null;
+    try {
+      parsed = JSON.parse(await res.text());
+    } catch {
+      /* not JSON */
+    }
+    throw httpError(res, parsed, nowMs());
+  }
+  return res;
+}
+
 // ---------------------------------------------------------------------------------------------
 // OpenAI-compatible chat completions
 // ---------------------------------------------------------------------------------------------
@@ -208,6 +298,11 @@ export interface OpenAICompatibleConfig {
   reasoningStyle?: 'reasoning_effort' | 'openrouter' | 'none';
   /** Per-attempt facade deadline hint, ms (UBAG `ubag_wait_ms`). */
   waitMs?: number;
+  /**
+   * Stream the reply when the caller wants progress (`onDelta`). Default true; off for gateways that
+   * cannot stream (UBAG drives a browser and answers once).
+   */
+  streaming?: boolean;
   now?: () => number;
 }
 
@@ -217,6 +312,32 @@ export function basicAuthHeader(credentials: string): string {
   let bin = '';
   for (const b of bytes) bin += String.fromCharCode(b);
   return `Basic ${btoa(bin)}`;
+}
+
+/** The reply shape of a chat-completions call (streamed replies are folded into this shape). */
+interface OpenAIReply {
+  choices?: { message?: { content?: unknown; refusal?: unknown }; finish_reason?: unknown }[];
+  usage?: { prompt_tokens?: unknown; completion_tokens?: unknown };
+}
+
+function openaiResult(raw: unknown): AiCompletion {
+  const data = (raw ?? {}) as OpenAIReply;
+  const choice = data.choices?.[0];
+  if (choice?.finish_reason === 'length') throw new AiError('output_truncated');
+  if (choice?.finish_reason === 'content_filter' || typeof choice?.message?.refusal === 'string') {
+    throw new AiError('refused');
+  }
+  const content = choice?.message?.content;
+  if (typeof content !== 'string') {
+    throw new AiError('invalid_output', { detail: 'response had no text' });
+  }
+  return {
+    text: content,
+    usage: {
+      inputTokens: num(data.usage?.prompt_tokens),
+      outputTokens: num(data.usage?.completion_tokens),
+    },
+  };
 }
 
 export function createOpenAICompatibleProvider(cfg: OpenAICompatibleConfig): AiProvider {
@@ -231,14 +352,16 @@ export function createOpenAICompatibleProvider(cfg: OpenAICompatibleConfig): AiP
     id: `openai-compatible:${base.host}`,
     model: cfg.model,
     origin: base.origin,
-    async complete(req, { signal }) {
+    async complete(req, { signal, onDelta }) {
       if (!key && !keyless) throw new AiError('missing_key');
+      const wantStream = !!onDelta && cfg.streaming !== false;
       const body = {
         model: cfg.model,
         messages: req.messages.map((m) => ({ role: m.role, content: m.content })),
         [cfg.maxTokensParam ?? 'max_tokens']: req.maxOutputTokens,
         temperature: req.temperature ?? 0.2,
-        stream: false,
+        stream: wantStream,
+        ...(wantStream ? { stream_options: { include_usage: true } } : {}),
         ...(req.json !== false && cfg.jsonMode !== false
           ? { response_format: { type: 'json_object' } }
           : {}),
@@ -250,29 +373,72 @@ export function createOpenAICompatibleProvider(cfg: OpenAICompatibleConfig): AiP
       if (key) {
         headers.authorization = cfg.authScheme === 'basic' ? basicAuthHeader(key) : `Bearer ${key}`;
       }
-      const data = (await postJson(cfg.fetch, url, headers, body, signal, now)) as {
-        choices?: { message?: { content?: unknown; refusal?: unknown }; finish_reason?: unknown }[];
-        usage?: { prompt_tokens?: unknown; completion_tokens?: unknown };
-      };
-      const choice = data.choices?.[0];
-      if (choice?.finish_reason === 'length') throw new AiError('output_truncated');
-      if (
-        choice?.finish_reason === 'content_filter' ||
-        typeof choice?.message?.refusal === 'string'
-      ) {
-        throw new AiError('refused');
+      if (wantStream) {
+        let res: Response;
+        try {
+          res = await postStream(cfg.fetch, url, headers, body, signal, now);
+        } catch (e) {
+          // A server that rejects `stream` is asked again without it.
+          if (!(e instanceof AiError) || e.code !== 'bad_request') throw e;
+          return this.complete(req, { ...(signal ? { signal } : {}) });
+        }
+        if (!(res.headers.get('content-type') ?? '').includes('text/event-stream')) {
+          // Answered with a plain JSON body anyway.
+          const text = await res.text();
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(text);
+          } catch {
+            throw new AiError('server_error', {
+              status: res.status,
+              detail: 'unreadable response',
+            });
+          }
+          return openaiResult(parsed);
+        }
+        let text = '';
+        let finish: unknown = null;
+        let refusal = false;
+        let usage: { prompt_tokens?: unknown; completion_tokens?: unknown } | undefined;
+        await readEventStream(
+          res,
+          (payload) => {
+            if (!payload || payload === '[DONE]') return;
+            let ev: {
+              choices?: {
+                delta?: { content?: unknown; refusal?: unknown };
+                finish_reason?: unknown;
+              }[];
+              usage?: { prompt_tokens?: unknown; completion_tokens?: unknown };
+            };
+            try {
+              ev = JSON.parse(payload);
+            } catch {
+              return;
+            }
+            const choice = ev.choices?.[0];
+            if (typeof choice?.delta?.content === 'string' && choice.delta.content) {
+              text += choice.delta.content;
+              onDelta?.(text);
+            }
+            if (typeof choice?.delta?.refusal === 'string') refusal = true;
+            if (choice?.finish_reason) finish = choice.finish_reason;
+            if (ev.usage) usage = ev.usage;
+          },
+          signal,
+        );
+        return openaiResult({
+          choices: [
+            {
+              message: { content: text, ...(refusal ? { refusal: 'refused' } : {}) },
+              finish_reason: finish ?? 'stop',
+            },
+          ],
+          ...(usage ? { usage } : {}),
+        });
       }
-      const content = choice?.message?.content;
-      if (typeof content !== 'string') {
-        throw new AiError('invalid_output', { detail: 'response had no text' });
-      }
-      return {
-        text: content,
-        usage: {
-          inputTokens: num(data.usage?.prompt_tokens),
-          outputTokens: num(data.usage?.completion_tokens),
-        },
-      };
+      const data = (await postJson(cfg.fetch, url, headers, body, signal, now)) as OpenAIReply;
+      return openaiResult(data);
     },
   };
 }
@@ -432,7 +598,7 @@ export function createCodexResponsesProvider(cfg: CodexResponsesConfig): AiProvi
     id: `codex-responses:${base.host}`,
     model: cfg.model,
     origin: base.origin,
-    async complete(req, { signal }) {
+    async complete(req, { signal, onDelta }) {
       if (!token || !cfg.accountId) throw new AiError('missing_key');
       const system = req.messages
         .filter((m) => m.role === 'system')
@@ -479,8 +645,33 @@ export function createCodexResponsesProvider(cfg: CodexResponsesConfig): AiProvi
       }
       let text: string;
       try {
-        text = await res.text();
-      } catch {
+        if (res.ok) {
+          // Read the event stream as it arrives so the answer can be shown while it is written.
+          const lines: string[] = [];
+          let soFar = '';
+          await readEventStream(
+            res,
+            (payload) => {
+              lines.push(`data: ${payload}`);
+              if (!onDelta || !payload.includes('response.output_text.delta')) return;
+              try {
+                const ev = JSON.parse(payload) as { type?: unknown; delta?: unknown };
+                if (ev.type === 'response.output_text.delta' && typeof ev.delta === 'string') {
+                  soFar += ev.delta;
+                  onDelta(soFar);
+                }
+              } catch {
+                /* partial or foreign event */
+              }
+            },
+            signal,
+          );
+          text = lines.join('\n');
+        } else {
+          text = await res.text();
+        }
+      } catch (e) {
+        if (e instanceof AiError) throw e;
         throw new AiError(signal?.aborted ? 'aborted' : 'network');
       }
       if (!res.ok) {

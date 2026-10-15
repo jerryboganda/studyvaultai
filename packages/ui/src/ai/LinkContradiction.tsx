@@ -14,6 +14,10 @@ export const CONTRADICTION_LINK_NOTE = 'Reported by an AI contradiction check; n
  * check reported the pair; the explanation stays in the AI result. Offered only when both passages
  * still exist, are different, and the model's quotes were matched to them.
  */
+/** Relations link highlights, notes and knowledge points; a flashcard has no relation kind. */
+const relationKind = (k: AiSourceRef['kind']): 'highlight' | 'note' | 'knowledgePoint' =>
+  k === 'knowledge_point' ? 'knowledgePoint' : k === 'note' ? 'note' : 'highlight';
+
 export function LinkContradiction({
   a,
   b,
@@ -28,9 +32,9 @@ export function LinkContradiction({
   const link = useAction(async () => {
     if (!a || !b) return;
     const made = await createRelation({
-      fromKind: a.kind,
+      fromKind: relationKind(a.kind),
       fromId: a.id,
-      toKind: b.kind,
+      toKind: relationKind(b.kind),
       toId: b.id,
       type: 'contradicts',
       note: CONTRADICTION_LINK_NOTE,
@@ -39,6 +43,7 @@ export function LinkContradiction({
   });
 
   if (!grounded || !a || !b || a.deleted || b.deleted) return null;
+  if (a.kind === 'card' || b.kind === 'card') return null;
   if (a.kind === b.kind && a.id === b.id) return null;
 
   return (
