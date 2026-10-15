@@ -163,7 +163,15 @@ describe('design tokens', () => {
         .filter(({ file }) => file !== 'packages/ui/src/tokens.css')
         .flatMap(({ css }) => [...css.matchAll(/(--sv-[a-z0-9-]+)\s*:/g)].map((m) => m[1]!)),
     );
-    const RUNTIME = ['--sv-chip', '--sv-hl-fill', '--sv-hl-solid', '--sv-hl-w', '--sv-arrow-x', '--sv-dot', '--sv-stripe'];
+    const RUNTIME = [
+      '--sv-chip',
+      '--sv-hl-fill',
+      '--sv-hl-solid',
+      '--sv-hl-w',
+      '--sv-arrow-x',
+      '--sv-dot',
+      '--sv-stripe',
+    ];
     const fromTokens = [...referenced].filter((n) => !local.has(n) && !RUNTIME.includes(n));
     expect(fromTokens.length).toBeGreaterThan(50);
     for (const [mode, scope] of Object.entries(SCOPES)) {
