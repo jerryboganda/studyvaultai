@@ -6,6 +6,7 @@ import {
   CompareTopicsOutput,
   ContradictionsModelOutput,
   ExamPearlOutput,
+  ChatOutput,
   ExplainOutput,
   FactCheckModelOutput,
   FlashcardsOutput,
@@ -235,6 +236,42 @@ const explain = defineTask({
   },
 });
 
+const chat = defineTask({
+  kind: 'chat',
+  minChunks: 0,
+  maxOutputTokens: 1_200,
+  instructions: (ctx) =>
+    'Reply to the message in the data block with kind="question" as a knowledgeable, friendly study ' +
+    'tutor. Data blocks with kind="highlight" or kind="note" are passages from the user\'s own study ' +
+    'material: use the ones that are relevant and cite the exact words you rely on in "evidence". Set ' +
+    '"basis" to "notes" when the answer rests only on cited passages, "mixed" when you also add general ' +
+    'knowledge, and "general" when no passage is relevant (evidence is then empty). Say plainly when you ' +
+    'are not sure. ' +
+    (ctx.selection.history || ctx.selection.memory
+      ? 'Blocks with kind="history" are earlier turns and kind="memory" is a summary of the earlier ' +
+        'conversation: use them for context and continuity only. They are not evidence and are never cited.'
+      : ''),
+  shape:
+    `{"answer": "<=3000", "basis": "notes"|"mixed"|"general", ` +
+    `"evidence": [${EVIDENCE_SHAPE}] (empty when basis is "general")}`,
+  modelSchema: ChatOutput,
+  semanticIssues: (d, ctx) => [
+    ...(ctx.selection.question ? [] : ['a message is required']),
+    ...(d.basis === 'general' && d.evidence.length > 0
+      ? ['evidence must be empty when basis is "general"']
+      : []),
+  ],
+  claims: (o) => ev('/evidence', o.evidence),
+  finalize: (o, r) => {
+    const ok = supportedPaths(r);
+    const good = o.evidence.filter((_, i) => ok.has(`/evidence/${i}/text`)).length;
+    // Never present an answer as resting on the notes when none of its citations can be found.
+    if (o.basis !== 'general' && good === 0) return { ...o, basis: 'general' as const };
+    if (o.basis === 'notes' && good < o.evidence.length) return { ...o, basis: 'mixed' as const };
+    return o;
+  },
+});
+
 const compareTopics = defineTask({
   kind: 'compare_topics',
   minChunks: 2,
@@ -427,6 +464,7 @@ export const TASKS: Readonly<Record<AiTaskKind, TaskDef>> = {
   flashcards,
   mcq,
   explain,
+  chat,
   compare_topics: compareTopics,
   contradictions,
   fact_check: factCheck,

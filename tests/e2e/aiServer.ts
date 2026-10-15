@@ -194,6 +194,7 @@ export function taskOf(chat: ChatRequest): string {
   if (p.startsWith('TASK\nWrite 3 to 5 short oral-exam')) return 'short_viva';
   if (p.startsWith('TASK\nBuild a hierarchical study outline')) return 'study_outline';
   if (p.startsWith('TASK\nAnswer the question in the data block')) return 'explain';
+  if (p.startsWith('TASK\nReply to the message in the data block')) return 'chat';
   return 'unknown';
 }
 
@@ -236,6 +237,19 @@ export function cannedAnswer(chat: ChatRequest): string {
         uncertainty: '',
         evidence: [evidence],
       });
+    case 'chat': {
+      // Passages (highlight/note blocks) come first; a chat with none is a general conversation.
+      const passage = dataBlocks(chat).find((x) => x.kind === 'highlight' || x.kind === 'note');
+      return JSON.stringify(
+        passage
+          ? {
+              answer: 'E2E chat answer drawn from your notes.',
+              basis: 'notes',
+              evidence: [{ quoteId: passage.id, text: quoteFrom(passage.text) }],
+            }
+          : { answer: 'E2E general chat answer.', basis: 'general', evidence: [] },
+      );
+    }
     case 'mnemonic':
       return JSON.stringify({
         aids: [

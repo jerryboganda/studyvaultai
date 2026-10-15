@@ -1,5 +1,5 @@
 /** Bump whenever a prompt, output schema or grounding rule changes: it is part of the cache key. */
-export const TEMPLATE_VERSION = 'sv-ai/2026-10-11.2';
+export const TEMPLATE_VERSION = 'sv-ai/2026-10-16.1';
 
 export const AI_TASK_KINDS = [
   'exam_pearl',
@@ -8,6 +8,7 @@ export const AI_TASK_KINDS = [
   'flashcards',
   'mcq',
   'explain',
+  'chat',
   'compare_topics',
   'contradictions',
   'fact_check',

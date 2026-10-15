@@ -7,15 +7,14 @@ import {
   OTHER_KEY,
   addFallback,
   aiSwitch,
-  askChat,
   axeReport,
   backupText,
-  chatPassagesOf,
   expect,
   highlightsOf,
   metaValue,
   nonFixture,
   openChat,
+  sendChat,
   openConsent,
   openExt,
   openSide,
@@ -25,7 +24,6 @@ import {
   readTable,
   renderOutbound,
   routingOf,
-  saveBlock,
   saveHighlight,
   setUpAi,
   storageDump,
@@ -58,8 +56,6 @@ test.describe.configure({ timeout: 150_000 });
 
 const countOf = async (page: Page, store: string): Promise<number> =>
   (await readTable(page, store)).length;
-
-const DIALOG = '[data-testid="ai-consent-dialog"]';
 
 /** The two probes of "Test connection" are not study traffic: count the rest. */
 const requestsOf = (p: FakeProvider) =>
@@ -383,81 +379,70 @@ test.describe('memory aids, short viva and study outline', () => {
 // 3. Chat with a bank
 // =============================================================================================
 
-test.describe('chat with your notes', () => {
-  test('retrieval is local; the preview lists the passages and earlier turns to untick; what is sent is exactly what was shown; the answer cites the vault quote', async ({
+test.describe('chat', () => {
+  test('works with no study material at all, remembers the conversation, and survives a reload', async ({
     env,
     provider,
   }) => {
     const options = await openExt(env, 'options');
     await setUpAi(options, provider);
-    // Both on ONE page: the harness finds a tab to activate by its address, so a second tab at the
-    // same address would never get the content script.
+    const chat = await openChat(env);
+
+    // The first message asks once what the conversation may send and shows the exact text.
+    await sendChat(chat, 'How do beta blockers work?', false);
+    await expect(chat.getByTestId('chat-consent')).toBeVisible();
+    await expect(chat.getByTestId('chat-consent-text')).toContainText('How do beta blockers work?');
+    expect(requestsOf(provider), 'nothing is sent before the person agrees').toHaveLength(0);
+    await chat.getByTestId('chat-consent-accept').click();
+
+    const first = chat.getByTestId('chat-turn').first();
+    await expect(first).toContainText('E2E general chat answer.');
+    await expect(first.getByTestId('chat-used')).toContainText('No notes were sent');
+    expect(requestsOf(provider)).toHaveLength(1);
+    expect(requestsOf(provider)[0]?.body).toContain('How do beta blockers work?');
+    expect(requestsOf(provider)[0]?.body).not.toContain('kind=\\"highlight\\"');
+
+    // The second message does not ask again, and carries the first turn as memory.
+    await sendChat(chat, 'And which are cardioselective?', false);
+    await expect(chat.getByTestId('chat-turn')).toHaveCount(2);
+    await expect(chat.getByTestId('chat-consent')).toHaveCount(0);
+    expect(requestsOf(provider)).toHaveLength(2);
+    expect(requestsOf(provider)[1]?.body).toContain('E2E general chat answer.');
+
+    // A new page lists the saved conversation and resumes it.
+    const reopened = await openChat(env);
+    await expect(reopened.getByTestId('chat-turn')).toHaveCount(0);
+    await reopened.getByTestId('chat-thread').first().click();
+    await expect(reopened.getByTestId('chat-turn')).toHaveCount(2);
+    expect(await countOf(options, 'aiResults')).toBe(2);
+  });
+
+  test('finds the relevant notes on this device and cites the vault quote word for word', async ({
+    env,
+    provider,
+  }) => {
+    const options = await openExt(env, 'options');
+    await setUpAi(options, provider);
     const { page } = await saveHighlight(env, options, '#p-pearl');
-    await saveBlock(options, page, '#p-second');
     const rows = await highlightsOf(options, page.url());
     const pearl = rows.find((r) => r.exactQuote.startsWith('The sinoatrial node sets'));
-    const vagal = rows.find((r) => r.exactQuote.startsWith('Parasympathetic stimulation'));
-    if (!pearl || !vagal) throw new Error('both highlights should be stored');
+    if (!pearl) throw new Error('the highlight should be stored');
     const chat = await openChat(env);
     await expect(chat.getByTestId('chat-scope')).toHaveText('the bank "Inbox"');
 
-    // First question: both passages match; one is unticked.
-    let dialog = await askChat(chat, 'What does the sinoatrial node do?');
-    expect(requestsOf(provider), 'searching and previewing send nothing').toHaveLength(0);
-    await expect(chatPassagesOf(dialog)).toHaveCount(2);
-    const outbound = dialog.getByTestId('ai-outbound');
-    await expect(outbound).toContainText(pearl.exactQuote);
-    await expect(outbound).toContainText(vagal.exactQuote);
-    await dialog.getByRole('checkbox', { name: /Parasympathetic stimulation/ }).uncheck();
-    await expect(outbound).not.toContainText('Parasympathetic stimulation');
-    await expect(outbound).toContainText(pearl.exactQuote);
-    const previewed = await outboundOf(dialog);
-
-    await dialog.getByTestId('ai-send').click();
-    await expect(dialog.getByTestId('ai-result-card')).toBeVisible();
-    const [first] = requestsOf(provider);
-    expect(requestsOf(provider)).toHaveLength(1);
-    expect(renderOutbound(first?.chat?.messages ?? [])).toBe(previewed);
-    expect(first?.body).not.toContain('Parasympathetic stimulation');
-    expect(first?.body).toContain('What does the sinoatrial node do?');
-    await dialog.getByTestId('ai-close').click();
-
+    await sendChat(chat, 'What does the sinoatrial node do?');
     const turn = chat.getByTestId('chat-turn').first();
-    await expect(turn).toContainText('What does the sinoatrial node do?');
+    await expect(turn).toContainText('E2E chat answer drawn from your notes.');
     await expect(turn.getByTestId('ai-verification')).toHaveAttribute('data-state', 'unverified');
     await expect(turn.getByTestId('ai-citation').locator('blockquote')).toHaveText(
       pearl.exactQuote,
     );
-    await expect(turn).toContainText('E2E answer drawn from the first passage.');
-
-    // Follow-up: the earlier turn is offered, ticked, and is sent only while it stays ticked.
-    dialog = await askChat(chat, 'And what slows it?');
-    const history = dialog.getByTestId('ai-chat-history');
-    await expect(history.getByTestId('ai-chat-turn')).toHaveCount(2);
-    await expect(history.getByTestId('ai-chat-turn').first()).toBeChecked();
-    await expect(dialog.getByTestId('ai-outbound')).toContainText(
-      'E2E answer drawn from the first passage.',
-    );
-    await history.getByTestId('ai-chat-turn').last().uncheck();
-    await expect(dialog.getByTestId('ai-outbound')).not.toContainText(
-      'E2E answer drawn from the first passage.',
-    );
-    await dialog.getByTestId('ai-send').click();
-    await expect(dialog.getByTestId('ai-result-card')).toBeVisible();
-    expect(requestsOf(provider)).toHaveLength(2);
-    const second = requestsOf(provider)[1];
-    expect(second?.body).not.toContain('E2E answer drawn from the first passage.');
-    expect(second?.body).toContain('And what slows it?');
-    await dialog.getByTestId('ai-close').click();
-    await expect(chat.getByTestId('chat-turn')).toHaveCount(2);
-
-    // The conversation is this page's: a new page has none, and nothing but the drafts was stored.
-    const reopened = await openChat(env);
-    await expect(reopened.getByTestId('chat-turn')).toHaveCount(0);
-    expect(await countOf(options, 'aiResults')).toBe(2);
+    await expect(turn.getByTestId('chat-used')).toContainText('1 of your notes');
+    // What was sent contains the quote, redaction applied, and nothing else from the vault.
+    expect(requestsOf(provider)[0]?.body).toContain(pearl.exactQuote);
   });
 
-  test('a citation that is not in the passages is flagged, the answer is not presented as one, and it cannot be saved as it is', async ({
+  test('a citation that is not in the notes is flagged and cannot be saved as it is', async ({
     env,
     provider,
   }) => {
@@ -467,11 +452,10 @@ test.describe('chat with your notes', () => {
     const chat = await openChat(env);
 
     provider.queue((request) => {
-      const [block] = dataBlocks(request);
+      const block = dataBlocks(request).find((b) => b.kind === 'highlight');
       return ok({
         answer: 'Warfarin is the first-line drug for the sinoatrial node.',
-        answerState: 'answered',
-        uncertainty: '',
+        basis: 'notes',
         evidence: [
           {
             quoteId: block?.id ?? 'missing',
@@ -480,71 +464,19 @@ test.describe('chat with your notes', () => {
         ],
       });
     });
-    const dialog = await askChat(chat, 'What drug acts on the sinoatrial node?');
-    await dialog.getByTestId('ai-send').click();
-    await expect(dialog.getByTestId('ai-result-card')).toBeVisible();
-    await dialog.getByTestId('ai-close').click();
-
+    await sendChat(chat, 'What drug acts on the sinoatrial node?');
     const turn = chat.getByTestId('chat-turn');
     await expect(turn.getByTestId('ai-verification')).toHaveAttribute('data-state', 'unsupported');
     await expect(turn.getByTestId('ai-unsupported')).toContainText('Unsupported citation.');
     await expect(turn.getByTestId('ai-citation')).toHaveCount(0);
-    await expect(turn.getByTestId('chat-cannot-answer')).toBeVisible();
     await expect(turn.getByTestId('ai-accept')).toHaveAttribute('aria-disabled', 'true');
     const [stored] = await readTable(options, 'aiResults');
     expect(stored).toMatchObject({
-      kind: 'explain',
+      kind: 'chat',
       verificationState: 'unsupported',
       grounding: { checked: 1, supported: 0, unsupported: 1 },
-      output: { answerState: 'insufficient_sources' },
+      output: { basis: 'general' },
     });
-  });
-
-  test('"cannot answer from your notes": no match sends nothing; a model that says so is shown as an answer; an empty selection cannot be sent', async ({
-    env,
-    provider,
-  }) => {
-    const options = await openExt(env, 'options');
-    await setUpAi(options, provider);
-    await saveHighlight(env, options, '#p-pearl');
-    const chat = await openChat(env);
-
-    // Nothing in the notes matches: said on this device, no request, no dialog.
-    await chat.getByTestId('chat-question').fill('zebrafish genomics pipeline');
-    await expect(chat.getByTestId('chat-ask')).not.toHaveAttribute('aria-disabled', 'true');
-    await chat.getByTestId('chat-ask').click();
-    await expect(chat.getByTestId('chat-note')).toContainText('Cannot answer from your notes');
-    await expect(chat.getByTestId('chat-note')).toContainText('nothing was sent');
-    await expect(chat.getByTestId('ai-consent-dialog')).toHaveCount(0);
-    expect(provider.seen).toEqual([]);
-
-    // Every passage unticked: Send says why and does nothing.
-    let dialog = await askChat(chat, 'What does the sinoatrial node do?');
-    await chatPassagesOf(dialog).first().uncheck();
-    await expect(dialog.getByTestId('ai-send')).toHaveAttribute('aria-disabled', 'true');
-    await expect(dialog.getByTestId('ai-send-reason')).toContainText('Tick at least one passage');
-    await dialog.getByTestId('ai-send').click({ force: true });
-    expect(provider.seen).toEqual([]);
-    await dialog.getByTestId('ai-cancel').click();
-
-    // The model itself says the notes do not answer it.
-    provider.queue(
-      ok({
-        answer: 'Your passages do not say what the node does at night.',
-        answerState: 'insufficient_sources',
-        uncertainty: 'No passage mentions the night.',
-        evidence: [],
-      }),
-    );
-    dialog = await askChat(chat, 'What does the sinoatrial node do at night?');
-    await dialog.getByTestId('ai-send').click();
-    await expect(dialog.getByTestId('ai-result-card')).toBeVisible();
-    await dialog.getByTestId('ai-close').click();
-    const turn = chat.getByTestId('chat-turn');
-    await expect(turn.getByTestId('chat-cannot-answer')).toContainText(
-      'No passage mentions the night.',
-    );
-    await expect(turn.getByTestId('ai-verification')).toHaveAttribute('data-state', 'unverified');
   });
 
   test('with AI off the chat view only explains, and the side panel button says why; with it on, the button opens the chat for that bank', async ({
@@ -589,7 +521,7 @@ test.describe('chat with your notes', () => {
 // =============================================================================================
 
 test.describe('accessibility', () => {
-  test('the provider list, the chat view and its consent dialog pass axe in light and dark', async ({
+  test('the provider list, the chat view and its consent card pass axe in light and dark', async ({
     env,
     provider,
     fallback,
@@ -611,16 +543,12 @@ test.describe('accessibility', () => {
     expect(await axeReport(chat, '[data-testid="chat-view"]'), 'chat view, dark').toBe('');
     await chat.emulateMedia({ colorScheme: 'light' });
 
-    const dialog = await askChat(chat, 'What does the sinoatrial node do?');
-    await expect(dialog.getByTestId('ai-fallbacks')).toBeVisible();
-    expect(await axeReport(chat, DIALOG), 'consent dialog with passages, light').toBe('');
+    await sendChat(chat, 'What does the sinoatrial node do?', false);
+    await expect(chat.getByTestId('chat-consent')).toBeVisible();
+    expect(await axeReport(chat, '[data-testid="chat-consent"]'), 'consent card, light').toBe('');
     await chat.emulateMedia({ colorScheme: 'dark' });
-    expect(await axeReport(chat, DIALOG), 'consent dialog with passages, dark').toBe('');
+    expect(await axeReport(chat, '[data-testid="chat-consent"]'), 'consent card, dark').toBe('');
     await chat.emulateMedia({ colorScheme: 'light' });
-    await chat.keyboard.press('Escape');
-    await expect(dialog).toHaveCount(0);
-    // Focus goes back to the button that opened the dialog.
-    await expect(chat.getByTestId('chat-ask')).toBeFocused();
     expect(requestsOf(provider)).toHaveLength(0);
   });
 });

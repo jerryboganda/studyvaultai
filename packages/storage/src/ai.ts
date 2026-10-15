@@ -568,8 +568,10 @@ const AiReview = z.strictObject({
   acceptedAt: IsoDate.nullable(),
   /** Per item (JSON pointer; '' = the whole result): what the user decided. */
   items: z.record(z.string().max(120), AiItemReview),
-  /** `explain` only: the question that was asked (the engine's result does not keep it). */
-  question: z.string().max(500).optional(),
+  /** `explain` and `chat`: the question that was asked (the engine's result does not keep it). */
+  question: z.string().max(4000).optional(),
+  /** `chat` only: the conversation this turn belongs to (see chat.ts). */
+  threadId: z.string().max(40).optional(),
 });
 type AiReview = z.infer<typeof AiReview>;
 
@@ -626,17 +628,42 @@ async function readResult(db: StudyVaultDb, id: string): Promise<StoredAiResult>
  */
 export async function saveAiResult(
   result: AiResult,
-  extra: { question?: string } = {},
+  extra: { question?: string; threadId?: string } = {},
 ): Promise<StoredAiResult> {
   const parsed = parseInput(AiResult, result, 'AI result');
   const question = extra.question?.trim() || undefined;
+  const threadId = extra.threadId;
   const row = await withWritableDb((db) =>
     db.transaction('rw', [db.aiResults, db.highlights], async () => {
       const existing = await db.aiResults.get(parsed.id);
       if (existing) {
         const current = await readResult(db, parsed.id);
-        if (question === undefined || current.question !== undefined) return current;
-        const next = { ...current, question } as StoredAiResult;
+        if (
+          threadId !== undefined &&
+          current.threadId !== undefined &&
+          current.threadId !== threadId
+        ) {
+          // The same answer served from the cache to another conversation: a row of its own there.
+          const copy = {
+            ...current,
+            id: `${parsed.id.slice(0, 40)}-${Math.random().toString(36).slice(2, 10)}`,
+            threadId,
+            ...(question === undefined ? {} : { question }),
+          } as StoredAiResult;
+          await db.aiResults.put(asRow(copy));
+          return copy;
+        }
+        if (
+          (question === undefined || current.question !== undefined) &&
+          (threadId === undefined || current.threadId !== undefined)
+        ) {
+          return current;
+        }
+        const next = {
+          ...current,
+          ...(current.question === undefined && question !== undefined ? { question } : {}),
+          ...(current.threadId === undefined && threadId !== undefined ? { threadId } : {}),
+        } as StoredAiResult;
         await db.aiResults.put(asRow(next));
         return next;
       }
@@ -654,6 +681,7 @@ export async function saveAiResult(
         acceptedAt: parsed.acceptedByUserAt,
         items: {},
         ...(question === undefined ? {} : { question }),
+        ...(threadId === undefined ? {} : { threadId }),
       } as StoredAiResult;
       await db.aiResults.put(asRow(created));
       return created;
@@ -1020,6 +1048,7 @@ export async function clearAiData(): Promise<void> {
         KEY_PROFILE_KEYS,
         KEY_BUDGET,
         KEY_CODEX_AUTH,
+        'aiChatThreads',
       ]);
     }),
   );

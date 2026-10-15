@@ -254,6 +254,23 @@ function Output({
           <Cites {...c} base="/evidence" evidence={result.output.evidence} />
         </>
       );
+    case 'chat':
+      return (
+        <>
+          {result.question ? (
+            <Plain>
+              <strong>Message:</strong> {result.question}
+            </Plain>
+          ) : null}
+          <Badge tone={result.output.basis === 'general' ? 'warning' : 'info'}>
+            {result.output.basis === 'general'
+              ? 'general knowledge'
+              : `from ${result.output.basis}`}
+          </Badge>
+          <Plain>{result.output.answer}</Plain>
+          <Cites {...c} base="/evidence" evidence={result.output.evidence} />
+        </>
+      );
     case 'compare_topics':
       return (
         <>

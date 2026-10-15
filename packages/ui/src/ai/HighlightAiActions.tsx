@@ -48,6 +48,7 @@ const KIND_ICON: Record<AiTaskKind, LucideIcon> = {
   flashcards: Layers,
   mcq: ListChecks,
   explain: MessageCircleQuestion,
+  chat: MessageCircleQuestion,
   compare_topics: Columns2,
   contradictions: Scale,
   fact_check: BadgeCheck,

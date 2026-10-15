@@ -442,6 +442,8 @@ export interface AiRunArgs {
   preview: AiRequestPreview;
   edits?: RedactionEdits;
   signal?: AbortSignal;
+  /** `chat` only: the conversation the answer is saved under. */
+  threadId?: string;
   onProgress?(event: LogEvent): void;
 }
 
@@ -530,6 +532,7 @@ export async function runAiTask(config: AiConfig, env: AiEnv, args: AiRunArgs): 
     const budget = outcome.budget ? await persistSpend(before, outcome.budget, nowMs) : before;
     const saved = await saveAiResult(outcome.result, {
       ...(args.selection.question ? { question: args.selection.question } : {}),
+      ...(args.threadId ? { threadId: args.threadId } : {}),
     });
     return {
       saved,

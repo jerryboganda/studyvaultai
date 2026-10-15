@@ -72,15 +72,17 @@ export async function openChat(env: Env, bankId = 'inbox-default'): Promise<Page
   return page;
 }
 
-/** Type a question; wait until Ask is available (settings read, search index ready). */
-export async function askChat(page: Page, question: string): Promise<Locator> {
-  const box = page.getByTestId('chat-question');
-  await box.fill(question);
+/**
+ * Type a message and send it. The first message of a conversation asks once what it may send: that
+ * card is accepted here (it is returned so a test can look at it before accepting when `accept` is
+ * false).
+ */
+export async function sendChat(page: Page, message: string, accept = true): Promise<void> {
+  await page.getByTestId('chat-question').fill(message);
   const ask = page.getByTestId('chat-ask');
   await expect(ask).not.toHaveAttribute('aria-disabled', 'true');
   await ask.click();
-  const dialog = page.getByTestId('ai-consent-dialog');
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByTestId('ai-outbound')).toBeVisible();
-  return dialog;
+  if (accept) {
+    await page.getByTestId('chat-consent-accept').click();
+  }
 }

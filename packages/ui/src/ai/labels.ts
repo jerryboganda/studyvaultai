@@ -27,6 +27,11 @@ export const AI_KIND_INFO: Record<AiTaskKind, AiKindInfo> = {
     hint: 'Answer your question using only the selected passages.',
     min: 1,
   },
+  chat: {
+    label: 'Chat',
+    hint: 'A conversation that can use your notes and general knowledge.',
+    min: 0,
+  },
   compare_topics: {
     label: 'Compare topics',
     hint: 'A table of aspects across topics. Needs two or more passages.',

@@ -237,6 +237,7 @@ export * from './backupFolder';
 
 // Optional AI features: results, cache port, settings, key and usage ledger (one line; see ai.ts)
 export * from './ai';
+export * from './chat';
 
 // Retention: decks, knowledge points, cards, reviews, queue, session (one line; see study.ts)
 export * from './study';

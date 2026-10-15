@@ -35,4 +35,5 @@ export {
   type AiChatTurn,
   type ChatRetrieval,
 } from './chat';
-export { routeFor, type AiProfileConfig, type AiRoute } from './runtime';
+export { routeFor, configSecrets, type AiProfileConfig, type AiRoute } from './runtime';
+export { requestEndpointAccess } from './permission';

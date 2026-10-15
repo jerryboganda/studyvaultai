@@ -315,3 +315,90 @@ describe('verification states and acceptance', () => {
     expect(acceptResult(out.result, Date.now()).verificationState).toBe('conflicting');
   });
 });
+
+describe('chat', () => {
+  const ask = (extra: Record<string, unknown> = {}) => ({
+    chunks: [],
+    question: 'Explain how a beta blocker works in simple words.',
+    ...extra,
+  });
+
+  it('answers with no passage at all, from general knowledge, citing nothing', async () => {
+    const selection = AiSelectionParse(ask());
+    const reply = { answer: 'Beta blockers slow the heart.', basis: 'general', evidence: [] };
+    const { out, provider } = await run('chat', reply, selection);
+    if (out.result.kind !== 'chat') throw new Error('kind');
+    expect(out.result.output.basis).toBe('general');
+    expect(out.result.inputSourceIds).toEqual([]);
+    expect(out.result.verificationState).toBe('unverified');
+    // The general assistant rule replaces "use only the data blocks".
+    expect(provider.calls[0]!.messages[0]!.content).toContain('general knowledge');
+    expect(provider.calls[0]!.messages[0]!.content).not.toContain('Use only the data blocks');
+  });
+
+  it('other kinds still need a passage', async () => {
+    const deps = makeDeps(createMockProvider([]));
+    await expect(approve('summary', AiSelectionParse({ chunks: [] }), deps)).rejects.toMatchObject({
+      code: 'invalid_selection',
+    });
+  });
+
+  it('sends the memory summary and earlier turns as non-citeable blocks', async () => {
+    const selection = AiSelectionParse(
+      ask({
+        memory: 'We discussed heart failure drugs.',
+        history: [
+          { role: 'user', text: 'What is ACE inhibitor?' },
+          { role: 'assistant', text: 'A drug class.' },
+        ],
+      }),
+    );
+    const reply = { answer: 'Okay.', basis: 'general', evidence: [] };
+    const { provider } = await run('chat', reply, selection);
+    const user = provider.calls[0]!.messages.find((m) => m.role === 'user')!.content;
+    expect(user).toContain('kind="memory"');
+    expect(user).toContain('kind="history"');
+    expect(user).toContain('We discussed heart failure drugs.');
+  });
+
+  it('memory is refused for other kinds', async () => {
+    const deps = makeDeps(createMockProvider([]));
+    const selection = { ...selectionFor('summary'), memory: 'x' };
+    await expect(approve('summary', selection, deps)).rejects.toMatchObject({
+      code: 'invalid_selection',
+    });
+  });
+
+  it('downgrades "notes" to "general" when no citation can be found', async () => {
+    const selection = selectionFor('chat');
+    const reply = {
+      answer: 'It is in your notes.',
+      basis: 'notes',
+      evidence: [{ quoteId: H1.id, text: 'this exact sentence is not in the passage' }],
+    };
+    const { out } = await run('chat', reply, selection);
+    if (out.result.kind !== 'chat') throw new Error('kind');
+    expect(out.result.output.basis).toBe('general');
+    expect(out.result.verificationState).toBe('unsupported');
+  });
+
+  it('rejects general answers that cite', async () => {
+    const reply = {
+      answer: 'x',
+      basis: 'general',
+      evidence: [{ quoteId: H1.id, text: H1.text.slice(0, 40) }],
+    };
+    const provider = createMockProvider([
+      { text: JSON.stringify(reply) },
+      { text: JSON.stringify(reply) },
+    ]);
+    const deps = makeDeps(provider);
+    const selection = selectionFor('chat');
+    const opts = await approve('chat', selection, deps);
+    await expect(runTask('chat', selection, deps, opts)).rejects.toBeTruthy();
+  });
+});
+
+function AiSelectionParse(v: unknown) {
+  return v as ReturnType<typeof selectionFor>;
+}
