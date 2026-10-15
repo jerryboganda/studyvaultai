@@ -43,20 +43,49 @@ import { registerTableSchema } from './registry';
  * origin it was saved for. Backup, export and migration snapshots must skip `AI_SECRET_META_KEYS`.
  */
 
-export const AI_PROVIDERS = ['openai_compatible', 'anthropic'] as const;
+/** Wire protocols. `codex_responses` (ChatGPT Codex OAuth) is the primary provider only. */
+export const AI_PROVIDERS = ['openai_compatible', 'anthropic', 'codex_responses'] as const;
 export type AiProviderId = (typeof AI_PROVIDERS)[number];
+/** What a fallback provider can be (the Codex login belongs to the primary provider). */
+export const AI_PROFILE_PROVIDERS = ['openai_compatible', 'anthropic'] as const;
+
+/** The preset a provider was set up from: drives model lists, reasoning mapping and usage. */
+export const AI_VENDORS = [
+  'openai',
+  'anthropic',
+  'ollama',
+  'lmstudio',
+  'custom',
+  'ubag',
+  'nvidia_nim',
+  'opencode_go',
+  'openrouter',
+  'chatgpt_codex',
+] as const;
+export type AiVendorId = (typeof AI_VENDORS)[number];
+
+export const AI_EFFORTS = ['', 'minimal', 'low', 'medium', 'high', 'max'] as const;
+export type AiEffort = (typeof AI_EFFORTS)[number];
+/** `basic`: the stored key is `user:password`, sent as HTTP Basic (UBAG's public gateway). */
+export const AI_AUTH_SCHEMES = ['bearer', 'basic'] as const;
+export type AiAuthScheme = (typeof AI_AUTH_SCHEMES)[number];
 
 const KEY_SETTINGS = 'aiSettings';
 const KEY_API_KEY = 'aiKey';
 const KEY_PROFILE_KEYS = 'aiProfileKeys';
 const KEY_BUDGET = 'aiBudget';
+const KEY_CODEX_AUTH = 'aiCodexAuth';
 
 /**
  * `meta` keys that hold secrets: every export, backup and snapshot must leave these rows out
  * (`meta` is not a backup table at all, and it is local-only for sync). `aiKey` is the primary
  * provider's key; `aiProfileKeys` holds one `{apiKey, origin}` per fallback provider.
  */
-export const AI_SECRET_META_KEYS: readonly string[] = [KEY_API_KEY, KEY_PROFILE_KEYS];
+export const AI_SECRET_META_KEYS: readonly string[] = [
+  KEY_API_KEY,
+  KEY_PROFILE_KEYS,
+  KEY_CODEX_AUTH,
+];
 
 // ---------------------------------------------------------------------------------------------
 // Settings (meta 'aiSettings')
@@ -76,12 +105,16 @@ const AiPricingSchema = z.strictObject({
 export const AiProfileSchema = z.strictObject({
   id: z.string().regex(/^p-[a-z0-9]{6,20}$/),
   label: z.string().trim().min(1).max(40),
-  provider: z.enum(AI_PROVIDERS),
+  provider: z.enum(AI_PROFILE_PROVIDERS),
   baseUrl: z.string().trim().max(300),
   model: z.string().trim().max(120),
   jsonMode: z.boolean(),
   maxTokensParam: z.enum(['max_tokens', 'max_completion_tokens']),
   pricing: AiPricingSchema.nullable(),
+  vendor: z.enum(AI_VENDORS).default('custom'),
+  /** '' = the model's own default. */
+  reasoningEffort: z.enum(AI_EFFORTS).default(''),
+  authScheme: z.enum(AI_AUTH_SCHEMES).default('bearer'),
   /** Used when an earlier provider is not answering (network error, 5xx, timeout), never otherwise. */
   fallback: z.boolean(),
 });
@@ -96,6 +129,9 @@ export const AiSettingsSchema = z
     /** Ask OpenAI-compatible servers for `response_format: json_object` (some servers reject it). */
     jsonMode: z.boolean(),
     maxTokensParam: z.enum(['max_tokens', 'max_completion_tokens']),
+    vendor: z.enum(AI_VENDORS).default('custom'),
+    reasoningEffort: z.enum(AI_EFFORTS).default(''),
+    authScheme: z.enum(AI_AUTH_SCHEMES).default('bearer'),
     limits: BudgetLimits,
     /** null = unknown: estimates show "unknown" and a cost cap cannot be enforced. */
     pricing: AiPricingSchema.nullable(),
@@ -122,7 +158,15 @@ export type AiSettings = z.infer<typeof AiSettingsSchema>;
 /** The fields every provider has, whether it is the primary one or a fallback. */
 export type AiProfileSettings = Pick<
   AiSettings,
-  'provider' | 'baseUrl' | 'model' | 'jsonMode' | 'maxTokensParam' | 'pricing'
+  | 'provider'
+  | 'baseUrl'
+  | 'model'
+  | 'jsonMode'
+  | 'maxTokensParam'
+  | 'pricing'
+  | 'vendor'
+  | 'reasoningEffort'
+  | 'authScheme'
 >;
 
 export function defaultAiSettings(): AiSettings {
@@ -132,6 +176,9 @@ export function defaultAiSettings(): AiSettings {
     model: '',
     jsonMode: true,
     maxTokensParam: 'max_tokens',
+    vendor: 'custom',
+    reasoningEffort: '',
+    authScheme: 'bearer',
     limits: { maxRequestsPerDay: 30, maxCostUsdPerDay: null },
     pricing: null,
     preferences: { flashcardCount: 5, mcqChoices: 4 },
@@ -151,7 +198,10 @@ function readSettings(stored: unknown): AiSettings {
   if (typeof stored !== 'object' || stored === null) return defaults;
   const raw = stored as Record<string, unknown>;
   const fallbacks = (Array.isArray(raw.fallbacks) ? raw.fallbacks : [])
-    .filter((p) => AiProfileSchema.safeParse(p).success)
+    .flatMap((p) => {
+      const r = AiProfileSchema.safeParse(p);
+      return r.success ? [r.data] : [];
+    })
     .slice(0, AI_MAX_FALLBACKS);
   const storedRoutes =
     typeof raw.routes === 'object' && raw.routes !== null && !Array.isArray(raw.routes)
@@ -249,6 +299,7 @@ export type AiEndpointCheck =
 const DEFAULT_BASE_URL: Record<AiProviderId, string> = {
   openai_compatible: '',
   anthropic: 'https://api.anthropic.com',
+  codex_responses: 'https://chatgpt.com/backend-api/codex',
 };
 
 /**
@@ -424,6 +475,36 @@ export async function clearAiProfileApiKey(profileId: string): Promise<void> {
       else await db.meta.put({ key: KEY_PROFILE_KEYS, value: all, updatedAt: now() });
     }),
   );
+  await signalChange();
+}
+
+// ---------------------------------------------------------------------------------------------
+// ChatGPT Codex login (meta 'aiCodexAuth'): OAuth tokens, same containment as the API key
+// ---------------------------------------------------------------------------------------------
+
+export const CodexAuthRow = z.strictObject({
+  accessToken: z.string().min(1).max(8192),
+  refreshToken: z.string().min(1).max(8192),
+  /** Epoch ms after which the access token must be refreshed. */
+  expiresAt: z.number().int().min(0),
+  accountId: z.string().min(1).max(200),
+});
+export type CodexAuth = z.infer<typeof CodexAuthRow>;
+
+export async function getCodexAuth(): Promise<CodexAuth | null> {
+  const row = await withDb((db) => db.meta.get(KEY_CODEX_AUTH));
+  const parsed = CodexAuthRow.safeParse(row?.value);
+  return parsed.success ? parsed.data : null;
+}
+
+export async function setCodexAuth(auth: CodexAuth): Promise<void> {
+  const value = parseInput(CodexAuthRow, auth, 'Codex login');
+  await withWritableDb((db) => db.meta.put({ key: KEY_CODEX_AUTH, value, updatedAt: now() }));
+  await signalChange();
+}
+
+export async function clearCodexAuth(): Promise<void> {
+  await withWritableDb((db) => db.meta.delete(KEY_CODEX_AUTH));
   await signalChange();
 }
 
@@ -933,7 +1014,13 @@ export async function clearAiData(): Promise<void> {
   await withWritableDb((db) =>
     db.transaction('rw', [db.aiResults, db.meta], async () => {
       await db.aiResults.clear();
-      await db.meta.bulkDelete([KEY_SETTINGS, KEY_API_KEY, KEY_PROFILE_KEYS, KEY_BUDGET]);
+      await db.meta.bulkDelete([
+        KEY_SETTINGS,
+        KEY_API_KEY,
+        KEY_PROFILE_KEYS,
+        KEY_BUDGET,
+        KEY_CODEX_AUTH,
+      ]);
     }),
   );
   await signalChange();

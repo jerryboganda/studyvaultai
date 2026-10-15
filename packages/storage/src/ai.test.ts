@@ -496,7 +496,7 @@ describe('settings, key and ledger', () => {
       origin: 'https://api.example.test',
       last4: KEY.slice(-4),
     });
-    expect(AI_SECRET_META_KEYS).toEqual(['aiKey', 'aiProfileKeys']);
+    expect(AI_SECRET_META_KEYS).toEqual(['aiKey', 'aiProfileKeys', 'aiCodexAuth']);
 
     await saveAiResult(await pearl());
     const all = await dump();

@@ -197,7 +197,26 @@ export interface OpenAICompatibleConfig {
   jsonMode?: boolean;
   /** Some servers/models want `max_completion_tokens`. Default `max_tokens` (widest compatibility). */
   maxTokensParam?: 'max_tokens' | 'max_completion_tokens';
+  /** `basic`: `apiKey` is `user:password` (UBAG's public gateway). Default `bearer`. */
+  authScheme?: 'bearer' | 'basic';
+  /** Reasoning/thinking effort; '' or absent sends nothing. */
+  reasoningEffort?: string;
+  /**
+   * How the effort is sent: `reasoning_effort` (OpenAI, NVIDIA NIM, OpenCode Go), `openrouter`
+   * (`reasoning: {effort}`), or `none` (UBAG folds the level into the model id).
+   */
+  reasoningStyle?: 'reasoning_effort' | 'openrouter' | 'none';
+  /** Per-attempt facade deadline hint, ms (UBAG `ubag_wait_ms`). */
+  waitMs?: number;
   now?: () => number;
+}
+
+/** `Basic base64(user:password)`; UTF-8 safe. */
+export function basicAuthHeader(credentials: string): string {
+  const bytes = new TextEncoder().encode(credentials);
+  let bin = '';
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return `Basic ${btoa(bin)}`;
 }
 
 export function createOpenAICompatibleProvider(cfg: OpenAICompatibleConfig): AiProvider {
@@ -205,6 +224,8 @@ export function createOpenAICompatibleProvider(cfg: OpenAICompatibleConfig): AiP
   const url = `${base.origin}${base.pathname.replace(/\/+$/, '')}/chat/completions`;
   const key = cfg.apiKey?.trim() ?? '';
   const keyless = isLoopbackHost(base.hostname);
+  const effort = cfg.reasoningEffort?.trim() ?? '';
+  const style = cfg.reasoningStyle ?? 'reasoning_effort';
   const now = cfg.now ?? (() => Date.now());
   return {
     id: `openai-compatible:${base.host}`,
@@ -221,9 +242,14 @@ export function createOpenAICompatibleProvider(cfg: OpenAICompatibleConfig): AiP
         ...(req.json !== false && cfg.jsonMode !== false
           ? { response_format: { type: 'json_object' } }
           : {}),
+        ...(effort && style === 'reasoning_effort' ? { reasoning_effort: effort } : {}),
+        ...(effort && style === 'openrouter' ? { reasoning: { effort } } : {}),
+        ...(cfg.waitMs ? { ubag_wait_ms: cfg.waitMs } : {}),
       };
       const headers: Record<string, string> = { 'content-type': 'application/json' };
-      if (key) headers.authorization = `Bearer ${key}`;
+      if (key) {
+        headers.authorization = cfg.authScheme === 'basic' ? basicAuthHeader(key) : `Bearer ${key}`;
+      }
       const data = (await postJson(cfg.fetch, url, headers, body, signal, now)) as {
         choices?: { message?: { content?: unknown; refusal?: unknown }; finish_reason?: unknown }[];
         usage?: { prompt_tokens?: unknown; completion_tokens?: unknown };
@@ -323,6 +349,160 @@ export function createAnthropicProvider(cfg: AnthropicConfig): AiProvider {
           outputTokens: num(data.usage?.output_tokens),
         },
       };
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------------------------
+// ChatGPT Codex backend (Responses API, OAuth bearer). Unofficial: shapes follow the Codex CLI.
+// The backend only answers as a server-sent-event stream, so this adapter reads the whole stream
+// and returns the assembled text (the pipeline above it is not streaming either).
+// ---------------------------------------------------------------------------------------------
+
+export interface CodexResponsesConfig {
+  /** OAuth access token (never logged). */
+  accessToken: string;
+  accountId: string;
+  model: string;
+  fetch: FetchLike;
+  /** Default `https://chatgpt.com/backend-api/codex`. */
+  baseUrl?: string;
+  reasoningEffort?: string;
+  now?: () => number;
+}
+
+export const CODEX_BASE_URL = 'https://chatgpt.com/backend-api/codex';
+
+/** Text and token usage out of a Responses-API event stream. Exported for tests. */
+export function parseCodexStream(raw: string): {
+  text: string;
+  usage: { inputTokens: number; outputTokens: number };
+  incomplete: boolean;
+  failed: boolean;
+} {
+  let deltas = '';
+  let finalText = '';
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let incomplete = false;
+  let failed = false;
+  for (const line of raw.split('\n')) {
+    if (!line.startsWith('data:')) continue;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === '[DONE]') continue;
+    let ev: {
+      type?: unknown;
+      delta?: unknown;
+      response?: {
+        usage?: { input_tokens?: unknown; output_tokens?: unknown };
+        output?: { content?: { type?: unknown; text?: unknown }[] }[];
+      };
+    };
+    try {
+      ev = JSON.parse(payload);
+    } catch {
+      continue;
+    }
+    if (ev.type === 'response.output_text.delta' && typeof ev.delta === 'string') {
+      deltas += ev.delta;
+    } else if (ev.type === 'response.failed' || ev.type === 'error') {
+      failed = true;
+    } else if (ev.type === 'response.incomplete') {
+      incomplete = true;
+    } else if (ev.type === 'response.completed' && ev.response) {
+      inputTokens = num(ev.response.usage?.input_tokens);
+      outputTokens = num(ev.response.usage?.output_tokens);
+      finalText = (ev.response.output ?? [])
+        .flatMap((o) => o.content ?? [])
+        .filter((c) => c.type === 'output_text' && typeof c.text === 'string')
+        .map((c) => c.text as string)
+        .join('');
+    }
+  }
+  return { text: deltas || finalText, usage: { inputTokens, outputTokens }, incomplete, failed };
+}
+
+export function createCodexResponsesProvider(cfg: CodexResponsesConfig): AiProvider {
+  const base = assertSafeEndpoint(cfg.baseUrl ?? CODEX_BASE_URL);
+  const url = `${base.origin}${base.pathname.replace(/\/+$/, '')}/responses`;
+  const token = cfg.accessToken.trim();
+  const now = cfg.now ?? (() => Date.now());
+  const effort = cfg.reasoningEffort?.trim() ?? '';
+  return {
+    id: `codex-responses:${base.host}`,
+    model: cfg.model,
+    origin: base.origin,
+    async complete(req, { signal }) {
+      if (!token || !cfg.accountId) throw new AiError('missing_key');
+      const system = req.messages
+        .filter((m) => m.role === 'system')
+        .map((m) => m.content)
+        .join('\n\n');
+      const body = {
+        model: cfg.model,
+        instructions: system || 'You are a helpful study assistant.',
+        input: req.messages
+          .filter((m) => m.role !== 'system')
+          .map((m) => ({
+            type: 'message',
+            role: m.role,
+            content: [
+              { type: m.role === 'assistant' ? 'output_text' : 'input_text', text: m.content },
+            ],
+          })),
+        stream: true,
+        store: false,
+        ...(effort ? { reasoning: { effort, summary: 'auto' } } : {}),
+      };
+      let res: Response;
+      try {
+        res = await cfg.fetch(url, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            accept: 'text/event-stream',
+            authorization: `Bearer ${token}`,
+            'chatgpt-account-id': cfg.accountId,
+            'openai-beta': 'responses=experimental',
+            originator: 'codex_cli_rs',
+          },
+          body: JSON.stringify(body),
+          signal: signal ?? null,
+          redirect: 'error',
+          credentials: 'omit',
+          cache: 'no-store',
+          referrerPolicy: 'no-referrer',
+        });
+      } catch {
+        if (signal?.aborted) throw new AiError('aborted');
+        throw new AiError('network');
+      }
+      let text: string;
+      try {
+        text = await res.text();
+      } catch {
+        throw new AiError(signal?.aborted ? 'aborted' : 'network');
+      }
+      if (!res.ok) {
+        let parsed: unknown = null;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          /* not JSON */
+        }
+        // A 401 means the login expired or was revoked: sign in again.
+        throw httpError(res, parsed, now());
+      }
+      if (text.length > MAX_RESPONSE_CHARS) {
+        throw new AiError('server_error', { status: res.status, detail: 'response too large' });
+      }
+      const out = parseCodexStream(text);
+      if (out.failed) {
+        throw new AiError('server_error', { status: res.status, detail: 'stream failed' });
+      }
+      if (out.incomplete) throw new AiError('output_truncated');
+      if (!out.text) throw new AiError('invalid_output', { detail: 'response had no text' });
+      return { text: out.text, usage: out.usage };
     },
   };
 }

@@ -8,6 +8,12 @@ copy it when a version is tagged.
 
 ## [Unreleased]
 
+### Added
+- AI providers: UBAG gateway (OpenAI-compatible facade, HTTP Basic), NVIDIA NIM, OpenCode Go,
+  OpenRouter and an unofficial ChatGPT (Codex) subscription login, each with a model dropdown (live
+  list with curated fallback) and a reasoning-effort dropdown; ChatGPT quota and OpenRouter spend can
+  be checked in the AI settings (ADR-023).
+
 Nothing has been released or submitted to a store. `package.json` is at 0.1.0. The entries below say
 what exists in the repository, not what has been proven. The latest fully green `ci.yml` run is
 <https://github.com/jerryboganda/studyvaultai/actions/runs/38186957997> (2026-10-12, branch

@@ -3,12 +3,15 @@ import { Suspense, lazy, useEffect, useId, useRef, useState, type ReactNode } fr
 import {
   Bot,
   Cloud,
+  Cpu,
   Gauge,
   Globe,
   KeyRound,
   Laptop,
   Link,
+  LogIn,
   Monitor,
+  Network,
   Pencil,
   PlugZap,
   Power,
@@ -16,6 +19,8 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  SquareTerminal,
+  Route,
   Wrench,
   type LucideIcon,
 } from 'lucide-react';
@@ -23,10 +28,12 @@ import {
   checkAiEndpoint,
   clearAiApiKey,
   getAiSettings,
+  getCodexAuth,
   setAiApiKey,
   updateAiSettings,
   type AiProviderId,
   type AiSettings,
+  type AiVendorId,
 } from '@storage';
 import { AsyncSwitch } from '../AsyncSwitch';
 import { Button } from '../Button';
@@ -54,6 +61,8 @@ import { describeAiError, type AiErrorView } from './labels';
 import { hasEndpointAccess, requestEndpointAccess, revokeEndpointAccess } from './permission';
 import { configSecrets, loadAiConfig, sendBlocker, testAiConnection } from './runtime';
 import { UsageLedger } from './UsageLedger';
+import { CodexSignIn, ModelPicker, VendorUsage } from './VendorExtras';
+import { VENDORS, providerNeedsKey, vendorOf } from './vendors';
 
 // Fallback providers and per-task routing: only loaded once the feature is on and this section shows.
 const AiRoutingSection = lazy(() =>
@@ -63,64 +72,52 @@ const AiRoutingSection = lazy(() =>
 /** The fields of the primary provider's form: everything but the fallback providers and the routes. */
 type PrimarySettings = Omit<AiSettings, 'fallbacks' | 'routes'>;
 
-type Preset = 'openai' | 'anthropic' | 'ollama' | 'lmstudio' | 'custom';
+type Preset = AiVendorId;
+
+const PRESET_ICON: Record<Preset, LucideIcon> = {
+  openai: Cloud,
+  anthropic: Bot,
+  ollama: Laptop,
+  lmstudio: Monitor,
+  custom: Link,
+  ubag: Network,
+  nvidia_nim: Cpu,
+  opencode_go: SquareTerminal,
+  openrouter: Route,
+  chatgpt_codex: LogIn,
+};
 
 /** The provider picture cards. `custom` keeps the typed address and lets the type be chosen. */
-const PRESETS: Record<
+const PRESETS = Object.fromEntries(
+  (Object.keys(VENDORS) as Preset[]).map((p) => [
+    p,
+    {
+      label: VENDORS[p].label,
+      hint: VENDORS[p].hint,
+      icon: PRESET_ICON[p],
+      provider: VENDORS[p].provider,
+      baseUrl: VENDORS[p].baseUrl,
+    },
+  ]),
+) as Record<
   Preset,
   { label: string; hint: string; icon: LucideIcon; provider: AiProviderId; baseUrl: string }
-> = {
-  openai: {
-    label: 'OpenAI',
-    hint: 'Cloud, API key',
-    icon: Cloud,
-    provider: 'openai_compatible',
-    baseUrl: 'https://api.openai.com/v1',
-  },
-  anthropic: {
-    label: 'Anthropic',
-    hint: 'Cloud, API key',
-    icon: Bot,
-    provider: 'anthropic',
-    baseUrl: '',
-  },
-  ollama: {
-    label: 'Ollama',
-    hint: 'This computer',
-    icon: Laptop,
-    provider: 'openai_compatible',
-    baseUrl: 'http://localhost:11434/v1',
-  },
-  lmstudio: {
-    label: 'LM Studio',
-    hint: 'This computer',
-    icon: Monitor,
-    provider: 'openai_compatible',
-    baseUrl: 'http://localhost:1234/v1',
-  },
-  custom: {
-    label: 'Other',
-    hint: 'Any address',
-    icon: Link,
-    provider: 'openai_compatible',
-    baseUrl: '',
-  },
-};
+>;
 const PRESET_TONE: Record<Preset, 'primary' | 'violet' | 'success' | 'neutral'> = {
   openai: 'primary',
   anthropic: 'violet',
   ollama: 'success',
   lmstudio: 'success',
   custom: 'neutral',
+  ubag: 'violet',
+  nvidia_nim: 'success',
+  opencode_go: 'primary',
+  openrouter: 'violet',
+  chatgpt_codex: 'primary',
 };
 
-const presetOf = (provider: AiProviderId, baseUrl: string): Preset =>
-  (Object.keys(PRESETS) as Preset[]).find(
-    (p) =>
-      p !== 'custom' &&
-      PRESETS[p].provider === provider &&
-      PRESETS[p].baseUrl === baseUrl.trim().replace(/\/+$/, ''),
-  ) ?? 'custom';
+const presetOf = (provider: AiProviderId, baseUrl: string, vendor: AiVendorId): Preset =>
+  vendorOf(vendor, provider, baseUrl);
 
 /** Daily request limits offered as picture cards (any other stored value is offered too). */
 const LIMITS = [10, 30, 100, 300] as const;
@@ -138,6 +135,9 @@ interface Form {
   mcq: string;
   jsonMode: boolean;
   maxTokensParam: AiSettings['maxTokensParam'];
+  vendor: AiVendorId;
+  reasoningEffort: AiSettings['reasoningEffort'];
+  authScheme: AiSettings['authScheme'];
 }
 
 const toForm = (s: AiSettings): Form => ({
@@ -152,6 +152,9 @@ const toForm = (s: AiSettings): Form => ({
   mcq: String(s.preferences.mcqChoices),
   jsonMode: s.jsonMode,
   maxTokensParam: s.maxTokensParam,
+  vendor: s.vendor,
+  reasoningEffort: s.reasoningEffort,
+  authScheme: s.authScheme,
 });
 
 const num = (t: string): number => (t.trim() === '' ? Number.NaN : Number(t));
@@ -196,6 +199,9 @@ function fromForm(
       model: f.model.trim(),
       jsonMode: f.jsonMode,
       maxTokensParam: f.maxTokensParam,
+      vendor: f.vendor,
+      reasoningEffort: f.reasoningEffort,
+      authScheme: f.authScheme,
       limits: { maxRequestsPerDay: maxRequests, maxCostUsdPerDay: maxCost },
       pricing: anyPrice ? { inputUsdPerMTok: priceIn, outputUsdPerMTok: priceOut } : null,
       preferences: { flashcardCount: flashcards, mcqChoices: mcq },
@@ -292,6 +298,7 @@ export function AiSettingsSection() {
   const flag = useAiFlag();
   const cfg = useAiConfig(flag.on);
   const saved = useAsync(() => getAiSettings(), [], [epoch]);
+  const codexIn = useAsync(async () => (await getCodexAuth()) !== null, [], [epoch]);
 
   // `draft` is what the person has typed; null = untouched, so the form follows what is stored.
   const [draft, setDraft] = useState<Form | null>(null);
@@ -397,7 +404,7 @@ export function AiSettingsSection() {
     }
     setErrors([]);
     await updateAiSettings((current) => ({ ...current, ...parsed.settings }));
-    if (keyInput.trim() !== '') {
+    if (keyInput.trim() !== '' && form.provider !== 'codex_responses') {
       await setAiApiKey(keyInput, formEndpoint.origin);
       setKeyInput('');
     }
@@ -568,15 +575,23 @@ export function AiSettingsSection() {
       : sendBlocker(config, env);
   const keyState = config?.key.state;
   const origin = endpoint?.ok ? endpoint.origin : null;
-  const savedPreset = saved.data ? presetOf(saved.data.provider, saved.data.baseUrl) : 'custom';
+  const savedPreset = saved.data
+    ? presetOf(saved.data.provider, saved.data.baseUrl, saved.data.vendor)
+    : 'custom';
   // Nothing is picked for a fresh setup (an empty OpenAI-compatible address); an existing one shows.
   const choice =
     preset ??
-    (form && (form.baseUrl.trim() !== '' || form.provider === 'anthropic')
-      ? presetOf(form.provider, form.baseUrl)
+    (form &&
+    (form.baseUrl.trim() !== '' ||
+      form.provider === 'anthropic' ||
+      form.provider === 'codex_responses')
+      ? presetOf(form.provider, form.baseUrl, form.vendor)
       : null);
-  // Same rule as the runtime (runtime.ts): Anthropic always needs a key, even on this computer.
-  const needsKey = form?.provider === 'anthropic' || !(formEndpoint?.ok && formEndpoint.loopback);
+  // Same rule as the runtime (vendors.ts): Anthropic and ChatGPT always need credentials.
+  const isCodex = form?.provider === 'codex_responses';
+  const needsKey = form
+    ? providerNeedsKey(form.provider, !!(formEndpoint?.ok && formEndpoint.loopback))
+    : true;
 
   const limitValue = form ? form.maxRequests : '30';
   const limitOptions = [
@@ -603,8 +618,19 @@ export function AiSettingsSection() {
               testId="ai-provider-choice"
               onChange={(p) => {
                 setPreset(p);
-                if (p === 'custom') edit({ provider: 'openai_compatible' });
-                else edit({ provider: PRESETS[p].provider, baseUrl: PRESETS[p].baseUrl });
+                const v = VENDORS[p];
+                if (p === 'custom') {
+                  edit({ provider: 'openai_compatible', vendor: 'custom', authScheme: 'bearer' });
+                } else {
+                  edit({
+                    provider: v.provider,
+                    baseUrl: v.baseUrl,
+                    vendor: p,
+                    authScheme: v.authScheme,
+                    // A model id or effort from another provider is not valid here.
+                    ...(form.vendor === p ? {} : { model: '', reasoningEffort: '' }),
+                  });
+                }
               }}
               options={(Object.keys(PRESETS) as Preset[]).map((p) => ({
                 value: p,
@@ -645,32 +671,34 @@ export function AiSettingsSection() {
                   )}
                 </Field>
               ) : null}
-              <Field
-                label="Provider address"
-                hint={
-                  form.provider === 'anthropic'
-                    ? 'Empty means https://api.anthropic.com.'
-                    : 'Plain http:// only for localhost.'
-                }
-              >
-                {(id, hintId) => (
-                  <input
-                    id={id}
-                    className="sv-control"
-                    data-testid="ai-base-url"
-                    inputMode="url"
-                    autoComplete="off"
-                    spellCheck={false}
-                    placeholder="https://api.example.com/v1"
-                    aria-invalid={(!!error && !formEndpoint?.ok) || undefined}
-                    aria-describedby={[hintId, error && !formEndpoint?.ok ? errorId : '']
-                      .filter(Boolean)
-                      .join(' ')}
-                    value={form.baseUrl}
-                    onChange={(e) => edit({ baseUrl: e.target.value })}
-                  />
-                )}
-              </Field>
+              {isCodex ? null : (
+                <Field
+                  label="Provider address"
+                  hint={
+                    form.provider === 'anthropic'
+                      ? 'Empty means https://api.anthropic.com.'
+                      : 'Plain http:// only for localhost.'
+                  }
+                >
+                  {(id, hintId) => (
+                    <input
+                      id={id}
+                      className="sv-control"
+                      data-testid="ai-base-url"
+                      inputMode="url"
+                      autoComplete="off"
+                      spellCheck={false}
+                      placeholder="https://api.example.com/v1"
+                      aria-invalid={(!!error && !formEndpoint?.ok) || undefined}
+                      aria-describedby={[hintId, error && !formEndpoint?.ok ? errorId : '']
+                        .filter(Boolean)
+                        .join(' ')}
+                      value={form.baseUrl}
+                      onChange={(e) => edit({ baseUrl: e.target.value })}
+                    />
+                  )}
+                </Field>
+              )}
               {error && !formEndpoint?.ok ? <StepError id={errorId}>{error}</StepError> : null}
               {/* After a failed Next the step error says it once, under the step. */}
               {formEndpoint &&
@@ -687,32 +715,52 @@ export function AiSettingsSection() {
                   {formEndpoint.origin} only.
                 </p>
               ) : null}
-              <Field label="Model id" hint="Copy it from your provider.">
-                {(id, hintId) => (
-                  <input
-                    id={id}
-                    className="sv-control ai-narrow"
-                    data-testid="ai-model"
-                    autoComplete="off"
-                    spellCheck={false}
-                    aria-invalid={(!!error && !!formEndpoint?.ok) || undefined}
-                    aria-describedby={[hintId, error && formEndpoint?.ok ? errorId : '']
-                      .filter(Boolean)
-                      .join(' ')}
-                    value={form.model}
-                    onChange={(e) => edit({ model: e.target.value })}
-                  />
-                )}
-              </Field>
+              <ModelPicker
+                vendor={form.vendor}
+                model={form.model}
+                effort={form.reasoningEffort}
+                authScheme={form.authScheme}
+                endpoint={formEndpoint}
+                needsKey={needsKey}
+                keyInput={keyInput}
+                onKeyInput={(v) => {
+                  setKeyInput(v);
+                  setSetupSaved(false);
+                }}
+                keySaved={keySaved}
+                onModel={(m) => edit({ model: m })}
+                onEffort={(e) => edit({ reasoningEffort: e })}
+                invalid={!!error && !!formEndpoint?.ok}
+                describedBy={error && formEndpoint?.ok ? errorId : ''}
+              />
               {error && formEndpoint?.ok ? <StepError id={errorId}>{error}</StepError> : null}
             </>
           ),
         },
-        ...(needsKey
+        ...(needsKey && isCodex
           ? [
               {
                 id: 'key',
-                title: 'API key',
+                title: 'Sign in',
+                inlineError: true,
+                validate: () => (codexIn.data ? null : 'Sign in with ChatGPT to continue.'),
+                content: ({ error, errorId }: { error: string | null; errorId: string }) => (
+                  <>
+                    <CodexSignIn
+                      signedIn={codexIn.data === true}
+                      onChanged={() => codexIn.refresh()}
+                    />
+                    {error ? <StepError id={errorId}>{error}</StepError> : null}
+                  </>
+                ),
+              },
+            ]
+          : []),
+        ...(needsKey && !isCodex
+          ? [
+              {
+                id: 'key',
+                title: VENDORS[form.vendor].keyLabel,
                 inlineError: true,
                 pending: keyPending,
                 validate: () =>
@@ -738,7 +786,10 @@ export function AiSettingsSection() {
                     ) : keyPending ? (
                       <p className="sd-line">{keyPending}</p>
                     ) : null}
-                    <Field label={keySaved ? 'New key (optional)' : 'API key'}>
+                    <Field
+                      label={keySaved ? 'New key (optional)' : VENDORS[form.vendor].keyLabel}
+                      hint={VENDORS[form.vendor].keyHelp}
+                    >
                       {(id) => (
                         <input
                           id={id}
@@ -806,12 +857,19 @@ export function AiSettingsSection() {
                 <Fact icon={Sparkles} label="Model">
                   {form.model.trim()}
                 </Fact>
+                <Fact icon={SlidersHorizontal} label="Reasoning">
+                  {form.reasoningEffort || 'Model default'}
+                </Fact>
                 <Fact icon={KeyRound} label="Key">
-                  {!needsKey
-                    ? 'Not needed'
-                    : keyInput.trim() !== ''
-                      ? 'New key, saved on Save'
-                      : (keySaved ?? 'None')}
+                  {isCodex
+                    ? codexIn.data
+                      ? 'Signed in'
+                      : 'Not signed in'
+                    : !needsKey
+                      ? 'Not needed'
+                      : keyInput.trim() !== ''
+                        ? 'New key, saved on Save'
+                        : (keySaved ?? 'None')}
                 </Fact>
                 <Fact icon={Gauge} label="Daily limit">
                   {form.maxRequests} requests
@@ -965,11 +1023,22 @@ export function AiSettingsSection() {
             </div>
             <div className="sd-row">
               <Chip icon={Sparkles}>{saved.data?.model}</Chip>
-              <StatusKey
-                state={keyState}
-                mask={config?.key.mask ?? null}
-                otherOrigin={config?.key.origin ?? null}
-              />
+              {saved.data?.provider === 'codex_responses' ? (
+                <Chip icon={KeyRound} tone={keyState === 'present' ? 'success' : 'warning'}>
+                  <span data-testid="ai-key-status">
+                    {keyState === 'present' ? 'Signed in' : 'Not signed in'}
+                  </span>
+                </Chip>
+              ) : (
+                <StatusKey
+                  state={keyState}
+                  mask={config?.key.mask ?? null}
+                  otherOrigin={config?.key.origin ?? null}
+                />
+              )}
+              {saved.data && saved.data.reasoningEffort ? (
+                <Chip icon={SlidersHorizontal}>Reasoning: {saved.data.reasoningEffort}</Chip>
+              ) : null}
               <Chip
                 icon={ShieldCheck}
                 tone={access === null ? 'neutral' : access ? 'success' : 'warning'}
@@ -1051,64 +1120,87 @@ export function AiSettingsSection() {
           </div>
 
           <Disclosure summary="Advanced" icon={SlidersHorizontal} testId="ai-advanced">
-            <AdvancedBlock title="API key" icon={KeyRound}>
-              <div className="sd-row ai-keyrow">
-                <Field label={keyState === 'present' ? 'Replace key' : 'API key'}>
-                  {(id) => (
-                    <input
-                      id={id}
-                      className="sv-control ai-narrow"
-                      data-testid="ai-key-input"
-                      type="password"
-                      autoComplete="off"
-                      spellCheck={false}
-                      value={keyInput}
-                      onChange={(e) => setKeyInput(e.target.value)}
-                    />
-                  )}
-                </Field>
-                <Button
-                  data-testid="ai-key-save"
-                  busy={saveKey.busy}
-                  {...(!endpoint?.ok
-                    ? {
-                        disabledReason:
-                          'Save a valid provider address first: the key is tied to it.',
-                      }
-                    : keyInput.trim() === ''
-                      ? { disabledReason: 'Type the key first.' }
+            {saved.data?.provider === 'codex_responses' ? (
+              <AdvancedBlock title="ChatGPT sign-in" icon={LogIn}>
+                <CodexSignIn
+                  signedIn={keyState === 'present'}
+                  onChanged={() => {
+                    codexIn.refresh();
+                    cfg.refresh();
+                  }}
+                />
+              </AdvancedBlock>
+            ) : (
+              <AdvancedBlock title="API key" icon={KeyRound}>
+                <div className="sd-row ai-keyrow">
+                  <Field label={keyState === 'present' ? 'Replace key' : 'API key'}>
+                    {(id) => (
+                      <input
+                        id={id}
+                        className="sv-control ai-narrow"
+                        data-testid="ai-key-input"
+                        type="password"
+                        autoComplete="off"
+                        spellCheck={false}
+                        value={keyInput}
+                        onChange={(e) => setKeyInput(e.target.value)}
+                      />
+                    )}
+                  </Field>
+                  <Button
+                    data-testid="ai-key-save"
+                    busy={saveKey.busy}
+                    {...(!endpoint?.ok
+                      ? {
+                          disabledReason:
+                            'Save a valid provider address first: the key is tied to it.',
+                        }
+                      : keyInput.trim() === ''
+                        ? { disabledReason: 'Type the key first.' }
+                        : {})}
+                    onClick={() => void saveKey.run()}
+                  >
+                    Save key
+                  </Button>
+                  <Button
+                    variant="danger"
+                    data-testid="ai-key-remove"
+                    busy={removeKey.busy}
+                    {...(config?.key.mask === null || config?.key.mask === undefined
+                      ? { disabledReason: 'There is no saved key to remove.' }
                       : {})}
-                  onClick={() => void saveKey.run()}
-                >
-                  Save key
-                </Button>
-                <Button
-                  variant="danger"
-                  data-testid="ai-key-remove"
-                  busy={removeKey.busy}
-                  {...(config?.key.mask === null || config?.key.mask === undefined
-                    ? { disabledReason: 'There is no saved key to remove.' }
-                    : {})}
-                  onClick={() => void removeKey.run()}
-                >
-                  Remove key
-                </Button>
-              </div>
-              <p className="sd-line">
-                Stored on this device <strong>without extra encryption</strong>; never in backups,
-                exports or logs.
-              </p>
-              {saveKey.error ? (
-                <InlineNotice tone="error" title="The key was not saved">
-                  {saveKey.error}
-                </InlineNotice>
-              ) : null}
-              {removeKey.error ? (
-                <InlineNotice tone="error" title="The key was not removed">
-                  {removeKey.error}
-                </InlineNotice>
-              ) : null}
-            </AdvancedBlock>
+                    onClick={() => void removeKey.run()}
+                  >
+                    Remove key
+                  </Button>
+                </div>
+                <p className="sd-line">
+                  Stored on this device <strong>without extra encryption</strong>; never in backups,
+                  exports or logs.
+                </p>
+                {saveKey.error ? (
+                  <InlineNotice tone="error" title="The key was not saved">
+                    {saveKey.error}
+                  </InlineNotice>
+                ) : null}
+                {removeKey.error ? (
+                  <InlineNotice tone="error" title="The key was not removed">
+                    {removeKey.error}
+                  </InlineNotice>
+                ) : null}
+              </AdvancedBlock>
+            )}
+
+            {saved.data &&
+            (saved.data.vendor === 'chatgpt_codex' || saved.data.vendor === 'openrouter') ? (
+              <AdvancedBlock title="Provider usage" icon={Gauge}>
+                <VendorUsage
+                  vendor={saved.data.vendor}
+                  baseUrl={endpoint?.ok ? endpoint.url : ''}
+                  origin={origin}
+                />
+              </AdvancedBlock>
+            ) : null}
 
             <AdvancedBlock title="Access" icon={ShieldCheck}>
               <p className="sd-line">

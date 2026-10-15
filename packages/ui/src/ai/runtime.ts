@@ -6,11 +6,13 @@ import {
   buildPreview,
   checkBudget,
   createAnthropicProvider,
+  createCodexResponsesProvider,
   createConsentToken,
   createCoordinator,
   createOpenAICompatibleProvider,
   emptyBudget,
   isAiError,
+  refreshCodexTokens,
   rollover,
   runTask,
   scrubSecrets,
@@ -27,6 +29,7 @@ import {
   type RedactionEdits,
   type SystemClock,
 } from '@ai';
+import { VENDORS, providerNeedsKey } from './vendors';
 import {
   PRIMARY_PROFILE_ID,
   addAiSpend,
@@ -38,7 +41,9 @@ import {
   getAiProfileApiKey,
   getAiProfileKeyInfos,
   getAiSettings,
+  getCodexAuth,
   saveAiResult,
+  setCodexAuth,
   type AiEndpointCheck,
   type AiKeyInfo,
   type AiProfileSettings,
@@ -132,12 +137,33 @@ function guard(origin: string, inner: FetchLike): FetchLike {
   };
 }
 
+/** UBAG drives a real browser: a request can take minutes (its facade deadline is 240 s). */
+const UBAG_WAIT_MS = 240_000;
+const SLOW_TIMEOUT_MS = 270_000;
+const timeoutFor = (settings: AiProfileSettings): number | null =>
+  settings.vendor === 'ubag'
+    ? SLOW_TIMEOUT_MS
+    : settings.vendor === 'chatgpt_codex'
+      ? 120_000
+      : null;
+
 function httpProvider(
   settings: AiProfileSettings,
   endpoint: Extract<AiEndpointCheck, { ok: true }>,
   apiKey: string | null,
   fetch: FetchLike,
+  accountId: string | null,
 ): AiProvider {
+  if (settings.provider === 'codex_responses') {
+    return createCodexResponsesProvider({
+      accessToken: apiKey ?? '',
+      accountId: accountId ?? '',
+      model: settings.model,
+      fetch,
+      baseUrl: endpoint.url,
+      reasoningEffort: settings.reasoningEffort,
+    });
+  }
   if (settings.provider === 'anthropic') {
     return createAnthropicProvider({
       apiKey: apiKey ?? '',
@@ -153,7 +179,32 @@ function httpProvider(
     fetch,
     jsonMode: settings.jsonMode,
     maxTokensParam: settings.maxTokensParam,
+    authScheme: settings.authScheme,
+    reasoningEffort: settings.reasoningEffort,
+    reasoningStyle: VENDORS[settings.vendor].reasoningStyle,
+    ...(settings.vendor === 'ubag' ? { waitMs: UBAG_WAIT_MS } : {}),
   });
+}
+
+/** The saved Codex login, refreshed when it is about to expire. Null = not signed in. */
+async function codexLogin(
+  env: AiEnv,
+): Promise<{ accessToken: string; accountId: string; last4: string } | null> {
+  const auth = await getCodexAuth();
+  if (!auth) return null;
+  const nowMs = env.clock.now();
+  if (auth.expiresAt - nowMs > 60_000) {
+    return { ...auth, last4: auth.accessToken.slice(-4) };
+  }
+  try {
+    // auth.openai.com is not the configured chatgpt.com origin, so this call uses the raw fetch.
+    const next = await refreshCodexTokens(env.fetch, auth, nowMs);
+    await setCodexAuth(next);
+    return { ...next, last4: next.accessToken.slice(-4) };
+  } catch {
+    // Offline or refused: keep the stored token; the request itself reports the real error.
+    return auth.expiresAt > nowMs ? { ...auth, last4: auth.accessToken.slice(-4) } : null;
+  }
 }
 
 interface ProfileInput {
@@ -172,11 +223,27 @@ async function buildProfile(
   env: AiEnv,
   secrets: string[],
 ): Promise<AiProfileConfig> {
-  const { settings, keyInfo } = input;
+  const { settings } = input;
+  let { keyInfo } = input;
   const endpoint = checkAiEndpoint(settings.provider, settings.baseUrl);
-  const apiKey = endpoint.ok ? await input.readKey(endpoint.origin) : null;
+  let apiKey: string | null = null;
+  let accountId: string | null = null;
+  if (settings.provider === 'codex_responses') {
+    const login = await codexLogin(env);
+    if (login) {
+      apiKey = login.accessToken;
+      accountId = login.accountId;
+      keyInfo = {
+        present: true,
+        origin: endpoint.ok ? endpoint.origin : null,
+        last4: login.last4,
+      };
+    }
+  } else {
+    apiKey = endpoint.ok ? await input.readKey(endpoint.origin) : null;
+  }
   if (apiKey) secrets.push(apiKey);
-  const needsKey = settings.provider === 'anthropic' || !(endpoint.ok && endpoint.loopback);
+  const needsKey = providerNeedsKey(settings.provider, endpoint.ok && endpoint.loopback);
   const state: KeyState = apiKey
     ? 'present'
     : keyInfo.present && endpoint.ok
@@ -199,7 +266,7 @@ async function buildProfile(
           fetch,
           profileId: input.id,
         })
-      : httpProvider(settings, endpoint, apiKey, fetch);
+      : httpProvider(settings, endpoint, apiKey, fetch, accountId);
   }
   return {
     id: input.id,
@@ -435,7 +502,13 @@ export async function runAiTask(config: AiConfig, env: AiEnv, args: AiRunArgs): 
       coordinator: env.coordinator,
       pricing: routed.pricing,
       secrets,
-      ...(env.timeoutMs === undefined ? {} : { timeoutMs: env.timeoutMs }),
+      ...(() => {
+        const slowest = Math.max(
+          env.timeoutMs ?? 0,
+          ...[routed.route.first, ...routed.route.targets].map((t) => timeoutFor(t.settings) ?? 0),
+        );
+        return slowest > 0 ? { timeoutMs: slowest } : {};
+      })(),
       ...(args.onProgress ? { log: args.onProgress } : {}),
     };
     let outcome;
@@ -489,7 +562,13 @@ export async function testAiConnection(
 ): Promise<AiConnectionTest> {
   const secrets = secretsFor(config);
   const timer = new AbortController();
-  const stop = setTimeout(() => timer.abort(), TEST_TIMEOUT_MS);
+  const stop = setTimeout(
+    () => timer.abort(),
+    Math.max(
+      TEST_TIMEOUT_MS,
+      ...config.profiles.filter((p) => p.id === profileId).map((p) => timeoutFor(p.settings) ?? 0),
+    ),
+  );
   const onAbort = () => timer.abort();
   signal?.addEventListener('abort', onAbort, { once: true });
   try {
