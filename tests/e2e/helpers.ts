@@ -14,13 +14,22 @@ export async function activateTab(
   try {
     await ext.goto(`chrome-extension://${extensionId}/options.html`);
     const url = page.url();
-    const result = await ext.evaluate(async (pageUrl) => {
-      const tabs = await chrome.tabs.query({});
-      const tab = tabs.find((t) => t.url === pageUrl);
-      if (!tab?.id)
-        return { ok: false, error: { code: 'not_found', message: `no tab for ${pageUrl}` } };
-      return chrome.runtime.sendMessage({ v: 1, type: 'tab.activate', payload: { tabId: tab.id } });
-    }, url);
+    const activate = () =>
+      ext.evaluate(async (pageUrl) => {
+        const tabs = await chrome.tabs.query({});
+        const tab = tabs.find((t) => t.url === pageUrl);
+        if (!tab?.id)
+          return { ok: false, error: { code: 'not_found', message: `no tab for ${pageUrl}` } };
+        return chrome.runtime.sendMessage({
+          v: 1,
+          type: 'tab.activate',
+          payload: { tabId: tab.id },
+        });
+      }, url);
+    let result = await activate();
+    // no_receiver = Chrome did not answer in time (a stalled CI runner); the product asks people to try
+    // again, and activating twice is safe. Any other error fails at once.
+    if (result?.error?.code === 'no_receiver') result = await activate();
     if (!result?.ok) throw new Error(`tab.activate failed: ${JSON.stringify(result)}`);
   } finally {
     await ext.close();
