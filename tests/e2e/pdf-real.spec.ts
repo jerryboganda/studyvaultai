@@ -232,13 +232,16 @@ for (const pdf of SHORT) {
         const t1 = Date.now();
         await chooseFile(page, pdf, bytes);
         await expect(page.getByTestId('pdf-highlight-card')).toHaveCount(1, { timeout: 60_000 });
-        await expect(page.getByTestId('pdf-highlight-card').first()).toContainText('Found on page');
         await expect(page.getByTestId('pdf-card-page').first()).toHaveText(`p. ${n}`);
         // "Go to highlight" is the user's way back to it: the page is drawn and the overlay is on
         // the same words, not on a neighbour.
         await page.getByTestId('pdf-card-goto').click();
         await pageRendered(page, n);
         await expectOverlayOnWords(page, n, parts, 'the restored highlight sits on the same words');
+        // Found on the page: painted, and no status badge ("Source changed", ambiguous or orphaned).
+        await expect(
+          page.getByTestId('pdf-highlight-card').first().locator('.sv-badge'),
+        ).toHaveCount(0);
         timings.restoreMs = Date.now() - t1;
 
         // Nothing was duplicated or rewritten by reopening.
@@ -262,6 +265,11 @@ for (const pdf of SHORT) {
         const timings: Record<string, number | string> = {};
         const { page, errors } = await openRealPdf(env, pdf);
         await expect(page.getByTestId('pdf-ocr-this-page')).toBeVisible({ timeout: 60_000 });
+        // The on-device promise is one tap away, in the card's (i).
+        await page
+          .getByRole('region', { name: 'Scanned pages' })
+          .getByRole('button', { name: 'About recognising text' })
+          .click();
         await expect(page.getByText('nothing is uploaded, and it works offline')).toBeVisible();
 
         // The first page whose verdict is "no selectable text" (page 1 may carry a stamp).
@@ -276,7 +284,7 @@ for (const pdf of SHORT) {
         await goToPage(page, target);
         await expect(page.getByTestId('pdf-page-input')).toHaveValue(String(target));
         await expect(page.getByTestId('pdf-ocr-this-page')).toBeEnabled();
-        await expect(page.getByTestId('pdf-ocr-this-page')).toHaveText(`OCR page ${target}`);
+        await expect(page.getByTestId('pdf-ocr-this-page')).toHaveText(`Only page ${target}`);
 
         const t = Date.now();
         await page.getByTestId('pdf-ocr-this-page').click();
@@ -531,7 +539,6 @@ test.describe('real layouts', () => {
     const t1 = Date.now();
     await chooseFile(page, pdf, bytes);
     await expect(page.getByTestId('pdf-highlight-card')).toHaveCount(1, { timeout: 60_000 });
-    await expect(page.getByTestId('pdf-highlight-card').first()).toContainText('Found on page');
     await expect(page.getByTestId('pdf-highlight-card').first()).toContainText('OCR text');
     await expect(page.getByTestId('pdf-ocr-status')).toHaveCount(0);
     await page.getByTestId('pdf-card-goto').click();
@@ -542,6 +549,10 @@ test.describe('real layouts', () => {
       await expect(complete).toBeAttached({ timeout: 30_000 });
     }
     await expectOverlayOnBox(page, 1, words!.box, 'the restored highlight sits on the same words');
+    // Found on the page: painted, and no status badge ("Source changed", ambiguous or orphaned).
+    await expect(page.getByTestId('pdf-highlight-card').first().locator('.sv-badge')).toHaveCount(
+      0,
+    );
     timings.restoreMs = Date.now() - t1;
 
     // Nothing was duplicated or re-recognised by reopening.

@@ -9,7 +9,7 @@ import { openReader, type Reader } from './helpers.pdfReal';
  * of the anchor and clicks there.
  */
 
-/** A generated or real file, chosen through the real file chooser behind "Choose a PDF file". */
+/** A generated or real file, chosen through the real file chooser behind "Choose a PDF". */
 export async function openBytes(env: Env, name: string, bytes: Buffer): Promise<Reader> {
   const reader = await openReader(env);
   const [chooser] = await Promise.all([

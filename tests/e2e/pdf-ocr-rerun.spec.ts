@@ -107,7 +107,7 @@ test.describe('reading recognised pages again', () => {
     // The highlight is still the person's, with the same quote, and is painted on the same words.
     expect((await storedHighlights(page)).map((h) => h.exactQuote)).toEqual([quote]);
     await page.getByRole('tab', { name: /Highlights/ }).click();
-    await expect(page.getByText(/not painted on the page/)).toHaveCount(0);
+    await expect(page.getByText(/not painted/)).toHaveCount(0);
     await expectOverlayOnWords(
       page,
       1,
@@ -127,7 +127,7 @@ test.describe('reading recognised pages again', () => {
     expect(row!.previousReading?.text).not.toContain('Zzqx');
     await expect(page.getByTestId('pdf-ocr-line-text').nth(1)).toHaveText(CORRECTION);
     await page.getByRole('tab', { name: /Highlights/ }).click();
-    await expect(page.getByText(/not painted on the page/)).toHaveCount(0);
+    await expect(page.getByText(/not painted/)).toHaveCount(0);
     await expectOverlayOnWords(
       page,
       1,
