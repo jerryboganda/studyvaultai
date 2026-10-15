@@ -22,8 +22,10 @@ import {
   expectTreeCount,
   externalRequests,
   listbox,
+  openAllHighlights,
   openControl,
   openDashboard,
+  openMoreView,
   openPalette,
   openPreview,
   pageErrors,
@@ -171,6 +173,9 @@ const STATUS_NAME: Record<ResolveStatus, string> = {
 /** Open a filter popover (a <details>) of the filter bar. */
 async function openFilter(page: Page, testId: string) {
   const group = page.getByTestId(testId);
+  // Priority, Status, Note and Date wait behind "More filters" until one of them is in use.
+  if (!(await group.isVisible())) await page.getByTestId('filter-more').click();
+  await expect(group).toBeVisible();
   if ((await group.getAttribute('open')) === null) await group.locator('summary').click();
   await expect(group).toHaveAttribute('open', '');
   return group;
@@ -188,16 +193,24 @@ const keysOf = (list: HighlightSpec[]) => list.map((h) => h.key);
 
 test.describe('open: empty vault and deep links', () => {
   test('an empty vault is described honestly in every view', async ({ env }) => {
-    const page = await openDashboard(env);
-
+    // The bare address lands on Home: nothing is due and the only bank, the Inbox, holds nothing.
+    const page = await openDashboard(env, { view: '' }, { settle: false });
     await expect(page).toHaveTitle('StudyVault AI dashboard');
+    await expect(page.getByTestId('home')).toBeVisible();
+    await expect(page.getByTestId('nav-home')).toHaveAttribute('aria-current', 'page');
+    await expect(page.getByTestId('home-hero')).toContainText('Nothing due right now');
+    await expect(page.getByTestId('home-bank')).toHaveCount(1);
+    await expect(page.getByTestId('home-bank')).toContainText(/Inbox\s*0 saved/);
+
+    await page.getByTestId('nav-banks').click();
+    await settle(page);
     await expect(page.getByRole('heading', { level: 1, name: 'StudyVault' })).toBeVisible();
 
     // Library: the only bank is the protected Inbox, with zero highlights.
     await expect(treeItem(page, 'Inbox')).toBeVisible();
     await expectTreeCount(page, 'Inbox', 0);
     await expect(page.getByTestId('view-library')).toHaveText(/All highlights\s*0$/);
-    await expect(page.getByText('Your vault is empty')).toBeVisible();
+    await expect(page.getByText('Nothing saved yet')).toBeVisible();
     await expect(page.getByTestId('result-summary')).toContainText('0 highlights');
     await expect(page.getByTestId('preview-empty')).toBeVisible();
     await expect(page.getByTestId('bulk-bar')).toHaveCount(0);
@@ -206,24 +219,24 @@ test.describe('open: empty vault and deep links', () => {
     // A search that finds nothing says so and offers a way out.
     await page.getByTestId('search-input').fill('zzzzqx');
     await expect(page.getByText('No results for “zzzzqx”')).toBeVisible();
-    await page.getByRole('button', { name: 'Clear the search' }).click();
-    await expect(page.getByText('Your vault is empty')).toBeVisible();
+    await page.getByRole('button', { name: 'Clear search' }).click();
+    await expect(page.getByText('Nothing saved yet')).toBeVisible();
 
     // A filter on an empty vault is "no match", not "empty vault".
     const group = page.getByTestId('filter-kind');
     await group.locator('summary').click();
     await group.getByRole('checkbox', { name: 'Formula' }).check();
-    await expect(page.getByText('No highlights match these filters').first()).toBeVisible();
+    await expect(page.getByText('No matches', { exact: true })).toBeVisible();
     await page.keyboard.press('Escape'); // close the popover that covers the chips
     await page.getByTestId('clear-filters').click();
-    await expect(page.getByText('Your vault is empty')).toBeVisible();
+    await expect(page.getByText('Nothing saved yet')).toBeVisible();
 
     // The other views.
-    await page.getByTestId('view-trash').click();
-    await expect(page.getByText('The trash is empty')).toBeVisible();
-    await page.getByTestId('view-duplicates').click();
+    await openMoreView(page, 'trash');
+    await expect(page.getByText('Trash is empty')).toBeVisible();
+    await openMoreView(page, 'duplicates');
     await expect(page.getByText('No duplicates found')).toBeVisible();
-    await page.getByTestId('view-storage').click();
+    await openMoreView(page, 'storage');
     await expect(page.getByTestId('storage-panel')).toBeVisible();
     await expect(page.getByTestId('no-cached-pdfs')).toBeVisible();
     await expect(
@@ -332,8 +345,8 @@ test.describe('tree: banks, folders, topics', () => {
     env,
   }) => {
     const page = await openDashboard(env);
+    // The wizard confirms with its "Bank ready!" screen (checked by createBankUi), not a toast.
     await createBankUi(page, 'Cardiology');
-    await expect(toast(page, 'Created bank Cardiology.')).toBeVisible();
     await createFolderUi(page, 'Cardiology', 'Valves');
     await createFolderUi(page, 'Valves', 'Mitral');
     await createFolderUi(page, 'Mitral', 'Stenosis');
@@ -354,6 +367,13 @@ test.describe('tree: banks, folders, topics', () => {
     expect(byName.get('Mitral')!.parentFolderId).toBe(byName.get('Valves')!.id);
     expect(byName.get('Stenosis')!.parentFolderId).toBe(byName.get('Mitral')!.id);
     expect(new Set(folders.map((f) => f.bankId)).size).toBe(1);
+    // ...inside the bank the wizard stored.
+    const banks = await readTable<{ id: string; name: string; deletedAt: string | null }>(
+      ctrl,
+      'banks',
+    );
+    const cardiology = banks.filter((b) => b.name === 'Cardiology' && b.deletedAt === null);
+    expect(cardiology.map((b) => b.id)).toEqual([folders[0]!.bankId]);
 
     await page.reload();
     await settle(page);
@@ -364,15 +384,21 @@ test.describe('tree: banks, folders, topics', () => {
   test('refuses blank names and over-long names in the name dialog', async ({ env }) => {
     const page = await openDashboard(env);
     await page.getByTestId('new-bank').click();
+    // "New bank" is a wizard; its first step is the name, and Next checks it.
     const dialog = dialogOf(page, 'New bank');
     const input = dialog.getByTestId('name-input');
-    const confirm = dialog.getByTestId('dialog-confirm');
+    const next = dialog.getByRole('button', { name: 'Next', exact: true });
+    const nameStep = dialog.getByRole('heading', { name: 'Name your bank' });
 
-    await expect(confirm).toHaveAttribute('aria-disabled', 'true');
+    // A blank name keeps the wizard on the name step and says why, by click and by Enter.
+    await next.click();
+    await expect(dialog.getByRole('alert')).toHaveText('Enter a name');
+    await expect(input).toHaveAttribute('aria-invalid', 'true');
+    await expect(nameStep).toBeVisible();
     await input.fill('   ');
-    await expect(confirm).toHaveAttribute('aria-disabled', 'true');
     await input.press('Enter');
-    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole('alert')).toHaveText('Enter a name');
+    await expect(nameStep).toBeVisible();
     await expect(treeOf(page).getByRole('treeitem')).toHaveCount(1);
 
     await expect(input).toHaveAttribute('maxlength', '80');
@@ -380,7 +406,9 @@ test.describe('tree: banks, folders, topics', () => {
     await input.pressSequentially('B'.repeat(95));
     expect((await input.inputValue()).length).toBe(80);
 
-    await dialog.getByTestId('dialog-cancel').click();
+    // Closing with a typed name asks first; discarding creates nothing.
+    await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Discard', exact: true }).click();
     await expect(dialog).toHaveCount(0);
     await expect(treeOf(page).getByRole('treeitem')).toHaveCount(1);
   });
@@ -798,7 +826,7 @@ test.describe('tree: banks, folders, topics', () => {
     await expectTreeCount(page, 'Folder A', 4);
 
     // The merged-away bank and folder are in the trash, restorable.
-    await page.getByTestId('view-trash').click();
+    await openMoreView(page, 'trash');
     const list = page.getByTestId('trash-list');
     await expect(list).toContainText('Source');
     await expect(list).toContainText('Folder B');
@@ -871,10 +899,12 @@ test.describe('tree: banks, folders, topics', () => {
 
     // The bank can be restored from the trash.
     await page.getByTestId('search-input').fill('');
-    await page.getByTestId('view-trash').click();
+    await openMoreView(page, 'trash');
     await page.getByTestId('trash-list').getByRole('checkbox', { name: /Temp/ }).first().check();
     await page.getByTestId('trash-restore').click();
     await expect(page.getByTestId('trash-outcome')).toContainText('Restored');
+    // The tree lives in the list view.
+    await openAllHighlights(page);
     await expect(treeItem(page, 'Temp')).toBeVisible();
   });
 
@@ -1297,7 +1327,7 @@ test.describe('perf: 10,000 highlights', () => {
     expect(probe.firstRowAt!).toBeLessThan(30_000);
     await expectTotal(page, live);
     await expect(page.getByTestId('view-library')).toHaveText(/All highlights\s*9,800$/);
-    await expect(page.getByTestId('result-summary')).toContainText('9,800 highlights, 100 loaded');
+    await expect(page.getByTestId('result-summary')).toContainText('9,800 highlights · 100 loaded');
 
     // ---- only a window of rows is in the DOM
     const options = page.locator('[role="option"]');
@@ -1355,7 +1385,7 @@ test.describe('perf: 10,000 highlights', () => {
     await closeFilters(page);
     await page.getByTestId('clear-filters').click();
     const indexStart = Date.now();
-    await page.getByTestId('view-storage').click();
+    await openMoreView(page, 'storage');
     await expect(page.getByTestId('index-summary')).toHaveText(/^[\d,]+ documents indexed\.$/, {
       timeout: 240_000,
     });
@@ -1370,7 +1400,7 @@ test.describe('perf: 10,000 highlights', () => {
       'search index built (wait counted from opening the storage view)',
       Date.now() - indexStart,
     );
-    await page.getByTestId('view-library').click();
+    await openAllHighlights(page);
     const sarcomere = Array.from({ length: N }, (_, k) => k + 1).filter(
       (i) => TOPICS[i % TOPICS.length] === 'sarcomere' && i % 50 !== 0,
     ).length;
@@ -1718,10 +1748,12 @@ test.describe('search', () => {
     const { ds, ctrl } = await seed(env, searchInput());
     const page = await openDashboard(env);
 
-    // Saving needs a query and a name.
+    // Saving needs a query and a name: the name form only appears once there is a query.
     const save = page.getByTestId('saved-search-save');
+    await expect(save).toBeHidden();
     await expect(save).toHaveAttribute('aria-disabled', 'true');
     await runQuery(page, 'heart');
+    await expect(save).toBeVisible();
     await expect(save).toHaveAttribute('aria-disabled', 'true'); // still no name
     await page.getByTestId('saved-search-name').fill('Heart items');
     await expect(save).not.toHaveAttribute('aria-disabled', 'true');
@@ -1847,7 +1879,7 @@ test.describe('search', () => {
     await runQuery(fourth, '');
     await openPreview(fourth, ds.id.hl('aorta'));
     await fourth.getByTestId('preview-trash').click();
-    await fourth.getByTestId('view-trash').click();
+    await openMoreView(fourth, 'trash');
     await fourth.getByTestId('trash-list').getByRole('checkbox').first().check();
     await fourth.getByTestId('trash-purge').click();
     await dialogOf(fourth, /^Permanently delete/)
@@ -1859,7 +1891,7 @@ test.describe('search', () => {
     await expect
       .poll(async () => (await probeOf(fourth)).status)
       .toContain('Items were permanently deleted');
-    await fourth.getByTestId('view-library').click();
+    await openAllHighlights(fourth);
     await runQuery(fourth, 'aorta');
     await expect(fourth.getByText('No results for “aorta”')).toBeVisible();
     await fourth.reload();
@@ -1927,7 +1959,7 @@ test.describe('preview: provenance, tags, fields, notes, duplicates', () => {
     await ensureVault(ctrl);
     const bankId = await createBankRpc(ctrl, 'Cardiology');
     const dash = await openDashboard(env);
-    await expect(dash.getByText('Your vault is empty')).toBeVisible();
+    await expect(dash.getByText('Nothing saved yet')).toBeVisible();
 
     // The real path: a fixture page, a real triple-click and the selection toolbar.
     const article = await openFixture(env, '/dash-source-a.html');
@@ -2133,7 +2165,7 @@ test.describe('preview: provenance, tags, fields, notes, duplicates', () => {
     await openPreview(page, ds.id.hl('p1'));
     const box = page.getByTestId('preview-comment');
     await box.fill('Two leaflets: anterior and posterior');
-    await expect(page.getByText('Unsaved changes (saved automatically)')).toBeVisible();
+    await expect(page.getByText('Saving soon…')).toBeVisible();
     await box.blur();
     await expect(page.getByText('Saved', { exact: true })).toBeVisible();
     await page.reload();
@@ -2367,7 +2399,9 @@ test.describe('preview: provenance, tags, fields, notes, duplicates', () => {
     await openPreview(page, first.id);
     const dups = page.getByTestId('preview-duplicates');
     await expect(dups).toContainText('This exact quote is saved 2 other times.');
-    await expect(dups).toContainText('Nothing is merged automatically');
+    await expect(
+      dups.getByRole('button', { name: 'About duplicates' }),
+    ).toHaveAccessibleDescription(/Nothing is merged automatically/);
     await expect(dups.getByTestId('duplicate-member')).toHaveCount(2);
     // The unique quote has no such section.
     await openPreview(page, unique.id);
@@ -2377,7 +2411,8 @@ test.describe('preview: provenance, tags, fields, notes, duplicates', () => {
     await page.getByTestId('review-duplicates').click();
     const clusters = page.getByTestId('duplicate-cluster');
     await expect(clusters).toHaveCount(1);
-    await expect(clusters).toContainText('Saved 3 times from 3 sources');
+    await expect(clusters).toContainText('3 copies');
+    await expect(clusters).toContainText('3 sources');
     await expect(clusters.getByTestId('duplicate-member')).toHaveCount(3);
     await expect(clusters).toHaveAttribute('aria-current', 'true'); // the one we came from
 
@@ -2677,7 +2712,7 @@ test.describe('bulk: selection and actions', () => {
     await page.getByTestId('bulk-delete').click();
     await dialogOf(page, 'Move 30 highlights to the trash?').getByTestId('dialog-confirm').click();
     await expect(toast(page, 'Moved 30 highlights to the trash.')).toBeVisible();
-    await expect(page.getByText('No highlights match these filters')).toBeVisible();
+    await expect(page.getByText('No matches', { exact: true })).toBeVisible();
     expect((await storedHighlights(ctrl)).filter((h) => h.deletedAt !== null)).toHaveLength(30);
     await toast(page, 'Moved 30 highlights to the trash.')
       .getByRole('button', { name: 'Undo' })
@@ -2691,7 +2726,7 @@ test.describe('bulk: selection and actions', () => {
     const { ds, ctrl } = await seed(env, bulkInput(env, 230));
     const page = await openDashboard(env);
     await treeItem(page, 'Work').click();
-    await expect(page.getByTestId('result-summary')).toContainText('230 highlights, 100 loaded');
+    await expect(page.getByTestId('result-summary')).toContainText('230 highlights · 100 loaded');
 
     const first = newestFirst(230).map((k) => ds.id.hl(k));
     await rowEl(page, first[0]!).click();
@@ -2736,6 +2771,13 @@ async function storageRow(page: Page, label: string): Promise<number> {
   return Number(((await cell.textContent()) ?? '').replace(/[^\d]/g, ''));
 }
 
+/** Show one kind in the trash: its filter is radio pills whose inputs are visually hidden. */
+async function showTrashKind(page: Page, pill: string) {
+  const option = page.getByTestId('trash-kind').locator('label', { hasText: pill });
+  await option.click();
+  await expect(option.getByRole('radio')).toBeChecked();
+}
+
 test.describe('trash: restore, purge, empty', () => {
   test('lists every kind, restores, purges only after a confirmation, and empties', async ({
     env,
@@ -2778,14 +2820,15 @@ test.describe('trash: restore, purge, empty', () => {
     await page.getByTestId('note-delete').click();
     await expect(toast(page, 'Note moved to the trash.')).toBeVisible();
 
-    await page.getByTestId('view-trash').click();
+    await openMoreView(page, 'trash');
+    // The kind filter is a row of radio pills, each with its count.
     const kind = page.getByTestId('trash-kind');
-    await expect(kind.locator('option')).toHaveText([
-      'Everything (4)',
-      'highlights (1)',
-      'notes (1)',
-      'folders (1)',
-      'banks (1)',
+    await expect(kind.locator('label')).toHaveText([
+      'All 4',
+      'Highlights 1',
+      'Notes 1',
+      'Folders 1',
+      'Banks 1',
     ]);
     const list = page.getByTestId('trash-list');
     await expect(list).toContainText('First inbox fact.');
@@ -2795,22 +2838,21 @@ test.describe('trash: restore, purge, empty', () => {
 
     // Nothing selected: the actions say why they do nothing.
     await expect(page.getByTestId('trash-restore')).toHaveAttribute('aria-disabled', 'true');
-    await expect(page.getByTestId('trash-purge')).toHaveAttribute(
-      'title',
+    await expect(page.getByTestId('trash-purge')).toHaveAccessibleDescription(
       'Select items to delete first.',
     );
 
     // Restore the highlight.
-    await kind.selectOption('highlight');
+    await showTrashKind(page, 'Highlights');
     await page.getByTestId('trash-select-all').click();
     await page.getByTestId('trash-restore').click();
     await expect(page.getByTestId('trash-outcome')).toHaveText('Restored 1 item.');
-    await page.getByTestId('view-library').click();
+    await openAllHighlights(page);
     await expect(rowEl(page, ds.id.hl('x1'))).toBeVisible();
 
     // Permanently delete the note: Escape in the dialog keeps it, Delete permanently removes it.
-    await page.getByTestId('view-trash').click();
-    await page.getByTestId('trash-kind').selectOption('note');
+    await openMoreView(page, 'trash');
+    await showTrashKind(page, 'Notes');
     await page.getByTestId('trash-select-all').click();
     await page.getByTestId('trash-purge').click();
     let dialog = dialogOf(page, 'Permanently delete 1 item?');
@@ -2839,7 +2881,7 @@ test.describe('trash: restore, purge, empty', () => {
     );
     await dialog.getByTestId('dialog-confirm').click();
     await expect(page.getByTestId('trash-outcome')).toContainText('Permanently deleted');
-    await expect(page.getByText('The trash is empty')).toBeVisible();
+    await expect(page.getByText('Trash is empty')).toBeVisible();
     expect(await readTable(ctrl, 'folders')).toHaveLength(0);
     expect((await readTable<{ id: string }>(ctrl, 'banks')).map((b) => b.id)).not.toContain(
       ds.id.bank('gone'),
@@ -2911,7 +2953,7 @@ test.describe('trash: restore, purge, empty', () => {
     const page = await openDashboard(env);
     await openPreview(page, doomed);
     await page.getByTestId('preview-trash').click();
-    await page.getByTestId('view-trash').click();
+    await openMoreView(page, 'trash');
     await page.getByTestId('trash-select-all').click();
     await page.getByTestId('trash-purge').click();
     await dialogOf(page, /^Permanently delete/)
@@ -2952,7 +2994,7 @@ test.describe('trash: restore, purge, empty', () => {
 
     // A second, fresh dashboard load agrees through its own storage panel.
     const second = await openDashboard(env, {}, { settle: false });
-    await second.getByTestId('view-storage').click();
+    await openMoreView(second, 'storage');
     await expect(second.getByTestId('storage-panel')).toBeVisible();
     for (const [label, table] of [
       ['Highlights', 'highlights'],
@@ -2964,7 +3006,7 @@ test.describe('trash: restore, purge, empty', () => {
     ] as const) {
       expect(await storageRow(second, label), label).toBe(after[table]);
     }
-    await second.getByTestId('view-library').click();
+    await openAllHighlights(second);
     await settle(second);
     await second.getByTestId('search-input').fill('quokka');
     await expect(second.getByText('No results for “quokka”')).toBeVisible();
@@ -3149,11 +3191,16 @@ test.describe('keyboard: palette, shortcuts, tab order, focus', () => {
     await settle(page);
     await expect(listbox(page)).toBeVisible();
 
-    // F6 cycles search -> list -> preview -> tree -> search.
+    // F6 cycles search -> list -> preview -> rail -> tree -> search.
     await page.keyboard.press('F6');
     await expect(listbox(page)).toBeFocused();
     await page.keyboard.press('F6');
     await expect(page.getByTestId('preview-pane')).toBeFocused();
+    await page.keyboard.press('F6');
+    // The rail's current item, not simply the first (Home).
+    await expect(
+      page.getByTestId('dash-rail').locator('.dash-nav__item[aria-current="page"]'),
+    ).toBeFocused();
     await page.keyboard.press('F6');
     await expect(treeOf(page).locator('[role="treeitem"]:focus')).toHaveCount(1);
     await page.keyboard.press('F6');
@@ -3182,12 +3229,15 @@ test.describe('keyboard: palette, shortcuts, tab order, focus', () => {
       const stop = await page.evaluate(() => {
         const el = document.activeElement as HTMLElement | null;
         if (!el || el === document.body) return '';
+        // Text content without aria-hidden parts (icons, a bank's letter tile), as a name is.
+        const shown = el.cloneNode(true) as HTMLElement;
+        for (const hidden of shown.querySelectorAll('[aria-hidden="true"]')) hidden.remove();
         const named =
           el.getAttribute('aria-label') ??
           (el instanceof HTMLInputElement
             ? (el.labels?.[0]?.textContent ?? el.placeholder)
             : null) ??
-          el.textContent ??
+          shown.textContent ??
           '';
         return `${el.localName}|${(named ?? '').replace(/\s+/g, ' ').trim()}`;
       });
@@ -3199,27 +3249,28 @@ test.describe('keyboard: palette, shortcuts, tab order, focus', () => {
       'every tab stop has a name',
     ).toEqual([]);
 
+    // Left to right, top to bottom: the rail, the search bar, the bank pane, then the list. The
+    // other views (Trash, Storage, ...) are tiles under More; the saved-search form waits for a
+    // query and Priority, Status, Note and Date wait behind "More filters" (both checked below).
     const expected = [
       /^a\|Skip to the main content/,
-      /^input\|Search highlights and notes/,
-      /^button\|Syntax help/,
+      /^button\|Home/,
+      /^button\|Banks/,
+      /^a\|Review/,
+      /^button\|Search/,
+      /^button\|More/,
       /^button\|Commands/,
       /^summary\|View options/,
+      /^button\|Settings/,
+      /^input\|Search highlights and notes/,
+      /^button\|Syntax help/,
       /^button\|All highlights/,
-      /^button\|Duplicate quotes/,
-      /^button\|Trash/,
-      /^button\|Storage/,
+      /^button\|Bank actions/,
       /^button\|New bank/,
       /^div\|Inbox/, // the tree is ONE stop (a roving tabindex)
-      /^input\|Name for the current search/,
-      /^button\|Save this search/,
-      /^button\|StudyVault settings/,
       /^summary\|Kind/,
-      /^summary\|Priority/,
-      /^summary\|Status/,
       /^summary\|Tags/,
-      /^summary\|Note/,
-      /^summary\|Date/,
+      /^button\|More filters/,
       /^select\|Sort by|^select\|Newest captured/,
       /^div\|Highlights/, // the list is ONE stop (aria-activedescendant)
     ];
@@ -3236,6 +3287,26 @@ test.describe('keyboard: palette, shortcuts, tab order, focus', () => {
     expect(await treeOf(page).locator('[role="treeitem"][tabindex="0"]').count()).toBe(1);
     expect(await listbox(page).getAttribute('tabindex')).toBe('0');
     expect(await page.locator('[role="option"][tabindex]').count()).toBe(0);
+
+    // "More filters" shows its four filters right after it, in order.
+    await page.getByTestId('filter-more').focus();
+    await page.keyboard.press('Enter');
+    for (const name of ['Priority', 'Status', 'Note', 'Date']) {
+      await page.keyboard.press('Tab');
+      await expect(
+        page.getByTestId(`filter-${name.toLowerCase()}`).locator('summary'),
+      ).toBeFocused();
+    }
+
+    // With a query, the saved-search form appears and its two stops come right after the tree.
+    await page.getByTestId('search-input').fill('bulk');
+    await treeOf(page).locator('[role="treeitem"][tabindex="0"]').focus();
+    await page.keyboard.press('Tab');
+    await expect(page.getByTestId('saved-search-name')).toBeFocused();
+    await expect(page.getByTestId('saved-search-name')).toHaveAccessibleName('Name this search');
+    await page.keyboard.press('Tab');
+    await expect(page.getByTestId('saved-search-save')).toBeFocused();
+    await expect(page.getByTestId('saved-search-save')).toHaveAccessibleName('Save search');
   });
 
   test('focus returns to the control that opened a dialog, menu or palette', async ({ env }) => {
@@ -3250,20 +3321,32 @@ test.describe('keyboard: palette, shortcuts, tab order, focus', () => {
     await seed(env, input);
     const page = await openDashboard(env);
 
-    // New bank: Escape, Cancel and a successful create all go back to the button.
+    // New bank (a wizard): Escape, Close and a finished create all go back to the button. The
+    // wizard opens with its step title focused, so the step is read first.
     const newBank = page.getByTestId('new-bank');
+    const wizard = dialogOf(page, 'New bank');
     await newBank.focus();
     await page.keyboard.press('Enter');
-    await expect(dialogOf(page, 'New bank')).toBeVisible();
-    await expect(page.getByTestId('name-input')).toBeFocused();
+    await expect(wizard).toBeVisible();
+    await expect(wizard.getByRole('heading', { name: 'Name your bank' })).toBeFocused();
     await page.keyboard.press('Escape');
+    await expect(wizard).toHaveCount(0);
     await expect(newBank).toBeFocused();
     await newBank.click();
-    await dialogOf(page, 'New bank').getByTestId('dialog-cancel').click();
+    await wizard.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(wizard).toHaveCount(0);
     await expect(newBank).toBeFocused();
     await newBank.click();
     await page.getByTestId('name-input').fill('Focus bank');
-    await page.keyboard.press('Enter');
+    await page.keyboard.press('Enter'); // Enter in the name field is Next
+    await expect(wizard.getByRole('heading', { name: 'Pick an icon' })).toBeFocused();
+    await wizard.getByRole('button', { name: 'Next', exact: true }).click();
+    await wizard.getByRole('button', { name: 'Next', exact: true }).click();
+    await wizard.getByRole('button', { name: 'Create bank', exact: true }).click();
+    const done = page.getByTestId('new-bank-done');
+    await expect(done.getByRole('heading', { name: 'Bank ready!' })).toBeFocused();
+    await done.getByRole('button', { name: 'Done', exact: true }).click();
+    await expect(done).toHaveCount(0);
     await expect(treeItem(page, 'Focus bank')).toBeVisible();
     await expect(newBank).toBeFocused();
 
@@ -3304,7 +3387,7 @@ test.describe('keyboard: palette, shortcuts, tab order, focus', () => {
     await expect(page.getByTestId('bulk-kind')).toBeFocused();
 
     // Trash confirmations.
-    await page.getByTestId('view-trash').click();
+    await openMoreView(page, 'trash');
     await page.getByTestId('trash-empty').click();
     await expect(dialogOf(page, 'Empty the trash?')).toBeVisible();
     await page.keyboard.press('Escape');
@@ -3371,16 +3454,16 @@ test.describe('keyboard: palette, shortcuts, tab order, focus', () => {
         });
         const page = await openDashboard(env);
         await page.emulateMedia({ colorScheme: scheme });
-        await page.getByTestId('view-trash').click();
+        await openMoreView(page, 'trash');
         await page.getByTestId('trash-list').getByRole('checkbox').first().check();
         await expect(page.getByTestId('trash-restore')).toContainText('Restore 1 item');
         await expectAxeClean(page);
 
-        await page.getByTestId('view-storage').click();
+        await openMoreView(page, 'storage');
         await expect(page.getByTestId('storage-table')).toBeVisible();
         await expectAxeClean(page);
 
-        await page.getByTestId('view-duplicates').click();
+        await openMoreView(page, 'duplicates');
         await expect(page.getByText('No duplicates found')).toBeVisible();
         await expectAxeClean(page);
         expect(ds.id.hl('p1')).toBeTruthy();
@@ -3465,7 +3548,7 @@ test.describe('resilience: reload, worker suspension, restart', () => {
     const ctrl = await openControl(env);
     await ensureVault(ctrl);
     const dash = await openDashboard(env);
-    await expect(dash.getByText('Your vault is empty')).toBeVisible();
+    await expect(dash.getByText('Nothing saved yet')).toBeVisible();
 
     // Prove the worker really restarts: mark it, stop it, observe the marker gone.
     const before = await markWorker(env.context, env.extensionId, 'dashboard-suspend');
@@ -3476,9 +3559,9 @@ test.describe('resilience: reload, worker suspension, restart', () => {
     // The dashboard talks to the vault directly: it works with the worker down.
     await createBankUi(dash, 'While suspended');
     await createFolderUi(dash, 'While suspended', 'Folder one');
-    await dash.getByTestId('view-trash').click();
-    await expect(dash.getByText('The trash is empty')).toBeVisible();
-    await dash.getByTestId('view-library').click();
+    await openMoreView(dash, 'trash');
+    await expect(dash.getByText('Trash is empty')).toBeVisible();
+    await openAllHighlights(dash);
 
     // A capture from a page wakes the worker, and the open dashboard shows it without a reload.
     const article = await openFixture(env, '/dash-source-a.html', { activate: true });

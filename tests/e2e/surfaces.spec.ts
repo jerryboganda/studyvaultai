@@ -237,7 +237,7 @@ test.describe('options: sections explain themselves and honour their flags', () 
     env,
   }) => {
     const ext = await openExt(env, 'options');
-    await expect(ext.getByRole('heading', { name: 'Review and study day' })).toBeVisible();
+    await expect(ext.getByRole('heading', { name: 'Review settings', exact: true })).toBeVisible();
     await expect(ext.getByRole('button', { name: 'Open review' })).not.toHaveAttribute(
       'aria-disabled',
       'true',
@@ -250,7 +250,7 @@ test.describe('options: sections explain themselves and honour their flags', () 
       .toMatchObject({
         review: false,
       });
-    await expect(ext.getByRole('heading', { name: 'Review and study day' })).toHaveCount(0);
+    await expect(ext.getByRole('heading', { name: 'Review settings', exact: true })).toHaveCount(0);
     await expect(ext.getByRole('button', { name: 'Open review' })).toHaveAttribute(
       'aria-disabled',
       'true',
@@ -430,16 +430,31 @@ test.describe('options: accessibility and reflow', () => {
 // =============================================================================================
 
 test.describe('popup: study bar', () => {
-  /** Create `n` typed cards through the real review page. */
+  /**
+   * Create `n` typed cards through the real review page: the Create wizard's "Blank card" path
+   * (Start from, Card type, Write the card, Pick a deck), then "Make another" for each further card.
+   */
   async function makeCards(env: Env, n: number): Promise<void> {
     const review = await extPage(env, 'review.html');
-    await review.getByRole('tab', { name: 'Create cards' }).click();
-    await review.getByRole('tab', { name: 'Typed card' }).click();
+    await review.getByRole('tab', { name: 'Create', exact: true }).click();
+    const next = review.getByRole('button', { name: 'Next', exact: true });
+    const choose = async (group: string, option: string) => {
+      const set = review.getByRole('radiogroup', { name: group });
+      await set.getByText(option, { exact: true }).click();
+      await expect(set.getByRole('radio', { name: option })).toBeChecked();
+    };
+    await choose('Start from', 'Blank card');
+    await next.click();
+    await choose('Card type', 'Q and A');
+    await next.click();
     for (let i = 1; i <= n; i++) {
+      if (i > 1) await review.getByRole('button', { name: 'Make another' }).click();
       const manual = review.getByTestId('rv-manual');
       await manual.getByLabel('Question', { exact: true }).fill(`Study bar question ${i}?`);
       await manual.getByLabel('Answer', { exact: true }).fill(`Answer ${i}`);
-      await review.getByTestId('rv-save-cards').click();
+      await next.click(); // to "Pick a deck", where the automatic deck is already chosen
+      await review.getByRole('button', { name: 'Create card', exact: true }).click();
+      await expect(review.getByRole('heading', { name: 'Card created!' })).toBeVisible();
       await expect(review.getByText('Created 1 card.')).toBeVisible();
       // The confirmation toast sits over the save button until it goes, and a pointer resting on
       // it pauses its timer: move the pointer away.
@@ -522,18 +537,23 @@ test.describe('popup: PDF tabs', () => {
       .toBe(true);
 
     const popup = await viewing(env, 'popup', page);
-    await expect(popup.getByText("PDFs open in Chrome's built-in viewer")).toBeVisible();
-    await expect(popup.getByText(/cannot highlight here/)).toHaveCount(1);
-    await expect(popup.getByRole('button', { name: 'Activate on this tab' })).toHaveCount(0);
+    await expect(popup.getByText('Chrome PDF viewer', { exact: true })).toBeVisible();
+    await expect(popup.getByRole('button', { name: 'Turn on' })).toHaveCount(0);
     await expect(popup.getByRole('button', { name: 'Open side panel' })).toBeVisible();
     await expect(popup.getByRole('button', { name: 'Open dashboard' })).toBeVisible();
+    // Why it cannot be marked up here is said once, behind the (i) next to the reader button.
+    await popup.getByRole('button', { name: 'About PDFs' }).click();
+    await expect(popup.getByText(/built-in viewer, which extensions cannot mark up/)).toHaveCount(
+      1,
+    );
+    await expect(popup.getByText(/built-in viewer, which extensions cannot mark up/)).toBeVisible();
     expect(await violationsOf(popup)).toBe('');
     // Axe opens a scratch tab; the popup follows the active tab, so show the PDF again.
     await page.bringToFront();
-    await expect(popup.getByRole('button', { name: 'Open in StudyVault reader' })).toBeVisible();
+    await expect(popup.getByRole('button', { name: 'Open in StudyVault' })).toBeVisible();
 
     const opened = env.context.waitForEvent('page');
-    await popup.getByRole('button', { name: 'Open in StudyVault reader' }).click();
+    await popup.getByRole('button', { name: 'Open in StudyVault' }).click();
     const reader = await opened;
     const url = new URL(reader.url());
     expect(url.pathname).toBe('/pdf-reader.html');
@@ -550,8 +570,12 @@ test.describe('popup: PDF tabs', () => {
     const page = await env.context.newPage();
     await page.goto(`${server.origin}/docs/renal.pdf`);
     const popup = await viewing(env, 'popup', page);
-    await expect(popup.getByText(/PDF reader is turned off/)).toBeVisible();
-    await expect(popup.getByRole('button', { name: /StudyVault reader/ })).toHaveCount(0);
+    await expect(popup.getByText('PDF reader is off.')).toBeVisible();
+    await expect(
+      popup.getByRole('button', { name: /^(Open in StudyVault|Open reader)$/ }),
+    ).toHaveCount(0);
+    // Where to turn it back on is one click away.
+    await expect(popup.getByRole('button', { name: 'Open Settings' })).toBeVisible();
     await expect(popup.getByRole('button', { name: 'Open side panel' })).toBeVisible();
   });
 });

@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 import type { Page } from '@playwright/test';
 import { DEFAULT_DENY_HOSTS } from '@shared';
 import { E2E_EXTENSION_PATH, PROD_EXTENSION_PATH } from './fixtures';
+import { settleGameBackfill } from './helpers';
 import {
   OVERLAY_HOST,
   activate,
@@ -154,11 +155,12 @@ test.describe('site access', () => {
     );
     expect(status).toMatchObject({ supported: true, access: 'persistent', active: true });
 
+    // The popup shows the site as always on; turning the switch off is how it is disabled.
     const popup = await viewing(env, 'popup', page);
-    await expect(popup.getByText('Always on', { exact: false }).first()).toBeVisible();
-    await expect(
-      popup.getByRole('button', { name: 'Disable always-on for this site' }),
-    ).toBeVisible();
+    const alwaysOn = popup.getByRole('switch', { name: 'Always on' });
+    await expect(alwaysOn).toBeVisible();
+    await expect(alwaysOn).toBeChecked();
+    await expect(alwaysOn).toBeEnabled();
   });
 
   test('a deny-list entry is excluded from the persistent registration and from injection', async ({
@@ -605,6 +607,9 @@ test.describe('messaging security: what a web page can and cannot reach', () => 
     env,
   }) => {
     const ext = await openExt(env, 'options');
+    // The install-time game backfill writes and bumps the epoch on its own: let it finish first, so
+    // the baseline below can only move because of one of the messages under test.
+    await settleGameBackfill(ext);
     const epoch = await dataEpoch(ext);
     const probe = (message: unknown) =>
       ext.evaluate(async (m) => {
@@ -679,10 +684,10 @@ test.describe('restricted pages: tab.activate answers with a specific error and 
       expect(reply).toMatchObject({ ok: false, error: { code: c.expectCode } });
       expect((reply as { error: { message: string } }).error.message).toMatch(c.message);
 
-      // The popup explains it instead of offering a dead Activate button.
+      // The popup explains it instead of offering a dead "Turn on" (activate) button.
       const popup = await viewing(env, 'popup', page);
-      await expect(popup.getByText('StudyVault cannot run on this page')).toBeVisible();
-      await expect(popup.getByRole('button', { name: 'Activate on this tab' })).toHaveCount(0);
+      await expect(popup.getByRole('heading', { name: "Can't run here" })).toBeVisible();
+      await expect(popup.getByRole('button', { name: 'Turn on' })).toHaveCount(0);
 
       // The side panel still offers Activate (the address is hidden) and shows the same error.
       const side = await viewing(env, 'sidepanel', page);
@@ -709,8 +714,8 @@ test.describe('restricted pages: tab.activate answers with a specific error and 
     expect(error?.message).not.toMatch(/undefined|\[object/);
 
     const popup = await viewing(env, 'popup', page);
-    await expect(popup.getByText('StudyVault cannot run on this page')).toBeVisible();
-    await expect(popup.getByRole('button', { name: 'Activate on this tab' })).toHaveCount(0);
+    await expect(popup.getByRole('heading', { name: "Can't run here" })).toBeVisible();
+    await expect(popup.getByRole('button', { name: 'Turn on' })).toHaveCount(0);
   });
 
   test('about:blank and data: pages are refused with an actionable message', async ({ env }) => {
@@ -754,18 +759,20 @@ test.describe('restricted pages: tab.activate answers with a specific error and 
       .toBe(true);
 
     const popup = await viewing(env, 'popup', page);
-    await expect(popup.getByText("PDFs open in Chrome's built-in viewer")).toBeVisible();
-    await expect(popup.getByText(/cannot highlight here/)).toBeVisible();
-    await expect(popup.getByRole('button', { name: 'Activate on this tab' })).toHaveCount(0);
+    await expect(popup.getByText('Chrome PDF viewer', { exact: true })).toBeVisible();
+    await expect(popup.getByRole('button', { name: 'Turn on' })).toHaveCount(0);
+    // What is not possible is said behind the (i) next to the reader button.
+    await popup.getByRole('button', { name: 'About PDFs' }).click();
+    await expect(popup.getByText(/built-in viewer, which extensions cannot mark up/)).toBeVisible();
     // What IS possible: StudyVault's own reader (a loopback or https address; the e2e server is
     // loopback). The popup only offers it; the reader itself is covered by pdf.spec.ts.
-    await expect(popup.getByRole('button', { name: 'Open in StudyVault reader' })).toBeVisible();
+    await expect(popup.getByRole('button', { name: 'Open in StudyVault' })).toBeVisible();
     // The side panel works without the page (saved highlights from every page), so it is offered here
     // too; what is not possible on this page is said above.
     await expect(popup.getByRole('button', { name: 'Open side panel' })).toBeVisible();
 
     const side = await viewing(env, 'sidepanel', page);
-    await expect(side.getByText("PDFs open in Chrome's built-in viewer")).toBeVisible();
+    await expect(side.getByRole('heading', { name: 'PDF in Chrome' })).toBeVisible();
     await expect(side.getByRole('button', { name: 'Activate on this tab' })).toHaveCount(0);
   });
 
@@ -779,7 +786,7 @@ test.describe('restricted pages: tab.activate answers with a specific error and 
     // Either an error explanation or success: an endless busy state is neither.
     const answered = side
       .getByRole('alert')
-      .or(side.getByText('No highlights on this page yet'))
+      .or(side.getByRole('heading', { name: 'Nothing saved yet' }))
       .first();
     await expect(
       answered,
@@ -890,11 +897,15 @@ prodTest.describe('production build', () => {
         await ext.evaluate(() => chrome.permissions.contains({ origins: [`http://127.0.0.1/*`] })),
       ).toBe(false);
 
-      // The genuine popup, with activeTab not granted, says Chrome did not share the address.
+      // The genuine popup, with activeTab not granted, says Chrome did not share the address: the
+      // short reason is shown, the sentence is behind its (i).
       const popup = await openRealPopup(env);
-      const text = await popup.waitForText(/StudyVault cannot run on this page/);
-      expect(text).toContain("Chrome did not share this tab's address");
-      expect(await popup.hasButton('Activate on this tab')).toBe(false);
+      const text = await popup.waitForText(/Can't run here/);
+      expect(text).toContain('Browser page');
+      expect(await popup.eval<string>('document.body.textContent')).toContain(
+        "Chrome did not share this tab's address",
+      );
+      expect(await popup.hasButton('Turn on')).toBe(false);
       await popup.close();
     },
   );

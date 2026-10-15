@@ -90,6 +90,11 @@ export interface DashTarget {
   q?: string;
   bank?: string;
   highlight?: string;
+  /**
+   * `?view=`. Without a deep link the helper opens the list ('library'), because a bare
+   * dashboard.html lands on Home; pass '' for that bare address.
+   */
+  view?: string;
 }
 
 /** Page-side recorder installed before the dashboard's scripts run (see `probeOf`). */
@@ -133,6 +138,9 @@ export function dashboardHref(env: Env, target: DashTarget = {}): string {
   if (target.highlight) params.set('highlight', target.highlight);
   if (target.bank) params.set('bank', target.bank);
   if (target.q) params.set('q', target.q);
+  // A bare dashboard.html lands on Home; the list helpers (settle, rows, tree) need the list.
+  const view = target.view ?? (params.toString() === '' ? 'library' : undefined);
+  if (view) params.set('view', view);
   const query = params.toString();
   return `chrome-extension://${env.extensionId}/dashboard.html${query ? `?${query}` : ''}`;
 }
@@ -848,13 +856,23 @@ export const toast = (page: Page, text: string | RegExp): Locator =>
 export const dialogOf = (page: Page, name: string | RegExp): Locator =>
   page.getByRole('dialog', { name });
 
-/** Create a bank through the "New bank" button and wait until it is in the tree. */
+/**
+ * Create a bank through the "New bank" wizard (Name, Icon, Colour, Looks good?) with its default icon
+ * and colour, close the "Bank ready!" screen with Done and wait until the bank is in the tree.
+ */
 export async function createBankUi(page: Page, name: string): Promise<void> {
   await page.getByTestId('new-bank').click();
-  const dialog = dialogOf(page, 'New bank');
-  await dialog.getByTestId('name-input').fill(name);
-  await dialog.getByTestId('dialog-confirm').click();
-  await expect(dialog).toHaveCount(0);
+  const wizard = dialogOf(page, 'New bank');
+  await wizard.getByTestId('name-input').fill(name);
+  for (let step = 0; step < 3; step++) {
+    await wizard.getByRole('button', { name: 'Next', exact: true }).click();
+  }
+  await wizard.getByRole('button', { name: 'Create bank', exact: true }).click();
+  const done = page.getByTestId('new-bank-done');
+  await expect(done.getByRole('heading', { name: 'Bank ready!' })).toBeVisible();
+  await expect(done).toContainText(name);
+  await done.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(done).toHaveCount(0);
   await expect(treeItem(page, name)).toBeVisible();
 }
 
@@ -872,6 +890,19 @@ export async function createFolderUi(page: Page, parent: string, name: string): 
   await dialog.getByTestId('dialog-confirm').click();
   await expect(dialog).toHaveCount(0);
   await expect(treeItem(page, name)).toBeVisible();
+}
+
+/** Open a view that lives under More (trash, storage, duplicates, graph, ...): More, then its tile. */
+export async function openMoreView(page: Page, view: string): Promise<void> {
+  await page.getByTestId('nav-more').click();
+  await page.getByTestId('more-view').getByTestId(`view-${view}`).click();
+  await expect(page.getByTestId('nav-more')).toHaveAttribute('aria-current', 'page');
+}
+
+/** Back to the list of every highlight from any view: Banks in the rail, then "All highlights". */
+export async function openAllHighlights(page: Page): Promise<void> {
+  await page.getByTestId('nav-banks').click();
+  await page.getByTestId('view-library').click();
 }
 
 export async function openPalette(page: Page): Promise<Locator> {

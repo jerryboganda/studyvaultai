@@ -310,9 +310,11 @@ function Workspace() {
 
   const focusPane = useCallback((pane: 'tree' | 'search' | 'list' | 'preview' | 'nav' | 'main') => {
     if (pane === 'nav') {
-      document
-        .querySelector<HTMLElement>('.dash-nav__item[aria-current="page"], .dash-nav__item')
-        ?.focus();
+      // The current item, else the first: a comma selector would always return the first in page order.
+      (
+        document.querySelector<HTMLElement>('.dash-nav__item[aria-current="page"]') ??
+        document.querySelector<HTMLElement>('.dash-nav__item')
+      )?.focus();
     } else if (pane === 'main') {
       mainPane()?.focus();
     } else if (pane === 'tree') {

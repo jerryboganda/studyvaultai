@@ -4,7 +4,7 @@ import { wrappedDoc } from '../fixtures/pdf/docs';
 import { downloadOf, openBackupPage, writeDatasetKeepingInbox } from './helpers.backup';
 import {
   buildDataset,
-  createBankUi,
+  createFolderUi,
   ensureVault,
   expect,
   expectAxeClean,
@@ -413,10 +413,11 @@ test.describe('dashboard', () => {
     await seed(env, smallInput(env));
     const dash = await openDashboard(env);
 
-    // Default: closes by itself, a real timer.
-    await createBankUi(dash, 'Renal');
-    await expect(toast(dash, 'Created bank Renal.')).toBeVisible();
-    await expect(toast(dash, 'Created bank Renal.')).toHaveCount(0, { timeout: 12_000 });
+    // Default: closes by itself, a real timer. (A new bank now ends on its own "Bank ready!" screen
+    // instead of a notification; a new folder still says so in one.)
+    await createFolderUi(dash, 'Cardiology', 'Renal');
+    await expect(toast(dash, 'Created folder Renal.')).toBeVisible();
+    await expect(toast(dash, 'Created folder Renal.')).toHaveCount(0, { timeout: 12_000 });
 
     // The viewer asks for them to stay (Settings > Appearance, kept in this browser).
     const ext = await openExt(env, 'options');
@@ -429,8 +430,8 @@ test.describe('dashboard', () => {
     await ext.close();
 
     await dash.bringToFront();
-    await createBankUi(dash, 'Neuro');
-    const kept = toast(dash, 'Created bank Neuro.');
+    await createFolderUi(dash, 'Cardiology', 'Neuro');
+    const kept = toast(dash, 'Created folder Neuro.');
     await expect(kept).toBeVisible();
     // Time itself is the assertion here: the default would have closed it after 5 s.
     await dash.waitForTimeout(6_500);

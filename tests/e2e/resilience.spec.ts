@@ -2,6 +2,7 @@ import type { Page } from '@playwright/test';
 import { expect, test } from './fixtures';
 import {
   activate,
+  createBankInPanel,
   dragSelect,
   enableDeveloperMode,
   evalInContentScript,
@@ -13,9 +14,11 @@ import {
   newUserDataDir,
   norm,
   openExtensionPage,
+  openRecent,
   overlayHostCount,
   paintedDetail,
   patchSettings,
+  pickIn,
   readDb,
   recordRequests,
   registeredScripts,
@@ -107,10 +110,7 @@ test.describe('persistence across restart and extension reload', () => {
       // The page has no text field (ADR-005): the bank is named in the side panel, then picked in
       // the page's "More options" together with kind and priority.
       const panel1 = await openExtensionPage(first.context, first.extensionId, 'sidepanel.html');
-      await panel1.getByRole('tab', { name: 'Banks' }).click();
-      await panel1.getByLabel('New bank').fill('Cardiology');
-      await panel1.getByRole('button', { name: 'Create bank' }).click();
-      await expect(panel1.getByText('Bank "Cardiology" created.')).toBeVisible();
+      await createBankInPanel(panel1, 'Cardiology');
 
       await page.bringToFront();
       await tripleClick(page, '#p-multiline');
@@ -120,15 +120,15 @@ test.describe('persistence across restart and extension reload', () => {
       await expect(composer).toBeVisible();
       await expect(composer.getByRole('textbox')).toHaveCount(0);
       await composer.getByLabel('Bank', { exact: true }).selectOption({ label: 'Cardiology' });
-      await composer.getByLabel('Type').selectOption({ label: 'ƒ Formula' });
-      await composer.getByLabel('Priority').selectOption('5');
+      await pickIn(composer, 'Kind', 'Formula').click();
+      await pickIn(composer, 'Priority', '5 (highest)').click();
       await composer.getByRole('button', { name: 'Save', exact: true }).click();
       await expect(savedToast(page)).toHaveText('Saved to Cardiology');
       await expectPaintedExactly(page, [QUOTE, MULTILINE]);
 
-      // Notes are typed in the side panel too. "Recent" lists every highlight whatever the active
-      // tab is, so both notes are written there (real keyboard input into the card's note field).
-      await panel1.getByRole('tab', { name: /Recent/ }).click();
+      // Notes are typed in the side panel too. "Recent" (under More) lists every highlight whatever
+      // the active tab is, so both notes are written there (real keyboard input into the note field).
+      await openRecent(panel1);
       const noteOf = (text: string) =>
         panel1.locator('article.hl-card', { hasText: text }).getByLabel('Your note');
       await noteOf('Depolarisation spreads').fill('composer note');
@@ -205,7 +205,7 @@ test.describe('persistence across restart and extension reload', () => {
 
       // The side panel lists both, with the note.
       const panel = await openExtensionPage(second.context, second.extensionId, 'sidepanel.html');
-      await panel.getByRole('tab', { name: /Recent/ }).click();
+      await openRecent(panel);
       await expect(panel.locator('article.hl-card')).toHaveCount(2);
     } finally {
       await first?.context.close().catch(() => undefined);
@@ -500,7 +500,7 @@ test.describe('offline', () => {
 
       // Data and the side panel work offline.
       const panel = await openExtensionPage(context, extensionId, 'sidepanel.html');
-      await panel.getByRole('tab', { name: /Recent/ }).click();
+      await openRecent(panel);
       await expect(panel.locator('article.hl-card')).toHaveCount(4);
       expect(liveHighlights(await readDb(ext))).toHaveLength(4);
 
@@ -814,7 +814,7 @@ test.describe('crash safety and races', () => {
       await selectAndSave(page, { triple: '#p-intro' }, 'primary pacemaker');
       // A note typed in the side panel (the page has no text field) and confirmed with "Saved".
       const panel = await openExtensionPage(session.context, session.extensionId, 'sidepanel.html');
-      await panel.getByRole('tab', { name: /Recent/ }).click();
+      await openRecent(panel);
       const card = panel.locator('article.hl-card', { hasText: 'Cardiac output equals' });
       await card.getByLabel('Your note').fill('written just before the crash');
       await expect(card.getByText('Saved', { exact: true })).toBeVisible();

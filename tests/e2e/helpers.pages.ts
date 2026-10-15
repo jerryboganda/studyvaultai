@@ -302,7 +302,7 @@ export async function viewing(env: Env, name: ExtPageName, target: Page): Promis
     // first query and its listener registration: the event is lost and the page stays on its own
     // tab. Wait for the page's own first answer (it is the active tab, an extension page, and says
     // it cannot run there) before switching.
-    await expect(ext.getByText(/StudyVault cannot run on this page/).first()).toBeVisible();
+    await expect(ext.getByRole('heading', { name: "Can't run here" })).toBeVisible();
   }
   await target.bringToFront();
   await activeTabId(ext);
@@ -333,7 +333,10 @@ export async function pageListState(side: Page): Promise<string> {
     if (text.includes('Could not load highlights')) return 'error: Could not load highlights';
     const cards = document.querySelectorAll('article').length;
     if (cards > 0) return `cards:${cards}`;
-    if (text.includes('No highlights on this page yet')) return 'empty';
+    const empty = Array.from(document.querySelectorAll('h3')).some(
+      (h) => h.textContent?.trim() === 'Nothing saved yet',
+    );
+    if (empty) return 'empty';
     return 'loading';
   });
 }
@@ -891,10 +894,19 @@ export class RawTarget {
     return last;
   }
 
-  /** Centre of the first button whose text matches; null when there is none. */
+  /**
+   * Centre of the first button named `label`: its aria-label, else its text without the parts hidden
+   * from assistive technology (a shortcut hint such as "Open side panel Alt+Shift+S" is aria-hidden).
+   */
   private buttonCentre(label: string): Promise<{ x: number; y: number } | null> {
     return this.eval(`(() => {
-      const b = [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === ${JSON.stringify(label)});
+      const nameOf = (x) => {
+        if (x.hasAttribute('aria-label')) return x.getAttribute('aria-label').trim();
+        const copy = x.cloneNode(true);
+        copy.querySelectorAll('[aria-hidden="true"]').forEach((h) => h.remove());
+        return copy.textContent.replace(/\\s+/g, ' ').trim();
+      };
+      const b = [...document.querySelectorAll('button')].find((x) => nameOf(x) === ${JSON.stringify(label)});
       if (!b) return null;
       const r = b.getBoundingClientRect();
       return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
