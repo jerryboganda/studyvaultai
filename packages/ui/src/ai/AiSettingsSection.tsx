@@ -575,7 +575,8 @@ export function AiSettingsSection() {
     (form && (form.baseUrl.trim() !== '' || form.provider === 'anthropic')
       ? presetOf(form.provider, form.baseUrl)
       : null);
-  const needsKey = formEndpoint?.ok ? !formEndpoint.loopback : true;
+  // Same rule as the runtime (runtime.ts): Anthropic always needs a key, even on this computer.
+  const needsKey = form?.provider === 'anthropic' || !(formEndpoint?.ok && formEndpoint.loopback);
 
   const limitValue = form ? form.maxRequests : '30';
   const limitOptions = [

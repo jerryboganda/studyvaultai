@@ -4,6 +4,8 @@ import {
   configureProvider,
   enableAi,
   expect,
+  metaValue,
+  openAdvanced,
   profilesOf,
   saveKey,
   test as base,
@@ -37,16 +39,19 @@ export const test = base.extend<{ anthropic: FakeProvider }>({
 });
 
 /**
- * Choose Anthropic the way a person does ("Use Anthropic" fills the provider's own address), then
- * type the address of the fake and the model and save. Sends nothing.
+ * Choose Anthropic the way a person does (its provider card in the setup wizard), then type the
+ * address of the fake and the model and save. Sends nothing.
  */
 export async function configureAnthropic(
   options: Page,
   cfg: { baseUrl: string; model?: string },
 ): Promise<void> {
-  await options.getByRole('button', { name: 'Use Anthropic' }).click();
-  await expect(options.getByTestId('ai-provider')).toHaveValue('anthropic');
-  await configureProvider(options, { baseUrl: cfg.baseUrl, model: cfg.model ?? ANTHROPIC_MODEL });
+  await configureProvider(options, {
+    baseUrl: cfg.baseUrl,
+    model: cfg.model ?? ANTHROPIC_MODEL,
+    preset: 'anthropic',
+  });
+  expect(await metaValue(options, 'aiSettings')).toMatchObject({ provider: 'anthropic' });
 }
 
 /** Switch on, choose Anthropic at the fake's address, save the key. Sends nothing. */
@@ -61,13 +66,14 @@ export async function setUpAnthropic(
 }
 
 /**
- * Add an Anthropic provider after the primary one through the settings page: Add, name, provider
- * type, address, model, Save, then the key. Returns the card.
+ * Add an Anthropic provider after the primary one through the settings page: open "Advanced", Add,
+ * name, provider type, address, model, Save, then the key. Returns the card.
  */
 export async function addAnthropicFallback(
   options: Page,
   cfg: { label: string; baseUrl: string; model?: string; key?: string | null },
 ): Promise<Locator> {
+  await openAdvanced(options);
   const before = await profilesOf(options).count();
   await options.getByTestId('ai-profile-add').click();
   await expect(profilesOf(options)).toHaveCount(before + 1);

@@ -1,6 +1,4 @@
-import fs from 'node:fs';
 import type { Page } from '@playwright/test';
-import { strFromU8, unzipSync } from 'fflate';
 import { dataBlocks, failure, ok, type FakeProvider } from './aiServer';
 import {
   FAKE_KEY,
@@ -11,6 +9,7 @@ import {
   aiSwitch,
   askChat,
   axeReport,
+  backupText,
   chatPassagesOf,
   expect,
   highlightsOf,
@@ -271,12 +270,7 @@ test.describe('fallback providers', () => {
       fallback.origin,
     );
 
-    const download = options.waitForEvent('download');
-    await options.getByTestId('backup-export-start').click();
-    const file = await (await download).path();
-    const text = Object.values(unzipSync(new Uint8Array(fs.readFileSync(file))))
-      .map((bytes) => strFromU8(bytes))
-      .join('\n');
+    const text = await backupText(env, options);
     expect(text, 'the backup holds the highlight').toContain(highlight.exactQuote.slice(0, 40));
     for (const secret of [OTHER_KEY, FAKE_KEY, fallback.origin, 'aiProfileKeys', 'aiKey']) {
       expect(text, `the backup does not hold ${secret}`).not.toContain(secret);
@@ -569,6 +563,7 @@ test.describe('chat with your notes', () => {
 
     const side = await openSide(env, page);
     await side.getByRole('tab', { name: 'Banks' }).click();
+    await side.getByTestId('bank-filter').filter({ hasText: 'Inbox' }).click();
     const button = side.getByRole('button', { name: 'Chat with the notes of Inbox (AI)' });
     await expect(button).toHaveAttribute('aria-disabled', 'true');
     await expect(button).toHaveAccessibleDescription(/AI features are off/);

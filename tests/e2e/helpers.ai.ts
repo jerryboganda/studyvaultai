@@ -1,8 +1,11 @@
+import fs from 'node:fs';
 import AxeBuilder from '@axe-core/playwright';
 import { settleAnimations } from './axeSettle';
 import type { Locator, Page } from '@playwright/test';
+import { strFromU8, unzipSync } from 'fflate';
 import { startFakeProvider, type ChatMessage, type FakeProvider } from './aiServer';
 import {
+  activeTabId,
   expect,
   highlightsOf,
   openExt,
@@ -10,7 +13,6 @@ import {
   saveBlock,
   storedSettings,
   test as base,
-  viewing,
   waitForPageList,
   type Env,
   type HighlightRow,
@@ -23,9 +25,9 @@ export type { Env, HighlightRow };
  * Helpers for ai.spec.ts: the optional AI feature in a real loaded extension against the local fake
  * provider of ./aiServer.ts (no real key, no internet).
  *
- * Settings go through the UI the way a person does it (the switch, the provider form, the key
- * field): the worker enforces a trusted copy of `settings`, so a raw storage write would be ignored.
- * Direct IndexedDB access is READ-ONLY and used to assert what was really persisted.
+ * Settings go through the UI the way a person does it (the switch, the setup wizard, the key field
+ * under "Advanced"): the worker enforces a trusted copy of `settings`, so a raw storage write would
+ * be ignored. Direct IndexedDB access is READ-ONLY and used to assert what was really persisted.
  */
 
 /** A syntactically valid fake key (printable ASCII, 8 to 512 characters). Never a real key. */
@@ -153,6 +155,22 @@ export const aiSwitch = (options: Page): Locator =>
  */
 const COLD_WRITE_MS = 45_000;
 
+/** Open one section of the settings page (only the current section is mounted), as its link does. */
+export async function showSection(page: Page, id: string): Promise<void> {
+  if (new URL(page.url()).hash !== `#${id}`) {
+    await page.evaluate((hash) => {
+      window.location.hash = hash;
+    }, id);
+  }
+  await expect(page.locator(`#${id}`)).toBeAttached();
+}
+
+/** The AI section of the settings page, with its switch on screen. */
+export async function showAiSection(options: Page): Promise<void> {
+  await showSection(options, 'ai');
+  await expect(aiSwitch(options)).toBeVisible({ timeout: COLD_WRITE_MS });
+}
+
 /** What a stalled first write looks like from the page: Web Locks, databases, pending texts. */
 async function stallReport(options: Page): Promise<string> {
   return options.evaluate(async () => {
@@ -182,16 +200,20 @@ async function pageLoaded(options: Page): Promise<void> {
   });
 }
 
+/** What the switch guards once it is on: the setup wizard, or the status card of an earlier setup. */
+const aiSetupOrStatus = (options: Page): Locator =>
+  options.getByTestId('ai-setup').or(options.getByTestId('ai-status'));
+
 export async function enableAi(options: Page): Promise<void> {
+  await showAiSection(options);
   // Not while the page is still starting its own reads: the write would queue behind them (and the
   // click is the first thing to touch the database on a fresh profile).
-  await expect(aiSwitch(options)).toBeVisible();
   await pageLoaded(options);
   await aiSwitch(options).click();
   try {
     // The real condition: the switch is checked AND the section it guards has appeared.
     await expect(aiSwitch(options)).toBeChecked({ timeout: COLD_WRITE_MS });
-    await expect(options.getByTestId('ai-base-url')).toBeVisible({ timeout: COLD_WRITE_MS });
+    await expect(aiSetupOrStatus(options)).toBeVisible({ timeout: COLD_WRITE_MS });
     await expect
       .poll(
         async () => ((await storedSettings(options))?.features as { ai?: boolean } | undefined)?.ai,
@@ -207,22 +229,74 @@ export async function enableAi(options: Page): Promise<void> {
   }
 }
 
+/** Open the closed "Advanced" part under the status card (key, access, limits, providers, ledger). */
+export async function openAdvanced(options: Page): Promise<Locator> {
+  const advanced = options.getByTestId('ai-advanced');
+  await expect(advanced).toBeVisible({ timeout: COLD_WRITE_MS });
+  if (!(await advanced.evaluate((d) => (d as HTMLDetailsElement).open))) {
+    await advanced.locator(':scope > summary').click();
+  }
+  await expect(advanced).toHaveJSProperty('open', true);
+  return advanced;
+}
+
+/** Pick a picture card the way a person does: click the card (its radio is visually hidden). */
+export async function pickCard(page: Page, testId: string): Promise<void> {
+  const radio = page.getByTestId(testId);
+  await page.locator('label').filter({ has: radio }).click();
+  await expect(radio).toBeChecked();
+}
+
+/** A step title of the setup wizard. */
+export const setupStep = (options: Page, name: string | RegExp): Locator =>
+  options.getByTestId('ai-setup').getByRole('heading', { level: 3, name });
+
+/**
+ * Point the AI settings at `baseUrl` and `model` through the setup wizard ("Edit setup" when it was
+ * set up before): provider card, address and model, the key step when the wizard asks for one (not
+ * for a local address), the daily limit, then "Save". Never "Save and test": configuring sends nothing.
+ */
 export async function configureProvider(
   options: Page,
-  cfg: { baseUrl: string; model?: string },
+  cfg: { baseUrl: string; model?: string; key?: string; preset?: 'custom' | 'anthropic' },
 ): Promise<void> {
+  const status = options.getByTestId('ai-status');
+  const setup = options.getByTestId('ai-setup');
+  const next = setup.getByTestId('ai-setup-next');
+  await expect(aiSetupOrStatus(options)).toBeVisible({ timeout: COLD_WRITE_MS });
+  if (await status.isVisible()) await options.getByTestId('ai-edit-setup').click();
+
+  await expect(setupStep(options, 'Pick a provider')).toBeVisible();
+  await pickCard(options, `ai-preset-${cfg.preset ?? 'custom'}`);
+  await next.click();
+  await expect(setupStep(options, 'Address and model')).toBeVisible();
   await options.getByTestId('ai-base-url').fill(cfg.baseUrl);
   await options.getByTestId('ai-model').fill(cfg.model ?? MODEL);
-  await options.getByTestId('ai-save-settings').click();
+  await next.click();
+  await expect(setupStep(options, /^(API key|Daily limit)$/)).toBeVisible();
+  if (await setupStep(options, 'API key').isVisible()) {
+    if (!cfg.key) throw new Error(`the setup asks for an API key for ${cfg.baseUrl}`);
+    await options.getByTestId('ai-key-input').fill(cfg.key);
+    await next.click();
+  }
+  await expect(setupStep(options, 'Daily limit')).toBeVisible();
+  await next.click();
+  await expect(setupStep(options, 'Save and test')).toBeVisible();
+  await setup.getByTestId('ai-setup-save').click();
+
   await expect
     .poll(async () => (await metaValue<{ baseUrl?: string }>(options, 'aiSettings'))?.baseUrl, {
       timeout: COLD_WRITE_MS,
     })
     .toBe(cfg.baseUrl);
-  await expect(options.getByTestId('ai-save-settings')).toHaveAttribute('aria-disabled', 'true');
+  // Saved: the wizard gives way to the status card.
+  await expect(status).toBeVisible();
+  await expect(setup).toHaveCount(0);
 }
 
+/** Save `key` with the key field under "Advanced"; the status card shows its mask. */
 export async function saveKey(options: Page, key: string): Promise<void> {
+  await openAdvanced(options);
   await options.getByTestId('ai-key-input').fill(key);
   await options.getByTestId('ai-key-save').click();
   await expect(options.getByTestId('ai-key-mask')).toHaveText(maskOf(key), {
@@ -240,6 +314,25 @@ export async function setUpAi(
   await enableAi(options);
   await configureProvider(options, { baseUrl: provider.baseUrl });
   if (key !== null) await saveKey(options, key);
+}
+
+/**
+ * Make a plain backup through the Backup section (in a settings tab of its own, so the page under
+ * test keeps its section), bring `back` to the front again and return the archive as one text.
+ */
+export async function backupText(env: Env, back: Page): Promise<string> {
+  const page = await openExt(env, 'options');
+  await showSection(page, 'backup');
+  // "Back up" is the default task, and its first step ("Lock it?") defaults to no passphrase.
+  await page.getByTestId('backup-export-flow-next').click();
+  const download = page.waitForEvent('download');
+  await page.getByTestId('backup-export-start').click();
+  const file = await (await download).path();
+  await page.close();
+  await back.bringToFront();
+  return Object.values(unzipSync(new Uint8Array(fs.readFileSync(file))))
+    .map((bytes) => strFromU8(bytes))
+    .join('\n');
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -262,7 +355,14 @@ export async function saveHighlight(
 
 /** The side panel showing `page`, with its highlight list loaded. */
 export async function openSide(env: Env, page: Page): Promise<Page> {
-  const side = await viewing(env, 'sidepanel', page);
+  // ponytail: the steps of helpers.pages `viewing`, whose wait still names the old "cannot run"
+  // copy in this tree; go back to `viewing` once that helper waits for "Can't run here".
+  const side = await openExt(env, 'sidepanel');
+  // The panel's own first answer (its tab is an extension page) before the tab switch, so the
+  // switch event cannot land before its listener exists.
+  await expect(side.getByRole('heading', { name: "Can't run here" })).toBeVisible();
+  await page.bringToFront();
+  await activeTabId(side);
   await waitForPageList(side);
   return side;
 }
@@ -270,13 +370,22 @@ export async function openSide(env: Env, page: Page): Promise<Page> {
 export const cardOf = (side: Page, highlightId: string): Locator =>
   side.locator(`article[data-highlight-id="${highlightId}"]`);
 
+/** Open a card's "More actions" drawer (tags, notes, links, AI drafts, Delete); returns the card. */
+export async function openDrawer(side: Page, highlightId: string): Promise<Locator> {
+  const card = cardOf(side, highlightId);
+  const more = card.getByTestId('card-more');
+  if ((await more.getAttribute('aria-expanded')) !== 'true') await more.click();
+  await expect(card.getByTestId('card-drawer')).toBeVisible();
+  return card;
+}
+
 /** Reveal the AI actions of a card and open the consent dialog for `kind`; waits for the preview. */
 export async function openConsent(
   side: Page,
   highlightId: string,
   kind: string = 'exam_pearl',
 ): Promise<Locator> {
-  const card = cardOf(side, highlightId);
+  const card = await openDrawer(side, highlightId);
   const toggle = card.getByTestId('card-ai-toggle');
   await expect(toggle).toBeVisible();
   if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();

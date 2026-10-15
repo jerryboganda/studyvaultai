@@ -1,6 +1,4 @@
-import fs from 'node:fs';
 import type { Locator, Page } from '@playwright/test';
-import { strFromU8, unzipSync } from 'fflate';
 import { dataBlocks, failure, hang, ok, quoteFrom, type FakeProvider } from './aiServer';
 import {
   FAKE_KEY,
@@ -8,6 +6,7 @@ import {
   OTHER_KEY,
   aiSwitch,
   axeReport,
+  backupText,
   cardOf,
   configureProvider,
   enableAi,
@@ -16,17 +15,23 @@ import {
   maskOf,
   metaValue,
   nonFixture,
+  openAdvanced,
   openConsent,
+  openDrawer,
   openExt,
   openSide,
   outboundOf,
   pageContents,
+  pickCard,
   readTable,
   renderOutbound,
   saveBlock,
   saveHighlight,
   saveKey,
   setUpAi,
+  setupStep,
+  showAiSection,
+  showSection,
   storageDump,
   storedSettings,
   test,
@@ -38,8 +43,9 @@ import { closedPort } from './helpers.pages';
 /**
  * The optional AI feature in a real loaded extension (the e2e build), against a local FAKE provider
  * that speaks the OpenAI-compatible chat-completions wire format (./aiServer.ts). No real key, no
- * internet. Everything a person does goes through the shipped UI: the Settings switch and form, the
- * side panel's highlight card, the consent preview, the result card.
+ * internet. Everything a person does goes through the shipped UI: the Settings switch, setup wizard
+ * and "Advanced" part, the side panel's highlight card (its "More actions" drawer), the consent
+ * preview, the result card.
  *
  * Not covered here (and why):
  *  - A model that never answers a consent-dialog request: the engine's per-attempt deadline is 60 s
@@ -139,22 +145,26 @@ test.describe('AI is off until the person turns it on', () => {
   }) => {
     const traffic = watchTraffic(env);
     const options = await openExt(env, 'options');
+    await showAiSection(options);
     const ai = options.locator('#ai');
     await expect(ai.getByRole('heading', { name: /AI assistance/ })).toBeVisible();
     await expect(aiSwitch(options)).not.toBeChecked();
-    // Off: the explanation and the switch, no provider form, no test button, no key field.
-    await expect(ai).toContainText('While this is off, StudyVault sends nothing anywhere');
-    for (const id of ['ai-base-url', 'ai-model', 'ai-key-input', 'ai-test']) {
+    // Off: the explanation, the switch and "Set up AI"; no setup, provider form, test or key field.
+    await expect(ai).toContainText('Nothing is sent while it is off.');
+    await expect(ai.getByTestId('ai-what-is-sent')).toContainText(
+      'While AI is off, StudyVault sends nothing anywhere',
+    );
+    await expect(ai.getByTestId('ai-setup-start')).toBeVisible();
+    for (const id of ['ai-setup', 'ai-base-url', 'ai-model', 'ai-key-input', 'ai-test']) {
       await expect(ai.getByTestId(id)).toHaveCount(0);
     }
 
-    // A saved highlight's card says so and offers no AI control.
+    // A saved highlight's card (its "More actions" drawer) says so and offers no AI control.
     const { page, highlight } = await saveHighlight(env, options, '#p-pearl');
     const side = await openSide(env, page);
-    const card = cardOf(side, highlight.id);
-    await expect(card.getByTestId('card-ai-hint')).toContainText(
-      'AI drafts are off, so nothing is sent anywhere',
-    );
+    const card = await openDrawer(side, highlight.id);
+    await expect(card.getByTestId('card-ai-hint')).toContainText('AI drafts are off.');
+    await expect(card.getByTestId('card-ai-hint')).toContainText('nothing is sent anywhere');
     await expect(card.getByTestId('card-ai-toggle')).toHaveCount(0);
     await expect(side.locator('[data-testid^="ai-action-"]')).toHaveCount(0);
     expect(provider.seen, 'the provider heard nothing while AI is off').toEqual([]);
@@ -185,7 +195,7 @@ test.describe('AI is off until the person turns it on', () => {
     // (a read-modify-write under the Web Lock "studyvault-settings") was held up. Reproduced on
     // purpose: another StudyVault window holds that lock while the person clicks.
     const options = await openExt(env, 'options');
-    await expect(aiSwitch(options)).toBeVisible();
+    await showAiSection(options);
     const holder = await env.context.newPage();
     await holder.goto(`chrome-extension://${env.extensionId}/options.html`);
     await holder.evaluate(
@@ -209,9 +219,9 @@ test.describe('AI is off until the person turns it on', () => {
     ).toBe(false);
     await holder.evaluate(() => (window as unknown as { __release: () => void }).__release());
 
-    // The click was kept: the flag is stored, the switch is on and the section it guards appears.
+    // The click was kept: the flag is stored, the switch is on and the setup it guards appears.
     await expect(aiSwitch(options)).toBeChecked();
-    await expect(options.getByTestId('ai-base-url')).toBeVisible();
+    await expect(options.getByTestId('ai-setup')).toBeVisible();
     await expect
       .poll(async () => ((await storedSettings(options))?.features as { ai?: boolean })?.ai)
       .toBe(true);
@@ -237,7 +247,7 @@ test.describe('the provider settings and the key', () => {
     await enableAi(options);
     await configureProvider(options, { baseUrl: provider.baseUrl });
     await expect(options.getByTestId('ai-endpoint-status')).toContainText(
-      `Requests will go to ${provider.origin} only.`,
+      `Requests go to ${provider.origin} only.`,
     );
     expect(provider.seen, 'configuring a provider sends nothing').toEqual([]);
 
@@ -268,13 +278,7 @@ test.describe('the provider settings and the key', () => {
     );
 
     // 4. Not in a backup made through the Backup section.
-    const download = options.waitForEvent('download');
-    await options.getByTestId('backup-export-start').click();
-    const file = await (await download).path();
-    const entries = unzipSync(new Uint8Array(fs.readFileSync(file)));
-    const text = Object.values(entries)
-      .map((bytes) => strFromU8(bytes))
-      .join('\n');
+    const text = await backupText(env, options);
     expect(text, 'the backup holds the highlight').toContain(highlight.exactQuote.slice(0, 40));
     expect(text, 'the backup does not hold the key').not.toContain(FAKE_KEY);
     expect(text, 'nor the provider address').not.toContain(provider.origin);
@@ -759,9 +763,7 @@ test.describe('failures are specific, save nothing, and can be retried', () => {
     const options = await openExt(env, 'options');
     await enableAi(options);
     await configureProvider(options, { baseUrl: `http://127.0.0.1:${dead}/v1` });
-    await expect(options.getByTestId('ai-key-status')).toContainText(
-      'No key saved. A local address does not need one.',
-    );
+    await expect(options.getByTestId('ai-key-status')).toHaveText('No key needed');
     const { page, highlight } = await saveHighlight(env, options, '#p-pearl');
     const side = await openSide(env, page);
     let dialog = await openConsent(side, highlight.id);
@@ -811,6 +813,7 @@ test.describe('failures are specific, save nothing, and can be retried', () => {
     await expect(result).toContainText('Reply: "OK"');
     expect(provider.completions()).toHaveLength(2);
     // Both calls are in the persisted ledger.
+    await openAdvanced(options);
     await expect(options.getByTestId('ai-ledger-requests')).toHaveText('2 of 30');
   });
 });
@@ -826,10 +829,14 @@ test.describe('offline', () => {
   }) => {
     const traffic = watchTraffic(env);
     const options = await openExt(env, 'options');
-    // A hosted provider: a model on this computer (loopback) is allowed to work offline.
+    // A hosted provider: a model on this computer (loopback) is allowed to work offline. Its setup
+    // asks for the key on a step of its own.
     await enableAi(options);
-    await configureProvider(options, { baseUrl: 'https://api.studyvault-e2e.example/v1' });
-    await saveKey(options, FAKE_KEY);
+    await configureProvider(options, {
+      baseUrl: 'https://api.studyvault-e2e.example/v1',
+      key: FAKE_KEY,
+    });
+    await expect(options.getByTestId('ai-key-mask')).toHaveText(maskOf(FAKE_KEY));
     const { page, highlight } = await saveHighlight(env, options, '#p-pearl');
     const side = await openSide(env, page);
 
@@ -907,8 +914,9 @@ test.describe('deleting AI data', () => {
     const before = await provenance(options, highlight.id);
     await options.bringToFront();
 
+    await openAdvanced(options);
     await options.getByTestId('ai-key-remove').click();
-    await expect(options.getByTestId('ai-key-status')).toContainText('No key saved.');
+    await expect(options.getByTestId('ai-key-status')).toHaveText('No key needed');
     expect(await metaValue(options, 'aiKey'), 'the key row is gone').toBeUndefined();
     expect(await metaValue(options, 'aiSettings'), 'the settings stay').toMatchObject({
       baseUrl: provider.baseUrl,
@@ -926,9 +934,14 @@ test.describe('deleting AI data', () => {
     for (const key of ['aiKey', 'aiSettings', 'aiBudget']) {
       expect(await metaValue(options, key), `${key} is gone`).toBeUndefined();
     }
+    // AI stays on but is not set up any more: the status card (and the ledger under it) gives way
+    // to the setup wizard, whose address and model are empty again.
+    await expect(options.getByTestId('ai-status')).toHaveCount(0);
+    await expect(setupStep(options, 'Pick a provider')).toBeVisible();
+    await pickCard(options, 'ai-preset-custom');
+    await options.getByTestId('ai-setup-next').click();
     await expect(options.getByTestId('ai-base-url')).toHaveValue('');
     await expect(options.getByTestId('ai-model')).toHaveValue('');
-    await expect(options.getByTestId('ai-ledger-requests')).toHaveText('0 of 30');
     // What the person accepted is theirs: it stays, and stays marked as made by the AI.
     const points = await readTable(options, 'knowledgePoints');
     expect(points).toHaveLength(1);
@@ -951,9 +964,12 @@ test.describe('deleting AI data', () => {
     await options.bringToFront();
     expect(await countOf(options, 'aiResults')).toBe(1);
 
-    await options.getByRole('button', { name: /^Delete all StudyVault data/ }).click();
-    const confirm = options.getByRole('dialog', { name: 'Delete all StudyVault data?' });
+    await showSection(options, 'data');
+    await options.getByRole('button', { name: 'Delete all data', exact: true }).click();
+    const confirm = options.getByRole('dialog', { name: 'Delete all StudyVault data' });
     await expect(confirm).toContainText('AI drafts, your provider settings and your API key');
+    await confirm.getByRole('button', { name: 'Next' }).click();
+    await confirm.getByRole('textbox').fill('delete');
     await confirm.getByRole('button', { name: 'Delete everything' }).click();
     await expect(
       options.getByText(/All StudyVault data was deleted from this device/),
@@ -969,9 +985,11 @@ test.describe('deleting AI data', () => {
     expect(dump).not.toContain(FAKE_KEY);
     expect(dump).not.toContain(provider.origin);
 
-    // Back to the defaults: the switch is off and no provider form is offered.
+    // Back to the defaults: the switch is off and no setup or provider form is offered.
     await options.reload();
+    await showAiSection(options);
     await expect(aiSwitch(options)).not.toBeChecked();
+    await expect(options.getByTestId('ai-setup')).toHaveCount(0);
     await expect(options.getByTestId('ai-base-url')).toHaveCount(0);
     expect(provider.completions(), 'deleting sent nothing').toHaveLength(1);
     expect(
@@ -989,11 +1007,15 @@ test.describe('accessibility', () => {
     env,
     provider,
   }) => {
+    // Seven axe runs (one over the whole section with "Advanced" open) and 48 Tab presses.
+    test.setTimeout(180_000);
     const options = await openExt(env, 'options');
     await setUpAi(options, provider);
     await options.getByTestId('ai-test').click();
     await expect(options.getByTestId('ai-test-result')).toContainText('Reply: "OK"');
     const probes = provider.seen.length; // the connection test is the only request so far
+    // The whole section: the status card and every part under "Advanced".
+    await openAdvanced(options);
     expect(await axeReport(options, '#ai'), 'AI settings, light').toBe('');
     await options.emulateMedia({ colorScheme: 'dark' });
     expect(await axeReport(options, '#ai'), 'AI settings, dark').toBe('');

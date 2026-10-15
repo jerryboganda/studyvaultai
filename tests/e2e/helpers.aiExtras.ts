@@ -1,6 +1,6 @@
 import type { Locator, Page } from '@playwright/test';
 import { startFakeProvider, type FakeProvider } from './aiServer';
-import { OTHER_KEY, expect, test as base, type Env } from './helpers.ai';
+import { OTHER_KEY, expect, openAdvanced, test as base, type Env } from './helpers.ai';
 
 export * from './helpers.ai';
 
@@ -25,18 +25,19 @@ export const test = base.extend<{ fallback: FakeProvider }>({
 
 export const FALLBACK_MODEL = 'fallback-model-1';
 
-/** The routing section of the AI settings (below the primary provider's form). */
+/** The routing section of the AI settings ("More providers", under "Advanced"). */
 export const routingOf = (options: Page): Locator => options.getByTestId('ai-routing');
 export const profilesOf = (options: Page): Locator => options.getByTestId('ai-profile');
 
 /**
- * Add a fallback provider through the settings page the way a person does: Add, fill the address,
- * the model and the name, Save, then the key. Returns the card.
+ * Add a fallback provider through the settings page the way a person does: open "Advanced", Add,
+ * fill the address, the model and the name, Save, then the key. Returns the card.
  */
 export async function addFallback(
   options: Page,
   cfg: { label: string; baseUrl: string; model?: string; key?: string | null },
 ): Promise<Locator> {
+  await openAdvanced(options);
   const before = await profilesOf(options).count();
   await options.getByTestId('ai-profile-add').click();
   await expect(profilesOf(options)).toHaveCount(before + 1);

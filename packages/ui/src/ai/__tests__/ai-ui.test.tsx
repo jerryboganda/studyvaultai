@@ -304,6 +304,23 @@ describe('AI settings', () => {
     },
   );
 
+  it('asks for a key for Anthropic even at an address on this computer (as the runtime does)', async () => {
+    const user = userEvent.setup();
+    await turnAi(true);
+    render(
+      <AiEnvProvider env={envFor(null)}>
+        <AiSettingsSection />
+      </AiEnvProvider>,
+    );
+    const next = () => user.click(screen.getByTestId('ai-setup-next'));
+    await user.click(await screen.findByTestId('ai-preset-anthropic'));
+    await next();
+    await user.type(screen.getByTestId('ai-base-url'), 'http://127.0.0.1:8787');
+    await user.type(screen.getByTestId('ai-model'), 'claude-test');
+    await next();
+    expect(await screen.findByRole('heading', { name: 'API key' })).toBeTruthy();
+  });
+
   it('opens the wizard again to edit the setup, with the saved answers, and can cancel', async () => {
     const user = userEvent.setup();
     await turnAi(true);
