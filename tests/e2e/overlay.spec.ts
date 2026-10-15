@@ -33,6 +33,7 @@ import {
   viewing,
   type Env,
 } from './helpers.pages';
+import { openDisclosure } from './helpers.backup';
 
 /**
  * The in-page overlay contract after ADR-005 (free text only in extension origins) and the wave-4
@@ -752,8 +753,10 @@ test.describe('deny list defaults', () => {
       DEFAULT_DENY_HOSTS.length,
       'the starter list is imported, not counted by hand',
     ).toBeGreaterThan(0);
-    const ext = await openExt(env, 'options');
-    const list = ext.getByRole('group', { name: 'Deny list' }).getByRole('listitem');
+    const ext = await openExt(env, 'options', 'site-access');
+    const deny = ext.getByRole('region', { name: 'Deny list', exact: true });
+    await openDisclosure(deny, 'Starter sites'); // the starter entries sit behind their own disclosure
+    const list = deny.getByRole('listitem');
     await expect(list).toHaveCount(DEFAULT_DENY_HOSTS.length);
     const shown = (await list.allInnerTexts()).map((t) => t.split('\n')[0]!.trim()).sort();
     expect(shown).toEqual([...DEFAULT_DENY_HOSTS].sort());
