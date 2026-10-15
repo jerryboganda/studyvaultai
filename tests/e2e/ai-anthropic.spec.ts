@@ -33,6 +33,9 @@ import {
   watchTraffic,
 } from './helpers.aiAnthropic';
 
+/** The fixture card number (tests/fixtures/html/ai-source.html), with or without separators. */
+const CARD = /4111[ -]?1111[ -]?1111[ -]?1111/;
+
 /**
  * The Anthropic provider of the optional AI feature in a real loaded extension, against a local FAKE
  * that speaks the Anthropic Messages API (./aiServer.ts, `api: 'anthropic'`). No real key, no
@@ -221,7 +224,7 @@ test.describe('a request', () => {
     expect(sent?.headers.referer, 'no referrer').toBeUndefined();
     expect(sent?.body, 'the key is a header, never part of the body').not.toContain(ANTHROPIC_KEY);
     expect(sent?.body).not.toContain('jane.doe@example.org');
-    expect(sent?.body).not.toContain('4111');
+    expect(sent?.body).not.toMatch(CARD);
 
     // An unverified draft: labelled, with the vault's own quote as the citation.
     await expect(card).toHaveAttribute('data-kind', 'exam_pearl');
