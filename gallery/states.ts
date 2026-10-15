@@ -126,7 +126,8 @@ async function askChat(): Promise<void> {
   const box = await waitFor(() => $<HTMLTextAreaElement>(tid('chat-question')), 'the question box');
   setValue(box, 'What do beta blockers do in heart failure?');
   await clickTestId('chat-ask');
-  await waitFor(() => $(tid('ai-consent-dialog')), 'the consent dialog');
+  // The chat asks once per conversation, in an inline card (not the AI consent dialog).
+  await waitFor(() => $(tid('chat-consent')), 'the chat consent card');
 }
 
 /** Sends from the open consent dialog and waits for the fake provider's answer. */
@@ -512,8 +513,7 @@ export const SCRIPTS: Partial<Record<Surface, Record<string, StateScript>>> = {
       prepare: aiConfigured,
       run: async () => {
         await askChat();
-        await sendConsent();
-        await clickTestId('ai-close');
+        await clickTestId('chat-consent-accept');
         await scrollTo(tid('chat-turn'), 20_000);
       },
     },

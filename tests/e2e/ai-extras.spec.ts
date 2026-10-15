@@ -400,7 +400,8 @@ test.describe('chat', () => {
     await expect(first.getByTestId('chat-used')).toContainText('No notes were sent');
     expect(requestsOf(provider)).toHaveLength(1);
     expect(requestsOf(provider)[0]?.body).toContain('How do beta blockers work?');
-    expect(requestsOf(provider)[0]?.body).not.toContain('kind=\\"highlight\\"');
+    // No highlight DATA block was sent (the task text itself names the kind, so match a block header).
+    expect(requestsOf(provider)[0]?.body).not.toMatch(/SV_DATA [^>]*kind=\\"highlight/);
 
     // The second message does not ask again, and carries the first turn as memory.
     await sendChat(chat, 'And which are cardioselective?', false);

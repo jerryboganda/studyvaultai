@@ -84,6 +84,22 @@ export function sampleAnswer(prompt: string): string {
   if (/^Reply with the single word: OK$/.test(prompt.trim())) return 'OK';
   const blocks = quotable(prompt);
   const first = blocks[0];
+  // Chat ("basis" shape): answers even with no study material, citing a passage when there is one.
+  if (prompt.includes('"basis"')) {
+    return JSON.stringify(
+      first
+        ? {
+            answer: `${SAMPLE}. Your notes say: “${span(first)}”`,
+            basis: 'mixed',
+            evidence: [evidence(first)],
+          }
+        : {
+            answer: `${SAMPLE}: a general answer (no saved passage matched).`,
+            basis: 'general',
+            evidence: [],
+          },
+    );
+  }
   if (!first) return '{}';
   const cited = blocks.slice(0, 2).map(evidence);
   const has = (key: string) => prompt.includes(`"${key}"`);

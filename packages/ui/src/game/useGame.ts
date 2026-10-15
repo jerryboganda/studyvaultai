@@ -57,6 +57,14 @@ export function useGame(o: { now?: () => number } = {}): GameView {
   // 2. Not ready: run the backfill and show its progress. Its Web Lock makes a second context
   // answer `busy` at once, and the next call resumes a run whose worker was stopped.
   const inFlight = useRef<Promise<GameBackfillResult> | null>(null);
+  // The backfill can outlive the page (or a test): no state update after unmount.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const [lastRun, setLastRun] = useState<GameBackfillResult | null>(null);
   const run = useCallback((): Promise<GameBackfillResult> => {
     inFlight.current ??= runGameBackfill()
@@ -67,8 +75,10 @@ export function useGame(o: { now?: () => number } = {}): GameView {
       }))
       .then((result) => {
         inFlight.current = null;
-        setLastRun(result);
-        refresh();
+        if (mounted.current) {
+          setLastRun(result);
+          refresh();
+        }
         return result;
       });
     return inFlight.current;
