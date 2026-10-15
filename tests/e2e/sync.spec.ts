@@ -14,13 +14,17 @@ import {
   expect,
   expectAccessible,
   highlightRows,
+  gotoSettings,
   launchProfile,
   metaValue,
+  openDangerPanel,
   openSyncSettings,
+  pickCard,
   saveQuote,
   serverText,
   sessionStore,
   setComment,
+  setupNext,
   signIn,
   syncConfigOf,
   syncFlag,
@@ -30,6 +34,7 @@ import {
   test,
   turnOnEncryption,
   turnOnSync,
+  uploadPlain,
   workerErrors,
 } from './helpers.sync';
 
@@ -77,12 +82,18 @@ test.describe('off by default', () => {
     expect(await syncFlag(options)).toBeFalsy();
 
     // The list is generated from STUDYVAULT_SYNC_POLICY: every synchronised table is in exactly
-    // one entry, and the page shows exactly the entries the generator returns.
+    // one entry, and the page shows exactly the entries the generator returns: as tiles on the
+    // wizard's first step, and in full under its "Every detail" panel.
     const { groups, unlabelled } = syncedGroups();
     expect(unlabelled, 'every synchronised table has a plain-language label').toEqual([]);
     expect(groups.flatMap((g) => g.tables).sort()).toEqual(
       Object.keys(STUDYVAULT_SYNC_POLICY).sort(),
     );
+    await expect(
+      s.getByRole('list', { name: 'What is uploaded' }).getByRole('listitem'),
+    ).toHaveCount(groups.length);
+    await s.locator('summary', { hasText: 'Every detail' }).click();
+    await expect(s.getByTestId('sync-explanation')).toBeVisible();
     await expect(s.getByTestId('sync-data-list').locator('li')).toHaveCount(groups.length);
     for (const g of groups) {
       await expect(s.getByTestId(`sync-data-${g.id}`)).toHaveText(`${g.label}: ${g.detail}`);
@@ -90,23 +101,38 @@ test.describe('off by default', () => {
     await expect(s.getByTestId('sync-never-sent')).toContainText(NEVER_UPLOADED);
     await expect(s.getByTestId('sync-server-sees')).toHaveText(SERVER_STILL_SEES);
     await expect(s.getByTestId('sync-provider-learns')).toHaveText(PROVIDER_LEARNS);
+    await expectAccessible(options, 'setup: what is shared, every detail open');
+
+    // The server step, then the sign-in provider step, which shows the redirect address.
+    await setupNext(options);
+    await s.getByTestId('sync-server-url').fill(sync.base);
+    await setupNext(options);
+    await s.getByTestId('sync-issuer').fill(idp.issuer);
+    await s.getByTestId('sync-client-id').fill(idp.clientId);
     await expect(s.getByTestId('sync-redirect-url')).toHaveText(
       `https://${env.extensionId}.chromiumapp.org/sync`,
     );
+    await setupNext(options);
 
-    // The acknowledgement is required: without it the button says why and does nothing.
-    await s.getByTestId('sync-server-url').fill(sync.base);
-    await s.getByTestId('sync-issuer').fill(idp.issuer);
-    await s.getByTestId('sync-client-id').fill(idp.clientId);
+    // The acknowledgement is required: without it "Turn on sync" says why, under the box, and does
+    // nothing (no permission asked, nothing turned on).
     const enable = s.getByTestId('sync-enable');
-    await expect(enable).toHaveAttribute('aria-disabled', 'true');
-    await expect(enable).toHaveAttribute('title', /understand where your data will go/);
-    await enable.click({ force: true }); // aria-disabled: focusable, does nothing
+    const ack = s.getByTestId('sync-ack');
+    await enable.click();
+    await expect(s.getByRole('alert')).toHaveText(/understand where your data will go/);
+    await expect(ack).toHaveAttribute('aria-invalid', 'true');
     await expect(s.getByTestId('sync-setup')).toBeVisible();
     await expect(s.getByTestId('sync-connected')).toHaveCount(0);
     expect(await syncFlag(options)).toBeFalsy();
-    await s.getByTestId('sync-ack').check();
-    await expect(enable).not.toHaveAttribute('aria-disabled', 'true');
+    expect(
+      await options.evaluate(() =>
+        chrome.permissions.contains({ permissions: ['identity', 'alarms'] }),
+      ),
+      'a refused click asks Chrome for nothing',
+    ).toBe(false);
+    await ack.check();
+    await expect(s.getByRole('alert')).toHaveCount(0);
+    await expect(ack).not.toHaveAttribute('aria-invalid', 'true');
 
     await expectAccessible(options, 'setup form');
 
@@ -189,7 +215,7 @@ test.describe('turning it on and the first upload', () => {
     await turnOnEncryption(options, PASSPHRASE);
     await expectUploaded(options);
     await expect(s.getByTestId('sync-pending')).toHaveText('nothing waiting to upload');
-    await expect(encryptionModeOf(options)).toContainText('unlocked on this device');
+    await expect(encryptionModeOf(options)).toContainText('Unlocked on this device');
     await expectAccessible(options, 'encryption on, unlocked');
 
     // The server holds ciphertext only, and a key profile that existed before the first operation.
@@ -217,7 +243,9 @@ test.describe('turning it on and the first upload', () => {
     // Lock now: syncing is paused and says so; a change made meanwhile stays on the device.
     await s.getByTestId('e2ee-lock').click();
     await expect(syncStatusOf(options)).toHaveText(STATUS_TEXT.locked);
-    await expect(encryptionModeOf(options)).toContainText('Set up, and locked on this device');
+    await expect(encryptionModeOf(options)).toContainText(
+      'Locked on this device: syncing is paused',
+    );
     const now = s.getByTestId('sync-now');
     await expect(now).toHaveAttribute('aria-disabled', 'true');
     await expect(now).toHaveAttribute('title', 'Unlock encryption first.');
@@ -237,7 +265,7 @@ test.describe('turning it on and the first upload', () => {
     await expect(syncStatusOf(options)).toHaveText(STATUS_TEXT.locked);
     await s.getByTestId('e2ee-unlock-passphrase').fill(PASSPHRASE);
     await s.getByTestId('e2ee-unlock').click();
-    await expect(encryptionModeOf(options)).toContainText('unlocked on this device');
+    await expect(encryptionModeOf(options)).toContainText('Unlocked on this device');
     await expect(s.getByTestId('sync-pending')).toHaveText('nothing waiting to upload');
     expect(sync.count('POST /v1/ops')).toBeGreaterThan(pushes);
     expect(await serverText(sync)).not.toContain('written while locked');
@@ -258,7 +286,12 @@ test.describe('turning it on and the first upload', () => {
     const s = syncSection(options);
     await expect(syncStatusOf(options)).toHaveText(STATUS_TEXT.awaiting_encryption_choice);
 
+    // The passphrase card is picked by default; the plain upload is only offered once
+    // "No passphrase" is picked.
     const plain = s.getByTestId('e2ee-upload-plain');
+    await expect(s.getByTestId('e2ee-choice-passphrase')).toBeChecked();
+    await expect(plain).toHaveCount(0);
+    await pickCard(options, 'e2ee-choice-plain');
     await expect(plain).toHaveAttribute('aria-disabled', 'true');
     await expect(plain).toHaveAttribute('title', /operator of the server can read/);
     await plain.click({ force: true });
@@ -372,10 +405,15 @@ test.describe('two devices', () => {
         'comment typed on profile B',
       );
       await expectAccessible(a, 'a text conflict');
+      const pushes = sync.count('POST /v1/ops');
       await sa.getByTestId('conflict-keep-local').first().click();
       await expect(sa.getByTestId('conflicts-panel')).toContainText('No conflicts');
       await syncNow(a);
+      // The choice was pushed before B pulls (the status alone may still read "up to date" from
+      // before the run, which raced B's pull on a loaded machine).
+      await expect.poll(() => sync.count('POST /v1/ops')).toBeGreaterThan(pushes);
       await expect(syncStatusOf(a)).toHaveText(STATUS_TEXT.idle);
+      await expect(sa.getByTestId('sync-pending')).toHaveText('nothing waiting to upload');
       await syncNow(b);
       await expect(syncStatusOf(b)).toHaveText(STATUS_TEXT.idle);
       await expect
@@ -406,8 +444,7 @@ test.describe('leaving', () => {
     await turnOnSync(options, syncConfigOf(sync, idp));
     await signIn(options, idp.subject);
     const s = syncSection(options);
-    await s.getByTestId('e2ee-plain-ack').check();
-    await s.getByTestId('e2ee-upload-plain').click();
+    await uploadPlain(options);
     await expectUploaded(options);
     expect(await serverText(sync)).toContain(QUOTE);
     expect((await sessionStore(options)).syncTokens).toBeDefined();
@@ -441,7 +478,9 @@ test.describe('leaving', () => {
     await expect(s.getByTestId('sync-pending')).toHaveText('nothing waiting to upload');
     expect(await serverText(sync)).toContain('edited while signed out');
 
-    // Delete my data from the server: typed confirmation, the server is empty, the device is not.
+    // Delete my data from the server (in the closed "Turn off or delete" panel): typed
+    // confirmation, the server is empty, the device is not.
+    await openDangerPanel(options);
     await s.getByTestId('sync-delete-server-data').click();
     const confirm = options.getByRole('dialog', { name: 'Delete my data from the server?' });
     await confirm.getByRole('button', { name: 'Delete from the server' }).click();
@@ -476,14 +515,17 @@ test.describe('leaving', () => {
     const stored = (await sync.stored()).length;
     const requests = sync.events.length;
 
-    await options.getByRole('button', { name: /^Delete all StudyVault data/ }).click();
-    await options
-      .getByRole('dialog', { name: 'Delete all StudyVault data?' })
-      .getByRole('button', { name: 'Delete everything' })
-      .click();
-    await expect(
-      options.getByText(/All StudyVault data was deleted from this device/),
-    ).toContainText('The copy on your sync server was not touched');
+    // Settings > Your data > Start over: "Delete all data", Next, type "delete", Delete everything.
+    await gotoSettings(options, env, 'data');
+    await options.getByRole('button', { name: 'Delete all data', exact: true }).click();
+    const wipe = options.getByRole('dialog', { name: 'Delete all StudyVault data' });
+    await expect(wipe).toContainText('The copy on your sync server stays too');
+    await wipe.getByRole('button', { name: 'Next', exact: true }).click();
+    await wipe.getByRole('textbox', { name: 'Type “delete”' }).fill('delete');
+    await wipe.getByRole('button', { name: 'Delete everything' }).click();
+    await expect(wipe.getByText(/All StudyVault data was deleted from this device/)).toContainText(
+      'The copy on your sync server was not touched',
+    );
 
     expect(await highlightRows(options)).toEqual([]);
     for (const key of ['sync.config', 'sync.encryption', 'sync.clientId', 'sync.state']) {
@@ -505,8 +547,10 @@ test.describe('leaving', () => {
     expect(sync.events.length, 'wiping the device sends nothing').toBe(requests);
     expect((await sync.stored()).length, 'the server copy is separate').toBe(stored);
 
+    await gotoSettings(options, env, 'sync');
     await options.reload();
     await expect(syncSection(options).getByTestId('sync-setup')).toBeVisible();
+    await setupNext(options);
     await expect(syncSection(options).getByTestId('sync-server-url')).toHaveValue('');
   });
 
@@ -520,8 +564,7 @@ test.describe('leaving', () => {
     await turnOnSync(options, syncConfigOf(sync, idp));
     await signIn(options, idp.subject);
     const s = syncSection(options);
-    await s.getByTestId('e2ee-plain-ack').check();
-    await s.getByTestId('e2ee-upload-plain').click();
+    await uploadPlain(options);
     await expectUploaded(options);
     const stored = (await sync.stored()).length;
     expect(stored).toBeGreaterThan(0);
@@ -558,8 +601,7 @@ test.describe('leaving', () => {
       await turnOnSync(options, syncConfigOf(sync, idp));
       await signIn(options, idp.subject);
       const s = syncSection(options);
-      await s.getByTestId('e2ee-plain-ack').check();
-      await s.getByTestId('e2ee-upload-plain').click();
+      await uploadPlain(options);
       await expectUploaded(options);
       await setComment(options, id, 'second edit, new token');
       await expect.poll(() => serverText(sync)).toContain('second edit, new token');
@@ -666,7 +708,7 @@ test.describe('worker and session', () => {
     await expect.poll(() => sync.count('POST /v1/ops')).toBeGreaterThan(pushes);
     await expect(s.getByTestId('sync-pending')).toHaveText('nothing waiting to upload');
     expect(await serverText(sync)).not.toContain('edited after the worker');
-    await expect(encryptionModeOf(options)).toContainText('unlocked on this device');
+    await expect(encryptionModeOf(options)).toContainText('Unlocked on this device');
 
     // The key's absolute expiry passes while nobody is looking: the next run finds no key.
     await options.evaluate(async () => {
@@ -684,7 +726,7 @@ test.describe('worker and session', () => {
     // Unlock again, then let the worker's own lock alarm fire while the worker is stopped.
     await s.getByTestId('e2ee-unlock-passphrase').fill(PASSPHRASE);
     await s.getByTestId('e2ee-unlock').click();
-    await expect(encryptionModeOf(options)).toContainText('unlocked on this device');
+    await expect(encryptionModeOf(options)).toContainText('Unlocked on this device');
     await stopWorker(env.context, env.extensionId, options);
     await options.evaluate(() => chrome.alarms.create('sv-sync-lock', { when: Date.now() + 1000 }));
     await expect(syncStatusOf(options)).toHaveText(STATUS_TEXT.locked, { timeout: 30_000 });
@@ -744,9 +786,7 @@ test.describe('worker and session', () => {
     const id = await saveQuote(options, { url: PAGE, title: TITLE, quote: QUOTE });
     await turnOnSync(options, syncConfigOf(sync, idp));
     await signIn(options, idp.subject);
-    const s = syncSection(options);
-    await s.getByTestId('e2ee-plain-ack').check();
-    await s.getByTestId('e2ee-upload-plain').click();
+    await uploadPlain(options);
     await expectUploaded(options);
 
     // The worker that handled the grant is stopped and started again by a message: only a listener

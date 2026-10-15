@@ -37,6 +37,10 @@ test('a formula in a side-panel note is typeset, fetched lazily, and edited as t
   await expect(card).toHaveCount(1);
   expect(seen, 'a panel without a formula fetches no typesetter').toEqual([]);
 
+  // Study notes sit in the card's "More actions" drawer.
+  const more = card.getByTestId('card-more');
+  await more.click();
+  await expect(more).toHaveAttribute('aria-expanded', 'true');
   await card.getByRole('button', { name: 'Add a note' }).click();
   await card.getByLabel('New study note (Markdown)').fill(TEX);
   await card.getByRole('button', { name: 'Save note' }).click();
@@ -57,8 +61,17 @@ test('a formula in a side-panel note is typeset, fetched lazily, and edited as t
   expect(seen.filter((u) => u.endsWith('.js'))).toHaveLength(1);
   expect(seen.filter((u) => u.endsWith('.css'))).toHaveLength(1);
 
+  // The drawer is per-card UI state: a re-render of the card list (seen here once the highlight's
+  // "Not checked yet" status settles) can close it. Each check below is made with the note shown.
+  const noteShown = async () => {
+    if ((await more.getAttribute('aria-expanded')) !== 'true') await more.click();
+    await expect(more).toHaveAttribute('aria-expanded', 'true');
+    await expect(note.locator('math')).toHaveCount(1);
+  };
+
   for (const scheme of ['light', 'dark'] as const) {
     await panel.emulateMedia({ colorScheme: scheme });
+    await noteShown();
     await settleAnimations(panel);
     const results = await new AxeBuilder({ page: panel })
       .withTags(['wcag2a', 'wcag2aa', 'wcag21aa', 'wcag22aa'])
@@ -72,6 +85,7 @@ test('a formula in a side-panel note is typeset, fetched lazily, and edited as t
   }
 
   // The editor shows what was typed, not the rendering.
+  await noteShown();
   await card.getByRole('button', { name: /^Edit this note/ }).click();
   await expect(card.getByLabel('Study note (Markdown)')).toHaveValue(TEX);
 });

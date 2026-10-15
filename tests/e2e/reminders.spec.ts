@@ -15,11 +15,12 @@ import {
   alarmsOf,
   expect,
   expectAccessible,
+  gotoSettings,
   holdsAlarmsPermission,
   noticeFlag,
   openReminderSettings,
   section,
-  statusOf,
+  statusItem,
   storedReminders,
   switchOf,
   toolbar,
@@ -78,14 +79,15 @@ test.describe('the toolbar count', () => {
     expect(await toolbar(options)).toEqual({ text: '', title: DEFAULT_TITLE });
     await expect(switchOf(options)).not.toBeChecked();
     expect(await storedReminders(options)).toEqual({ on: false, dailyAt: null });
-    await expect(statusOf(options)).toContainText('Toolbar count: off.');
+    await expect(statusItem(options, 'Badge')).toHaveText('Off');
+    await expect(statusItem(options, 'Daily time')).toHaveText('None');
     expect(await holdsAlarmsPermission(options)).toBe(false);
 
     // On: the number the popup would show, in words in the tooltip, and no permission was needed.
     await switchOf(options).check();
     await expect.poll(() => toolbar(options)).toEqual(cardsDue(3));
     await expect(switchOf(options)).not.toHaveAttribute('aria-busy', 'true');
-    await expect(statusOf(options)).toContainText('Toolbar count: on.');
+    await expect(statusItem(options, 'Badge')).toHaveText('On');
     expect(await storedReminders(options)).toEqual({ on: true, dailyAt: null });
     expect(await holdsAlarmsPermission(options)).toBe(false);
     expect(await alarmsOf(options)).toEqual([]);
@@ -110,14 +112,23 @@ test.describe('the toolbar count', () => {
     await switchOf(options).check();
     await expect.poll(() => toolbar(options)).toEqual(cardsDue(3));
 
-    // Review off: the count and the section go quiet, and the stored choice is kept.
-    await options.getByRole('checkbox', { name: 'Show review in StudyVault' }).uncheck();
+    // Review off (Settings > Review): the count and the section go quiet, both views say the
+    // reminders are paused, and the stored choice is kept.
+    await gotoSettings(options, env, 'review');
+    const showReview = options.getByRole('checkbox', { name: 'Show review', exact: true });
+    await showReview.uncheck();
     await expect.poll(() => toolbar(options)).toEqual({ text: '', title: DEFAULT_TITLE });
-    await expect(options.getByText(/paused until review is back on/)).toBeVisible();
+    await expect(options.getByText(/Reminders are paused/)).toBeVisible();
+    await gotoSettings(options, env, 'reminders');
+    await expect(statusItem(options, 'Badge')).toHaveText('Paused (review off)');
+    await expect(switchOf(options)).toBeChecked();
     expect(await storedReminders(options)).toEqual({ on: true, dailyAt: null });
 
-    await options.getByRole('checkbox', { name: 'Show review in StudyVault' }).check();
+    await gotoSettings(options, env, 'review');
+    await showReview.check();
     await expect.poll(() => toolbar(options)).toEqual(cardsDue(3));
+    await gotoSettings(options, env, 'reminders');
+    await expect(statusItem(options, 'Badge')).toHaveText('On');
   });
 });
 
@@ -141,7 +152,7 @@ test.describe('the daily time', () => {
     expect(alarm!.scheduledTime).toBeGreaterThan(Date.now());
     expect(alarm!.scheduledTime - Date.now()).toBeLessThanOrEqual(DAY);
     expect(await storedReminders(options)).toEqual({ on: true, dailyAt: '07:30' });
-    await expect(statusOf(options)).toContainText('Daily reminder: 07:30 (UTC), next ');
+    await expect(statusItem(options, 'Daily time')).toContainText('07:30 (UTC), next ');
 
     // The worker that handled the grant is stopped and started again by a message: only a listener
     // added during a worker's initial evaluation is one Chrome remembers across stops
@@ -204,8 +215,10 @@ test.describe('the daily time', () => {
     await options.evaluate(() => chrome.permissions.remove({ permissions: ['alarms'] }));
     const note = section(options).getByTestId('reminders-permission-note');
     await expect(note).toBeVisible();
+    await expect(note).toContainText('The count on the icon still works.');
+    // The why is in the note's (i).
     await expect(note).toContainText('only lets an extension run at a set time');
-    await expect(statusOf(options)).toContainText('18:15 is saved but not active');
+    await expect(statusItem(options, 'Daily time')).toHaveText('18:15 saved, not active');
     expect(await alarmsOf(options)).toEqual([]);
     expect(await toolbar(options)).toEqual(cardsDue(3)); // the count needs no permission
     expect(await storedReminders(options)).toEqual({ on: true, dailyAt: '18:15' });
@@ -247,14 +260,14 @@ test.describe('Delete all data', () => {
       .poll(() => toolbar(options))
       .toEqual({ text: '!', title: `${DEFAULT_TITLE}: Time to review: 3 cards due` });
 
-    await options.getByRole('button', { name: /^Delete all StudyVault data/ }).click();
-    await options
-      .getByRole('dialog', { name: 'Delete all StudyVault data?' })
-      .getByRole('button', { name: 'Delete everything' })
-      .click();
-    await expect(
-      options.getByText(/All StudyVault data was deleted from this device/),
-    ).toBeVisible();
+    // Settings > Your data > Start over: "Delete all data", Next, type "delete", Delete everything.
+    await gotoSettings(options, env, 'data');
+    await options.getByRole('button', { name: 'Delete all data', exact: true }).click();
+    const wipe = options.getByRole('dialog', { name: 'Delete all StudyVault data' });
+    await wipe.getByRole('button', { name: 'Next', exact: true }).click();
+    await wipe.getByRole('textbox', { name: 'Type “delete”' }).fill('delete');
+    await wipe.getByRole('button', { name: 'Delete everything' }).click();
+    await expect(wipe.getByText(/All StudyVault data was deleted from this device/)).toBeVisible();
 
     await expect.poll(() => toolbar(options)).toEqual({ text: '', title: DEFAULT_TITLE });
     await expect.poll(() => alarmsOf(options)).toEqual([]);
@@ -263,8 +276,10 @@ test.describe('Delete all data', () => {
     expect(await storedReminders(options)).toEqual({ on: false, dailyAt: null });
 
     // A fresh start of the page: still off, and no count comes back by itself.
+    await gotoSettings(options, env, 'reminders');
     await options.reload();
     await expect(switchOf(options)).not.toBeChecked();
+    await expect(statusItem(options, 'Badge')).toHaveText('Off');
     await bgData(options, 'banks.list');
     expect(await toolbar(options)).toEqual({ text: '', title: DEFAULT_TITLE });
   });

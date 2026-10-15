@@ -18,15 +18,26 @@ export const ALARM_NAME = 'sv-reminder';
 
 export const section = (page: Page): Locator => page.getByTestId('reminders-section');
 export const statusOf = (page: Page): Locator => section(page).getByTestId('reminders-status');
+/** One line of the status list ("Badge", "Daily time"): its value. */
+export const statusItem = (page: Page, term: 'Badge' | 'Daily time'): Locator =>
+  statusOf(page)
+    .locator('div')
+    .filter({ has: page.getByRole('term').filter({ hasText: term }) })
+    .getByRole('definition');
 export const switchOf = (page: Page): Locator =>
-  section(page).getByRole('switch', { name: 'Show how many cards are due on the toolbar icon' });
+  section(page).getByRole('checkbox', { name: 'Badge on icon', exact: true });
 
-/** The settings page, loaded far enough that the reminders section is showing. */
+/** Show one settings view (`options.html#<id>`): only the current view is mounted. */
+export async function gotoSettings(page: Page, env: Env, view: string): Promise<void> {
+  await page.goto(`chrome-extension://${env.extensionId}/options.html#${view}`);
+}
+
+/** The settings page's Reminders view, loaded far enough that the reminders section is showing. */
 export async function openReminderSettings(env: Env): Promise<Page> {
   const page = await openExt(env, 'options');
-  await expect(
-    section(page).getByRole('heading', { name: 'Study reminders (optional, off by default)' }),
-  ).toBeVisible();
+  await gotoSettings(page, env, 'reminders');
+  await expect(page.getByRole('heading', { name: 'Reminders', level: 1 })).toBeVisible();
+  await expect(section(page)).toBeVisible();
   return page;
 }
 

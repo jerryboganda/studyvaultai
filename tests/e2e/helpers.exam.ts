@@ -1,5 +1,5 @@
 import type { Locator, Page } from '@playwright/test';
-import { expect, readStudyDb, type CardRow } from './helpers.review';
+import { expect, pick, readStudyDb, type CardRow } from './helpers.review';
 
 /**
  * Helpers for exam.spec.ts (exam simulation, ADR-020). Real Chromium, the real built extension,
@@ -13,10 +13,8 @@ export const XID = {
   setup: 'rv-exam-setup',
   scope: 'rv-exam-scope',
   questions: 'rv-exam-questions',
-  timed: 'rv-exam-timed',
   minutes: 'rv-exam-minutes',
   shuffle: 'rv-exam-shuffle',
-  start: 'rv-exam-start',
   continue: 'rv-exam-continue',
   discard: 'rv-exam-discard',
   run: 'rv-exam-run',
@@ -47,8 +45,6 @@ export const XID = {
   historyClear: 'rv-exam-history-clear',
   // exam over a syllabus
   source: 'rv-exam-source',
-  sourceLibrary: 'rv-exam-source-library',
-  sourceSyllabus: 'rv-exam-source-syllabus',
   syllabus: 'rv-exam-syllabus',
   topic: 'rv-exam-topic',
   weighted: 'rv-exam-weighted',
@@ -161,8 +157,43 @@ export async function openExamTab(page: Page): Promise<void> {
   await expect(page.getByTestId(XID.setup)).toBeVisible();
 }
 
+/** The "New exam" setup wizard (hidden while an exam is in progress). */
+export const examWizard = (page: Page): Locator =>
+  page.getByTestId(XID.setup).getByRole('region', { name: 'New exam', exact: true });
+
+/** The title of the setup step on screen ("Ask from", "What to ask", "How many?", ...). */
+export const examStep = (page: Page): Locator =>
+  examWizard(page).getByRole('heading', { level: 2 });
+
+/** Press the wizard's Next and wait for another step (or the step `to`). */
+export async function examNext(page: Page, to?: string): Promise<void> {
+  const step = examStep(page);
+  const from = ((await step.textContent()) ?? '').trim();
+  await examWizard(page).getByRole('button', { name: 'Next', exact: true }).click();
+  if (to !== undefined) await expect(step).toHaveText(to);
+  else await expect(step).not.toHaveText(from);
+}
+
+/** Press Next (changing nothing) until the setup shows the step `title`. */
+export async function toExamStep(page: Page, title: string): Promise<void> {
+  for (let i = 0; i < 8; i++) {
+    await expect(examStep(page)).toBeVisible();
+    if (((await examStep(page).textContent()) ?? '').trim() === title) return;
+    await examNext(page);
+  }
+  throw new Error(`the exam setup never reached "${title}"`);
+}
+
+/** "How many?" step: "Custom" and a typed number of questions. */
+export async function typeQuestionCount(page: Page, count: number | string): Promise<void> {
+  const wizard = examWizard(page);
+  const custom = wizard.getByRole('radio', { name: /^Custom/ });
+  if (!(await custom.isChecked())) await pick(custom);
+  await wizard.getByTestId(XID.questions).fill(String(count));
+}
+
 export interface StartOptions {
-  /** Start of the scope's option text, e.g. "Bank: Cardiology". Default: all cards. */
+  /** The scope as its old label, e.g. "Bank: Cardiology" or "Tag: pearl". Default: all cards. */
   scope?: string;
   questions?: number;
   /** A time limit in minutes; omitted for none. */
@@ -171,36 +202,45 @@ export interface StartOptions {
   shuffle?: boolean;
 }
 
-/** Fill the setup form and press "Start exam". Waits for the first question. */
+const escapeRe = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Walk the setup wizard from the step it is on and press "Start exam"; waits for the first question.
+ * Each step applies only what `opts` says (a source, topic or count chosen before is kept), except
+ * that the order is set to `shuffle` (default off) and the time limit to `minutes` (default none).
+ */
 export async function startExam(page: Page, opts: StartOptions = {}): Promise<void> {
-  const setup = page.getByTestId(XID.setup);
-  await expect(setup).toBeVisible();
-  if (opts.scope !== undefined) {
-    const select = setup.getByTestId(XID.scope);
-    const value = await select.evaluate(
-      (el, prefix) =>
-        [...(el as HTMLSelectElement).options].find((o) => o.textContent?.startsWith(prefix))
-          ?.value ?? '',
-      opts.scope,
-    );
-    expect(value, `scope option "${opts.scope}"`).not.toBe('');
-    await select.selectOption(value);
+  const wizard = examWizard(page);
+  await expect(wizard).toBeVisible();
+  const scope = opts.scope === undefined ? null : /^(Bank|Folder|Tag): (.+)$/.exec(opts.scope);
+  if (opts.scope !== undefined && !scope) throw new Error(`unknown scope ${opts.scope}`);
+  for (let i = 0; i < 10; i++) {
+    const step = ((await examStep(page).textContent()) ?? '').trim();
+    if (step === 'What to ask' && scope) {
+      await pick(wizard.getByRole('radio', { name: new RegExp(`^A ${scope[1]!.toLowerCase()}`) }));
+    } else if (/^Which (bank|folder|tag)\?$/.test(step) && scope) {
+      const item = wizard.getByRole('radio', { name: new RegExp(`^${escapeRe(scope[2]!)}`) });
+      await pick(item);
+    } else if (step === 'How many?') {
+      if (opts.questions !== undefined) await typeQuestionCount(page, opts.questions);
+      const shuffle = wizard.getByTestId(XID.shuffle);
+      if (opts.shuffle === true) await shuffle.check();
+      else await shuffle.uncheck();
+    } else if (step === 'Time limit') {
+      if (opts.minutes !== undefined) {
+        await pick(wizard.getByRole('radio', { name: /^Custom/ }));
+        await wizard.getByTestId(XID.minutes).fill(String(opts.minutes));
+      } else {
+        await pick(wizard.getByRole('radio', { name: /^No limit/ }));
+      }
+    } else if (step === 'Looks good?') {
+      await wizard.getByRole('button', { name: 'Start exam', exact: true }).click();
+      await expect(page.getByTestId(XID.run)).toBeVisible();
+      return;
+    }
+    await examNext(page);
   }
-  if (opts.questions !== undefined) {
-    await setup.getByTestId(XID.questions).fill(String(opts.questions));
-  }
-  const shuffle = setup.getByTestId(XID.shuffle);
-  if (opts.shuffle === true) await shuffle.check();
-  else await shuffle.uncheck();
-  const timed = setup.getByTestId(XID.timed);
-  if (opts.minutes !== undefined) {
-    await timed.check();
-    await setup.getByTestId(XID.minutes).fill(String(opts.minutes));
-  } else {
-    await timed.uncheck();
-  }
-  await setup.getByTestId(XID.start).click();
-  await expect(page.getByTestId(XID.run)).toBeVisible();
+  throw new Error('the exam setup never reached "Looks good?"');
 }
 
 export const heading = (page: Page): Locator =>
@@ -232,7 +272,7 @@ export async function walkExam(page: Page, rules: readonly Rule[]): Promise<stri
     shown.push(body);
     const rule = rules.find((r) => body.includes(r.match));
     if (rule?.option !== undefined) {
-      await page.getByRole('radio', { name: rule.option, exact: true }).check();
+      await pick(page.getByRole('radio', { name: rule.option, exact: true }));
     }
     if (rule?.text !== undefined) await page.getByTestId(XID.text).fill(rule.text);
     if (n < total) await page.getByTestId(XID.next).click();
@@ -254,10 +294,10 @@ export async function expectNoFeedback(page: Page, hidden: readonly string[]): P
   await expect(run).not.toContainText(/correct answer|Correct\b|Wrong\b|Your answer was/i);
 }
 
-/** "I knew it" or "I did not know it" for question number `n` (1-based, as shown). */
+/** "I knew it" or "Didn't know it" for question number `n` (1-based, as shown). */
 export async function markQuestion(page: Page, n: number, mark: 'know' | 'dont'): Promise<void> {
-  const name = mark === 'know' ? `I knew it (question ${n})` : `I did not know it (question ${n})`;
-  await page.getByRole('radio', { name, exact: true }).check();
+  const name = mark === 'know' ? `I knew it (question ${n})` : `Didn't know it (question ${n})`;
+  await pick(page.getByRole('radio', { name, exact: true }));
 }
 
 /** The text of every option of the topic picker, indentation and spacing removed. */
@@ -271,10 +311,16 @@ export async function topicOptions(page: Page): Promise<string[]> {
     );
 }
 
-/** Switch the setup form to "A syllabus" and wait until the cards were read (counts are shown). */
+/**
+ * On the setup's first step ("Ask from"), choose "A syllabus" and go on to "Which topic?"; waits
+ * until the cards were read (counts are shown).
+ */
 export async function chooseSyllabusSource(page: Page): Promise<void> {
   const setup = page.getByTestId(XID.setup);
-  await setup.getByTestId(XID.sourceSyllabus).check();
+  await expect(examStep(page)).toHaveText('Ask from');
+  const syllabus = setup.getByTestId(XID.source).getByRole('radio', { name: /^A syllabus/ });
+  await pick(syllabus);
+  await examNext(page, 'Which topic?');
   await expect(setup.getByTestId(XID.topic)).toBeVisible();
   await expect
     .poll(async () => (await topicOptions(page))[0], { message: 'the topic counts were read' })
