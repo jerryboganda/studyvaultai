@@ -53,6 +53,7 @@ export {
   hashSeed,
   isFieldTarget,
   keyAction,
+  leftAfterSession,
   parseDraft,
   percent,
   sessionXp,

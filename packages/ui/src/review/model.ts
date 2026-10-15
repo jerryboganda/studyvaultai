@@ -26,6 +26,7 @@ import {
   type StudyDay,
 } from '@study';
 import type { AnalyticsInput } from '@storage';
+import { plural } from '../text';
 
 /** Pure view-model helpers of the review surfaces: no React, no storage, no clock reads. */
 
@@ -167,6 +168,22 @@ export function summarizeSession(
     lapses,
     leeches,
   };
+}
+
+/**
+ * The done screen's "what is left" line. "Now" is counted like the page header's "25 due now" (the
+ * queue: new cards and daily limits included), so the two always agree; `reviewsTomorrow` is the
+ * forecast's reviews and learning steps due tomorrow (new cards are not scheduled ahead).
+ */
+export function leftAfterSession(
+  dueNow: { total: number; new: number },
+  reviewsTomorrow: number,
+): string {
+  const now =
+    dueNow.total === 0
+      ? 'Nothing is due right now'
+      : `${plural(dueNow.total, 'card')} still due now${dueNow.new > 0 ? ` (${dueNow.new} new)` : ''}`;
+  return `${now}, ${plural(reviewsTomorrow, 'review')} due tomorrow.`;
 }
 
 /** "3 min", "45 s", "1 h 05 min". */

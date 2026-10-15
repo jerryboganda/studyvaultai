@@ -170,7 +170,7 @@ const restoreWith =
 
 /** AI configured, "Edit setup" pressed: the setup flow at the step titled `title`. */
 const editAiAt = (title: string) => async () => {
-  // The saved key is read after the settings: before it, the key step asks for one.
+  // The saved key is read after the settings: until it is known, the key step holds Next ("Checking for a saved key…").
   await waitFor(() => $(tid('ai-key-mask')), 'the saved key');
   await clickTestId('ai-edit-setup');
   await wizardTo(title);

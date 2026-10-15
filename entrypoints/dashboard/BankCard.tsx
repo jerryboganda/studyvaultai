@@ -75,7 +75,7 @@ export function BankCardView({
       <span className="bankcard__top">
         <BankTile name={bank.name} icon={bank.icon} color={bank.color} />
         <span className="bankcard__text">
-          <span className="bankcard__name" dir="auto">
+          <span className="bankcard__name" dir="auto" title={bank.name}>
             {bank.name}
           </span>
           <span className="bankcard__meta">

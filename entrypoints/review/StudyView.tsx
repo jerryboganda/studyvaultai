@@ -51,11 +51,13 @@ import {
   deckStartId,
   formatDuration,
   formatWhen,
+  leftAfterSession,
   percent,
   sessionXp,
   toBoundary,
   toClock,
   toQueuePrefs,
+  useDueCount,
   useReviewSession,
   useTick,
   type ReviewView,
@@ -602,7 +604,8 @@ function SessionDone({
     [epoch],
   );
   const forecast = next.data?.forecast;
-  const tomorrow = forecast?.days[1]?.due ?? null;
+  // The same count as the page header's "due now", so the two numbers never disagree.
+  const due = useDueCount();
 
   const g = game.data;
   const gameOn = g?.mode === true;
@@ -755,12 +758,10 @@ function SessionDone({
       </p>
 
       <p className="rv-done__next" data-testid={TID.summaryNext}>
-        {next.error
+        {next.error || due.error
           ? 'What comes next could not be loaded.'
-          : forecast
-            ? `${plural(forecast.overdue + (forecast.days[0]?.due ?? 0), 'card')} still due today, ${
-                tomorrow === null ? 'none' : tomorrow
-              } due tomorrow.`
+          : forecast && due.summary
+            ? leftAfterSession(due.summary.total, forecast.days[1]?.due ?? 0)
             : 'Working out what comes next…'}
       </p>
       {state.notice ? <InlineNotice tone="info">{state.notice}</InlineNotice> : null}

@@ -41,6 +41,19 @@ import { AiSettingsSection } from '../AiSettingsSection';
 import { HighlightAiActions } from '../HighlightAiActions';
 import type { AiEnv } from '../runtime';
 
+// Holds back the saved key's read (the AI config loads after the settings), like a slow device.
+const keyInfo = vi.hoisted(() => ({ gate: Promise.resolve() as Promise<unknown> }));
+vi.mock('@storage', async (importOriginal) => {
+  const real = await importOriginal<{ getAiKeyInfo(): Promise<unknown> }>();
+  return {
+    ...real,
+    getAiKeyInfo: async () => {
+      await keyInfo.gate;
+      return real.getAiKeyInfo();
+    },
+  };
+});
+
 vi.setConfig({ testTimeout: 30_000 });
 // CI runners are slow and share CPUs: waiting for async UI gets generous headroom.
 configureTestingLibrary({ asyncUtilTimeout: 8_000 });
@@ -107,6 +120,7 @@ const outboundOf = (calls: MockProvider['calls']) =>
   (calls[0]?.messages ?? []).map((m) => `[${m.role}]\n${m.content}`).join('\n\n');
 
 beforeEach(async () => {
+  keyInfo.gate = Promise.resolve();
   await freshDatabase();
   chrome = makeChromeFakes();
   Object.assign(browser, chrome);
@@ -313,6 +327,41 @@ describe('AI settings', () => {
     expect(screen.queryByTestId('ai-setup')).toBeNull();
     // The button that was clicked is gone: focus lands on the status card's title, not <body>.
     await waitFor(() => expect(document.activeElement).toBe(within(status).getByRole('heading')));
+  });
+
+  it('waits for the saved key before checking the key step: Next says why, then moves on', async () => {
+    const user = userEvent.setup();
+    await turnAi(true);
+    await configure();
+    let release!: () => void;
+    keyInfo.gate = new Promise<void>((r) => (release = r));
+    render(
+      <AiEnvProvider env={envFor(null)}>
+        <AiSettingsSection />
+      </AiEnvProvider>,
+    );
+    await user.click(await screen.findByTestId('ai-edit-setup'));
+    await user.click(screen.getByTestId('ai-setup-next'));
+    await user.click(screen.getByTestId('ai-setup-next'));
+    expect(screen.getByRole('heading', { name: 'API key' })).toBeTruthy();
+    // Not known yet: Next is disabled with the reason, and a press neither fails nor moves focus.
+    const next = screen.getByTestId('ai-setup-next');
+    expect(next.getAttribute('aria-disabled')).toBe('true');
+    expect(document.getElementById(next.getAttribute('aria-describedby')!)?.textContent).toBe(
+      'Checking for a saved key…',
+    );
+    await user.click(next);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('heading', { name: 'API key' })).toBeTruthy();
+    expect(screen.getByTestId('ai-key-input').getAttribute('aria-invalid')).toBeNull();
+
+    release();
+    expect((await screen.findByTestId('ai-key-mask')).textContent).toBe(`••••••••${KEY.slice(-4)}`);
+    await waitFor(() =>
+      expect(screen.getByTestId('ai-setup-next').getAttribute('aria-disabled')).toBeNull(),
+    );
+    await user.click(screen.getByTestId('ai-setup-next'));
+    expect(await screen.findByRole('heading', { name: 'Daily limit' })).toBeTruthy();
   });
 
   it('replaces the key under Advanced, masked, and never shows it in full', async () => {

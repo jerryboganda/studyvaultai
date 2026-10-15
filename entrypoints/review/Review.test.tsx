@@ -154,6 +154,25 @@ describe('review page: the session', () => {
     expect(screen.getByTestId(TID.summaryAnswered).textContent).toMatch(/answered 1 card/);
   });
 
+  it('says what is left the way the header counts it: new cards of other decks included', async () => {
+    const user = userEvent.setup();
+    const { deck } = await seed(1);
+    const other = await createDeck({ name: 'Renal', settings: {} });
+    await createManualCards([basic(2), basic(3), basic(4)], { deckId: other.id });
+    render(<Review />);
+    await user.click(await screen.findByTestId(deckStartId(deck.id)));
+    await screen.findByTestId(TID.card);
+    await user.click(screen.getByTestId(TID.reveal));
+    await user.click(screen.getByTestId(ratingId(4)));
+    await screen.findByTestId(TID.summary, {}, { timeout: 20_000 });
+    await waitFor(() =>
+      expect(screen.getByTestId(TID.summaryNext).textContent).toMatch(
+        /^3 cards still due now \(3 new\), \d+ reviews? due tomorrow\.$/,
+      ),
+    );
+    expect(screen.getByText('3 due now')).toBeTruthy();
+  });
+
   it('explains the answer from the card and shows what the learner wrote', async () => {
     const user = userEvent.setup();
     await seed(1);

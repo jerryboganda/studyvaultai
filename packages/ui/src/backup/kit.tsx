@@ -274,6 +274,11 @@ export type FlowStep = {
   title: string;
   /** Runs on Next / Finish: a message keeps the person on this step. */
   validate?: () => string | null | undefined;
+  /**
+   * Why the step cannot be checked yet (what `validate` reads is still loading): Next / Finish is
+   * disabled with this reason instead of failing on a guess.
+   */
+  pending?: string;
   /** The content shows the error itself, under the field it names (<StepError>). */
   inlineError?: boolean;
   content: ReactNode | ((ctx: { error: string | null; errorId: string }) => ReactNode);
@@ -384,6 +389,7 @@ export function StepFlow({
             icon={FinishIcon}
             aria-busy={finish.busy || undefined}
             data-testid={finish.testId}
+            disabledReason={step.pending}
             onClick={finish.busy ? undefined : next}
           >
             {finish.label}
@@ -392,6 +398,7 @@ export function StepFlow({
           <ChunkyButton
             variant="primary"
             iconEnd={ArrowRight}
+            disabledReason={step.pending}
             data-testid={testId ? `${testId}-next` : undefined}
             onClick={next}
           >

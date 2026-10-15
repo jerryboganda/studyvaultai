@@ -474,6 +474,12 @@ button.bankcard:active {
   overflow-wrap: anywhere;
 }
 .bankcard__name {
+  /* Two lines at most, so a long name never makes one card taller than its row (full name: title). */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
   font-size: var(--sv-text-md);
   font-weight: 800;
 }

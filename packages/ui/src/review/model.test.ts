@@ -10,6 +10,7 @@ import {
   hashSeed,
   isFieldTarget,
   keyAction,
+  leftAfterSession,
   parseDraft,
   sessionXp,
   summarizeSession,
@@ -201,6 +202,21 @@ describe('summarizeSession', () => {
     expect(formatDuration(45_000)).toBe('45 s');
     expect(formatDuration(5 * 60_000)).toBe('5 min');
     expect(formatDuration(3_900_000)).toBe('1 h 05 min');
+  });
+});
+
+describe('leftAfterSession', () => {
+  it('counts what is left like the header ("25 due now"), new cards included and named', () => {
+    // The header's 25 = 18 reviews and learning steps + 7 new cards from the same queue.
+    expect(leftAfterSession({ total: 25, new: 7 }, 4)).toBe(
+      '25 cards still due now (7 new), 4 reviews due tomorrow.',
+    );
+    expect(leftAfterSession({ total: 1, new: 0 }, 1)).toBe(
+      '1 card still due now, 1 review due tomorrow.',
+    );
+    expect(leftAfterSession({ total: 0, new: 0 }, 0)).toBe(
+      'Nothing is due right now, 0 reviews due tomorrow.',
+    );
   });
 });
 

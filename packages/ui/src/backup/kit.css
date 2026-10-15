@@ -133,10 +133,11 @@
   height: 14px;
 }
 
-/* Icon facts. */
+/* Icon facts. auto-fit, not auto-fill: empty tracks collapse, so a few facts share the row and a
+   value (an address) wraps only when it really does not fit. */
 .sd-facts {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(150px, 100%), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr));
   gap: var(--sv-space-2);
   margin: 0;
 }
@@ -166,9 +167,10 @@
   height: 14px;
 }
 .sd-fact dd {
+  min-width: 0; /* a grid item: lets break-word wrap instead of widening the fact */
   margin: 0;
   font-weight: 800;
-  overflow-wrap: anywhere;
+  overflow-wrap: break-word;
 }
 .sd-mono {
   font-family: var(--sv-font-mono);

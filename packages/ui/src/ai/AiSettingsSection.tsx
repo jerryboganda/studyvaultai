@@ -384,6 +384,8 @@ export function AiSettingsSection() {
     formEndpoint?.ok && config?.key.mask && config.key.origin === formEndpoint.origin
       ? config.key.mask
       : null;
+  // The saved key is read after the settings: until then "no key saved" is only a guess.
+  const keyPending = config || cfg.error ? undefined : 'Checking for a saved key…';
 
   /** Writes the wizard's answers: the settings, then the key typed for that address. */
   async function writeSetup(): Promise<boolean> {
@@ -711,6 +713,7 @@ export function AiSettingsSection() {
                 id: 'key',
                 title: 'API key',
                 inlineError: true,
+                pending: keyPending,
                 validate: () =>
                   keyInput.trim() === '' && !keySaved
                     ? 'Paste the API key from your provider.'
@@ -731,6 +734,8 @@ export function AiSettingsSection() {
                         Saved key: <code data-testid="ai-key-mask">{keySaved}</code>. Paste a new
                         one to replace it.
                       </p>
+                    ) : keyPending ? (
+                      <p className="sd-line">{keyPending}</p>
                     ) : null}
                     <Field label={keySaved ? 'New key (optional)' : 'API key'}>
                       {(id) => (
