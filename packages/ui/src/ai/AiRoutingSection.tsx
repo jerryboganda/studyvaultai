@@ -10,7 +10,6 @@ import {
   setAiProfileApiKey,
   updateAiSettings,
   type AiProfile,
-  type AiProviderId,
 } from '@storage';
 import { Route } from 'lucide-react';
 import { Button } from '../Button';
@@ -34,7 +33,7 @@ import {
 /** A fallback provider as the text the person is typing (blank = unset). */
 interface Form {
   label: string;
-  provider: AiProviderId;
+  provider: AiProfile['provider'];
   baseUrl: string;
   model: string;
   priceIn: string;
@@ -259,7 +258,7 @@ function ProviderCard({
             className="sv-control ai-narrow"
             data-testid="ai-profile-provider"
             value={form.provider}
-            onChange={(e) => edit({ provider: e.target.value as AiProviderId })}
+            onChange={(e) => edit({ provider: e.target.value as AiProfile['provider'] })}
           >
             <option value="openai_compatible">OpenAI-compatible</option>
             <option value="anthropic">Anthropic</option>
