@@ -2,6 +2,8 @@ import type { Page } from '@playwright/test';
 import { KIND_DECORATION } from '@highlights';
 import { DEFAULT_DENY_HOSTS, HIGHLIGHT_KINDS, KIND_LABELS } from '@shared';
 import { IN_PAGE_KEYS, describeCommand } from '@ui/shortcuts';
+import { openDisclosure } from './helpers.backup';
+import { pickCard } from './helpers.graph';
 import {
   activate,
   activeTexts,
@@ -962,16 +964,16 @@ test.describe('options: theme', () => {
     env,
   }) => {
     const page = await openFixture(env, '/article.html');
-    const options = await openExt(env, 'options');
+    const options = await openExt(env, 'options', 'appearance');
     const popup = await viewing(env, 'popup', page);
     const side = await viewing(env, 'sidepanel', page);
 
     // Baseline: light everywhere.
-    await expect(options.getByRole('radio', { name: /^Match my system/ })).toBeChecked();
+    await expect(options.getByRole('radio', { name: /^System/ })).toBeChecked();
     const lightOptions = await pageLuminance(options);
     expect(lightOptions).toBeGreaterThan(0.8);
 
-    await options.getByRole('radio', { name: /^Dark/ }).click();
+    await pickCard(options.getByRole('radio', { name: /^Dark/ }));
     await expect(options.locator('html')).toHaveAttribute('data-theme', 'dark');
     await expect.poll(() => pageLuminance(options)).toBeLessThan(0.3);
 
@@ -994,18 +996,19 @@ test.describe('options: theme', () => {
     await expect.poll(() => luminanceOf(toolbarSurface)).toBeLessThan(0.35);
 
     // Persisted: a fresh options tab and a brand-new popup come up dark; switching back goes light.
-    const fresh = await openExt(env, 'options');
+    const fresh = await openExt(env, 'options', 'appearance');
     await expect(fresh.getByRole('radio', { name: /^Dark/ })).toBeChecked();
     await expect.poll(() => pageLuminance(fresh)).toBeLessThan(0.3);
-    await fresh.getByRole('radio', { name: /^Light/ }).click();
+    await pickCard(fresh.getByRole('radio', { name: /^Light/ }));
     await expect.poll(() => pageLuminance(fresh)).toBeGreaterThan(0.8);
     await expect.poll(() => pageLuminance(popup)).toBeGreaterThan(0.8);
   });
 
+  // The choice is now named "System" ("Match device").
   test('"Match my system" follows prefers-color-scheme', async ({ env }) => {
-    const options = await openExt(env, 'options');
+    const options = await openExt(env, 'options', 'appearance');
     await options.emulateMedia({ colorScheme: 'dark' });
-    await expect(options.getByRole('radio', { name: /^Match my system/ })).toBeChecked();
+    await expect(options.getByRole('radio', { name: /^System/ })).toBeChecked();
     await expect.poll(() => pageLuminance(options)).toBeLessThan(0.3);
     await options.emulateMedia({ colorScheme: 'light' });
     await expect.poll(() => pageLuminance(options)).toBeGreaterThan(0.8);
@@ -1014,13 +1017,18 @@ test.describe('options: theme', () => {
 
 test.describe('options: deny list', () => {
   const field = (options: Page) => options.getByRole('textbox', { name: 'Add a site' });
-  const add = (options: Page) => options.getByRole('button', { name: 'Add to deny list' });
+  const add = (options: Page) => options.getByRole('button', { name: 'Add site', exact: true });
+  /** The deny list card in Settings > Site access: your own sites, then the starter sites. */
+  const denyCard = (options: Page) =>
+    options.getByRole('region', { name: 'Deny list', exact: true });
 
   test('invalid input gets a specific message, nothing is added, and the message clears as you type', async ({
     env,
   }) => {
-    const options = await openExt(env, 'options');
-    const rows = options.getByRole('group', { name: 'Deny list' }).getByRole('listitem');
+    const options = await openExt(env, 'options', 'site-access');
+    // The starter sites are listed behind their own disclosure: open it to count every entry.
+    await openDisclosure(denyCard(options), 'Starter sites');
+    const rows = denyCard(options).getByRole('listitem');
     // The list renders after settings load: wait for it, then compare with the shipped starter list
     // (imported, never a literal count).
     await expect(rows).not.toHaveCount(0);
@@ -1056,8 +1064,8 @@ test.describe('options: deny list', () => {
   test('valid entries are normalised, listed, persisted and removable; defaults can be restored', async ({
     env,
   }) => {
-    const options = await openExt(env, 'options');
-    const list = options.getByRole('group', { name: 'Deny list' });
+    const options = await openExt(env, 'options', 'site-access');
+    const list = denyCard(options);
 
     await field(options).fill('HTTPS://Example.COM/some/path?x=1');
     await add(options).click();
@@ -1085,6 +1093,7 @@ test.describe('options: deny list', () => {
     const restore = options.getByRole('button', { name: 'Restore default sites' });
     await expect(restore).toHaveAttribute('aria-disabled', 'true');
     await expect(restore).toHaveAccessibleDescription('All default sites are already on the list.');
+    await openDisclosure(list, 'Starter sites'); // where a default entry is listed
     await options.getByRole('button', { name: 'Remove paypal.com from the deny list' }).click();
     await expect(options.getByText('Missing: paypal.com.')).toBeVisible();
     await expect(restore).not.toHaveAttribute('aria-disabled', 'true');
@@ -1100,7 +1109,7 @@ test.describe('options: deny list', () => {
     env,
   }) => {
     const page = await openFixture(env, '/article.html', { origin: env.altOrigin });
-    const options = await openExt(env, 'options');
+    const options = await openExt(env, 'options', 'site-access');
 
     await page.bringToFront();
     await tripleClickBlock(page, '#p-intro');
@@ -1109,9 +1118,7 @@ test.describe('options: deny list', () => {
     await options.bringToFront();
     await field(options).fill('localhost');
     await add(options).click();
-    await expect(
-      options.getByRole('group', { name: 'Deny list' }).getByText('localhost', { exact: true }),
-    ).toBeVisible();
+    await expect(denyCard(options).getByText('localhost', { exact: true })).toBeVisible();
 
     await expect(page.locator(OVERLAY_HOST)).toHaveCount(0);
     await expect(toolbarOf(page)).toHaveCount(0);
@@ -1130,15 +1137,14 @@ test.describe('options: deny list', () => {
   test('is usable at 320 px with a very long entry (no horizontal scroll, nothing clipped)', async ({
     env,
   }) => {
-    const options = await openExt(env, 'options');
-    await field(options).fill(
-      'a-very-long-subdomain-name-for-layout-testing.example-institution-of-higher-learning.org',
-    );
+    const options = await openExt(env, 'options', 'site-access');
+    const long =
+      'a-very-long-subdomain-name-for-layout-testing.example-institution-of-higher-learning.org';
+    await field(options).fill(long);
     await add(options).click();
-    // The entry is also spoken through the page's status region: look at the list.
-    await expect(
-      options.getByRole('group', { name: 'Deny list' }).getByText(/a-very-long-subdomain-name/),
-    ).toBeVisible();
+    // The entry is also spoken through the page's status region (and named in its Remove button's
+    // tooltip): look at the chip in the list.
+    await expect(denyCard(options).getByText(long, { exact: true })).toBeVisible();
     await options.setViewportSize({ width: 320, height: 700 });
     await expect.poll(() => options.evaluate(() => window.innerWidth)).toBe(320);
     const report = await layoutReport(options);
@@ -1151,14 +1157,14 @@ test.describe('options: floating toolbar toggle', () => {
   test('off hides the toolbar but the shortcut/menu capture path still saves; on restores it', async ({
     env,
   }) => {
-    const ext = await openExt(env, 'options');
+    const ext = await openExt(env, 'options', 'capture');
     const page = await openFixture(env, '/article.html');
 
     // Positive control with the toggle on.
     await tripleClickBlock(page, '#p-intro');
     await expect(toolbarOf(page)).toBeVisible();
 
-    const checkbox = ext.getByRole('checkbox', { name: /Show the floating toolbar/ });
+    const checkbox = ext.getByRole('checkbox', { name: 'Floating toolbar', exact: true });
     await ext.bringToFront();
     await expect(checkbox).toBeChecked();
     await checkbox.click();
@@ -1209,24 +1215,27 @@ test.describe('options: floating toolbar toggle', () => {
 // =============================================================================================
 
 test.describe('options: highlights on pages', () => {
+  // The switch is now labelled "Show on pages" (Settings > Appearance > Highlights).
   test('"Show highlights on pages" off stops painting (saving continues), disables the style choice, and on restores it', async ({
     env,
   }) => {
-    const ext = await openExt(env, 'options');
+    const ext = await openExt(env, 'options', 'appearance');
     const page = await openFixture(env, '/article.html');
     await saveBlock(ext, page, '#p-intro');
     await expect.poll(() => paintedByColor(page)).toEqual({ amber: [expect.any(String)] });
 
-    const toggle = ext.getByRole('checkbox', { name: 'Show highlights on pages' });
+    const toggle = ext.getByRole('checkbox', { name: 'Show on pages', exact: true });
     await ext.bringToFront();
     await expect(toggle).toBeChecked();
-    await expect(toggle).toHaveAccessibleDescription(/scripts that a site itself runs can read/);
+    // The trade-off: one line on the switch, the full sentence behind its (i).
+    await expect(toggle).toHaveAccessibleDescription('Sites can see which passages are painted.');
+    await expect(
+      ext.getByRole('button', { name: 'About show on pages' }),
+    ).toHaveAccessibleDescription(/scripts that a site itself runs can read/);
     await toggle.click();
     await expect.poll(async () => (await storedSettings(ext))?.paintHighlights).toBe(false);
     await expect(ext.getByRole('radio', { name: /^Strong/ })).toBeDisabled();
-    await expect(
-      ext.getByText('Highlight style has no effect while highlights are not shown'),
-    ).toBeVisible();
+    await expect(ext.getByText('No effect while highlights are not shown on pages.')).toBeVisible();
 
     await expect
       .poll(() => publishedRangeCount(page), { message: 'the page registry is left alone' })
@@ -1245,7 +1254,7 @@ test.describe('options: highlights on pages', () => {
   test("highlight style: Automatic by default; Strong thickens every underline; the legend names each kind's underline", async ({
     env,
   }) => {
-    const ext = await openExt(env, 'options');
+    const ext = await openExt(env, 'options', 'appearance');
     const page = await openFixture(env, '/article.html');
     await saveBlock(ext, page, '#p-intro');
     await expect
@@ -1254,6 +1263,8 @@ test.describe('options: highlights on pages', () => {
 
     await ext.bringToFront();
     await expect(ext.getByRole('radio', { name: /^Automatic/ })).toBeChecked();
+    // The legend sits with the colours, behind their disclosure.
+    await openDisclosure(ext, 'Colours and underlines');
     const legend = ext.getByRole('list', { name: 'Underline for each highlight kind' });
     await expect(legend.getByRole('listitem')).toHaveCount(HIGHLIGHT_KINDS.length);
     for (const kind of HIGHLIGHT_KINDS) {
@@ -1262,15 +1273,13 @@ test.describe('options: highlights on pages', () => {
     }
 
     // A controlled radio: its state changes when the saved setting comes back, so click, then wait.
-    await ext.getByRole('radio', { name: /^Strong/ }).click();
-    await expect(ext.getByRole('radio', { name: /^Strong/ })).toBeChecked();
+    await pickCard(ext.getByRole('radio', { name: /^Strong/ }));
     await expect.poll(async () => (await storedSettings(ext))?.highlightStyle).toBe('strong');
     await expect
       .poll(async () => (await highlightRuleFor(page, 'sv-hl-amber-essential'))?.thickness)
       .toBe(`${KIND_DECORATION.essential.thickness + 1}px`);
 
-    await ext.getByRole('radio', { name: /^Normal/ }).click();
-    await expect(ext.getByRole('radio', { name: /^Normal/ })).toBeChecked();
+    await pickCard(ext.getByRole('radio', { name: /^Normal/ }));
     await expect
       .poll(async () => (await highlightRuleFor(page, 'sv-hl-amber-essential'))?.thickness)
       .toBe(`${KIND_DECORATION.essential.thickness}px`);
@@ -1281,11 +1290,14 @@ test.describe('options: capture and private windows', () => {
   test('"Save from private windows" is off by default, explains the trade-off, and persists', async ({
     env,
   }) => {
-    const ext = await openExt(env, 'options');
-    const box = ext.getByRole('checkbox', { name: 'Save from private windows' });
+    const ext = await openExt(env, 'options', 'capture');
+    const box = ext.getByRole('checkbox', { name: 'Private windows', exact: true });
     await expect(box).not.toBeChecked();
-    await expect(box).toHaveAccessibleDescription(/private \(incognito\) windows/);
-    await expect(box).toHaveAccessibleDescription(/stay after you close the window/);
+    // The trade-off: one line on the switch, the full sentence behind its (i).
+    await expect(box).toHaveAccessibleDescription('Saves stay in your normal profile.');
+    const about = ext.getByRole('button', { name: 'About private windows' });
+    await expect(about).toHaveAccessibleDescription(/private \(incognito\) windows/);
+    await expect(about).toHaveAccessibleDescription(/stay after the window closes/);
 
     await box.click();
     await expect.poll(async () => (await storedSettings(ext))?.allowIncognitoCapture).toBe(true);
@@ -1300,16 +1312,16 @@ test.describe('options: keyboard shortcuts', () => {
   test("lists every command exactly as Chrome reports it, the fixed in-page keys, and opens Chrome's shortcut page", async ({
     env,
   }) => {
-    const ext = await openExt(env, 'options');
+    const ext = await openExt(env, 'options', 'shortcuts');
     const commands = await ext.evaluate(() => chrome.commands.getAll());
     expect(commands.map((c) => c.name)).toEqual(
       expect.arrayContaining(['quick-save', 'open-side-panel', 'focus-toolbar', 'next-highlight']),
     );
 
     const section = ext.locator('#shortcuts');
-    await expect(
-      section.getByRole('heading', { name: 'Keyboard shortcuts', level: 2 }),
-    ).toBeVisible();
+    await expect(ext.getByRole('heading', { name: 'Shortcuts', level: 1 })).toBeVisible();
+    await expect(section.getByRole('heading', { name: 'In any tab', level: 2 })).toBeVisible();
+    await expect(section.getByRole('heading', { name: 'Inside a page', level: 2 })).toBeVisible();
     const list = section.getByRole('list', { name: 'Browser shortcuts' });
     await expect(list.getByRole('listitem')).toHaveCount(commands.length);
     for (const c of commands) {
@@ -1327,17 +1339,18 @@ test.describe('options: keyboard shortcuts', () => {
     for (const k of IN_PAGE_KEYS) await expect(inPage).toContainText(k.action);
 
     const opened = env.context.waitForEvent('page');
-    await section.getByRole('button', { name: 'Change shortcuts in Chrome' }).click();
+    await section.getByRole('button', { name: 'Change in Chrome' }).click();
     const shortcuts = await opened;
     await expect.poll(() => shortcuts.url()).toMatch(/^(chrome|edge):\/\/extensions\/shortcuts/);
   });
 });
 
 test.describe('options: delete all data', () => {
+  // Asking first is now a guarded flow: "What goes" (focus on its title), then the typed word.
   test('asks first (focus starts on Cancel), then removes highlights, banks and settings, and the page repaints without them', async ({
     env,
   }) => {
-    const ext = await openExt(env, 'options');
+    const ext = await openExt(env, 'options', 'data');
     const page = await openFixture(env, '/article.html');
     await bgData(ext, 'bank.create', { name: 'Cardiology' });
     await saveBlock(ext, page, '#p-intro');
@@ -1345,19 +1358,28 @@ test.describe('options: delete all data', () => {
     await expect.poll(() => paintedByColor(page)).toEqual({ amber: [expect.any(String)] });
 
     await ext.bringToFront();
-    const open = ext.getByRole('button', { name: /^Delete all StudyVault data/ });
+    const open = ext.getByRole('button', { name: 'Delete all data', exact: true });
     await open.click();
-    const dialog = ext.getByRole('dialog', { name: 'Delete all StudyVault data?' });
+    const dialog = ext.getByRole('dialog', { name: 'Delete all StudyVault data', exact: true });
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
+    await expect(dialog.getByRole('heading', { name: 'What goes' })).toBeFocused();
+    await dialog.getByRole('button', { name: 'Next', exact: true }).click();
     await expect(dialog).toContainText('This cannot be undone.');
-    await dialog.getByRole('button', { name: 'Cancel' }).click();
+    await dialog.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(dialog).toHaveCount(0);
-    expect(await highlightsOf(ext, page.url()), 'Cancel deletes nothing').toHaveLength(1);
+    expect(await highlightsOf(ext, page.url()), 'Close deletes nothing').toHaveLength(1);
 
     await open.click();
+    await dialog.getByRole('button', { name: 'Next', exact: true }).click();
+    // Without the typed word nothing is deleted.
     await dialog.getByRole('button', { name: 'Delete everything' }).click();
-    await expect(ext.getByText(/All StudyVault data was deleted from this device/)).toBeVisible();
+    await expect(dialog.getByRole('alert')).toContainText('Type delete to go on.');
+    expect(await highlightsOf(ext, page.url()), 'no word, no delete').toHaveLength(1);
+    await dialog.getByLabel('Type “delete”').fill('delete');
+    await dialog.getByRole('button', { name: 'Delete everything' }).click();
+    await expect(
+      dialog.getByText(/All StudyVault data was deleted from this device/),
+    ).toBeVisible();
 
     await expect.poll(async () => (await highlightsOf(ext, page.url())).length).toBe(0);
     const { banks } = await bgData<{ banks: Array<{ name: string }> }>(ext, 'banks.list');

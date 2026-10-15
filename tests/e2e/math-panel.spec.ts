@@ -61,10 +61,9 @@ test('a formula in a side-panel note is typeset, fetched lazily, and edited as t
   expect(seen.filter((u) => u.endsWith('.js'))).toHaveLength(1);
   expect(seen.filter((u) => u.endsWith('.css'))).toHaveLength(1);
 
-  // The drawer is per-card UI state: a re-render of the card list (seen here once the highlight's
-  // "Not checked yet" status settles) can close it. Each check below is made with the note shown.
+  // The drawer stays open while the data under it changes (the note saved, the highlight's "Not
+  // checked yet" status settling): nothing below reopens it.
   const noteShown = async () => {
-    if ((await more.getAttribute('aria-expanded')) !== 'true') await more.click();
     await expect(more).toHaveAttribute('aria-expanded', 'true');
     await expect(note.locator('math')).toHaveCount(1);
   };

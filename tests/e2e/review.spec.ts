@@ -892,11 +892,11 @@ test.describe('study session from a PDF', () => {
     await expect(hlRow).toContainText('Page 2 line 1');
     await expect(hlRow).toContainText('Renal physiology');
     await openHighlightInAuthor(page, hl.id);
-    // Soft: the redesigned author view no longer shows the PDF page anywhere (the old view said
-    // "From Renal physiology, page 2."); reported as a product regression, the rest still runs.
-    await expect
-      .soft(page.getByTestId(TID.author), 'the author view names the PDF page of the highlight')
-      .toContainText(/Renal physiology.{0,5}(page|p\.)\s*2(?!\d)/i);
+    // Provenance stays in sight: the quote on "Card type" names the document and the PDF page.
+    await expect(
+      page.getByTestId(TID.author),
+      'the author view names the PDF page of the highlight',
+    ).toContainText(/Renal physiology.{0,5}(page|p\.)\s*2(?!\d)/i);
     await saveEditor(
       page,
       { t: 'basic', question: 'PDF-card: which line is this?', answer: hl.exactQuote },

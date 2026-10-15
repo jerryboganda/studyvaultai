@@ -95,10 +95,14 @@ function watchErrors(page: Page): void {
 
 export type ExtPageName = 'popup' | 'sidepanel' | 'options';
 
-export async function openExt(env: Env, name: ExtPageName): Promise<Page> {
+/**
+ * `view` opens one settings view (`options.html#<id>`): the settings page mounts only the current
+ * section, and without a hash it shows its home.
+ */
+export async function openExt(env: Env, name: ExtPageName, view?: string): Promise<Page> {
   const page = await env.context.newPage();
   watchErrors(page);
-  await page.goto(`chrome-extension://${env.extensionId}/${name}.html`);
+  await page.goto(`chrome-extension://${env.extensionId}/${name}.html${view ? `#${view}` : ''}`);
   return page;
 }
 

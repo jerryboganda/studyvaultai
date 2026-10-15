@@ -1,7 +1,14 @@
 import type { Page } from '@playwright/test';
 import { MAX_FOLDER_DEPTH } from '@shared';
 import { wrappedDoc } from '../fixtures/pdf/docs';
-import { downloadOf, openBackupPage, writeDatasetKeepingInbox } from './helpers.backup';
+import {
+  downloadOf,
+  openBackupPage,
+  openSection,
+  pick,
+  showTask,
+  writeDatasetKeepingInbox,
+} from './helpers.backup';
 import {
   buildDataset,
   createFolderUi,
@@ -102,12 +109,16 @@ test.describe('JSON export', () => {
   }) => {
     const { ds } = await seed(env, smallInput(env));
     const page = await openBackupPage(env);
+    await showTask(page, 'export');
     const readable = page.getByTestId('backup-readable');
-    await expect(readable.getByRole('heading', { level: 3 })).toHaveText(
-      'Export to Markdown, CSV, Anki or JSON',
-    );
+    // The "Readable copy" card offers JSON as one of its format picture cards.
+    await expect(readable.getByRole('heading', { level: 3 })).toHaveText('Readable copy');
+    const formats = readable.getByRole('radiogroup', { name: 'Format' });
+    for (const f of ['Markdown', 'CSV', 'Anki', 'JSON']) {
+      await expect(formats.getByRole('radio', { name: new RegExp(`^${f}`) })).toHaveCount(1);
+    }
 
-    await readable.getByTestId('readable-format-json').check();
+    await pick(readable.getByTestId('readable-format-json'));
     await expect(readable.getByTestId('readable-format-json')).toHaveAccessibleDescription(
       /does not import it back/,
     );
@@ -149,7 +160,7 @@ test.describe('JSON export', () => {
     expect(atp.quoteHash).toMatch(/^[0-9a-f]{64}$/);
 
     // One chosen bank.
-    await readable.getByTestId('readable-scope-banks').check();
+    await pick(readable.getByTestId('readable-scope-banks'));
     await readable.getByTestId(`readable-bank-${ds.id.bank('cardio')}`).check();
     await readable.getByTestId('readable-prepare').click();
     await expect(readable.getByTestId('readable-summary')).toHaveText('2 highlights in 1 file.');
@@ -196,7 +207,7 @@ test.describe('pending writes', () => {
   test('the AI switch and a settings switch show their choice at once, are busy until stored, and never snap back', async ({
     env,
   }) => {
-    const ext = await openExt(env, 'options');
+    const ext = await openExt(env, 'options', 'ai');
 
     const ai = ext.getByTestId('ai-enable');
     await expect(ai).not.toBeChecked();
@@ -218,10 +229,9 @@ test.describe('pending writes', () => {
     await expect.poll(() => featureOf(ext, 'ai')).toBe(true);
     await expect(ext.locator('#ai').getByText('Saving…')).toHaveCount(0);
 
-    // A switch of the same kind in another section.
-    const toolbar = ext.getByRole('checkbox', {
-      name: 'Show the floating toolbar when I select text',
-    });
+    // A switch of the same kind in another section (Capture: one view at a time, same page).
+    await openSection(ext, 'capture');
+    const toolbar = ext.getByRole('checkbox', { name: 'Floating toolbar', exact: true });
     await expect(toolbar).toBeChecked();
     const releaseToolbar = await holdNextSettingsWrite(ext);
     await toolbar.click();
@@ -236,11 +246,16 @@ test.describe('pending writes', () => {
   test('"Turn on sync" says it is waiting for Chrome and refuses a second press', async ({
     env,
   }) => {
-    const ext = await openExt(env, 'options');
+    const ext = await openExt(env, 'options', 'sync');
     const section = ext.locator('#sync');
+    // The setup wizard: what is shared, the server, the sign-in provider, a last look.
+    const next = section.getByTestId('sync-setup-flow-next');
+    await next.click();
     await section.getByTestId('sync-server-url').fill('https://sync.example.org');
+    await next.click();
     await section.getByTestId('sync-issuer').fill('https://id.example.org');
     await section.getByTestId('sync-client-id').fill('studyvault');
+    await next.click();
     await section.getByTestId('sync-ack').check();
     const enable = section.getByTestId('sync-enable');
     await expect(section.getByTestId('sync-enable-status')).toHaveCount(0);
@@ -420,10 +435,8 @@ test.describe('dashboard', () => {
     await expect(toast(dash, 'Created folder Renal.')).toHaveCount(0, { timeout: 12_000 });
 
     // The viewer asks for them to stay (Settings > Appearance, kept in this browser).
-    const ext = await openExt(env, 'options');
-    const keep = ext.getByRole('checkbox', {
-      name: 'Keep notifications on screen until I close them',
-    });
+    const ext = await openExt(env, 'options', 'appearance');
+    const keep = ext.getByRole('checkbox', { name: 'Keep notifications', exact: true });
     await expect(keep).not.toBeChecked();
     await keep.check();
     await expect(keep).toBeChecked();
@@ -500,11 +513,13 @@ test.describe('PDF reader keyboard', () => {
     await expect(toast(page, 'Nothing is selected.')).toContainText('F7');
     await expect(page.getByTestId('pdf-savebar')).toHaveCount(0);
 
-    // S: the bar opens and focus moves into it, even before the selection gate's pause is over.
+    // S: the bar opens and focus moves into it (onto the chosen kind dot, its first decision),
+    // even before the selection gate's pause is over.
+    const chosenKind = page.getByTestId('pdf-save-kind').getByRole('radio', { checked: true });
     await selectLikeCaretBrowsing(page, 'glomerulus filters', 'tubule reabsorbs');
     await page.keyboard.press('s');
     await expect(page.getByTestId('pdf-savebar')).toBeVisible();
-    await expect(page.getByTestId('pdf-save-kind')).toBeFocused();
+    await expect(chosenKind).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(page.getByTestId('pdf-savebar')).toHaveCount(0);
     await expect(viewer).toBeFocused();
@@ -512,7 +527,7 @@ test.describe('PDF reader keyboard', () => {
     // Enter on a selection does the same, and the highlight is saved with the keyboard alone.
     await selectLikeCaretBrowsing(page, 'glomerulus filters', 'tubule reabsorbs');
     await page.keyboard.press('Enter');
-    await expect(page.getByTestId('pdf-save-kind')).toBeFocused();
+    await expect(chosenKind).toBeFocused();
     await page.getByTestId('pdf-save').focus();
     await page.keyboard.press('Enter');
     await expect(page.getByTestId('pdf-highlight-card').first()).toContainText(
