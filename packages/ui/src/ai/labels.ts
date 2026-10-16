@@ -161,6 +161,11 @@ export function describeAiError(err: unknown, secrets: readonly string[] = []): 
           ? 'Wait a moment and try again.'
           : `The provider asks you to wait ${retryAfterSec} second${retryAfterSec === 1 ? '' : 's'} before trying again.`;
     }
+    // UBAG drives a real browser; these are its own words for "that website could not be used now".
+    if (/job_cancelled|selector_drift|provider_login_required/.test(err.detail ?? '')) {
+      hint =
+        'The gateway could not use that website just now (its browser may need to log in again, or the site changed). Try another model, or ask the gateway operator.';
+    }
     if (err.code === 'network' && typeof navigator !== 'undefined' && navigator.onLine === false) {
       hint = 'You appear to be offline. Core StudyVault features keep working without AI.';
     }

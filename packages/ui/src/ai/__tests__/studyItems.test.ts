@@ -134,3 +134,17 @@ describe('fitSelection', () => {
     expect(r.selection.chunks).toHaveLength(0);
   });
 });
+
+describe('UBAG browser failures', () => {
+  it('say what to do instead of "try again later"', async () => {
+    const { describeAiError } = await import('../labels');
+    const { AiError } = await import('@ai');
+    for (const detail of ['HTTP 500 job_cancelled', 'HTTP 503 selector_drift_detected']) {
+      const view = describeAiError(new AiError('server_error', { status: 500, detail }));
+      expect(view.hint).toMatch(/Try another model/);
+    }
+    expect(describeAiError(new AiError('server_error', { detail: 'HTTP 500' })).hint).not.toMatch(
+      /another model/,
+    );
+  });
+});
