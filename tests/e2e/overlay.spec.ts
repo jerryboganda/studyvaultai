@@ -550,6 +550,10 @@ test.describe('keyboard navigation between highlights', () => {
     const page = await openFixture(env, '/compat-inline.html');
     await saveBlock(ext, page, '#focus-p');
     await saveBlock(ext, page, '#plain-after');
+    // Both saved highlights painted (stored is not yet painted on a slow runner) before stepping to one.
+    await expect
+      .poll(() => publishedRangeCount(page), { timeout: 15_000 })
+      .toBeGreaterThanOrEqual(2);
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.locator('#focus-region').focus();
     expect(await page.evaluate(() => document.activeElement?.id)).toBe('focus-region');
