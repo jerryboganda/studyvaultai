@@ -67,7 +67,11 @@ describe('partialAnswer', () => {
 
 describe('scope', () => {
   it('offers only items made from highlights in the scope, never a free-standing card', async () => {
-    const all = await retrieveStudyItems('ACE inhibitors metformin diabetes heart failure', 10, load);
+    const all = await retrieveStudyItems(
+      'ACE inhibitors metformin diabetes heart failure',
+      10,
+      load,
+    );
     expect(all.map((f) => f.id).sort()).toEqual(['card-1', 'card-2', 'kp-1']);
     const scoped = await retrieveStudyItems(
       'ACE inhibitors metformin diabetes heart failure',
