@@ -8,6 +8,26 @@ copy it when a version is tagged.
 
 ## [Unreleased]
 
+### Added
+- Chat is a conversation: works with no study material, saved conversations that resume after a
+  reload, a rolling summary as memory, and automatic retrieval from your highlights and notes with
+  verbatim citations (ADR-024). Replaces the find-tick-send flow for chat.
+- Chat: requests are trimmed to the model's context budget and the header shows requests left today and
+  context used; optional "suggest search words"; "Refresh memory"; paged long conversations; the streamed
+  answer no longer chatters in the live region. UBAG preset gains a personal-access-token mode; the
+  project's gateway accepts per-user tokens on `/v1/openai/*` (ADR-026).
+- Chat "Match by meaning": an 8 MB on-device static embedding (potion-base-8M, MIT) finds notes,
+  flashcards and knowledge points that mean the same as the question without sharing its words;
+  nothing is sent (ADR-025). Flashcards and knowledge points now respect the chosen bank, folder and
+  tag. UBAG requests that outlast the gateway's wait rejoin the running job instead of failing.
+- Chat: flashcards and knowledge points are searched and cited; stems and study abbreviations improve
+  matching; per-conversation provider, model and reasoning effort; streamed answers; memory panel,
+  rename, download and save-as-note (ADR-024 addendum).
+- AI providers: UBAG gateway (OpenAI-compatible facade, HTTP Basic), NVIDIA NIM, OpenCode Go,
+  OpenRouter and an unofficial ChatGPT (Codex) subscription login, each with a model dropdown (live
+  list with curated fallback) and a reasoning-effort dropdown; ChatGPT quota and OpenRouter spend can
+  be checked in the AI settings (ADR-023).
+
 Nothing has been released or submitted to a store. `package.json` is at 0.1.0. The entries below say
 what exists in the repository, not what has been proven. The latest fully green `ci.yml` run is
 <https://github.com/jerryboganda/studyvaultai/actions/runs/38186957997> (2026-10-12, branch

@@ -1,5 +1,11 @@
 import type { Page } from '@playwright/test';
-import { deleteAllData, openBackupPage, snapshotVault } from './helpers.backup';
+import {
+  deleteAllData,
+  openBackupPage,
+  openDisclosure,
+  showTask,
+  snapshotVault,
+} from './helpers.backup';
 import {
   axeViolations,
   captureQuote,
@@ -95,6 +101,9 @@ test.describe('import formats', () => {
       return rows;
     };
 
+    // The importer is the section's "Import" card; what it reads is in its "Supported files" panel.
+    await showTask(page, 'import');
+    await openDisclosure(ext, 'Supported files');
     await expect(ext.getByTestId('backup-external-help')).toContainText(
       /Not supported: Anki \.apkg packages .* old \.doc and \.ppt files .* DRM-protected files/,
     );

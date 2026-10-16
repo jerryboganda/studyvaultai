@@ -6,7 +6,7 @@ import {
   type CustomFields,
 } from '@shared';
 import type { HighlightDetail } from '@storage';
-import { Button, errorMessage, plural, useAction, useToast } from '@ui';
+import { Button, InfoTip, errorMessage, plural, useAction, useToast } from '@ui';
 import { useApi } from './api';
 import { DialogError, FormDialog, PlacePicker, type Place } from './dialogs';
 import { formatDate } from './format';
@@ -189,11 +189,14 @@ export function PreviewFields({ detail }: { detail: HighlightDetail }) {
 
   return (
     <section className="dash-section" aria-labelledby="pv-fields" data-testid="preview-fields">
-      <h3 id="pv-fields">Custom fields</h3>
+      <div className="sv-row dash-section__head">
+        <h3 id="pv-fields">Custom fields</h3>
+        <InfoTip label="About custom fields" align="start">
+          Your own labels for a highlight, such as “exam” or “chapter”.
+        </InfoTip>
+      </div>
       {entries.length === 0 ? (
-        <p className="sv-small sv-muted">
-          No fields. Use them for your own metadata, such as “exam” or “chapter”.
-        </p>
+        <p className="sv-small sv-muted">No fields yet.</p>
       ) : (
         <dl className="dash-fields">
           {entries.map(([k, v]) => (
@@ -395,7 +398,10 @@ export function PreviewLocations({ detail }: { detail: HighlightDetail }) {
         </Button>
       </div>
       <p className="sv-small sv-muted">
-        A highlight can live in several banks without being copied; notes and tags are shared.
+        Shared notes and tags in every bank.{' '}
+        <InfoTip label="About filing in several banks" side="top" align="start">
+          A highlight can live in several banks without being copied; notes and tags are shared.
+        </InfoTip>
       </p>
 
       {dialog ? (
@@ -444,8 +450,10 @@ export function PreviewDuplicates({
     <section className="dash-section" aria-labelledby="pv-dups" data-testid="preview-duplicates">
       <h3 id="pv-dups">Same quote elsewhere</h3>
       <p className="sv-small">
-        This exact quote is saved {plural(detail.duplicates.length, 'other time')}. Nothing is
-        merged automatically; you decide what to keep.
+        This exact quote is saved {plural(detail.duplicates.length, 'other time')}.{' '}
+        <InfoTip label="About duplicates" side="top" align="start">
+          Nothing is merged automatically; you decide what to keep.
+        </InfoTip>
       </p>
       <ul className="sv-stack sv-stack--tight">
         {detail.duplicates.map((d) => (

@@ -81,6 +81,8 @@ export interface CaptureUi {
     tone?: 'info' | 'success' | 'error';
     action?: { label: string; run: () => void };
     secondary?: { label: string; run: () => void };
+    /** XP the save earned (CaptureResult.xp, Game mode on): shown as a "+2 XP" chip. */
+    xp?: number;
   }): void;
   /** Re-apply theme / palette when settings change. */
   applySettings(settings: Settings): void;

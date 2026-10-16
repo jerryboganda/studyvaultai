@@ -41,7 +41,13 @@ import { expect } from './helpers.review';
 // What a backup holds
 // -----------------------------------------------------------------------------------------------
 
-/** The registry's tables minus `meta` and `syncOps` (packages/storage backupTarget.ts). */
+/** The game ledger (ADR-022): a backup carries it, but the app re-derives it after a restore. */
+export const LEDGER_TABLES = ['gameEvents', 'gameFacts'] as const;
+
+/**
+ * The registry's tables minus `meta` and `syncOps` (packages/storage backupTarget.ts) and minus the game
+ * ledger, so vault comparisons cover the person's data only.
+ */
 export const BACKUP_TABLES = [
   'banks',
   'folders',
@@ -304,6 +310,38 @@ export async function openBackupPage(env: Env): Promise<Page> {
 export const exportPanel = (page: Page) => page.getByTestId('backup-export');
 export const wizard = (page: Page) => page.getByTestId('backup-import');
 
+export type BackupTask = 'backup' | 'restore' | 'import' | 'export';
+
+/**
+ * Choose a picture card: its radio is visually hidden inside the card's <label>, so a person clicks
+ * the card itself. `radio` is the card's radio input.
+ */
+export async function pick(radio: Locator): Promise<void> {
+  if (!(await radio.isChecked())) await radio.locator('xpath=ancestor::label[1]').click();
+  await expect(radio).toBeChecked();
+}
+
+/** Pick one of the section's picture cards (Back up / Restore / Import / Export) and wait for its tool. */
+export async function showTask(page: Page, task: BackupTask): Promise<void> {
+  await pick(page.getByTestId(`backup-task-${task}`));
+  await expect(page.getByTestId(`backup-panel-${task}`)).toBeVisible();
+}
+
+/** Open the closed disclosure whose summary reads `summary` inside `scope`, as a person does. */
+export async function openDisclosure(scope: Page | Locator, summary: string): Promise<void> {
+  const head = scope.locator('summary', { hasText: summary }).first();
+  const details = head.locator('xpath=..');
+  if ((await details.getAttribute('open')) === null) await head.click();
+  await expect(details).toHaveAttribute('open', '');
+}
+
+/** Show one settings view (options.html#<id>): only the current section is on the page. */
+export async function openSection(page: Page, id: string): Promise<void> {
+  await page.evaluate((hash) => {
+    window.location.hash = hash;
+  }, id);
+}
+
 // -----------------------------------------------------------------------------------------------
 // Export
 // -----------------------------------------------------------------------------------------------
@@ -344,32 +382,51 @@ export const LABEL = {
   documents: 'PDF documents',
 } as const;
 
-/** Tick "protect with a passphrase" and fill the two fields and the acknowledgement. */
+/** Fill the passphrase, its repeat and the acknowledgement. */
+async function fillPassphrase(scope: Locator, testId: string, passphrase: string): Promise<void> {
+  await scope.getByTestId(`${testId}-value`).fill(passphrase);
+  await scope.getByTestId(`${testId}-confirm`).fill(passphrase);
+  await scope.getByTestId(`${testId}-ack`).check();
+}
+
+/** Tick "lock with a passphrase" and fill the two fields and the acknowledgement. */
 export async function setPassphrase(
   scope: Locator,
   testId: string,
   passphrase: string,
 ): Promise<void> {
   await scope.getByTestId(`${testId}-enable`).check();
-  await scope.getByTestId(`${testId}-value`).fill(passphrase);
-  await scope.getByTestId(`${testId}-confirm`).fill(passphrase);
-  await scope.getByTestId(`${testId}-ack`).check();
+  await fillPassphrase(scope, testId, passphrase);
 }
 
-/** "Create backup file" in the Backup section, optionally encrypted; returns the saved file. */
+/**
+ * "Back up" in the Backup section, optionally encrypted; returns the saved file. The backup file is a
+ * short wizard: "Lock it?" -> ("Passphrase") -> "Looks good?" -> "Back up now". The flow must be on
+ * its first step (or showing a finished backup, which "Done" puts away).
+ */
 export async function createBackup(
   page: Page,
   options: { passphrase?: string } = {},
 ): Promise<BackupFile> {
+  await showTask(page, 'backup');
   const panel = exportPanel(page);
+  const previous = panel.getByTestId('backup-export-done');
+  if (await previous.isVisible()) await previous.getByRole('button', { name: 'Done' }).click();
+  await expect(panel.getByTestId('backup-export-flow')).toBeVisible();
   if (options.passphrase !== undefined) {
-    await setPassphrase(panel, 'backup-export-pass', options.passphrase);
+    await pick(panel.getByTestId('backup-export-pass-enable'));
+    await panel.getByTestId('backup-export-flow-next').click();
+    await fillPassphrase(panel, 'backup-export-pass', options.passphrase);
+  } else {
+    await pick(panel.getByTestId('backup-export-pass-off'));
   }
+  await panel.getByTestId('backup-export-flow-next').click();
   const saved = await downloadOf(page, () => panel.getByTestId('backup-export-start').click());
-  // A previous run's result stays on screen until this one replaces it: wait for the busy state to end.
   await expect(panel.getByTestId('backup-export-progress')).toHaveCount(0);
   const done = panel.getByTestId('backup-export-done');
   await expect(done).toBeVisible();
+  // The counts and the checksum sit in the closed "What is inside" panel: open it to read them.
+  await openDisclosure(done, 'What is inside');
   const counts: Record<string, number> = {};
   for (const li of await done.getByTestId('backup-export-counts').locator('li').all()) {
     const [label, value] = await li.locator('span').allTextContents();
@@ -434,32 +491,47 @@ export function readArchive(bytes: Uint8Array): ArchiveContents {
 // -----------------------------------------------------------------------------------------------
 
 export const wipeDialog = (page: Page) =>
-  page.getByRole('dialog', { name: 'Delete all StudyVault data?' });
+  page.getByRole('dialog', { name: 'Delete all StudyVault data', exact: true });
 
+/** Settings > Your data > "Delete all data": opens the guarded flow on its first step. */
 export async function openWipeDialog(page: Page): Promise<void> {
-  await page.getByRole('button', { name: 'Delete all StudyVault data…' }).click();
+  await openSection(page, 'data');
+  await page.getByRole('button', { name: 'Delete all data', exact: true }).click();
   await expect(wipeDialog(page)).toBeVisible();
 }
 
-/** "Delete all StudyVault data…" -> confirm dialog -> wait for the success notice. */
+/**
+ * "Delete all data" -> "What goes" -> Next -> type "delete" -> "Delete everything" -> wait for the
+ * success report -> Done. Then back to the settings view the page showed before (the Backup view
+ * opens again with a fresh read of the emptied vault, without a page reload).
+ */
 export async function deleteAllData(page: Page): Promise<void> {
+  const from = new URL(page.url()).hash;
   await openWipeDialog(page);
-  await wipeDialog(page).getByRole('button', { name: 'Delete everything' }).click();
+  const dialog = wipeDialog(page);
+  await dialog.getByRole('button', { name: 'Next', exact: true }).click();
+  await dialog.getByLabel('Type “delete”').fill('delete');
+  await dialog.getByRole('button', { name: 'Delete everything' }).click();
   await expect(
-    page.getByText(/All StudyVault data was deleted from this device/),
+    dialog.getByText(/All StudyVault data was deleted from this device/),
     'the page reports that the deletion finished',
   ).toBeVisible({ timeout: 60_000 });
+  await dialog.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  if (from !== '#data') await openSection(page, from.slice(1));
+  if (from === '#backup') await expect(page.getByTestId('backup-section')).toBeVisible();
 }
 
 // -----------------------------------------------------------------------------------------------
 // Restore
 // -----------------------------------------------------------------------------------------------
 
-/** Hand a file to the restore wizard's file input (a real change event on the real input). */
+/** "Restore", then hand a file to the wizard's file input (a real change event on the real input). */
 export async function chooseBackup(
   page: Page,
   file: { name: string; bytes: Uint8Array | Buffer },
 ): Promise<void> {
+  await showTask(page, 'restore');
   await wizard(page)
     .getByTestId('backup-import-file')
     .setInputFiles({
@@ -478,7 +550,7 @@ export async function expectReview(page: Page): Promise<void> {
 /** "Replace my study data with the backup" -> typed confirmation. Leaves the safety copy as is. */
 export async function selectReplace(page: Page): Promise<void> {
   const w = wizard(page);
-  await w.getByTestId('backup-import-mode-replace').check();
+  await pick(w.getByTestId('backup-import-mode-replace'));
   await expect(w.getByTestId('restore-summary')).toContainText('Your vault becomes the backup');
   await w.getByTestId('backup-import-confirm-word').fill('REPLACE');
 }
@@ -519,7 +591,8 @@ export async function chooseAnother(page: Page): Promise<void> {
     })
     .first()
     .click();
-  await expect(w.getByTestId('backup-import-file')).toBeVisible();
+  // Back on "Pick a file": the drop card with its "Choose backup file" button.
+  await expect(w.getByTestId('backup-import-drop')).toBeVisible();
 }
 
 // -----------------------------------------------------------------------------------------------

@@ -1022,7 +1022,8 @@ async function evaluate(
     }
     for (const key of liveMap.keys()) if (!archiveKeys.has(key)) rep.liveOnly++;
     if (mode === 'replace') {
-      removedLiveOnly += rep.liveOnly;
+      // The game ledger is the app's own accounting, not items the person would recognise.
+      if (!scan.spec.bookkeeping) removedLiveOnly += rep.liveOnly;
       stage.set(name, archiveKeys);
     } else {
       stage.set(name, toStage);

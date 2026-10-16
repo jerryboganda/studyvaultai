@@ -1,0 +1,12 @@
+potion-base-8M
+Source: https://huggingface.co/minishlab/potion-base-8M
+Authors: The Minish Lab. Licence: MIT.
+
+Used in StudyVault AI as an on-device static word-piece embedding for "Match by meaning" in chat.
+The vectors are quantised to int8 (scripts/prepare-embedding-model.mjs); the vocabulary is unchanged.
+
+MIT License. Permission is hereby granted, free of charge, to any person obtaining a copy of this
+model and associated files, to deal in them without restriction, including without limitation the
+rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies, subject to
+the inclusion of the copyright notice and this permission notice in all copies or substantial
+portions. THE MODEL IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.

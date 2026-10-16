@@ -526,6 +526,35 @@ describe('review session value', () => {
     });
   });
 
+  it('a learning step that lands after the rollover belongs to tomorrow, not to this session', () => {
+    // At 23:55 a Good on a new card schedules its 10-minute step for 00:05: tomorrow's study day.
+    // The session is pinned to its day (resume rebuilds a stale one), so the card leaves it and
+    // tomorrow's queue serves it. At midday the same step stays in the session.
+    const at = (t: string) => {
+      const card = makeCard('new-00001');
+      const session = startSession(buildQueue([card], opts({ now: t })), {
+        id: 'session-0001',
+        boundary: UTC,
+      });
+      const r = answer(card, 3, t, 1);
+      return {
+        card: r.card,
+        session: answerInSession(session, r.card, { logId: r.log.id, rating: 3 }),
+      };
+    };
+    const late = at('2026-01-05T23:55:00.000Z');
+    expect(late.card.fsrs.due).toBe('2026-01-06T00:05:00.000Z');
+    expect(late.session.learning).toEqual([]);
+    expect(nextInSession(late.session, '2026-01-05T23:56:00.000Z')).toEqual({ kind: 'done' });
+    const tomorrow = buildQueue([late.card], opts({ now: '2026-01-06T00:05:00.000Z' }));
+    expect(tomorrow.entries).toMatchObject([{ cardId: 'new-00001', kind: 'learning' }]);
+
+    const midday = at('2026-01-05T12:00:00.000Z');
+    expect(midday.session.learning).toEqual([
+      { cardId: 'new-00001', dueAt: '2026-01-05T12:10:00.000Z' },
+    ]);
+  });
+
   it('survives JSON persistence and a restart', () => {
     const byId = world();
     const q = buildQueue([...byId.values()], opts());

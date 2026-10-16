@@ -132,6 +132,17 @@ describe('CommandPalette', () => {
     expect(options()[0]!.getAttribute('aria-selected')).toBe('true');
   });
 
+  it('closes from its visible Close button and from a click on the backdrop', () => {
+    const onClose = vi.fn();
+    render(<CommandPalette commands={commands()} onClose={onClose} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole('combobox'));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByTestId('command-palette'));
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
   it('says so when nothing matches', () => {
     render(<CommandPalette commands={commands()} onClose={() => undefined} />);
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'qqqq' } });

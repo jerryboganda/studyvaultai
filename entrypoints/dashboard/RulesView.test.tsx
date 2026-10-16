@@ -152,6 +152,17 @@ const rowNamed = (name: string) =>
   rows().find((r) => within(r).getByTestId('rule-name-text').textContent === name)!;
 const dialog = () => screen.getByRole('dialog', { hidden: true });
 const inDialog = () => within(dialog());
+/** The wizard's Next button, and the way to its last step (Back keeps every answer). */
+const next = () => fireEvent.click(inDialog().getByRole('button', { name: 'Next' }));
+const toLastStep = () => {
+  for (let i = 0; i < 8 && inDialog().queryByRole('button', { name: 'Next' }); i += 1) next();
+};
+const stepTitle = () => dialog().querySelector('h2')?.textContent;
+/** With no rule yet, the empty state holds "New rule" once the list has been read. */
+const openNewRule = async () => {
+  await screen.findByText('No rules yet');
+  fireEvent.click(screen.getByTestId('rule-new'));
+};
 
 beforeEach(() => fakeBrowser.reset());
 afterEach(cleanup);
@@ -175,9 +186,8 @@ describe('the list', () => {
     await screen.findAllByTestId('rule-row');
     const [first, second] = rows();
     expect(first!.textContent).toContain('Cardiology course');
-    expect(first!.textContent).toContain(
-      'the site is example.com and the page title contains “heart”',
-    );
+    expect(first!.textContent).toContain('example.com');
+    expect(first!.textContent).toContain('“heart”');
     expect(first!.textContent).toContain('Cardiology / Week 1');
     expect(first!.textContent).toContain('High yield');
     expect(first!.textContent).toContain('Asks first');
@@ -188,9 +198,10 @@ describe('the list', () => {
 
   it('explains an empty list and offers to create the first rule', async () => {
     await mount(new FakeRules());
-    expect(await screen.findByText('No filing rules yet')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Create the first rule' }));
+    expect(await screen.findByText('No rules yet')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('rule-new'));
     expect(dialog()).toBeTruthy();
+    expect(stepTitle()).toBe('When');
   });
 
   it('says what is wrong with a rule whose target was deleted', async () => {
@@ -221,7 +232,7 @@ describe('ordering', () => {
     const rules = await three();
     const up = within(rowNamed('A')).getByTestId('rule-up');
     expect(up.getAttribute('aria-disabled')).toBe('true');
-    expect(up.getAttribute('title')).toBe('This rule is already first.');
+    expect(up.getAttribute('aria-label')).toContain('This rule is already first.');
     const last = within(rowNamed('C')).getByTestId('rule-down');
     expect(last.getAttribute('aria-disabled')).toBe('true');
 
@@ -288,18 +299,22 @@ describe('turning a rule on and off', () => {
 });
 
 describe('creating a rule', () => {
-  it('validates each chip, and creates a rule that asks first by default', async () => {
+  it('walks the wizard: validates each step and chip, and creates a rule that asks first', async () => {
     const rules = new FakeRules();
     await mount(rules);
-    fireEvent.click(await screen.findByRole('button', { name: 'Create the first rule' }));
+    await openNewRule();
 
-    const confirm = inDialog().getByTestId('dialog-confirm');
-    // Nothing yet: the button says why.
-    expect(confirm.getAttribute('aria-disabled')).toBe('true');
-    expect(confirm.getAttribute('title')).toBe('Give the rule a name.');
+    // When: nothing picked yet, so Next stays on the step and says why.
+    next();
+    expect(stepTitle()).toBe('When');
+    expect(inDialog().getByRole('alert').textContent).toMatch(/Pick at least one/);
+    fireEvent.click(inDialog().getByRole('checkbox', { name: /^Site/ }));
+    next();
+    expect(stepTitle()).toBe('What matches');
 
-    fireEvent.change(inDialog().getByTestId('rule-name'), { target: { value: 'Course site' } });
-    expect(confirm.getAttribute('title')).toMatch(/Add at least one condition/);
+    // A picked field needs a value before Next.
+    next();
+    expect(stepTitle()).toBe('What matches');
 
     // A bad site name is refused with the reason, and nothing is added.
     const hosts = within(inDialog().getByTestId('rule-hosts'));
@@ -307,32 +322,60 @@ describe('creating a rule', () => {
     fireEvent.click(hosts.getByRole('button', { name: 'Add site' }));
     expect(hosts.getByRole('alert').textContent).toMatch(/"bad_host!" is not a site name/);
 
-    // A good one is normalised; Enter adds without submitting the dialog.
+    // A good one is normalised; Enter adds it.
     fireEvent.change(hosts.getByRole('textbox'), {
       target: { value: 'HTTPS://www.Example.com/a' },
     });
     fireEvent.keyDown(hosts.getByRole('textbox'), { key: 'Enter' });
     expect(hosts.getByText('www.example.com')).toBeTruthy();
     expect(hosts.queryByRole('alert')).toBeNull();
-    expect(rules.called('createFilingRule')).toHaveLength(0);
 
     // The same site again is refused.
     fireEvent.change(hosts.getByRole('textbox'), { target: { value: 'www.example.com' } });
     fireEvent.click(hosts.getByRole('button', { name: 'Add site' }));
     expect(hosts.getByRole('alert').textContent).toMatch(/already in the list/);
+    next();
 
-    // Choose the bank, a folder and a tag to add.
-    fireEvent.change(inDialog().getByTestId('rule-bank'), { target: { value: BANK_CARDIO } });
+    // File into: the bank as a picture card, then a folder and a tag to add.
+    expect(stepTitle()).toBe('File into');
+    fireEvent.click(inDialog().getByRole('radio', { name: /Cardiology/ }));
     fireEvent.change(inDialog().getByTestId('rule-folder'), { target: { value: FOLDER_WEEK1 } });
     const addTags = within(inDialog().getByTestId('rule-add-tags'));
     fireEvent.change(addTags.getByRole('combobox'), { target: { value: TAG_HY } });
     fireEvent.click(addTags.getByRole('button', { name: 'Add tag' }));
+    next();
 
-    // "Ask me before filing" is on unless the person turns it off.
-    expect((inDialog().getByTestId('rule-confirm') as HTMLInputElement).checked).toBe(true);
-    expect(confirm.getAttribute('aria-disabled')).toBeNull();
+    // "Ask first" is chosen unless the person picks "File at once".
+    expect(stepTitle()).toBe('Ask first?');
+    expect((inDialog().getByRole('radio', { name: /Ask first/ }) as HTMLInputElement).checked).toBe(
+      true,
+    );
+    next();
 
-    fireEvent.click(confirm);
+    // Try it: the real decision, with this rule in the list, from a sample made of the rule.
+    expect(stepTitle()).toBe('Try it');
+    expect((inDialog().getByTestId('wiz-test-url') as HTMLInputElement).value).toBe(
+      'https://www.example.com/',
+    );
+    expect(inDialog().getByTestId('wiz-test-row').textContent).toContain('This rule');
+    fireEvent.change(inDialog().getByTestId('wiz-test-url'), {
+      target: { value: 'https://www.example.com/cardio' },
+    });
+    expect(inDialog().getByTestId('wiz-test-verdict').textContent).toContain(
+      'Ask first, then file in Cardiology / Week 1',
+    );
+    expect(inDialog().getByTestId('wiz-test-row').textContent).toContain('This rule');
+    next();
+
+    // Looks good?: the rule in one card, then its name.
+    expect(stepTitle()).toBe('Looks good?');
+    const summary = inDialog().getByTestId('rule-summary').textContent;
+    expect(summary).toContain('www.example.com');
+    expect(summary).toContain('Cardiology / Week 1');
+    expect(summary).toContain('Asks first');
+    expect(rules.called('createFilingRule')).toHaveLength(0);
+    fireEvent.change(inDialog().getByTestId('rule-name'), { target: { value: 'Course site' } });
+    fireEvent.click(inDialog().getByRole('button', { name: 'Create rule' }));
     await waitFor(() => expect(rules.called('createFilingRule')).toHaveLength(1));
     expect(rules.called('createFilingRule')[0]!.args[0]).toMatchObject({
       name: 'Course site',
@@ -345,21 +388,54 @@ describe('creating a rule', () => {
     expect((await screen.findAllByTestId('rule-row'))[0]!.textContent).toContain('Course site');
   });
 
+  it('offers a name when the field is left empty, and drops fields that were unticked', async () => {
+    const rules = new FakeRules();
+    await mount(rules);
+    await openNewRule();
+    fireEvent.click(inDialog().getByRole('checkbox', { name: /^Site/ }));
+    fireEvent.click(inDialog().getByRole('checkbox', { name: /^Page title/ }));
+    next();
+    const title = within(inDialog().getByTestId('rule-title'));
+    fireEvent.change(title.getByRole('textbox'), { target: { value: 'heart' } });
+    fireEvent.keyDown(title.getByRole('textbox'), { key: 'Enter' });
+    const hosts = within(inDialog().getByTestId('rule-hosts'));
+    fireEvent.change(hosts.getByRole('textbox'), { target: { value: 'example.com' } });
+    fireEvent.keyDown(hosts.getByRole('textbox'), { key: 'Enter' });
+    // Back to When: untick the title; its word is kept in the form but not saved.
+    fireEvent.click(inDialog().getByRole('button', { name: 'Back' }));
+    fireEvent.click(inDialog().getByRole('checkbox', { name: /^Page title/ }));
+    toLastStep();
+    expect(inDialog().getByText(/Empty uses “example.com to Inbox”/)).toBeTruthy();
+    fireEvent.click(inDialog().getByRole('button', { name: 'Create rule' }));
+    await waitFor(() => expect(rules.called('createFilingRule')).toHaveLength(1));
+    expect(rules.called('createFilingRule')[0]!.args[0]).toMatchObject({
+      name: 'example.com to Inbox',
+      match: { hosts: ['example.com'], titleContains: [] },
+    });
+  });
+
   it('warns that a tags-only rule cannot match a new highlight, and about filing at once', async () => {
     await mount(new FakeRules());
-    fireEvent.click(await screen.findByRole('button', { name: 'Create the first rule' }));
+    await openNewRule();
+    fireEvent.click(inDialog().getByRole('checkbox', { name: /^Tags/ }));
+    next();
     const tags = within(inDialog().getByTestId('rule-tags'));
     fireEvent.change(tags.getByRole('combobox'), { target: { value: TAG_HY } });
     fireEvent.click(tags.getByRole('button', { name: 'Add tag' }));
     expect(inDialog().getByText(/will not match it when it is saved/)).toBeTruthy();
 
-    fireEvent.click(inDialog().getByTestId('rule-confirm'));
+    next();
+    next();
+    fireEvent.click(inDialog().getByRole('radio', { name: /File at once/ }));
+    toLastStep();
     expect(inDialog().getByText(/files a highlight at once/)).toBeTruthy();
   });
 
   it('removing a chip puts the focus back in its field', async () => {
     await mount(new FakeRules());
-    fireEvent.click(await screen.findByRole('button', { name: 'Create the first rule' }));
+    await openNewRule();
+    fireEvent.click(inDialog().getByRole('checkbox', { name: /^Page title/ }));
+    next();
     const title = within(inDialog().getByTestId('rule-title'));
     const input = title.getByRole('textbox');
     fireEvent.change(input, { target: { value: 'heart failure' } });
@@ -373,13 +449,15 @@ describe('creating a rule', () => {
     const rules = new FakeRules();
     rules.fail.createFilingRule = new StudyVaultError('not_found', 'Bank not found');
     await mount(rules);
-    fireEvent.click(await screen.findByRole('button', { name: 'Create the first rule' }));
-    fireEvent.change(inDialog().getByTestId('rule-name'), { target: { value: 'X' } });
+    await openNewRule();
+    fireEvent.click(inDialog().getByRole('checkbox', { name: /^Site/ }));
+    next();
     const hosts = within(inDialog().getByTestId('rule-hosts'));
     fireEvent.change(hosts.getByRole('textbox'), { target: { value: 'example.com' } });
     fireEvent.click(hosts.getByRole('button', { name: 'Add site' }));
-    fireEvent.change(inDialog().getByTestId('rule-bank'), { target: { value: BANK_CARDIO } });
-    fireEvent.click(inDialog().getByTestId('dialog-confirm'));
+    toLastStep();
+    fireEvent.change(inDialog().getByTestId('rule-name'), { target: { value: 'X' } });
+    fireEvent.click(inDialog().getByRole('button', { name: 'Create rule' }));
     expect(await inDialog().findByText('Bank not found')).toBeTruthy();
     expect(dialog()).toBeTruthy();
   });
@@ -392,15 +470,76 @@ describe('editing, duplicating and deleting', () => {
     await mount(rules);
     await screen.findAllByTestId('rule-row');
     fireEvent.click(within(rowNamed('Old name')).getByTestId('rule-edit'));
+    // Editing opens on the review, with a way back to each part.
+    expect(stepTitle()).toBe('Looks good?');
+    fireEvent.click(inDialog().getByRole('button', { name: 'Change what it matches' }));
+    expect(stepTitle()).toBe('When');
+    // The rule's own fields start picked.
+    expect((inDialog().getByRole('checkbox', { name: /^Site/ }) as HTMLInputElement).checked).toBe(
+      true,
+    );
+    // "Review" walks back over the steps in between and lands on the review again.
+    expect(inDialog().queryByRole('button', { name: 'Next' })).toBeNull();
+    fireEvent.click(inDialog().getByRole('button', { name: 'Review' }));
+    expect(stepTitle()).toBe('Looks good?');
     const name = inDialog().getByTestId('rule-name') as HTMLInputElement;
     expect(name.value).toBe('Old name');
     fireEvent.change(name, { target: { value: 'New name' } });
-    fireEvent.click(inDialog().getByTestId('dialog-confirm'));
+    fireEvent.click(inDialog().getByRole('button', { name: 'Save rule' }));
     await waitFor(() => expect(rules.called('updateFilingRule')).toHaveLength(1));
     expect(rules.called('updateFilingRule')[0]!.args[2]).toEqual({
       expectedVersion: rule.updatedAt,
     });
     await waitFor(() => expect(rowNamed('New name')).toBeTruthy());
+  });
+
+  it('after a jump back, Review stops on the first step that needs a fix', async () => {
+    const rules = new FakeRules();
+    rules.seed({ name: 'A' });
+    await mount(rules);
+    await screen.findAllByTestId('rule-row');
+    fireEvent.click(within(rowNamed('A')).getByTestId('rule-edit'));
+    fireEvent.click(inDialog().getByRole('button', { name: 'Change what it matches' }));
+    // A new field without a value: Review cannot pass "What matches".
+    fireEvent.click(inDialog().getByRole('checkbox', { name: /^Page title/ }));
+    fireEvent.click(inDialog().getByRole('button', { name: 'Review' }));
+    expect(stepTitle()).toBe('What matches');
+    expect(inDialog().getByRole('alert').textContent).toMatch(/Add a word/);
+    const title = within(inDialog().getByTestId('rule-title'));
+    fireEvent.change(title.getByRole('textbox'), { target: { value: 'heart' } });
+    fireEvent.keyDown(title.getByRole('textbox'), { key: 'Enter' });
+    fireEvent.click(inDialog().getByRole('button', { name: 'Review' }));
+    expect(stepTitle()).toBe('Looks good?');
+    expect(inDialog().getByTestId('rule-summary').textContent).toContain('“heart”');
+    fireEvent.click(inDialog().getByRole('button', { name: 'Save rule' }));
+    await waitFor(() => expect(rules.called('updateFilingRule')).toHaveLength(1));
+    expect(rules.called('updateFilingRule')[0]!.args[1]).toMatchObject({
+      match: { hosts: ['example.com'], titleContains: ['heart'] },
+    });
+  });
+
+  it('a rule whose bank was deleted cannot be saved from the review: it shows where to fix it', async () => {
+    const rules = new FakeRules();
+    const rule = rules.seed({ name: 'Orphan', action: { bankId: 'bank-deleted01' } });
+    rules.problems = [
+      { ruleId: rule.id, field: 'action.bankId', id: 'bank-deleted01', problem: 'deleted' },
+    ];
+    await mount(rules);
+    await screen.findAllByTestId('rule-row');
+    fireEvent.click(within(rowNamed('Orphan')).getByTestId('rule-edit'));
+    expect(inDialog().getByTestId('rule-summary').textContent).toContain('a deleted bank');
+    fireEvent.click(inDialog().getByRole('button', { name: 'Save rule' }));
+    expect(stepTitle()).toBe('File into');
+    expect(inDialog().getByRole('alert').textContent).toMatch(/Choose the bank/);
+    expect(rules.called('updateFilingRule')).toHaveLength(0);
+    fireEvent.click(inDialog().getByRole('radio', { name: /Renal/ }));
+    fireEvent.click(inDialog().getByRole('button', { name: 'Review' }));
+    expect(stepTitle()).toBe('Looks good?');
+    fireEvent.click(inDialog().getByRole('button', { name: 'Save rule' }));
+    await waitFor(() => expect(rules.called('updateFilingRule')).toHaveLength(1));
+    expect(rules.called('updateFilingRule')[0]!.args[1]).toMatchObject({
+      action: { bankId: BANK_RENAL },
+    });
   });
 
   it('refuses to overwrite a rule that was changed while the dialog was open', async () => {
@@ -410,8 +549,9 @@ describe('editing, duplicating and deleting', () => {
     await screen.findAllByTestId('rule-row');
     fireEvent.click(within(rowNamed('A')).getByTestId('rule-edit'));
     await rules.updateFilingRule(rule.id, { name: 'Changed elsewhere' });
+    toLastStep();
     fireEvent.change(inDialog().getByTestId('rule-name'), { target: { value: 'Mine' } });
-    fireEvent.click(inDialog().getByTestId('dialog-confirm'));
+    fireEvent.click(inDialog().getByRole('button', { name: 'Save rule' }));
     expect(await inDialog().findByText(/changed in another window/)).toBeTruthy();
     expect(rules.live()[0]!.name).toBe('Changed elsewhere');
   });
@@ -430,7 +570,9 @@ describe('editing, duplicating and deleting', () => {
       requireConfirm: false,
       match: { hosts: ['a.org'] },
     });
-    expect((await inDialog().findByTestId('rule-name')) as HTMLInputElement).toHaveProperty(
+    await waitFor(() => expect(dialog()).toBeTruthy());
+    toLastStep();
+    expect(inDialog().getByTestId('rule-name') as HTMLInputElement).toHaveProperty(
       'value',
       'A (copy)',
     );
@@ -472,7 +614,9 @@ describe('Test a rule', () => {
     const rules = new FakeRules();
     setup(rules);
     await mount(rules);
-    await screen.findByTestId('rule-tester');
+    // The test panel is folded away until asked for.
+    fireEvent.click(await screen.findByTestId('rule-tester-toggle'));
+    expect(screen.getByTestId('rule-tester-toggle').getAttribute('aria-expanded')).toBe('true');
     const t = within(screen.getByTestId('rule-tester'));
     const type = (id: string, value: string) =>
       fireEvent.change(screen.getByTestId(id), { target: { value } });
@@ -494,7 +638,7 @@ describe('Test a rule', () => {
       });
       rules.seed({ name: 'Other site', match: { hosts: ['other.org'] } });
     });
-    expect(t.getByTestId('test-result').textContent).toMatch(/Fill in the fields/);
+    expect(t.getByTestId('test-result').textContent).toMatch(/Type an address/);
 
     type('test-url', 'https://www.example.com/cardio/week-1');
     type('test-title', 'Heart failure basics');

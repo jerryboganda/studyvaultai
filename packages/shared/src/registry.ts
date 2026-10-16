@@ -23,6 +23,11 @@ export interface TableSpec {
   derivedFields?: readonly string[];
   /** Tables that must never leave the device (e.g. cached PDF bytes unless the user opts in). */
   localOnly?: boolean;
+  /**
+   * Rows the app keeps for its own accounting (the game ledger, ADR-022): backed up and restored like
+   * any table, but never counted as the person's items in restore previews.
+   */
+  bookkeeping?: boolean;
 }
 
 export interface TableRegistry {

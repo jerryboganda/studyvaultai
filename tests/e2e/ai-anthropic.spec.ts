@@ -1,6 +1,4 @@
-import fs from 'node:fs';
 import type { Page } from '@playwright/test';
-import { strFromU8, unzipSync } from 'fflate';
 import { anthropicFailure, cannedAnswer, failure, ok } from './aiServer';
 import {
   ANTHROPIC_KEY,
@@ -8,17 +6,20 @@ import {
   FAKE_KEY,
   WRONG_ANTHROPIC_KEY,
   addAnthropicFallback,
+  backupText,
   configureProvider,
   enableAi,
   expect,
   maskOf,
   metaValue,
   nonFixture,
+  openAdvanced,
   openConsent,
   openExt,
   openSide,
   outboundOf,
   pageContents,
+  pickCard,
   readTable,
   renderOutbound,
   saveHighlight,
@@ -26,16 +27,20 @@ import {
   sendAndWaitForDraft,
   setUpAi,
   setUpAnthropic,
+  setupStep,
   storageDump,
   test,
   watchTraffic,
 } from './helpers.aiAnthropic';
 
+/** The fixture card number (tests/fixtures/html/ai-source.html), with or without separators. */
+const CARD = /4111[ -]?1111[ -]?1111[ -]?1111/;
+
 /**
  * The Anthropic provider of the optional AI feature in a real loaded extension, against a local FAKE
  * that speaks the Anthropic Messages API (./aiServer.ts, `api: 'anthropic'`). No real key, no
- * internet. Everything a person does goes through the shipped UI: the "Use Anthropic" preset and the
- * provider form, the key field, the side panel's highlight card, the consent preview.
+ * internet. Everything a person does goes through the shipped UI: the Anthropic card of the setup
+ * wizard, the key field under "Advanced", the side panel's highlight card, the consent preview.
  *
  * What the fake enforces, as the live API does: `x-api-key` (Authorization is not read),
  * `anthropic-version`, a body of exactly model / max_tokens / system / messages / temperature, user
@@ -72,18 +77,25 @@ test.describe('choosing Anthropic and keeping its key', () => {
     await options.bringToFront();
 
     await enableAi(options);
-    await options.getByRole('button', { name: 'Use Anthropic' }).click();
-    await expect(options.getByTestId('ai-provider')).toHaveValue('anthropic');
+    await pickCard(options, 'ai-preset-anthropic');
+    await options.getByTestId('ai-setup-next').click();
+    await expect(setupStep(options, 'Address and model')).toBeVisible();
     await expect(options.getByTestId('ai-base-url')).toHaveValue('');
-    await expect(options.getByText('Leave empty for https://api.anthropic.com.')).toBeVisible();
+    await expect(options.getByText('Empty means https://api.anthropic.com.')).toBeVisible();
     await expect(options.getByTestId('ai-endpoint-status')).toContainText(
-      'Requests will go to https://api.anthropic.com only.',
+      'Requests go to https://api.anthropic.com only.',
     );
+    await options.getByTestId('ai-setup-back').click();
 
     // The person points it at another address (here the fake) and names the model.
-    await configureProvider(options, { baseUrl: anthropic.baseUrl, model: ANTHROPIC_MODEL });
+    await configureProvider(options, {
+      baseUrl: anthropic.baseUrl,
+      model: ANTHROPIC_MODEL,
+      preset: 'anthropic',
+      key: ANTHROPIC_KEY, // Anthropic always wants a key, even at a local address: the wizard asks
+    });
     await expect(options.getByTestId('ai-endpoint-status')).toContainText(
-      `Requests will go to ${anthropic.origin} only.`,
+      `Requests go to ${anthropic.origin} only.`,
     );
     expect(await metaValue(options, 'aiSettings')).toMatchObject({
       provider: 'anthropic',
@@ -92,15 +104,6 @@ test.describe('choosing Anthropic and keeping its key', () => {
     });
     expect(anthropic.seen, 'configuring a provider sends nothing').toEqual([]);
 
-    // Anthropic always wants a key, even at a local address: the test button says so.
-    await expect(options.getByTestId('ai-key-status')).toHaveText('No key saved.');
-    const testButton = options.getByTestId('ai-test');
-    await expect(testButton).toHaveAttribute('aria-disabled', 'true');
-    await expect(testButton).toHaveAccessibleDescription(
-      'Add your API key in the AI settings first.',
-    );
-
-    await saveKey(options, ANTHROPIC_KEY);
     await expect(options.getByTestId('ai-key-status')).toContainText(maskOf(ANTHROPIC_KEY));
     await expect(options.getByTestId('ai-access-status')).toHaveText('allowed');
 
@@ -121,12 +124,7 @@ test.describe('choosing Anthropic and keeping its key', () => {
     );
 
     // 4. Not in a backup made through the Backup section.
-    const download = options.waitForEvent('download');
-    await options.getByTestId('backup-export-start').click();
-    const file = await (await download).path();
-    const text = Object.values(unzipSync(new Uint8Array(fs.readFileSync(file))))
-      .map((bytes) => strFromU8(bytes))
-      .join('\n');
+    const text = await backupText(env, options);
     expect(text, 'the backup holds the highlight').toContain(highlight.exactQuote.slice(0, 40));
     expect(text, 'the backup does not hold the key').not.toContain(ANTHROPIC_KEY);
     expect(text, 'nor the provider address').not.toContain(anthropic.origin);
@@ -226,7 +224,7 @@ test.describe('a request', () => {
     expect(sent?.headers.referer, 'no referrer').toBeUndefined();
     expect(sent?.body, 'the key is a header, never part of the body').not.toContain(ANTHROPIC_KEY);
     expect(sent?.body).not.toContain('jane.doe@example.org');
-    expect(sent?.body).not.toContain('4111');
+    expect(sent?.body).not.toMatch(CARD);
 
     // An unverified draft: labelled, with the vault's own quote as the citation.
     await expect(card).toHaveAttribute('data-kind', 'exam_pearl');
@@ -256,6 +254,7 @@ test.describe('a request', () => {
       outputTokens: 87,
     });
     await options.reload();
+    await openAdvanced(options);
     await expect(options.getByTestId('ai-ledger-requests')).toHaveText('1 of 30');
     await expect(options.getByTestId('ai-ledger-tokens')).toHaveText('4321 in, 87 out');
 

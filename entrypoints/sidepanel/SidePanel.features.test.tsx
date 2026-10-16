@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, configure, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, configure, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { browser } from 'wxt/browser';
 import { fakeBrowser } from 'wxt/testing/fake-browser';
@@ -13,7 +13,7 @@ import {
 import { readReminderFlag, writeReminderFlag } from '@ui/review/reminders';
 import { BIOLOGY, INBOX, makeChromeFakes, makeItem, rpc, store } from '@ui/testing/fakes';
 import { SidePanel } from './SidePanel';
-import { extras } from './testing';
+import { description, extras, openCard, showRecent } from './testing';
 
 // The real module underneath (review's session port binds to it at import time); the panel's
 // reads and writes are the in-memory fakes, which share one item list and one change signal.
@@ -131,16 +131,16 @@ const doc = (id: string, over: Partial<SearchDocument> = {}): SearchDocument => 
 // ---------------------------------------------------------------------------------------------
 
 describe('tabs, header and address hash', () => {
-  it('offers This page, Recent, Search, Banks and Review in that order', async () => {
+  it('offers This page, Banks, Review, Search and More in that order', async () => {
     live();
     await open();
     const tabs = await screen.findAllByRole('tab');
     expect(tabs.map((t) => (t.textContent ?? '').replace(/\s*\(\d+\)$/, ''))).toEqual([
       'This page',
-      'Recent',
-      'Search',
       'Banks',
       'Review',
+      'Search',
+      'More',
     ]);
     expect(tabs.filter((t) => t.getAttribute('aria-selected') === 'true')).toHaveLength(1);
   });
@@ -152,10 +152,12 @@ describe('tabs, header and address hash', () => {
     expect((await screen.findByRole('tab', { name: 'Banks' })).getAttribute('aria-selected')).toBe(
       'true',
     );
-    expect(await screen.findByLabelText('New bank')).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'New bank' })).toBeTruthy();
 
-    await userEvent.click(screen.getByRole('tab', { name: 'Recent' }));
+    await showRecent();
     expect(window.location.hash).toBe('#recent');
+    // Recent is a page of More: the More tab stays selected.
+    expect(screen.getByRole('tab', { name: 'More' }).getAttribute('aria-selected')).toBe('true');
 
     window.location.hash = '#search';
     await waitFor(() =>
@@ -174,16 +176,22 @@ describe('tabs, header and address hash', () => {
     ).toBe('true');
   });
 
-  it('keeps the page context in the header on every tab', async () => {
+  it('names the page and its status on This page, and counts its highlights on the tab', async () => {
     live();
     store.reset([makeItem(), makeItem()]);
     await open();
-    await screen.findByText('2 highlights');
-    await userEvent.click(screen.getByRole('tab', { name: 'Banks' }));
-    const context = screen.getByTestId('page-context');
+    const context = await screen.findByTestId('page-context');
     expect(within(context).getByRole('heading', { name: 'Cell biology notes' })).toBeTruthy();
     expect(within(context).getByText('example.com')).toBeTruthy();
-    expect(within(context).getByText('2 highlights')).toBeTruthy();
+    expect(within(context).getByText('On')).toBeTruthy();
+    expect(await screen.findByRole('tab', { name: /^This page\s?\(2\)$/ })).toBeTruthy();
+  });
+
+  it('opens Settings from the header', async () => {
+    live();
+    await open();
+    await userEvent.click(await screen.findByRole('button', { name: 'Settings' }));
+    expect(browser.runtime.openOptionsPage).toHaveBeenCalled();
   });
 
   it('opens the dashboard from the header', async () => {
@@ -228,7 +236,7 @@ describe('card actions', () => {
     await open(features({ review: false }));
     const button = await screen.findByRole('button', { name: 'Make flashcard' });
     expect(button.getAttribute('aria-disabled')).toBe('true');
-    expect(button.getAttribute('title')).toMatch(/Review is turned off in Settings/);
+    expect(description(button)).toMatch(/Review is turned off in Settings/);
     await userEvent.click(button);
     expect(created).toEqual([]);
   });
@@ -252,6 +260,7 @@ describe('tags', () => {
     store.reset([makeItem()]);
     const id = store.items[0]!.highlight.id;
     await open();
+    await openCard();
     const field = await screen.findByLabelText('Add a tag');
 
     await userEvent.type(field, '  exam pearl ');
@@ -273,6 +282,7 @@ describe('tags', () => {
     store.reset([makeItem()]);
     extras.tags = [{ id: 'tag-existing1', name: 'neuro', color: null, nameKey: 'neuro' }];
     await open();
+    await openCard();
     const field = (await screen.findByLabelText('Add a tag')) as HTMLInputElement;
     const list = document.getElementById(field.getAttribute('list')!)!;
     await waitFor(() =>
@@ -294,6 +304,11 @@ describe('tags', () => {
     extras.tags = [{ id: 'tag-existing1', name: 'neuro', color: null, nameKey: 'neuro' }];
     extras.links.set(id, new Set(['tag-existing1']));
     await open();
+    // Closed card: the tag is a read-only chip (once the card's details have loaded).
+    await waitFor(() =>
+      expect(screen.getByRole('list', { name: 'Banks and tags' }).textContent).toContain('#neuro'),
+    );
+    await openCard();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Remove tag neuro' }));
 
@@ -308,6 +323,7 @@ describe('tags', () => {
     live();
     store.reset([makeItem()]);
     await open();
+    await openCard();
     const field = await screen.findByLabelText('Add a tag');
 
     await userEvent.click(screen.getByRole('button', { name: 'Add tag' }));
@@ -326,6 +342,7 @@ describe('tags', () => {
     store.reset([makeItem()]);
     extras.failNext.createTag = new StudyVaultError('internal', 'Tag table is locked');
     await open();
+    await openCard();
     await userEvent.type(await screen.findByLabelText('Add a tag'), 'neuro{Enter}');
     expect((await screen.findByRole('alert')).textContent).toContain('Tag table is locked');
   });
@@ -343,6 +360,9 @@ describe('notes', () => {
       body: '**Key point**\n\n<script>window.__x=1</script>\n\n[site](https://example.org)',
     });
     const { container } = await open();
+    // Closed card: a chip counts the study notes.
+    expect(await screen.findByText('study note', { exact: false })).toBeTruthy();
+    await openCard();
 
     const note = await screen.findByTestId('card-note');
     expect(within(note).getByText('Key point').tagName).toBe('STRONG');
@@ -358,6 +378,7 @@ describe('notes', () => {
     store.reset([makeItem()]);
     const item = store.items[0]!;
     await open();
+    await openCard();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Add a note' }));
     const editor = await screen.findByLabelText('New study note (Markdown)');
@@ -382,6 +403,7 @@ describe('notes', () => {
     const id = store.items[0]!.highlight.id;
     const note = await extras.module.createNote({ highlightId: id, body: 'First draft' });
     await open();
+    await openCard();
 
     await userEvent.click(
       await screen.findByRole('button', { name: /^Edit this note: First draft/ }),
@@ -409,6 +431,7 @@ describe('notes', () => {
     live();
     store.reset([makeItem()]);
     await open();
+    await openCard();
     await userEvent.click(await screen.findByRole('button', { name: 'Add a note' }));
     await userEvent.click(screen.getByRole('button', { name: 'Save note' }));
     expect((await screen.findByRole('alert')).textContent).toContain('Write something, or cancel.');
@@ -425,10 +448,52 @@ describe('notes', () => {
     expect(await screen.findByText('Do not lose me')).toBeTruthy();
   });
 
+  it('keeps the open drawer and what is being typed when the panel follows another tab and comes back', async () => {
+    rpc.tab['content.pageStatus'] = () => {
+      if (current.id !== 11) throw new StudyVaultError('unsupported_page', 'No receiver.');
+      return status();
+    };
+    store.reset([makeItem()]);
+    await open();
+    await openCard();
+    await userEvent.click(await screen.findByRole('button', { name: 'Add a note' }));
+    await userEvent.type(screen.getByLabelText('New study note (Markdown)'), 'Half a thought');
+    await userEvent.type(screen.getByLabelText('Add a tag'), 'renal');
+
+    // Another tab comes to the front (a blank page): its list replaces this page's cards.
+    const switchTo = async (tab: FakeTab) => {
+      current = tab;
+      await act(async () => {
+        await fakeBrowser.tabs.onActivated.trigger({ tabId: tab.id, windowId: 1 });
+      });
+    };
+    await switchTo({ id: 12, url: undefined, title: '' });
+    await waitFor(() => expect(screen.queryByRole('article')).toBeNull());
+    await switchTo({ id: 11, url: 'https://example.com/notes', title: 'Cell biology notes' });
+
+    const card = await screen.findByRole('article');
+    expect(within(card).getByTestId('card-more').getAttribute('aria-expanded')).toBe('true');
+    const editor = within(card).getByLabelText('New study note (Markdown)') as HTMLTextAreaElement;
+    expect(editor.value).toBe('Half a thought');
+    expect((within(card).getByLabelText('Add a tag') as HTMLInputElement).value).toBe('renal');
+    expect(store.calls.some((c) => c.fn === 'createNote')).toBe(false);
+
+    // Saved, the draft is done with: the editor closes and stays closed after the next remount.
+    await userEvent.click(within(card).getByRole('button', { name: 'Save note' }));
+    expect(await within(card).findByTestId('card-note')).toBeTruthy();
+    await switchTo({ id: 12, url: undefined, title: '' });
+    await waitFor(() => expect(screen.queryByRole('article')).toBeNull());
+    await switchTo({ id: 11, url: 'https://example.com/notes', title: 'Cell biology notes' });
+    const back = await screen.findByRole('article');
+    expect(within(back).queryByLabelText('New study note (Markdown)')).toBeNull();
+    expect(within(back).getByTestId('card-more').getAttribute('aria-expanded')).toBe('true');
+  });
+
   it('keeps the first text area of a card for the quick note, so the hand-over still lands there', async () => {
     live();
     store.reset([makeItem()]);
     await open();
+    await openCard();
     await userEvent.click(await screen.findByRole('button', { name: 'Add a note' }));
     const card = screen.getByRole('article');
     expect(card.querySelector('textarea')?.id).toBe(
@@ -444,9 +509,12 @@ describe('AI on a card', () => {
     live();
     store.reset([makeItem()]);
     await open();
+    // Said once, inside the card's More actions (not repeated on every closed card).
+    expect(screen.queryByTestId('card-ai-hint')).toBeNull();
+    await openCard();
     const hint = await screen.findByTestId('card-ai-hint');
     expect(hint.textContent).toContain('AI drafts are off');
-    const link = within(hint).getByRole('link', { name: 'Turn them on in Options' });
+    const link = within(hint).getByRole('link', { name: 'Turn on AI drafts in Options' });
     expect(link.getAttribute('href')).toMatch(/options\.html#ai$/);
     expect(screen.queryByTestId('ai-actions-stub')).toBeNull();
   });
@@ -456,6 +524,7 @@ describe('AI on a card', () => {
     store.reset([makeItem()]);
     const id = store.items[0]!.highlight.id;
     await open(features({ ai: true }));
+    await openCard();
     const toggle = await screen.findByRole('button', { name: 'AI drafts' });
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(screen.queryByTestId('card-ai-hint')).toBeNull();
@@ -478,8 +547,11 @@ describe('Review tab', () => {
     const tab = await screen.findByRole('tab', { name: /^Review.*3/ });
     await userEvent.click(tab);
 
-    expect(await screen.findByText('cards to study now')).toBeTruthy();
-    await userEvent.click(screen.getByRole('button', { name: 'Start reviewing' }));
+    expect((await screen.findByTestId('rv-tab-count')).textContent).toBe('3');
+    expect(screen.getByRole('list', { name: 'Due mix' }).textContent).toBe(
+      '2 new1 learning0 review',
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Start review' }));
     await waitFor(() => expect(created).toHaveLength(1));
     const url = new URL(created[0]!);
     expect(url.pathname).toBe('/review.html');
@@ -491,7 +563,7 @@ describe('Review tab', () => {
     live();
     await open();
     await userEvent.click(await screen.findByRole('tab', { name: 'Review' }));
-    expect(await screen.findByText('No cards to review yet')).toBeTruthy();
+    expect(await screen.findByText('No cards yet')).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Create cards' }));
     await waitFor(() => expect(new URL(created[0]!).searchParams.get('view')).toBe('create'));
   });
@@ -502,8 +574,8 @@ describe('Review tab', () => {
     await open(features({ review: false }));
     const tab = await screen.findByRole('tab', { name: 'Review' }); // no count while it is off
     await userEvent.click(tab);
-    expect(await screen.findByText('Review is turned off')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Start reviewing' })).toBeNull();
+    expect(await screen.findByText('Review is off')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Start review' })).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'Open settings' }));
     await waitFor(() => expect(created.some((u) => /options\.html#review$/.test(u))).toBe(true));
   });
@@ -526,6 +598,9 @@ describe('daily review notice', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Show review' }));
     expect(screen.getByRole('tab', { name: /^Review/, selected: true })).toBeTruthy();
     expect(screen.getByText('Time to review: 5 cards due')).toBeTruthy();
+    // On Review itself Start is right there: no "Show review" that would do nothing.
+    expect(screen.queryByRole('button', { name: 'Show review' })).toBeNull();
+    await waitFor(() => expect(document.activeElement).not.toBe(document.body)); // its button went away
 
     await userEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
     await waitFor(() => expect(screen.queryByText(/Time to review/)).toBeNull());
@@ -578,7 +653,7 @@ describe('sources', () => {
     };
     store.reset([item], []);
     await open();
-    await userEvent.click(await screen.findByRole('tab', { name: 'Recent' }));
+    await showRecent();
 
     const card = (await screen.findByText('From the lecture PDF.')).closest('article')!;
     const link = within(card).getByRole('link', { name: 'Open in the PDF reader, page 12' });
@@ -604,7 +679,7 @@ describe('sources', () => {
     });
     store.reset([item], []);
     await open();
-    await userEvent.click(await screen.findByRole('tab', { name: 'Recent' }));
+    await showRecent();
     const card = (await screen.findByText('Imported quote.')).closest('article')!;
     expect(within(card).queryByRole('link', { name: /Open page|PDF reader/ })).toBeNull();
     expect(card.textContent).toContain('From an imported source');
@@ -627,15 +702,19 @@ describe('bank filter', () => {
     await open();
     await userEvent.click(await screen.findByRole('tab', { name: 'Banks' }));
   }
+  const openBiology = async () =>
+    userEvent.click(await screen.findByRole('button', { name: /^Biology/ }));
 
-  it('narrows Recent to a bank and says so, then clears', async () => {
+  it('opens a bank with its own highlights, narrows Recent to it, then clears', async () => {
     await openBanks();
-    await userEvent.click(
-      await screen.findByRole('button', { name: 'Show Biology in Recent and Search' }),
-    );
-    expect(screen.getByTestId('bank-scope').textContent).toContain('only Biology');
+    await openBiology();
+    const head = screen.getByTestId('bank-scope');
+    expect(within(head).getByRole('heading', { name: 'Biology' })).toBeTruthy();
+    // The open bank lists its highlights in place.
+    expect(await screen.findByText('Biology only.')).toBeTruthy();
+    expect(screen.queryByText('Inbox only.')).toBeNull();
 
-    await userEvent.click(screen.getByRole('tab', { name: 'Recent' }));
+    await showRecent();
     expect(await screen.findByText('Biology only.')).toBeTruthy();
     expect(screen.queryByText('Inbox only.')).toBeNull();
     expect(screen.getByTestId('recent-scope').textContent).toContain('Only Biology');
@@ -646,6 +725,17 @@ describe('bank filter', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Show everything' }));
     expect(await screen.findByText('Inbox only.')).toBeTruthy();
     expect(screen.queryByTestId('recent-scope')).toBeNull();
+    // Back in Banks, the list of banks shows again.
+    await userEvent.click(screen.getByRole('tab', { name: 'Banks' }));
+    expect(await screen.findByRole('list', { name: 'Your banks' })).toBeTruthy();
+  });
+
+  it('goes back to all banks', async () => {
+    await openBanks();
+    await openBiology();
+    await userEvent.click(screen.getByRole('button', { name: 'All banks' }));
+    expect(await screen.findByRole('list', { name: 'Your banks' })).toBeTruthy();
+    expect(screen.queryByTestId('bank-scope')).toBeNull();
   });
 
   it('shows folders with counts, expands children and filters to a folder', async () => {
@@ -653,6 +743,7 @@ describe('bank filter', () => {
     extras.folders[BIOLOGY.id] = [
       folder('fold-cell0001', 'Cell', 5, [folder('fold-organ001', 'Organelles', 2)]),
     ];
+    await openBiology();
     const toggle = screen.getByRole('button', { name: 'Show folders of Biology' });
     await userEvent.click(toggle);
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
@@ -668,7 +759,9 @@ describe('bank filter', () => {
     await userEvent.click(
       within(list).getByRole('button', { name: 'Show Organelles in Recent and Search' }),
     );
-    expect(screen.getByTestId('bank-scope').textContent).toContain('Biology › Organelles');
+    expect(screen.getByTestId('folder-scope').textContent).toContain('Only Organelles');
+    await userEvent.click(screen.getByRole('button', { name: 'Show all of Biology' }));
+    expect(screen.queryByTestId('folder-scope')).toBeNull();
   });
 
   it('offers chat with a bank only while AI is on; off, the button says why and opens nothing', async () => {
@@ -677,9 +770,10 @@ describe('bank filter', () => {
     store.banks = [INBOX, BIOLOGY];
     await open();
     await userEvent.click(await screen.findByRole('tab', { name: 'Banks' }));
+    await openBiology();
     const off = await screen.findByRole('button', { name: 'Chat with the notes of Biology (AI)' });
     expect(off.getAttribute('aria-disabled')).toBe('true');
-    expect(off.getAttribute('title')).toMatch(/AI features are off/);
+    expect(description(off)).toMatch(/AI features are off/);
     await userEvent.click(off);
     expect(created).toHaveLength(0);
   });
@@ -690,6 +784,7 @@ describe('bank filter', () => {
     store.banks = [INBOX, BIOLOGY];
     await open(features({ ai: true }));
     await userEvent.click(await screen.findByRole('tab', { name: 'Banks' }));
+    await openBiology();
     const chat = await screen.findByRole('button', { name: 'Chat with the notes of Biology (AI)' });
     await waitFor(() => expect(chat.getAttribute('aria-disabled')).toBeNull());
     await userEvent.click(chat);
@@ -701,6 +796,7 @@ describe('bank filter', () => {
 
   it('says so when a bank has no folders, and offers the dashboard for managing them', async () => {
     await openBanks();
+    await openBiology();
     await userEvent.click(screen.getByRole('button', { name: 'Show folders of Biology' }));
     expect(await screen.findByText('No folders in this bank yet.')).toBeTruthy();
     await userEvent.click(screen.getByRole('button', { name: 'Open Biology in the dashboard' }));
@@ -771,14 +867,15 @@ describe('Search tab', () => {
     const { a, b } = await openSearch();
     rpc.tab['content.reveal'] = () => ({ found: true });
     await userEvent.type(queryBox(), 'mitochondria OR ribosomes');
-    const cards = await screen.findAllByTestId('search-result');
-    expect(cards).toHaveLength(2);
+    // Typing is debounced: wait for the whole query, not a match of its first word.
+    await waitFor(() => expect(screen.getAllByTestId('search-result')).toHaveLength(2));
+    const cards = screen.getAllByTestId('search-result');
     const mine = cards.find((c) => c.getAttribute('data-highlight-id') === a.highlight.id)!;
     const other = cards.find((c) => c.getAttribute('data-highlight-id') === b.highlight.id)!;
 
     const off = within(other).getByRole('button', { name: 'Show on page' });
     expect(off.getAttribute('aria-disabled')).toBe('true');
-    expect(off.getAttribute('title')).toMatch(/from another page/);
+    expect(description(off)).toMatch(/from another page/);
 
     await userEvent.click(within(mine).getByRole('button', { name: 'Show on page' }));
     expect(await within(mine).findByText('Showing this highlight on the page.')).toBeTruthy();
@@ -828,9 +925,7 @@ describe('Search tab', () => {
     await openSearch();
     store.banks = [INBOX, BIOLOGY];
     await userEvent.click(screen.getByRole('tab', { name: 'Banks' }));
-    await userEvent.click(
-      await screen.findByRole('button', { name: 'Show Biology in Recent and Search' }),
-    );
+    await userEvent.click(await screen.findByRole('button', { name: /^Biology/ }));
     await userEvent.click(screen.getByRole('tab', { name: 'Search' }));
     expect(screen.getByTestId('search-scope').textContent).toContain('Only in Biology');
 
@@ -845,7 +940,7 @@ describe('Search tab', () => {
   it('keeps what was typed when another tab is visited', async () => {
     await openSearch();
     await userEvent.type(queryBox(), 'mitochondria');
-    await userEvent.click(screen.getByRole('tab', { name: 'Recent' }));
+    await userEvent.click(screen.getByRole('tab', { name: 'Banks' }));
     await userEvent.click(screen.getByRole('tab', { name: 'Search' }));
     expect((queryBox() as HTMLInputElement).value).toBe('mitochondria');
     expect(await screen.findByTestId('search-results')).toBeTruthy();

@@ -1,15 +1,32 @@
 import { Suspense, lazy, useCallback, useState } from 'react';
 import { browser } from 'wxt/browser';
 import {
+  ChartColumn,
+  Flame,
+  GalleryVerticalEnd,
+  Layers,
+  Settings,
+  Settings2,
+  SquarePlus,
+  Timer,
+} from 'lucide-react';
+import {
+  BarMeter,
   Button,
+  IconButton,
+  IconTabBar,
   InlineNotice,
-  Tabs,
+  ProgressRing,
+  StatChip,
   ToastProvider,
+  VaultBuddy,
   useAction,
   useApplyTheme,
   useFocusRescue,
   useSettings,
+  type IconTab,
 } from '@ui';
+import { useGame, type GameView } from '@ui/game';
 import {
   ReviewSettingsSection,
   TID,
@@ -23,13 +40,22 @@ import {
 import { Analytics } from './Analytics';
 import { Author } from './Author';
 import { CardBrowser } from './CardBrowser';
-import { StudyView } from './StudyView';
+import { Loading, StudyView } from './StudyView';
 
 // The exam view and its storage helpers are only needed on the Exam tab: a chunk of their own.
 const ExamView = lazy(() => import('./Exam').then((m) => ({ default: m.ExamView })));
 
 /** Where focus goes when a toast that held it closes: the panel content, never <body>. */
 const content = () => document.querySelector<HTMLElement>('[role="tabpanel"], main');
+
+const TABS: IconTab<ReviewView>[] = [
+  { id: 'study', label: 'Study', icon: Layers },
+  { id: 'exam', label: 'Exam', icon: Timer },
+  { id: 'create', label: 'Create', icon: SquarePlus },
+  { id: 'cards', label: 'Cards', icon: GalleryVerticalEnd },
+  { id: 'analytics', label: 'Stats', icon: ChartColumn },
+  { id: 'settings', label: 'Settings', icon: Settings2 },
+];
 
 export function Review() {
   return (
@@ -39,10 +65,56 @@ export function Review() {
   );
 }
 
+/**
+ * Today's goal ring and streak (Game mode on). While the ledger is still being built it shows the
+ * real backfill progress and no number; with Game mode off it shows nothing (ADR-022).
+ */
+function GameHeader({ game }: { game: GameView }) {
+  const g = game.data;
+  if (!g || !g.mode) return null;
+  if (!g.ready) {
+    if (g.backfill.status === 'failed') {
+      return (
+        <Button variant="ghost" onClick={() => void game.retryBackfill()}>
+          Retry XP count
+        </Button>
+      );
+    }
+    return (
+      <div className="rv-head__counting">
+        <span className="sv-small">Counting XP</span>
+        <BarMeter
+          value={g.backfill.done}
+          max={Math.max(1, g.backfill.total)}
+          label="Counting your XP"
+          valueText={`${g.backfill.done} of ${g.backfill.total}`}
+          size="sm"
+        />
+      </div>
+    );
+  }
+  return (
+    <div className="rv-head__game">
+      <ProgressRing
+        value={g.today.xp}
+        max={g.goal.value}
+        label="Daily goal"
+        unit="XP"
+        size={48}
+        stroke={6}
+      >
+        <span className="rv-head__xp">{g.today.xp}</span>
+      </ProgressRing>
+      <StatChip icon={Flame} tone="flame" value={g.streak.current} label="day streak" hideLabel />
+    </div>
+  );
+}
+
 function Page() {
   const global = useSettings();
   useApplyTheme(global.settings?.theme);
   const study = useStudySettings();
+  const game = useGame();
   const [link] = useState(() => parseReviewSearch(window.location.search));
   const [view, setView] = useState<ReviewView>(
     link.view ?? (link.highlightId ? 'create' : 'study'),
@@ -97,7 +169,7 @@ function Page() {
   if (!settings) {
     return (
       <div className="rv-page" data-testid={TID.page}>
-        <p className="sv-muted">Loading…</p>
+        <Loading />
       </div>
     );
   }
@@ -113,38 +185,41 @@ function Page() {
       data-testid={TID.page}
     >
       <header className="rv-head">
-        <h1>Review</h1>
-        <p className="sv-muted" aria-live="polite">
-          {due.count === null
-            ? ''
-            : due.count === 0
-              ? 'Nothing due right now'
-              : `${due.count} due now`}
-        </p>
-        <Button variant="ghost" busy={openSettings.busy} onClick={() => void openSettings.run()}>
-          StudyVault settings
-        </Button>
+        <VaultBuddy pose="wave" size={56} className="rv-head__buddy" />
+        <div className="rv-head__text">
+          <h1>Review</h1>
+          <p className="rv-head__sub" aria-live="polite">
+            {due.count === null
+              ? ''
+              : due.count === 0
+                ? 'Nothing due right now'
+                : `${due.count} due now`}
+          </p>
+        </div>
+        <GameHeader game={game} />
+        <IconButton
+          icon={Settings}
+          label="StudyVault settings"
+          tipSide="left"
+          aria-busy={openSettings.busy || undefined}
+          onClick={() => void openSettings.run()}
+        />
       </header>
       {openSettings.error ? (
         <InlineNotice tone="error">Could not open settings: {openSettings.error}</InlineNotice>
       ) : null}
-      <Tabs
+      <IconTabBar
         label="Review sections"
-        tabs={[
-          { id: 'study', label: 'Study' },
-          { id: 'exam', label: 'Exam' },
-          { id: 'create', label: 'Create cards' },
-          { id: 'cards', label: 'Cards' },
-          { id: 'analytics', label: 'Analytics' },
-          { id: 'settings', label: 'Settings' },
-        ]}
-        value={view}
-        onChange={(id) => select(id as ReviewView)}
+        tabs={TABS}
+        active={view}
+        onChange={select}
+        className="rv-tabs"
       >
         <div className="rv-panel">
           {view === 'study' ? (
             <StudyView
               settings={settings}
+              game={game}
               start={link.start === true}
               deckId={link.deckId ?? null}
               onFocusMode={setFocusMode}
@@ -152,8 +227,13 @@ function Page() {
             />
           ) : null}
           {view === 'exam' ? (
-            <Suspense fallback={<p className="sv-muted">Loading…</p>}>
-              <ExamView settings={settings} onFocusMode={setFocusMode} target={examTarget} />
+            <Suspense fallback={<Loading />}>
+              <ExamView
+                settings={settings}
+                onFocusMode={setFocusMode}
+                target={examTarget}
+                onCreateCards={() => select('create')}
+              />
             </Suspense>
           ) : null}
           {view === 'create' ? <Author initialHighlightId={link.highlightId ?? null} /> : null}
@@ -163,7 +243,7 @@ function Page() {
           ) : null}
           {view === 'settings' ? <ReviewSettingsSection /> : null}
         </div>
-      </Tabs>
+      </IconTabBar>
     </div>
   );
 }

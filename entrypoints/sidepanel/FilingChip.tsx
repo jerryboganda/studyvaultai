@@ -1,5 +1,6 @@
+import { FolderInput, Tag } from 'lucide-react';
 import type { FilingSuggestion } from '@shared';
-import { Badge, Button, InlineNotice, useAction } from '@ui';
+import { Button, InlineNotice, useAction } from '@ui';
 
 /**
  * A filing rule's pending suggestion on the highlight's card (docs/adr/017-filing-rules.md): the
@@ -22,18 +23,24 @@ export function FilingChip({
     suggestion.folderName === null
       ? suggestion.bankName
       : `${suggestion.bankName} / ${suggestion.folderName}`;
+  const tags = suggestion.addTagIds.length;
   return (
-    <div className="sv-stack sv-stack--tight hl-suggest" data-testid="card-suggestion">
-      <div className="sv-row">
-        <Badge tone="info">Suggestion</Badge>
-        <span className="sv-small sv-wrap" dir="auto">
-          Rule “{suggestion.ruleName}” suggests filing this in <strong>{place}</strong>
-          {suggestion.addTagIds.length > 0
-            ? ` and adding ${suggestion.addTagIds.length} ${suggestion.addTagIds.length === 1 ? 'tag' : 'tags'}`
-            : ''}
-          .
+    <div className="hl-suggest" data-testid="card-suggestion">
+      <p className="hl-suggest__what" dir="auto">
+        <FolderInput aria-hidden="true" strokeWidth={2.4} />
+        <span>
+          File in <strong>{place}</strong>?
         </span>
-      </div>
+        {tags > 0 ? (
+          <span className="hl-chip">
+            <Tag aria-hidden="true" strokeWidth={2.4} />+{tags}
+            <span className="sv-sr"> {tags === 1 ? 'tag' : 'tags'}</span>
+          </span>
+        ) : null}
+      </p>
+      <p className="hl-suggest__rule" dir="auto">
+        Rule: {suggestion.ruleName}
+      </p>
       <div className="sv-row">
         <Button
           variant="primary"
@@ -41,10 +48,12 @@ export function FilingChip({
           disabledReason={dismiss.busy ? 'Dismissing the suggestion.' : undefined}
           onClick={() => void file.run()}
           data-testid="suggestion-file"
+          aria-label={`File in ${suggestion.bankName}`}
         >
-          File in {suggestion.bankName}
+          File
         </Button>
         <Button
+          variant="ghost"
           busy={dismiss.busy}
           disabledReason={file.busy ? 'Filing the highlight.' : undefined}
           onClick={() => void dismiss.run()}

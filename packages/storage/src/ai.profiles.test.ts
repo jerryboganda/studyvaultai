@@ -49,6 +49,9 @@ const profile = (over: Partial<AiProfile> = {}): AiProfile => ({
   model: 'llama',
   jsonMode: true,
   maxTokensParam: 'max_tokens',
+  vendor: 'custom',
+  reasoningEffort: '',
+  authScheme: 'bearer',
   pricing: null,
   fallback: true,
   ...over,
@@ -148,7 +151,7 @@ describe('the keys of fallback providers', () => {
     await updateAiSettings((cur) => ({ ...cur, fallbacks: [a] }));
     await setAiApiKey(KEY, 'https://api.example.test');
     await setAiProfileApiKey(a.id, KEY2, 'http://localhost');
-    expect(AI_SECRET_META_KEYS).toEqual(['aiKey', 'aiProfileKeys']);
+    expect(AI_SECRET_META_KEYS).toEqual(['aiKey', 'aiProfileKeys', 'aiCodexAuth']);
 
     expect(await getAiProfileApiKey(a.id, 'http://localhost')).toBe(KEY2);
     expect(await getAiProfileApiKey(a.id, 'https://evil.example')).toBeNull();

@@ -111,28 +111,65 @@ export const syncSection = (page: Page): Locator => page.getByTestId('sync-secti
 export const syncStatusOf = (page: Page): Locator => syncSection(page).getByTestId('sync-status');
 export const encryptionModeOf = (page: Page): Locator => syncSection(page).getByTestId('e2ee-mode');
 
-/** The settings page, loaded far enough that the sync section is showing something. */
+/** Show one settings view (`options.html#<id>`): only the current view is mounted. */
+export async function gotoSettings(page: Page, env: Env, view: string): Promise<void> {
+  await page.goto(`chrome-extension://${env.extensionId}/options.html#${view}`);
+}
+
+/** The settings page's Sync view, loaded far enough that the sync section is showing something. */
 export async function openSyncSettings(env: Env): Promise<Page> {
   const page = await openExt(env, 'options');
+  await gotoSettings(page, env, 'sync');
   await expect(
-    syncSection(page).getByRole('heading', { name: 'Sync between devices (optional)' }),
+    syncSection(page).getByRole('heading', { name: 'Sync between devices', exact: true }),
   ).toBeVisible();
   await expect(syncSection(page).getByText('Loading…')).toHaveCount(0);
   return page;
 }
 
-/** Fill the form, confirm the acknowledgement and press "Turn on sync…": Chrome's real prompt path. */
+/** Next in the setup wizard: what is shared, then the server, the sign-in provider, a last look. */
+export async function setupNext(page: Page): Promise<void> {
+  await syncSection(page).getByTestId('sync-setup-flow-next').click();
+}
+
+/** Walk the setup wizard, confirm the acknowledgement, press "Turn on sync": Chrome's real prompt path. */
 export async function turnOnSync(
   page: Page,
   config: { serverUrl: string; issuer: string; clientId: string },
 ): Promise<void> {
   const s = syncSection(page);
+  await setupNext(page);
   await s.getByTestId('sync-server-url').fill(config.serverUrl);
+  await setupNext(page);
   await s.getByTestId('sync-issuer').fill(config.issuer);
   await s.getByTestId('sync-client-id').fill(config.clientId);
+  await setupNext(page);
   await s.getByTestId('sync-ack').check();
   await s.getByTestId('sync-enable').click();
   await expect(s.getByTestId('sync-connected')).toBeVisible();
+}
+
+/** Pick a picture card the way a person does, by clicking the card: its radio is visually hidden. */
+export async function pickCard(page: Page, testId: string): Promise<void> {
+  await syncSection(page)
+    .locator('label', { has: page.getByTestId(testId) })
+    .click();
+  await expect(syncSection(page).getByTestId(testId)).toBeChecked();
+}
+
+/** Pick the "No passphrase" card, confirm what it means, upload without end-to-end encryption. */
+export async function uploadPlain(page: Page): Promise<void> {
+  const s = syncSection(page);
+  await pickCard(page, 'e2ee-choice-plain');
+  await s.getByTestId('e2ee-plain-ack').check();
+  await s.getByTestId('e2ee-upload-plain').click();
+}
+
+/** Open the closed "Turn off or delete" panel that holds Turn sync off and the server delete. */
+export async function openDangerPanel(page: Page): Promise<void> {
+  const danger = syncSection(page).getByTestId('sync-danger');
+  await danger.locator('summary').click();
+  await expect(danger.getByTestId('sync-delete-server-data')).toBeVisible();
 }
 
 /** "Sign in": the worker opens Chrome's real web-auth-flow window against the stand-in provider. */

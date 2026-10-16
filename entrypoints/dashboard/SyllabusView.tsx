@@ -1,4 +1,32 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type RefObject } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  type RefObject,
+} from 'react';
+import {
+  ArrowDown,
+  ArrowUp,
+  ChartColumn,
+  Download,
+  IndentDecrease,
+  IndentIncrease,
+  Layers,
+  Library,
+  ListTree,
+  MousePointerClick,
+  Pencil,
+  Plus,
+  Scale,
+  Search,
+  Tag,
+  Trash,
+  TriangleAlert,
+} from 'lucide-react';
 import {
   MAX_SYLLABI,
   MAX_SYLLABUS_DEPTH,
@@ -21,7 +49,17 @@ import {
   type SyllabusNodeInput,
   type SyllabusProblem,
 } from '@storage';
-import { Button, EmptyState, InlineNotice, errorMessage, plural, useToast } from '@ui';
+import {
+  BuddyEmptyState,
+  ChunkyButton,
+  InfoTip,
+  InlineNotice,
+  ProgressRing,
+  VaultBuddy,
+  errorMessage,
+  plural,
+  useToast,
+} from '@ui';
 import { reviewPageUrl } from '@ui/review/links';
 import {
   PopupMenu,
@@ -34,10 +72,11 @@ import {
   type TreeItem,
   type TreeKeyResult,
 } from '@ui/vault';
-import { FormDialog, NameDialog } from './dialogs';
+import { NameDialog } from './dialogs';
 import { useBump, useVaultQuery } from './hooks';
+import { Action, Chip, Empty, IconAction, Loading, ViewHead } from './moreKit';
+import { SyllabusWizard } from './SyllabusWizard';
 import {
-  OUTLINE_MAX_CHARS,
   addBlocked,
   addTopic,
   bankTopics,
@@ -45,8 +84,6 @@ import {
   flatTopics,
   heightOf,
   moveTopic,
-  outlineToInputs,
-  parseOutline,
   parseWeightInput,
   removeTopic,
   syllabusToMarkdown,
@@ -83,7 +120,7 @@ function downloadText(name: string, text: string): void {
 const fileName = (name: string): string =>
   `${name.replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-+|-+$/g, '') || 'syllabus'}.md`;
 
-type Dialog = 'new' | 'rename' | 'import' | null;
+type Dialog = 'new' | 'rename' | null;
 
 export function SyllabusView({
   initialId,
@@ -100,24 +137,39 @@ export function SyllabusView({
   const problems = useVaultQuery(() => checkSyllabi(), []);
   const [pickedId, setPickedId] = useState<string | null>(initialId);
   const [dialog, setDialog] = useState<Dialog>(null);
-  const selectId = useId();
 
-  if (list.loading) {
+  const head = (action?: ReactNode) => (
+    <ViewHead
+      icon={ListTree}
+      tone="success"
+      title="Syllabus"
+      titleId="syl-title"
+      info="Your own outline of what an exam or course covers. Point each topic at the banks and tags that hold it; Stats on the review page then shows coverage per topic."
+    >
+      {action}
+    </ViewHead>
+  );
+  // The title stays put while the list loads or fails, so the page does not jump.
+  if (list.loading || list.error) {
     return (
-      <p className="sv-muted dash-loading" role="status">
-        Loading your syllabi…
-      </p>
-    );
-  }
-  if (list.error) {
-    return (
-      <InlineNotice
-        tone="error"
-        title="Could not read your syllabi"
-        action={<Button onClick={list.refresh}>Try again</Button>}
-      >
-        {list.error}
-      </InlineNotice>
+      <section className="dash-panel mv-view syl" aria-labelledby="syl-title">
+        {head()}
+        {list.loading ? (
+          <Loading>Loading your syllabi…</Loading>
+        ) : (
+          <InlineNotice
+            tone="error"
+            title="Could not read your syllabi"
+            action={
+              <ChunkyButton size="sm" onClick={list.refresh}>
+                Try again
+              </ChunkyButton>
+            }
+          >
+            {list.error}
+          </InlineNotice>
+        )}
+      </section>
     );
   }
 
@@ -125,6 +177,12 @@ export function SyllabusView({
   const current = syllabi.find((s) => s.id === pickedId) ?? syllabi[0] ?? null;
   const full = syllabi.length >= MAX_SYLLABI ? FULL : undefined;
   const starters = bankTopics(data.banks);
+  const startersReason =
+    data.counts === null
+      ? 'Your banks are still loading.'
+      : starters.length === 0
+        ? 'You have no banks besides the Inbox yet.'
+        : undefined;
 
   const created = async (name: string, nodes: SyllabusNodeInput[]) => {
     const made = await createSyllabus({ name, nodes });
@@ -161,90 +219,71 @@ export function SyllabusView({
   };
 
   return (
-    <section className="dash-panel syl" aria-labelledby="syl-title" data-testid="syllabus-view">
-      <h2 id="syl-title">Syllabus</h2>
-      <p className="sv-small sv-muted">
-        A syllabus is your own outline of what an exam or course covers. Point each topic at the
-        banks and tags that hold its material; the Analytics tab of the review page then shows what
-        you have, and how well you know it, per topic. Nothing is guessed from text.
-      </p>
-
-      <div className="sv-row syl-bar">
-        {syllabi.length > 0 ? (
-          <div className="sv-field">
-            <label className="sv-label" htmlFor={selectId}>
-              Syllabus
-            </label>
-            <select
-              id={selectId}
-              className="sv-control"
-              value={current?.id ?? ''}
-              onChange={(e) => setPickedId(e.target.value)}
-              data-testid="syllabus-select"
-            >
-              {syllabi.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
-          </div>
-        ) : null}
-        <Button onClick={() => setDialog('new')} disabledReason={full} data-testid="syllabus-new">
-          New syllabus…
-        </Button>
-        <Button
-          onClick={() => setDialog('import')}
-          disabledReason={full}
-          data-testid="syllabus-import"
-        >
-          Import an outline…
-        </Button>
-        <Button
-          disabledReason={
-            full ??
-            (data.counts === null
-              ? 'Your banks are still loading.'
-              : starters.length === 0
-                ? 'You have no banks besides the Inbox yet.'
-                : undefined)
-          }
-          onClick={() => {
-            void created('From my banks', starters).catch((err: unknown) =>
-              toast.push({
-                tone: 'error',
-                message: errorMessage(err, 'Could not create the syllabus.'),
-              }),
-            );
-          }}
-          data-testid="syllabus-from-banks"
-        >
-          Start from my banks
-        </Button>
-      </div>
+    <section
+      className="dash-panel mv-view syl"
+      aria-labelledby="syl-title"
+      data-testid="syllabus-view"
+    >
+      {/* While there is none, the empty state holds "New syllabus" instead. */}
+      {head(
+        current ? (
+          <Action
+            variant="primary"
+            icon={Plus}
+            onClick={() => setDialog('new')}
+            disabledReason={full}
+            data-testid="syllabus-new"
+          >
+            New syllabus
+          </Action>
+        ) : null,
+      )}
 
       {current ? (
         <>
-          <div className="sv-row">
-            <Button onClick={() => setDialog('rename')} data-testid="syllabus-rename">
-              Rename…
-            </Button>
-            <a
-              className="sv-btn sv-btn--secondary"
-              href={reviewPageUrl({ view: 'analytics' })}
-              target="_blank"
-              rel="noopener noreferrer"
-              data-testid="syllabus-coverage-link"
-            >
-              See coverage (review page)
-            </a>
-            <Button
-              variant="danger"
-              onClick={() => void remove(current)}
-              data-testid="syllabus-delete"
-            >
-              Delete syllabus
-            </Button>
+          <div className="syl-bar">
+            <label className="syl-bar__pick">
+              <span className="mv-label">Syllabus</span>
+              <select
+                className="sv-control"
+                value={current.id}
+                onChange={(e) => setPickedId(e.target.value)}
+                data-testid="syllabus-select"
+              >
+                {syllabi.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <span className="syl-bar__actions">
+              <IconAction
+                icon={Pencil}
+                label="Rename"
+                onClick={() => setDialog('rename')}
+                data-testid="syllabus-rename"
+              />
+              <a
+                className="sv-chunky sv-chunky--sm"
+                href={reviewPageUrl({ view: 'analytics' })}
+                target="_blank"
+                rel="noopener noreferrer"
+                data-testid="syllabus-coverage-link"
+              >
+                <ChartColumn className="sv-chunky__icon" aria-hidden="true" strokeWidth={2.5} />
+                Coverage
+                <span className="sv-vh"> (opens the review page)</span>
+              </a>
+              <IconAction
+                icon={Trash}
+                className="mv-ibtn--danger"
+                label="Delete syllabus"
+                tipSide="left"
+                onClick={() => void remove(current)}
+                data-testid="syllabus-delete"
+              />
+            </span>
           </div>
           <Editor
             key={current.id}
@@ -254,19 +293,23 @@ export function SyllabusView({
           />
         </>
       ) : (
-        <EmptyState title="You have no syllabus yet">
-          Create an empty one, paste an outline, or start from your banks (one topic per bank). Then
-          point topics at banks and tags to see coverage.
-        </EmptyState>
+        <Empty
+          title="No syllabus yet"
+          text="Outline your exam, then map topics."
+          action={{
+            label: 'New syllabus',
+            icon: Plus,
+            onClick: () => setDialog('new'),
+            testId: 'syllabus-new',
+          }}
+        />
       )}
 
       {dialog === 'new' ? (
-        <NameDialog
-          title="New syllabus"
-          label="Syllabus name"
-          confirmLabel="Create syllabus"
-          maxLength={MAX_SYLLABUS_NAME_CHARS}
-          onSubmit={(name) => created(name, [])}
+        <SyllabusWizard
+          starters={starters}
+          startersReason={startersReason}
+          onCreate={created}
           onCancel={() => setDialog(null)}
         />
       ) : null}
@@ -285,170 +328,7 @@ export function SyllabusView({
           onCancel={() => setDialog(null)}
         />
       ) : null}
-      {dialog === 'import' ? (
-        <ImportDialog onCreate={created} onCancel={() => setDialog(null)} />
-      ) : null}
     </section>
-  );
-}
-
-// ---------------------------------------------------------------------------------------------
-// Import
-// ---------------------------------------------------------------------------------------------
-
-const PREVIEW_LINES = 60;
-
-function ImportDialog({
-  onCreate,
-  onCancel,
-}: {
-  onCreate(name: string, nodes: SyllabusNodeInput[]): Promise<void>;
-  onCancel(): void;
-}) {
-  const textId = useId();
-  const nameId = useId();
-  const [text, setText] = useState('');
-  const [name, setName] = useState('');
-  const parsed = useMemo(() => parseOutline(text), [text]);
-  const finalName = (name.trim() || parsed.name || 'Imported outline').slice(
-    0,
-    MAX_SYLLABUS_NAME_CHARS,
-  );
-  const preview = useMemo(() => {
-    const lines: Array<{ depth: number; title: string; weight?: number }> = [];
-    const walk = (topics: typeof parsed.topics, depth: number) => {
-      for (const t of topics) {
-        if (lines.length > PREVIEW_LINES) return;
-        lines.push({
-          depth,
-          title: t.title,
-          ...(t.weight === undefined ? {} : { weight: t.weight }),
-        });
-        walk(t.children, depth + 1);
-      }
-    };
-    walk(parsed.topics, 1);
-    return lines;
-  }, [parsed]);
-
-  const reason =
-    text.trim() === ''
-      ? 'Paste an outline first.'
-      : parsed.errors.length > 0
-        ? 'Fix the problems listed first.'
-        : parsed.count === 0
-          ? 'No topics were found in the text.'
-          : undefined;
-
-  return (
-    <FormDialog
-      title="Import an outline"
-      confirmLabel="Create syllabus"
-      disabledReason={reason}
-      onSubmit={() => onCreate(finalName, outlineToInputs(parsed.topics))}
-      onCancel={onCancel}
-      wide
-      testId="syllabus-import-dialog"
-    >
-      <p className="sv-small sv-muted">
-        Paste a nested list (bullets, numbers or plain indented lines) or Markdown headings. A first{' '}
-        <code># Title</code> line names the syllabus; a trailing <code>(weight 2)</code> sets a
-        weight. Topics are created without banks or tags: map them afterwards. Nothing is saved
-        until you press the button.
-      </p>
-      <div className="sv-field">
-        <label className="sv-label" htmlFor={textId}>
-          Outline
-        </label>
-        <textarea
-          id={textId}
-          className="sv-control syl-outline"
-          rows={9}
-          value={text}
-          spellCheck={false}
-          dir="auto"
-          data-autofocus=""
-          onChange={(e) => setText(e.target.value)}
-          data-testid="syllabus-import-text"
-        />
-      </div>
-      <div className="sv-field">
-        <label className="sv-label" htmlFor={nameId}>
-          Syllabus name
-        </label>
-        <input
-          id={nameId}
-          className="sv-control"
-          value={name}
-          placeholder={parsed.name ?? 'Imported outline'}
-          maxLength={MAX_SYLLABUS_NAME_CHARS}
-          dir="auto"
-          autoComplete="off"
-          onChange={(e) => setName(e.target.value)}
-          data-testid="syllabus-import-name"
-        />
-      </div>
-
-      <div aria-live="polite" data-testid="syllabus-import-summary">
-        {text.trim() === '' ? (
-          <p className="sv-muted">The preview appears here as you paste.</p>
-        ) : parsed.errors.length > 0 ? (
-          <p>This outline cannot be imported yet:</p>
-        ) : (
-          <p>
-            <strong>
-              {plural(parsed.count, 'topic')} in {plural(parsed.depth, 'level')}
-            </strong>{' '}
-            will be created as “{finalName}”. This is a preview; nothing has been saved.
-          </p>
-        )}
-      </div>
-      {parsed.errors.length > 0 ? (
-        <ul className="sv-stack sv-stack--tight syl-issues" data-testid="syllabus-import-errors">
-          {parsed.errors.slice(0, 8).map((e, i) => (
-            <li key={`${e.line}-${i}`}>
-              {e.line > 0 ? `Line ${e.line}: ` : ''}
-              {e.message}
-            </li>
-          ))}
-          {parsed.errors.length > 8 ? <li>…and {parsed.errors.length - 8} more.</li> : null}
-        </ul>
-      ) : null}
-      {parsed.notes.length > 0 && parsed.errors.length === 0 ? (
-        <details className="rv-details">
-          <summary>{plural(parsed.notes.length, 'line')} read with an assumption</summary>
-          <ul className="rv-details__body sv-stack sv-stack--tight">
-            {parsed.notes.slice(0, 12).map((n, i) => (
-              <li key={`${n.line}-${i}`}>
-                Line {n.line}: {n.message}
-              </li>
-            ))}
-          </ul>
-        </details>
-      ) : null}
-      {preview.length > 0 && parsed.errors.length === 0 ? (
-        <ol
-          className="syl-preview"
-          aria-label="Preview of the topics"
-          data-testid="syllabus-import-preview"
-        >
-          {preview.slice(0, PREVIEW_LINES).map((l, i) => (
-            <li key={i} style={{ paddingInlineStart: `${(l.depth - 1) * 1.25}rem` }} dir="auto">
-              {l.title}
-              {l.weight !== undefined ? (
-                <span className="sv-small sv-muted"> (weight {l.weight})</span>
-              ) : null}
-            </li>
-          ))}
-          {preview.length > PREVIEW_LINES ? <li className="sv-muted">…and more.</li> : null}
-        </ol>
-      ) : null}
-      <p className="sv-small sv-muted">
-        At most {MAX_SYLLABUS_NODES} topics, {MAX_SYLLABUS_DEPTH} levels, titles of{' '}
-        {MAX_SYLLABUS_TITLE_CHARS} characters and {OUTLINE_MAX_CHARS.toLocaleString()} characters of
-        text.
-      </p>
-    </FormDialog>
   );
 }
 
@@ -573,6 +453,9 @@ function Editor({
 
   const count = countTopics(nodes);
   const depth = nodes.reduce((h, n) => Math.max(h, heightOf(n)), 0);
+  const mapped = flatTopics(nodes).filter(
+    (t) => t.node.bankIds.length + t.node.tagIds.length > 0,
+  ).length;
 
   const apply = (edit: Edit, focus = false): boolean => {
     if (!edit.ok) {
@@ -646,138 +529,210 @@ function Editor({
   const myProblems = problems.filter((p) => p.nodeId === topicId);
 
   return (
-    <div className="syl-editor sv-stack">
-      <p className="sv-small sv-muted" data-testid="syllabus-size">
-        {count} of {MAX_SYLLABUS_NODES} topics · {depth} of {MAX_SYLLABUS_DEPTH} levels
-        {problems.length > 0
-          ? ` · ${plural(problems.length, 'mapping')} point at something deleted`
-          : ''}
-      </p>
-
-      <div className="sv-row" role="group" aria-label="Topic actions">
-        <Button
+    <div className="syl-editor">
+      <div className="mv-card syl-strip">
+        <ProgressRing
+          value={mapped}
+          max={count}
+          label="Mapped topics"
+          unit="topics"
+          tone="success"
+          size={76}
+          stroke={10}
+          description="Topics that point at a bank or a tag."
+        >
+          <span className="syl-strip__n">{count === 0 ? '–' : `${mapped}/${count}`}</span>
+        </ProgressRing>
+        <span className="syl-strip__body">
+          <span className="syl-strip__title">
+            Mapped topics
+            <InfoTip label="About mapped topics">
+              A mapped topic points at a bank or a tag, so its material can be counted. Select a
+              topic to map it. A syllabus holds up to {MAX_SYLLABUS_NODES} topics in{' '}
+              {MAX_SYLLABUS_DEPTH} levels.
+            </InfoTip>
+          </span>
+          {/* The chips draw the line below; the line is what a screen reader hears. */}
+          <span className="mv-row" aria-hidden="true">
+            <Chip icon={ListTree} tone="success">
+              {plural(count, 'topic')}
+            </Chip>
+            <Chip icon={Layers}>{plural(depth, 'level')}</Chip>
+            {problems.length > 0 ? (
+              <Chip icon={TriangleAlert} tone="warning">
+                {plural(problems.length, 'broken link')}
+              </Chip>
+            ) : null}
+          </span>
+          <span className="sv-vh" data-testid="syllabus-size">
+            {count} of {MAX_SYLLABUS_NODES} topics · {depth} of {MAX_SYLLABUS_DEPTH} levels
+            {problems.length > 0
+              ? ` · ${plural(problems.length, 'mapping')} point at something deleted`
+              : ''}
+          </span>
+        </span>
+        <ChunkyButton
+          size="sm"
+          icon={Download}
+          className="syl-strip__export"
           onClick={() =>
             downloadText(fileName(syllabus.name), syllabusToMarkdown(syllabus.name, nodes))
           }
           data-testid="syllabus-export"
         >
-          Export as Markdown
-        </Button>
-        <Button
-          onClick={() => {
-            if (apply(addTopic(nodes, topic?.id ?? null, 'after'))) {
-              setTitleFocus((n) => n + 1);
-              toast.announce('Topic added. Type its title.');
-            }
-          }}
-          disabledReason={addReason}
-          data-testid="topic-add"
-        >
-          New topic{topic ? ' after this one' : ''}
-        </Button>
-        <Button
-          onClick={() => {
-            if (topic && apply(addTopic(nodes, topic.id, 'child'))) {
-              setCollapsed((c) => new Set([...c].filter((x) => x !== topic.id)));
-              setTitleFocus((n) => n + 1);
-              toast.announce('Subtopic added. Type its title.');
-            }
-          }}
-          disabledReason={subReason}
-          data-testid="topic-add-child"
-        >
-          New subtopic
-        </Button>
-        {(
-          [
-            ['up', 'Move up'],
-            ['down', 'Move down'],
-            ['indent', 'Indent'],
-            ['outdent', 'Outdent'],
-          ] as const
-        ).map(([direction, label]) => (
-          <Button
-            key={direction}
-            disabledReason={probe[direction]}
-            onClick={() => topicId && move(topicId, direction, false)}
-            data-testid={`topic-${direction}`}
-          >
-            {label}
-          </Button>
-        ))}
-        <Button
-          variant="danger"
-          disabledReason={topic === null ? 'Select a topic first.' : undefined}
-          onClick={() => topic && deleteTopic(topic.id)}
-          data-testid="topic-delete"
-        >
-          Delete topic
-        </Button>
+          Export
+        </ChunkyButton>
       </div>
 
-      <div className="dash-two-col syl-grid">
-        <div className="sv-stack sv-stack--tight">
-          {nodes.length === 0 ? (
-            <EmptyState title="This syllabus has no topics yet">
-              Add the first topic with “New topic”.
-            </EmptyState>
-          ) : (
-            <>
-              <Tree
-                ref={treeRef}
-                label={`Topics of ${syllabus.name}`}
-                items={items}
-                expanded={expanded}
-                onExpandedChange={(next) =>
-                  setCollapsed(
-                    new Set(
-                      flatTopics(nodes)
-                        .filter((t) => t.node.children.length > 0 && !next.has(t.node.id))
-                        .map((t) => t.node.id),
-                    ),
-                  )
+      <div className="syl-grid">
+        <section className="mv-card syl-topics" aria-label="Topics">
+          <div className="syl-tools" role="group" aria-label="Topic actions">
+            <Action
+              size="sm"
+              variant="primary"
+              icon={Plus}
+              onClick={() => {
+                if (apply(addTopic(nodes, topic?.id ?? null, 'after'))) {
+                  setTitleFocus((n) => n + 1);
+                  toast.announce('Topic added. Type its title.');
                 }
-                selectedId={topicId}
-                onActivate={setTopicId}
-                onCommand={onCommand}
-                onContextMenu={(id, at) => {
-                  setTopicId(id);
-                  setMenu({ id, at });
-                }}
-                className="syl-tree"
-                renderItem={(v) => {
-                  const n = byId.get(v.item.id);
-                  if (!n) return null;
-                  const mapped = n.bankIds.length + n.tagIds.length;
-                  return (
-                    <>
-                      <span className="syl-name" dir="auto">
-                        {n.title}
-                      </span>{' '}
-                      <span className="sv-small sv-muted">
-                        {n.weight !== undefined ? `weight ${n.weight} · ` : ''}
-                        {mapped === 0
-                          ? 'not mapped'
-                          : `${plural(n.bankIds.length, 'bank')}, ${plural(n.tagIds.length, 'tag')}`}
-                      </span>
-                    </>
-                  );
-                }}
+              }}
+              disabledReason={addReason}
+              data-testid="topic-add"
+            >
+              Topic
+            </Action>
+            <Action
+              size="sm"
+              icon={Plus}
+              onClick={() => {
+                if (topic && apply(addTopic(nodes, topic.id, 'child'))) {
+                  setCollapsed((c) => new Set([...c].filter((x) => x !== topic.id)));
+                  setTitleFocus((n) => n + 1);
+                  toast.announce('Subtopic added. Type its title.');
+                }
+              }}
+              disabledReason={subReason}
+              data-testid="topic-add-child"
+            >
+              Subtopic
+            </Action>
+            <span className="syl-tools__icons">
+              {(
+                [
+                  ['up', 'Move up', ArrowUp],
+                  ['down', 'Move down', ArrowDown],
+                  ['indent', 'Indent', IndentIncrease],
+                  ['outdent', 'Outdent', IndentDecrease],
+                ] as const
+              ).map(([direction, label, icon]) => (
+                <IconAction
+                  key={direction}
+                  icon={icon}
+                  label={label}
+                  disabledReason={probe[direction]}
+                  onClick={() => topicId && move(topicId, direction, false)}
+                  data-testid={`topic-${direction}`}
+                />
+              ))}
+              <IconAction
+                icon={Trash}
+                className="mv-ibtn--danger"
+                label="Delete topic"
+                tipSide="left"
+                disabledReason={topic === null ? 'Select a topic first.' : undefined}
+                onClick={() => topic && deleteTopic(topic.id)}
+                data-testid="topic-delete"
               />
-              <p className="sv-small sv-muted">
+              <InfoTip label="Keyboard keys for topics" align="end">
                 Arrow keys move through the topics. Alt+Up and Alt+Down reorder, Alt+Right indents,
-                Alt+Left outdents, F2 edits the title, Delete removes. The buttons above do the
-                same.
-              </p>
-            </>
+                Alt+Left outdents, F2 edits the title, Delete removes.
+              </InfoTip>
+            </span>
+          </div>
+          {nodes.length === 0 ? (
+            <BuddyEmptyState
+              pose="sleep"
+              mascotSize={88}
+              heading="h4"
+              title="This syllabus has no topics yet"
+              text="Add the first one with Topic."
+            />
+          ) : (
+            <Tree
+              ref={treeRef}
+              label={`Topics of ${syllabus.name}`}
+              items={items}
+              expanded={expanded}
+              onExpandedChange={(next) =>
+                setCollapsed(
+                  new Set(
+                    flatTopics(nodes)
+                      .filter((t) => t.node.children.length > 0 && !next.has(t.node.id))
+                      .map((t) => t.node.id),
+                  ),
+                )
+              }
+              selectedId={topicId}
+              onActivate={setTopicId}
+              onCommand={onCommand}
+              onContextMenu={(id, at) => {
+                setTopicId(id);
+                setMenu({ id, at });
+              }}
+              className="syl-tree"
+              renderItem={(v) => {
+                const n = byId.get(v.item.id);
+                if (!n) return null;
+                const links = n.bankIds.length + n.tagIds.length;
+                return (
+                  <span className="syl-item">
+                    <span className="syl-item__name" dir="auto">
+                      {n.title}
+                    </span>{' '}
+                    <span className="syl-item__chips">
+                      {n.weight !== undefined ? (
+                        <Chip icon={Scale} tone="sun" prefix="Weight">
+                          {String(n.weight)}
+                        </Chip>
+                      ) : null}
+                      {links === 0 ? (
+                        <Chip tone="neutral">Not mapped</Chip>
+                      ) : (
+                        <>
+                          {n.bankIds.length > 0 ? (
+                            <Chip icon={Library} tone="primary">
+                              {plural(n.bankIds.length, 'bank')}
+                            </Chip>
+                          ) : null}
+                          {n.tagIds.length > 0 ? (
+                            <Chip icon={Tag} tone="success">
+                              {plural(n.tagIds.length, 'tag')}
+                            </Chip>
+                          ) : null}
+                        </>
+                      )}
+                    </span>
+                  </span>
+                );
+              }}
+            />
           )}
-        </div>
+        </section>
 
-        <div className="sv-stack" data-testid="topic-details">
+        <section
+          className="mv-card syl-details"
+          aria-label="Topic details"
+          data-testid="topic-details"
+        >
           {topic === null ? (
-            <p className="sv-muted">
-              Select a topic to change its title and weight and to point it at banks and tags.
-            </p>
+            <div className="syl-pick">
+              <VaultBuddy pose="think" size={72} />
+              <p className="mv-line">
+                <MousePointerClick aria-hidden="true" className="syl-pick__icon" /> Select a topic
+                to edit and map it.
+              </p>
+            </div>
           ) : (
             <TopicForm
               key={topic.id}
@@ -792,7 +747,7 @@ function Editor({
               onShow={onShowTopic}
             />
           )}
-        </div>
+        </section>
       </div>
 
       {menu && byId.has(menu.id) ? (
@@ -890,77 +845,81 @@ function TopicForm({
   const mapped = topic.bankIds.length + topic.tagIds.length > 0;
 
   return (
-    <section className="sv-stack" aria-label={`Topic: ${topic.title}`}>
-      <div className="sv-field">
-        <label className="sv-label" htmlFor={titleId}>
-          Title
-        </label>
-        <input
-          ref={titleRef}
-          id={titleId}
-          className="sv-control"
-          value={title}
-          maxLength={MAX_SYLLABUS_TITLE_CHARS}
-          dir="auto"
-          autoComplete="off"
-          aria-invalid={titleError !== null || undefined}
-          aria-describedby={titleError ? `${titleId}-err` : undefined}
-          onChange={(e) => setTitle(e.target.value)}
-          onBlur={commitTitle}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              commitTitle();
-            } else if (e.key === 'Escape') {
-              setTitle(topic.title);
-              setTitleError(null);
-            }
-          }}
-          data-testid="topic-title"
-        />
-        {titleError ? (
-          <p id={`${titleId}-err`} className="syl-error sv-small" role="alert">
-            {titleError}
-          </p>
-        ) : null}
-      </div>
+    <div className="syl-form" aria-label={`Topic: ${topic.title}`} role="group">
+      <div className="syl-form__pair">
+        <div className="mv-field">
+          <label htmlFor={titleId}>Title</label>
+          <input
+            ref={titleRef}
+            id={titleId}
+            className="sv-control"
+            value={title}
+            maxLength={MAX_SYLLABUS_TITLE_CHARS}
+            dir="auto"
+            autoComplete="off"
+            aria-invalid={titleError !== null || undefined}
+            aria-describedby={titleError ? `${titleId}-err` : undefined}
+            onChange={(e) => setTitle(e.target.value)}
+            onBlur={commitTitle}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                commitTitle();
+              } else if (e.key === 'Escape') {
+                setTitle(topic.title);
+                setTitleError(null);
+              }
+            }}
+            data-testid="topic-title"
+          />
+          {titleError ? (
+            <p id={`${titleId}-err`} className="mv-error" role="alert">
+              <TriangleAlert aria-hidden="true" />
+              {titleError}
+            </p>
+          ) : null}
+        </div>
 
-      <div className="sv-field">
-        <label className="sv-label" htmlFor={weightId}>
-          Weight
-        </label>
-        <input
-          id={weightId}
-          className="sv-control syl-weight"
-          inputMode="decimal"
-          value={weight}
-          autoComplete="off"
-          aria-invalid={!weightCheck.ok || undefined}
-          aria-describedby={weightHelp}
-          onChange={(e) => setWeight(e.target.value)}
-          onBlur={commitWeight}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              commitWeight();
-            }
-          }}
-          data-testid="topic-weight"
-        />
-        <p
-          id={weightHelp}
-          className={`sv-small ${weightCheck.ok ? 'sv-muted' : 'syl-error'}`}
-          role={weightCheck.ok ? undefined : 'alert'}
-        >
-          {weightCheck.ok
-            ? `Relative importance among its siblings. Empty means an equal share (at most ${MAX_SYLLABUS_WEIGHT}).`
-            : weightCheck.message}
-        </p>
+        <div className="mv-field syl-form__weight">
+          <span className="syl-wiz-label">
+            <label htmlFor={weightId}>Weight</label>
+            <InfoTip label="About weight" align="end">
+              Relative importance among its siblings. Empty means an equal share (at most{' '}
+              {MAX_SYLLABUS_WEIGHT}).
+            </InfoTip>
+          </span>
+          <input
+            id={weightId}
+            className="sv-control"
+            inputMode="decimal"
+            value={weight}
+            placeholder="Equal"
+            autoComplete="off"
+            aria-invalid={!weightCheck.ok || undefined}
+            aria-describedby={weightCheck.ok ? undefined : weightHelp}
+            onChange={(e) => setWeight(e.target.value)}
+            onBlur={commitWeight}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                commitWeight();
+              }
+            }}
+            data-testid="topic-weight"
+          />
+          {weightCheck.ok ? null : (
+            <p id={weightHelp} className="mv-error" role="alert">
+              <TriangleAlert aria-hidden="true" />
+              {weightCheck.message}
+            </p>
+          )}
+        </div>
       </div>
 
       <MappingPicker
         legend="Banks"
         noun="bank"
+        icon={Library}
         options={banks}
         selected={topic.bankIds}
         max={MAX_SYLLABUS_LINKS}
@@ -971,6 +930,7 @@ function TopicForm({
       <MappingPicker
         legend="Tags"
         noun="tag"
+        icon={Tag}
         options={tags}
         selected={topic.tagIds}
         max={MAX_SYLLABUS_LINKS}
@@ -981,20 +941,19 @@ function TopicForm({
 
       {hasChildren && mapped ? (
         <InlineNotice tone="info">
-          This topic has subtopics. What it points at counts towards its totals, but its coverage is
-          judged from its subtopics.
+          This topic has subtopics: its coverage is judged from them.
         </InlineNotice>
       ) : null}
       {problems.length > 0 ? (
         <InlineNotice tone="warning" title="Some of what this topic points at is gone">
-          {plural(problems.length, 'bank or tag')} deleted or in the trash. It covers nothing until
-          you restore it or untick it above.
+          {plural(problems.length, 'bank or tag')} deleted or in the trash. Restore it or untick it.
         </InlineNotice>
       ) : null}
 
-      <div className="sv-row">
-        <Button
+      <div className="mv-row">
+        <Action
           variant="primary"
+          icon={Search}
           disabledReason={
             library === null || library.kind === 'none'
               ? (library?.reason ?? 'Select a topic first.')
@@ -1004,14 +963,14 @@ function TopicForm({
           data-testid="topic-show"
         >
           Show highlights
-        </Button>
+        </Action>
         {library?.kind === 'search' && library.used < library.total ? (
-          <span className="sv-small sv-muted">
-            The search box holds {library.used} of its {library.total} banks and tags.
+          <span className="mv-line">
+            The search holds {library.used} of its {library.total} banks and tags.
           </span>
         ) : null}
       </div>
-    </section>
+    </div>
   );
 }
 
@@ -1082,6 +1041,7 @@ const SHOWN = 100;
 function MappingPicker({
   legend,
   noun,
+  icon: Icon,
   options,
   selected,
   max,
@@ -1091,6 +1051,7 @@ function MappingPicker({
 }: {
   legend: string;
   noun: 'bank' | 'tag';
+  icon: typeof Library;
   options: { id: string; name: string }[];
   selected: readonly string[];
   max: number;
@@ -1104,22 +1065,45 @@ function MappingPicker({
   const known = new Set(options.map((o) => o.id));
   const missing = selected.filter((id) => !known.has(id));
   const needle = filter.trim().toLowerCase();
-  const shown = options.filter((o) => needle === '' || o.name.toLowerCase().includes(needle));
+  // What the topic pointed at when it was opened comes first, so it is in sight without
+  // scrolling; a pill ticked now stays where it is (nothing moves under the pointer or the focus).
+  const [opened] = useState(() => new Set(selected));
+  const shown = options
+    .filter((o) => needle === '' || o.name.toLowerCase().includes(needle))
+    .sort((a, b) => Number(opened.has(b.id)) - Number(opened.has(a.id)));
   const atMax = selected.length >= max;
   const toggle = (id: string) =>
     onChange(chosen.has(id) ? selected.filter((x) => x !== id) : [...selected, id]);
+  const pill = (id: string, on: boolean, text: string, warn = false) => (
+    <label
+      key={id}
+      className={`mv-pill${warn ? ' syl-pill--gone' : ''}`}
+      data-on={on ? '' : undefined}
+    >
+      <input
+        type="checkbox"
+        className="sv-vh"
+        checked={on}
+        disabled={atMax && !on}
+        onChange={() => toggle(id)}
+      />
+      <span className="mv-pill__tick" aria-hidden="true" />
+      <span dir="auto">{text}</span>
+    </label>
+  );
 
   return (
-    <fieldset className="syl-picker" data-testid={testId}>
-      <legend>
+    <fieldset className="mv-pills syl-picker" data-testid={testId}>
+      <legend className="mv-label syl-picker__legend">
+        <Icon aria-hidden="true" />
         {legend}{' '}
-        <span className="sv-small sv-muted">
+        <span className="mv-meta">
           ({selected.length} of {max})
         </span>
       </legend>
       {options.length > 8 ? (
-        <div className="sv-field">
-          <label className="sv-label" htmlFor={filterId}>
+        <div className="mv-field syl-picker__find">
+          <label className="sv-vh" htmlFor={filterId}>
             Find a {noun}
           </label>
           <input
@@ -1127,46 +1111,27 @@ function MappingPicker({
             type="search"
             className="sv-control"
             value={filter}
+            placeholder={`Find a ${noun}`}
             autoComplete="off"
             onChange={(e) => setFilter(e.target.value)}
           />
         </div>
       ) : null}
-      <div className="syl-picker__list">
-        {missing.map((id) => (
-          <label key={id} className="sv-check">
-            <input type="checkbox" checked onChange={() => toggle(id)} />
-            <span className="syl-error">
-              A {noun} that is deleted or in the trash (untick to remove)
-            </span>
-          </label>
-        ))}
-        {shown.slice(0, SHOWN).map((o) => {
-          const on = chosen.has(o.id);
-          return (
-            <label key={o.id} className="sv-check">
-              <input
-                type="checkbox"
-                checked={on}
-                disabled={atMax && !on}
-                onChange={() => toggle(o.id)}
-              />
-              <span dir="auto">{o.name}</span>
-            </label>
-          );
-        })}
+      <div className="mv-pills__list">
+        {missing.map((id) =>
+          pill(id, true, `A ${noun} that is deleted or in the trash (untick to remove)`, true),
+        )}
+        {shown.slice(0, SHOWN).map((o) => pill(o.id, chosen.has(o.id), o.name))}
       </div>
-      {loaded && options.length === 0 ? (
-        <p className="sv-small sv-muted">You have no {noun}s yet.</p>
-      ) : null}
+      {loaded && options.length === 0 ? <p className="mv-line">You have no {noun}s yet.</p> : null}
       {shown.length > SHOWN ? (
-        <p className="sv-small sv-muted">
-          Showing the first {SHOWN} of {shown.length}. Type in the box to narrow the list.
+        <p className="mv-line">
+          Showing the first {SHOWN} of {shown.length}. Type to narrow the list.
         </p>
       ) : null}
       {atMax ? (
-        <p className="sv-small sv-muted">
-          A topic points at most {max} {noun}s. Untick one to choose another.
+        <p className="mv-line">
+          At most {max} {noun}s. Untick one first.
         </p>
       ) : null}
     </fieldset>

@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, configure, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { browser } from 'wxt/browser';
 import { defaultSettings, type Settings } from '@shared';
@@ -8,6 +8,7 @@ import { createDeck, createManualCards } from '@storage';
 import { freshDatabase } from '@storage/test-vault';
 import { readReminderFlag, writeReminderFlag } from '@ui/review/reminders';
 import { makeChromeFakes, rpc, siteStatus, store } from '@ui/testing/fakes';
+import { gameState, type GameFake } from './testGame';
 import { Popup } from './Popup';
 
 // The same arrangement as Popup.test.tsx: pages' highlight reads are fakes, review counts are real.
@@ -16,6 +17,14 @@ vi.mock('@storage', async (importOriginal) => {
   const { store: fake } = await import('@ui/testing/fakes');
   return { ...actual, ...fake.module } as never;
 });
+const game = vi.hoisted(() => ({ current: null as unknown as GameFake }));
+vi.mock('@ui/game', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  useGame: () => game.current,
+}));
+// The Sunny popup draws more on each render; jsdom on a busy machine needs longer than 1 s.
+configure({ asyncUtilTimeout: 10_000 });
+
 vi.mock('@runtime', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   const { rpc: fake } = await import('@ui/testing/fakes');
@@ -49,6 +58,7 @@ async function openPopup(settings: Partial<Settings> = {}) {
 const raise = () => writeReminderFlag({ at: Date.now(), expiresAt: Date.now() + 3_600_000 });
 
 beforeEach(async () => {
+  game.current = gameState();
   await freshDatabase(); // also resets fakeBrowser
   store.reset();
   rpc.reset();
@@ -68,10 +78,13 @@ describe('popup: the daily review notice', () => {
 
     const notice = await screen.findByText('Time to review: 3 cards due');
     expect(notice.closest('[role="status"]')).not.toBeNull(); // announced, not only drawn
-    expect(screen.getByRole('button', { name: 'Start review' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Start review/ })).toBeTruthy();
+    // The notice takes the detail line's place (the popup keeps its height).
+    expect(screen.queryByText(/\d+ new · \d+ learning/)).toBeNull();
 
     await userEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
     await waitFor(() => expect(screen.queryByText(/Time to review/)).toBeNull());
+    expect(await screen.findByText('3 new · 0 learning · 0 review')).toBeTruthy();
     expect(await readReminderFlag()).toBeNull();
     // Focus did not fall to <body>: the title took it.
     expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1 }));

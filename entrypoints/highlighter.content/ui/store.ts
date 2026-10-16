@@ -13,6 +13,8 @@ export interface Toast {
   secondary?: { label: string; run: () => void };
   /** Overrides how long the toast stays (ms). Internal: the host cannot set it through the contract. */
   ttl?: number;
+  /** XP the save earned (CaptureResult.xp, only while Game mode is on): shown as a "+2 XP" chip. */
+  xp?: number;
 }
 
 export interface UiState {
@@ -63,6 +65,7 @@ export function pushToast(
     action?: Toast['action'];
     secondary?: Toast['secondary'];
     ttl?: number;
+    xp?: number;
   },
 ): number {
   const toast: Toast = { ...notice, id: ++toastSeq, tone: notice.tone ?? 'info' };

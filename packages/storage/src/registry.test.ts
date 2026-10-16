@@ -29,7 +29,14 @@ describe('table registry', () => {
     expect(registry.schemaVersion).toBe(DB_VERSION);
     // The registry describes the vault's tables: the sync bookkeeping tables of v3 are not in it.
     expect(registry.tables.map((t) => t.name).sort()).toEqual(
-      [...Object.keys(SCHEMA_V2), 'filingRules', 'syllabi', 'relations'].sort(),
+      [
+        ...Object.keys(SCHEMA_V2),
+        'filingRules',
+        'syllabi',
+        'relations',
+        'gameEvents',
+        'gameFacts',
+      ].sort(),
     );
     const db = getDb();
     await db.open();

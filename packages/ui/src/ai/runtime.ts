@@ -6,11 +6,13 @@ import {
   buildPreview,
   checkBudget,
   createAnthropicProvider,
+  createCodexResponsesProvider,
   createConsentToken,
   createCoordinator,
   createOpenAICompatibleProvider,
   emptyBudget,
   isAiError,
+  refreshCodexTokens,
   rollover,
   runTask,
   scrubSecrets,
@@ -27,6 +29,7 @@ import {
   type RedactionEdits,
   type SystemClock,
 } from '@ai';
+import { VENDORS, providerNeedsKey } from './vendors';
 import {
   PRIMARY_PROFILE_ID,
   addAiSpend,
@@ -38,7 +41,9 @@ import {
   getAiProfileApiKey,
   getAiProfileKeyInfos,
   getAiSettings,
+  getCodexAuth,
   saveAiResult,
+  setCodexAuth,
   type AiEndpointCheck,
   type AiKeyInfo,
   type AiProfileSettings,
@@ -132,12 +137,34 @@ function guard(origin: string, inner: FetchLike): FetchLike {
   };
 }
 
+/** UBAG drives a real browser: a request can take minutes (its facade deadline is 240 s). */
+const UBAG_WAIT_MS = 240_000;
+// 240 s per wait, and the same request is joined up to three more times (16 minutes in all).
+const SLOW_TIMEOUT_MS = 17 * 60_000;
+const timeoutFor = (settings: AiProfileSettings): number | null =>
+  settings.vendor === 'ubag'
+    ? SLOW_TIMEOUT_MS
+    : settings.vendor === 'chatgpt_codex'
+      ? 120_000
+      : null;
+
 function httpProvider(
   settings: AiProfileSettings,
   endpoint: Extract<AiEndpointCheck, { ok: true }>,
   apiKey: string | null,
   fetch: FetchLike,
+  accountId: string | null,
 ): AiProvider {
+  if (settings.provider === 'codex_responses') {
+    return createCodexResponsesProvider({
+      accessToken: apiKey ?? '',
+      accountId: accountId ?? '',
+      model: settings.model,
+      fetch,
+      baseUrl: endpoint.url,
+      reasoningEffort: settings.reasoningEffort,
+    });
+  }
   if (settings.provider === 'anthropic') {
     return createAnthropicProvider({
       apiKey: apiKey ?? '',
@@ -153,7 +180,32 @@ function httpProvider(
     fetch,
     jsonMode: settings.jsonMode,
     maxTokensParam: settings.maxTokensParam,
+    authScheme: settings.authScheme,
+    reasoningEffort: settings.reasoningEffort,
+    reasoningStyle: VENDORS[settings.vendor].reasoningStyle,
+    ...(settings.vendor === 'ubag' ? { waitMs: UBAG_WAIT_MS, streaming: false } : {}),
   });
+}
+
+/** The saved Codex login, refreshed when it is about to expire. Null = not signed in. */
+async function codexLogin(
+  env: AiEnv,
+): Promise<{ accessToken: string; accountId: string; last4: string } | null> {
+  const auth = await getCodexAuth();
+  if (!auth) return null;
+  const nowMs = env.clock.now();
+  if (auth.expiresAt - nowMs > 60_000) {
+    return { ...auth, last4: auth.accessToken.slice(-4) };
+  }
+  try {
+    // auth.openai.com is not the configured chatgpt.com origin, so this call uses the raw fetch.
+    const next = await refreshCodexTokens(env.fetch, auth, nowMs);
+    await setCodexAuth(next);
+    return { ...next, last4: next.accessToken.slice(-4) };
+  } catch {
+    // Offline or refused: keep the stored token; the request itself reports the real error.
+    return auth.expiresAt > nowMs ? { ...auth, last4: auth.accessToken.slice(-4) } : null;
+  }
 }
 
 interface ProfileInput {
@@ -172,11 +224,27 @@ async function buildProfile(
   env: AiEnv,
   secrets: string[],
 ): Promise<AiProfileConfig> {
-  const { settings, keyInfo } = input;
+  const { settings } = input;
+  let { keyInfo } = input;
   const endpoint = checkAiEndpoint(settings.provider, settings.baseUrl);
-  const apiKey = endpoint.ok ? await input.readKey(endpoint.origin) : null;
+  let apiKey: string | null = null;
+  let accountId: string | null = null;
+  if (settings.provider === 'codex_responses') {
+    const login = await codexLogin(env);
+    if (login) {
+      apiKey = login.accessToken;
+      accountId = login.accountId;
+      keyInfo = {
+        present: true,
+        origin: endpoint.ok ? endpoint.origin : null,
+        last4: login.last4,
+      };
+    }
+  } else {
+    apiKey = endpoint.ok ? await input.readKey(endpoint.origin) : null;
+  }
   if (apiKey) secrets.push(apiKey);
-  const needsKey = settings.provider === 'anthropic' || !(endpoint.ok && endpoint.loopback);
+  const needsKey = providerNeedsKey(settings.provider, endpoint.ok && endpoint.loopback);
   const state: KeyState = apiKey
     ? 'present'
     : keyInfo.present && endpoint.ok
@@ -199,7 +267,7 @@ async function buildProfile(
           fetch,
           profileId: input.id,
         })
-      : httpProvider(settings, endpoint, apiKey, fetch);
+      : httpProvider(settings, endpoint, apiKey, fetch, accountId);
   }
   return {
     id: input.id,
@@ -217,11 +285,32 @@ async function buildProfile(
   };
 }
 
+/** Per-provider setting overrides for one request (a chat's own model or reasoning effort). */
+export type AiOverrides = Record<
+  string,
+  Partial<Pick<AiProfileSettings, 'model' | 'reasoningEffort'>>
+>;
+
 export async function loadAiConfig(
   flagOn: boolean,
   env: AiEnv = defaultAiEnv(),
+  overrides: AiOverrides = {},
 ): Promise<AiConfig> {
-  const settings = await getAiSettings();
+  const stored = await getAiSettings();
+  const apply = <T extends AiProfileSettings>(id: string, s: T): T => {
+    const o = overrides[id];
+    return o
+      ? {
+          ...s,
+          ...(o.model ? { model: o.model } : {}),
+          ...(o.reasoningEffort === undefined ? {} : { reasoningEffort: o.reasoningEffort }),
+        }
+      : s;
+  };
+  const settings = {
+    ...apply(PRIMARY_PROFILE_ID, stored),
+    fallbacks: stored.fallbacks.map((p) => apply(p.id, p)),
+  };
   const budget = await getAiBudget(env.clock.now());
   const secrets: string[] = [];
   const primary = await buildProfile(
@@ -293,9 +382,12 @@ export interface AiRoute {
  * route it elsewhere), then every other provider that is set up and allowed to be a fallback, in list
  * order. Providers that are not set up are skipped, never guessed at.
  */
-export function routeFor(config: AiConfig, kind: AiTaskKind): AiRoute {
+export function routeFor(config: AiConfig, kind: AiTaskKind, prefer?: string | null): AiRoute {
   const all = config.profiles;
-  const chosen = all.find((p) => p.id === config.settings.routes[kind]) ?? all[0]!;
+  const chosen =
+    (prefer ? all.find((p) => p.id === prefer) : undefined) ??
+    all.find((p) => p.id === config.settings.routes[kind]) ??
+    all[0]!;
   const rest = all.filter((p) => p.id !== chosen.id && p.fallback);
   // The first provider is kept whenever it exists: a missing key is then a reason to show next to
   // Send, with the preview still readable, not a missing preview.
@@ -304,12 +396,20 @@ export function routeFor(config: AiConfig, kind: AiTaskKind): AiRoute {
 }
 
 /** Why a request cannot be sent right now (null = it can). Shown as the reason a button is disabled. */
-export function sendBlocker(config: AiConfig, env: AiEnv, kind?: AiTaskKind): string | null {
+export function sendBlocker(
+  config: AiConfig,
+  env: AiEnv,
+  kind?: AiTaskKind,
+  prefer?: string | null,
+): string | null {
   if (!config.flagOn) return 'AI features are turned off in the AI settings.';
-  const p = kind ? routeFor(config, kind).first : config.profiles[0]!;
+  const p = kind ? routeFor(config, kind, prefer).first : config.profiles[0]!;
   const named = (text: string) => (p.id === PRIMARY_PROFILE_ID ? text : `${p.label}: ${text}`);
   if (p.problem) return named(p.problem);
   if (p.key.state === 'missing') {
+    if (p.settings.provider === 'codex_responses') {
+      return 'Sign in with ChatGPT in the AI settings first (your sign-in is missing or has expired).';
+    }
     return p.id === PRIMARY_PROFILE_ID
       ? 'Add your API key in the AI settings first.'
       : `Add the API key of "${p.label}" in the AI settings first.`;
@@ -332,8 +432,8 @@ const targetOf = (p: AiProfileConfig): FallbackTarget => ({
 });
 
 /** Pipeline deps for one task: the first provider and the fallbacks behind it. */
-function routedDeps(config: AiConfig, kind: AiTaskKind) {
-  const route = routeFor(config, kind);
+function routedDeps(config: AiConfig, kind: AiTaskKind, prefer?: string | null) {
+  const route = routeFor(config, kind, prefer);
   const [first, ...rest] = route.targets;
   if (!first?.provider) return null;
   return {
@@ -350,11 +450,14 @@ export async function previewAiTask(
   kind: AiTaskKind,
   selection: AiSelection,
   edits?: RedactionEdits,
+  prefer?: string | null,
 ): Promise<AiRequestPreview> {
   if (!config.flagOn) throw new AiError('disabled');
-  const routed = routedDeps(config, kind);
+  const routed = routedDeps(config, kind, prefer);
   if (!routed)
-    throw new Error(sendBlocker(config, env, kind) ?? config.problem ?? 'AI is not set up.');
+    throw new Error(
+      sendBlocker(config, env, kind, prefer) ?? config.problem ?? 'AI is not set up.',
+    );
   return buildPreview(
     kind,
     selection,
@@ -375,6 +478,12 @@ export interface AiRunArgs {
   preview: AiRequestPreview;
   edits?: RedactionEdits;
   signal?: AbortSignal;
+  /** `chat` only: the conversation the answer is saved under. */
+  threadId?: string;
+  /** Try this provider first (a chat's own choice); the others still follow as fallbacks. */
+  prefer?: string | null;
+  /** Reply text so far, while a streaming provider answers (progress display only). */
+  onDelta?(textSoFar: string): void;
   onProgress?(event: LogEvent): void;
 }
 
@@ -416,7 +525,7 @@ function clean(err: unknown, secrets: readonly string[]): unknown {
 export async function runAiTask(config: AiConfig, env: AiEnv, args: AiRunArgs): Promise<AiRunDone> {
   const secrets = secretsFor(config);
   try {
-    const routed = config.flagOn ? routedDeps(config, args.kind) : null;
+    const routed = config.flagOn ? routedDeps(config, args.kind, args.prefer) : null;
     if (!routed) throw new AiError('disabled');
     const { first } = routed.route;
     if (first.key.state === 'missing' || first.key.state === 'other_origin') {
@@ -435,8 +544,15 @@ export async function runAiTask(config: AiConfig, env: AiEnv, args: AiRunArgs): 
       coordinator: env.coordinator,
       pricing: routed.pricing,
       secrets,
-      ...(env.timeoutMs === undefined ? {} : { timeoutMs: env.timeoutMs }),
+      ...(() => {
+        const slowest = Math.max(
+          env.timeoutMs ?? 0,
+          ...[routed.route.first, ...routed.route.targets].map((t) => timeoutFor(t.settings) ?? 0),
+        );
+        return slowest > 0 ? { timeoutMs: slowest } : {};
+      })(),
       ...(args.onProgress ? { log: args.onProgress } : {}),
+      ...(args.onDelta ? { onDelta: args.onDelta } : {}),
     };
     let outcome;
     try {
@@ -457,6 +573,7 @@ export async function runAiTask(config: AiConfig, env: AiEnv, args: AiRunArgs): 
     const budget = outcome.budget ? await persistSpend(before, outcome.budget, nowMs) : before;
     const saved = await saveAiResult(outcome.result, {
       ...(args.selection.question ? { question: args.selection.question } : {}),
+      ...(args.threadId ? { threadId: args.threadId } : {}),
     });
     return {
       saved,
@@ -489,7 +606,13 @@ export async function testAiConnection(
 ): Promise<AiConnectionTest> {
   const secrets = secretsFor(config);
   const timer = new AbortController();
-  const stop = setTimeout(() => timer.abort(), TEST_TIMEOUT_MS);
+  const stop = setTimeout(
+    () => timer.abort(),
+    Math.max(
+      TEST_TIMEOUT_MS,
+      ...config.profiles.filter((p) => p.id === profileId).map((p) => timeoutFor(p.settings) ?? 0),
+    ),
+  );
   const onAbort = () => timer.abort();
   signal?.addEventListener('abort', onAbort, { once: true });
   try {

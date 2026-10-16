@@ -164,6 +164,12 @@ export function goodReply(kind: AiTaskKind, s: AiSelection): unknown {
         uncertainty: '',
         evidence: [ev(a)],
       };
+    case 'chat':
+      return {
+        answer: 'Metformin is the first-line treatment according to your notes.',
+        basis: 'notes',
+        evidence: [ev(a)],
+      };
     case 'compare_topics':
       return {
         topics: ['Type 1', 'Type 2'],
@@ -246,6 +252,8 @@ export function goodReply(kind: AiTaskKind, s: AiSelection): unknown {
 export function selectionFor(kind: AiTaskKind): AiSelection {
   switch (kind) {
     case 'explain':
+      return sel([H1, N1], { question: 'What is first-line treatment for type 2 diabetes?' });
+    case 'chat':
       return sel([H1, N1], { question: 'What is first-line treatment for type 2 diabetes?' });
     case 'compare_topics':
       return sel([H1, H2]);

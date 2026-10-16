@@ -16,10 +16,12 @@ import {
   pasteOutline,
   putSyllabus,
   seedSyllabusVault,
+  startPaste,
   syllabusRows,
   topicId,
   topicsByTitle,
   topicsTree,
+  wizardNext as syllabusWizardNext,
 } from './helpers.syllabus';
 import { recordRequests, stopWorker } from './helpers.lifecycle';
 import {
@@ -36,6 +38,7 @@ import {
   openReview,
   openTypedCard,
   pageErrors,
+  pick,
   readStudyDb,
   saveEditor,
   setClock,
@@ -46,7 +49,10 @@ import {
 import {
   XID,
   chooseSyllabusSource,
+  examNext,
   examOnTopicId,
+  examStep,
+  examWizard,
   expectNoFeedback,
   finishExam,
   heading,
@@ -58,7 +64,9 @@ import {
   scheduleOf,
   startExam,
   studyTopicId,
+  toExamStep,
   topicOptions,
+  typeQuestionCount,
   walkExam,
 } from './helpers.exam';
 
@@ -130,15 +138,25 @@ test.describe('an exam from start to results', () => {
     try {
       await openExamTab(page);
       const setup = page.getByTestId(XID.setup);
-      await expect(setup.getByTestId(XID.scope)).toContainText('All cards (3 cards)');
+      await expect(examStep(page)).toHaveText('What to ask');
+      const all = setup
+        .getByTestId(XID.scope)
+        .getByRole('radio', { name: /^All cards\s*3 cards$/ });
+      await expect(all).toBeChecked();
       // The count is capped by the cards available; an impossible one is explained, not guessed.
-      await setup.getByTestId(XID.questions).fill('50');
+      await toExamStep(page, 'How many?');
+      await typeQuestionCount(page, 50);
       await expect(setup).toContainText(
         'Only 3 cards can be asked in this scope, so the exam has 3 questions.',
       );
-      await setup.getByTestId(XID.questions).fill('0');
-      await expect(setup.getByTestId(XID.start)).toHaveAttribute('aria-disabled', 'true');
-      await expect(setup).toContainText('Ask for a whole number of questions from 1 to 200.');
+      await typeQuestionCount(page, 0);
+      // Next refuses it: the step stays, says why, and the field is marked.
+      await examWizard(page).getByRole('button', { name: 'Next', exact: true }).click();
+      await expect(examWizard(page).getByRole('alert')).toHaveText(
+        'Ask for a whole number of questions from 1 to 200.',
+      );
+      await expect(examStep(page)).toHaveText('How many?');
+      await expect(setup.getByTestId(XID.questions)).toHaveAttribute('aria-invalid', 'true');
       await expect(setup).toContainText('No exam has been finished yet.');
 
       await startExam(page, { questions: 50 });
@@ -248,8 +266,9 @@ test.describe('an exam from start to results', () => {
     await page.getByTestId(XID.leave).click();
     await page.getByRole('dialog').getByRole('button', { name: 'Leave exam' }).click();
     const setup = page.getByTestId(XID.setup);
-    await expect(setup).toContainText('An exam is in progress');
-    await expect(setup.getByTestId(XID.start)).toHaveAttribute('aria-disabled', 'true');
+    await expect(setup).toContainText('Exam in progress');
+    // No second exam can be started meanwhile: the setup wizard is not offered.
+    await expect(examWizard(page)).toHaveCount(0);
     expect((await readExamMeta(page)).session?.phase).toBe('answering');
 
     await setup.getByTestId(XID.continue).click();
@@ -259,7 +278,10 @@ test.describe('an exam from start to results', () => {
     await page.getByRole('dialog').getByRole('button', { name: 'Leave exam' }).click();
     await page.getByTestId(XID.discard).click();
     await page.getByRole('dialog').getByRole('button', { name: 'Discard exam' }).click();
-    await expect(page.getByTestId(XID.start)).not.toHaveAttribute('aria-disabled', 'true');
+    await expect(examWizard(page)).toBeVisible();
+    await expect(
+      examWizard(page).getByRole('button', { name: 'Next', exact: true }),
+    ).not.toHaveAttribute('aria-disabled', 'true');
     await expect.poll(async () => (await readExamMeta(page)).session).toBeNull();
     // Discarding is not finishing: no history, no review, nothing changed.
     expect((await readExamMeta(page)).history).toEqual([]);
@@ -292,7 +314,7 @@ test.describe('the clock', () => {
     ).toBe(0);
 
     await page.getByTestId(XID.next).click();
-    await page.getByRole('radio', { name: 'AV node', exact: true }).check();
+    await pick(page.getByRole('radio', { name: 'AV node', exact: true }));
     await persisted(page, (s) => s.questions[1]?.choiceId !== null, 'the pick was written');
 
     // One minute in: half of the two minutes is gone.
@@ -342,7 +364,7 @@ test.describe('the clock', () => {
     await startExam(page, { questions: 3, minutes: 10 });
     await page.getByTestId(XID.text).fill('about seventy');
     await page.getByTestId(XID.next).click();
-    await page.getByRole('radio', { name: 'SA node', exact: true }).check();
+    await pick(page.getByRole('radio', { name: 'SA node', exact: true }));
     await persisted(
       page,
       (s) => s.questions[0]?.text === 'about seventy' && s.questions[1]?.choiceId !== null,
@@ -420,7 +442,7 @@ test.describe('count this exam as review', () => {
     await expect(page.getByTestId(XID.results)).toBeVisible();
     expect(await scheduleOf(page)).toEqual(before);
 
-    const tick = page.getByRole('checkbox', { name: 'Count this exam as review' });
+    const tick = page.getByRole('switch', { name: 'Count as review' });
     await expect(tick).not.toBeChecked();
     await tick.check();
     await expect(page.getByTestId(XID.countStatus)).toHaveText('Counted 2 cards as review.');
@@ -545,7 +567,7 @@ test.describe('accessibility', () => {
     await page.getByTestId(XID.text).fill('about seventy');
     await page.getByTestId(XID.next).click();
     await expectAccessible(page, 'exam: multiple-choice question');
-    await page.getByRole('radio', { name: 'AV node', exact: true }).check();
+    await pick(page.getByRole('radio', { name: 'AV node', exact: true }));
     await expectAccessible(page, 'exam: multiple-choice question with an option picked');
     await page.getByTestId(XID.finish).click();
     await expectAccessible(page, 'exam: finish confirmation');
@@ -559,7 +581,9 @@ test.describe('accessibility', () => {
     await expect(page.getByTestId(XID.results)).toBeVisible();
     await expect(page.getByTestId(XID.missed)).toContainText('Question 2');
     await expectAccessible(page, 'exam: results with a missed question');
-    await page.getByText('Time per question').click();
+    // The time table sits under "More details" with the tag table.
+    await page.getByTestId(XID.results).getByText('More details', { exact: true }).click();
+    await expect(page.getByTestId(XID.times)).toBeVisible();
     await expectAccessible(page, 'exam: results with the time table open');
 
     await page.getByTestId(XID.close).click();
@@ -579,9 +603,12 @@ test.describe('an exam from a syllabus topic', () => {
     // ---- the syllabus is made in the editor: an outline is pasted, then topics are mapped --------
     const editor = await openDashboard(env);
     await openSyllabusView(editor);
-    await editor.getByTestId(SID.import).click();
-    const dialog = await pasteOutline(editor, OUTLINE);
-    await dialog.getByTestId('dialog-confirm').click();
+    // The "New syllabus" wizard: Start from › Paste outline › Name it › Looks good?
+    const dialog = await startPaste(editor);
+    await pasteOutline(editor, OUTLINE);
+    await syllabusWizardNext(dialog, 'Name it');
+    await syllabusWizardNext(dialog, 'Looks good?');
+    await dialog.getByRole('button', { name: 'Create syllabus', exact: true }).click();
     await expect(dialog).toHaveCount(0);
     await expect(topicsTree(editor).getByRole('treeitem')).toHaveCount(6);
     await mapTopic(editor, 'Heart failure', { banks: ['Cardiology'] });
@@ -622,7 +649,8 @@ test.describe('an exam from a syllabus topic', () => {
       await expect(setup.getByTestId(XID.syllabusNote)).toContainText(
         '2 cards belong to “Renal” and its subtopics.',
       );
-      await setup.getByTestId(XID.questions).fill('5');
+      await examNext(page, 'How many?');
+      await typeQuestionCount(page, 5);
       await expect(setup).toContainText(
         'Only 2 cards can be asked in this scope, so the exam has 2 questions.',
       );
@@ -716,11 +744,13 @@ test.describe('an exam from a syllabus topic', () => {
     );
     const topic = page.getByTestId(XID.topic);
     await expect(topic).toHaveValue(topicId('renal'));
-    await expect(page.getByTestId(XID.sourceSyllabus)).toBeChecked();
+    // The source is already the syllabus: the wizard opens on its topic step, no "Ask from" step.
+    await expect(examStep(page)).toHaveText('Which topic?');
+    await expect(examWizard(page).getByRole('radio', { name: /^A syllabus/ })).toHaveCount(0);
     expect(new URL(page.url()).search).toBe(
       `?view=exam&syllabus=${syllabusId}&topic=${topicId('renal')}`,
     );
-    await expect(page.getByRole('heading', { name: 'Exam simulation' })).toBeFocused();
+    await expect(page.getByRole('heading', { name: 'Practice exam' })).toBeFocused();
     await expect(page.getByTestId(XID.syllabusNote)).toContainText(
       '2 cards belong to “Renal” and its subtopics.',
     );
@@ -728,11 +758,13 @@ test.describe('an exam from a syllabus topic', () => {
     // ---- the address does the same after a reload -------------------------------------------------
     await page.reload();
     await expect(page.getByTestId(XID.topic)).toHaveValue(topicId('renal'));
-    await expect(page.getByRole('heading', { name: 'Exam simulation' })).toBeFocused();
+    await expect(page.getByRole('heading', { name: 'Practice exam' })).toBeFocused();
 
     // ---- the whole syllabus, weighted -------------------------------------------------------------
     await page.getByTestId(XID.topic).selectOption('');
     await page.getByTestId(XID.weighted).check();
+    // The plan is on the last step ("Looks good?"), with the default count and no time limit.
+    await toExamStep(page, 'Looks good?');
     const plan = page.getByTestId(XID.plan);
     await plan.locator('summary').click();
     // Heart failure 0.1875 and Renal 0.375 of the syllabus: a third and two thirds of what can be

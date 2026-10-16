@@ -1,9 +1,11 @@
 import { useId, useState } from 'react';
+import { CalendarCheck, CalendarClock, CircleAlert } from 'lucide-react';
 import { studyDayKey, studyDayNumber } from '@study';
 import { applyBacklog, planBacklog } from '@storage';
 import {
   Button,
   ConfirmDialog,
+  InfoTip,
   InlineNotice,
   errorMessage,
   plural,
@@ -15,6 +17,8 @@ import {
 import { TID, clockKey, formatDayKey, toBoundary, toClock, type StudySettings } from '@ui/review';
 
 const MAX_SAMPLE = 8;
+/** The spans the slider offers, today included. */
+export const SPREAD_DAYS = [2, 3, 5, 7, 10, 14, 21, 30] as const;
 
 /**
  * Overdue recovery: spread the cards that are late over the next few days within each deck's daily
@@ -60,7 +64,6 @@ export function BacklogRecovery({
     if (!plan.data) return;
     const applied = await applyBacklog(plan.data.plan, toClock(settings));
     setResult(applied);
-    setConfirm(false);
     plan.refresh();
   });
 
@@ -75,45 +78,58 @@ export function BacklogRecovery({
     );
   }
   const moves = preview?.moves.length ?? 0;
+  const rows = [...byDay.entries()].sort((a, b) => a[0] - b[0]);
+  const keptToday = preview?.plan.keptToday ?? 0;
+  const peak = Math.max(1, ...rows.map(([, n]) => n));
+  const index = Math.max(0, SPREAD_DAYS.indexOf(days as (typeof SPREAD_DAYS)[number]));
 
   return (
-    <section className="sv-stack" aria-label="Backlog recovery" data-testid={TID.backlog}>
-      <p>
-        {plural(overdue, 'review card')} {overdue === 1 ? 'is' : 'are'} overdue. Recovery spreads
-        them over the next days so you are not buried at once. Only due dates change; what you
-        remember about each card is kept.
-      </p>
-      <div className="rv-grid">
-        <div className="sv-field">
-          <label className="sv-label" htmlFor={`${uid}-days`}>
-            Spread over
-          </label>
-          <select
+    <section className="rv-backlog" aria-label="Backlog recovery" data-testid={TID.backlog}>
+      <div className="rv-backlog__controls">
+        <div className="rv-slider">
+          <span className="rv-labelrow">
+            <label className="sv-label" htmlFor={`${uid}-days`}>
+              Spread over <strong className="rv-slider__value">{days} days</strong>
+            </label>
+            <InfoTip label="About catching up" align="start">
+              {plural(overdue, 'review card')} {overdue === 1 ? 'is' : 'are'} overdue. Recovery
+              spreads them over the next days; only due dates change, what you remember is kept.
+            </InfoTip>
+          </span>
+          <input
             id={`${uid}-days`}
-            className="sv-control"
+            type="range"
+            className="rv-slider__input"
             data-testid={TID.backlogDays}
-            value={days}
+            min={0}
+            max={SPREAD_DAYS.length - 1}
+            step={1}
+            value={index}
+            aria-valuetext={`${days} days, today included`}
             onChange={(e) => {
-              setDays(Number(e.target.value));
+              setDays(SPREAD_DAYS[Number(e.target.value)] ?? 7);
               setResult(null);
             }}
-          >
-            {[2, 3, 5, 7, 10, 14, 21, 30].map((d) => (
-              <option key={d} value={d}>
-                {d} days (today included)
-              </option>
-            ))}
-          </select>
+          />
+          <span className="rv-slider__ends" aria-hidden="true">
+            <span>{SPREAD_DAYS[0]} days</span>
+            <span>{SPREAD_DAYS[SPREAD_DAYS.length - 1]} days</span>
+          </span>
         </div>
-        <div className="sv-field">
-          <label className="sv-label" htmlFor={`${uid}-budget`}>
-            Reviews per day, per deck
-          </label>
+        <div className="sv-field rv-backlog__budget">
+          <span className="rv-labelrow">
+            <label className="sv-label" htmlFor={`${uid}-budget`}>
+              Daily cap per deck
+            </label>
+            <InfoTip label="About the daily cap">
+              Reviews per day in each deck. Leave it empty to use each deck’s own limit.
+            </InfoTip>
+          </span>
           <input
             id={`${uid}-budget`}
             className="sv-control"
             inputMode="numeric"
-            placeholder="Each deck’s own limit"
+            placeholder="Deck limit"
             value={perDay}
             aria-invalid={budgetError ? true : undefined}
             aria-describedby={budgetError ? `${uid}-budget-err` : undefined}
@@ -123,8 +139,8 @@ export function BacklogRecovery({
             }}
           />
           {budgetError ? (
-            <p id={`${uid}-budget-err`} className="sv-small rv-error">
-              <span aria-hidden="true">✕ </span>
+            <p id={`${uid}-budget-err`} className="sv-small rv-error rv-error--icon">
+              <CircleAlert aria-hidden="true" strokeWidth={2.6} />
               {budgetError}
             </p>
           ) : null}
@@ -149,37 +165,49 @@ export function BacklogRecovery({
       ) : null}
 
       {preview ? (
-        <div className="sv-stack sv-stack--tight" data-testid={TID.backlogPlan}>
-          <h3>What will change</h3>
-          <ul className="rv-list">
+        <div className="rv-backlog__plan" data-testid={TID.backlogPlan}>
+          <ul className="rv-backlog__stats">
             <li>
-              {plural(preview.plan.keptToday, 'overdue card')} stay due today (within today&rsquo;s
-              budget).
+              <CalendarCheck aria-hidden="true" strokeWidth={2.5} />
+              <span>
+                {plural(keptToday, 'overdue card')} stay due today (within today&rsquo;s budget).
+              </span>
             </li>
             <li>
-              {plural(moves, 'card')} move to later days
-              {moves > 0 ? ':' : '.'}
+              <CalendarClock aria-hidden="true" strokeWidth={2.5} />
+              <span>
+                {plural(moves, 'card')} move to later days
+                {moves > 0 ? ':' : '.'}
+              </span>
             </li>
           </ul>
           {moves > 0 ? (
             <div className="rv-tablewrap">
-              <table className="rv-table">
-                <caption className="sv-sr">Cards moved per day</caption>
-                <thead>
+              <table className="rv-bars">
+                <caption className="sv-vh">Cards moved per day</caption>
+                <thead className="sv-vh">
                   <tr>
                     <th scope="col">New due day</th>
                     <th scope="col">Cards</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {[...byDay.entries()]
-                    .sort((a, b) => a[0] - b[0])
-                    .map(([offset, count]) => (
-                      <tr key={offset}>
-                        <th scope="row">{dayLabel.get(offset) ?? `Day +${offset}`}</th>
-                        <td>{count}</td>
-                      </tr>
-                    ))}
+                  {rows.map(([offset, count]) => (
+                    <tr key={offset}>
+                      <th scope="row">{dayLabel.get(offset) ?? `Day +${offset}`}</th>
+                      <td>
+                        <span className="rv-bars__cell">
+                          <span className="rv-bars__track" aria-hidden="true">
+                            <span
+                              className="rv-bars__fill"
+                              style={{ width: `${Math.round((count / peak) * 100)}%` }}
+                            />
+                          </span>
+                          <span className="rv-bars__n">{count}</span>
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
@@ -187,13 +215,13 @@ export function BacklogRecovery({
           {preview.unassigned.length > 0 ? (
             <InlineNotice tone="warning" title="Some cards do not fit">
               {plural(preview.unassigned.length, 'card')} would not fit into {days} days at this
-              budget and stay overdue. Spread over more days or raise the budget to include them.
+              budget and stay overdue. Spread over more days or raise the budget.
             </InlineNotice>
           ) : null}
           {moves > 0 ? (
             <details className="rv-details">
-              <summary>Show the first {Math.min(MAX_SAMPLE, moves)} cards that move</summary>
-              <ul className="rv-list">
+              <summary>First {Math.min(MAX_SAMPLE, moves)} cards that move</summary>
+              <ul className="rv-list rv-details__body">
                 {preview.moves.slice(0, MAX_SAMPLE).map((m) => (
                   <li key={m.cardId} className="sv-wrap">
                     {truncate(m.front, 70)}: was due {formatDayKey(m.fromDueAt.slice(0, 10))}, now{' '}
@@ -231,7 +259,11 @@ export function BacklogRecovery({
         <ConfirmDialog
           title={`Move ${plural(moves, 'card')}?`}
           confirmLabel="Move the cards"
-          onConfirm={() => void apply.run()}
+          onConfirm={() => {
+            // Close first: a failure is then shown on the page, not behind the modal.
+            setConfirm(false);
+            void apply.run();
+          }}
           onCancel={() => setConfirm(false)}
         >
           <p>

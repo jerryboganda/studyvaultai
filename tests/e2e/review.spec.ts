@@ -30,6 +30,7 @@ import {
   countedLogs,
   createBasicCards,
   createTypedClozeCards,
+  createWizard,
   dueNumbers,
   expect,
   expectAccessible,
@@ -49,6 +50,7 @@ import {
   openTypedCard,
   optionIndex,
   pageErrors,
+  pick,
   previewLabels,
   questionText,
   ratingId,
@@ -67,6 +69,8 @@ import {
   tabUntil,
   tableRows,
   whenText,
+  wizardNext,
+  wizardStep,
   type Captured,
   type CardRow,
   type CardSpec,
@@ -149,15 +153,30 @@ test('review page: create a card, study it with the keyboard, continue after a r
   await expect(page.getByRole('heading', { name: 'Review', level: 1 })).toBeVisible();
   await expect(page.getByTestId('rv-deck-empty')).toBeVisible();
 
-  await page.getByRole('tab', { name: 'Create cards' }).click();
-  await page.getByRole('tab', { name: 'Typed card' }).click();
+  // The empty state's own button opens the Create wizard: a blank card, question and answer.
+  await page.getByTestId('rv-deck-empty').getByRole('button', { name: 'Create cards' }).click();
+  await expect(page.getByRole('tab', { name: 'Create', exact: true })).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  const wizard = page.getByRole('region', { name: 'Create cards', exact: true });
+  await wizard.getByText('Blank card', { exact: true }).click(); // the picture card
+  await expect(wizard.getByRole('radio', { name: /^Blank card/ })).toBeChecked();
+  await wizard.getByRole('button', { name: 'Next', exact: true }).click();
+  await expect(wizard.getByRole('radio', { name: /^Q and A/ })).toBeChecked();
+  await wizard.getByRole('button', { name: 'Next', exact: true }).click();
   const manual = page.getByTestId('rv-manual');
   await manual
     .getByLabel('Question', { exact: true })
     .fill('What is the normal adult resting heart rate?');
   await manual.getByLabel('Answer', { exact: true }).fill('60 to 100 beats per minute');
-  await expect(page.getByTestId('rv-preview')).toContainText('1 card will be created');
-  await page.getByTestId('rv-save-cards').click();
+  await expect(page.getByTestId('rv-preview')).toContainText(
+    'What is the normal adult resting heart rate?',
+  );
+  await expect(page.getByTestId('rv-preview')).toContainText('60 to 100 beats per minute');
+  await wizard.getByRole('button', { name: 'Next', exact: true }).click();
+  await expect(wizard).toContainText('1 card ready');
+  await wizard.getByRole('button', { name: 'Create card', exact: true }).click();
   await expect(page.getByText('Created 1 card.')).toBeVisible();
 
   await page.getByRole('tab', { name: 'Study' }).click();
@@ -198,8 +217,10 @@ test.describe('authoring', () => {
 
     const page = await openReview(ctx);
     await openHighlightInAuthor(page, sv.id);
-    await expect(page.getByText('Source quote (read only)')).toBeVisible();
-    await expect(page.getByTestId(TID.editor).locator('blockquote')).toHaveText(QUOTE_SV);
+    // The chosen highlight's quote is shown above the card types.
+    await expect(page.getByRole('region', { name: 'Create cards', exact: true })).toContainText(
+      QUOTE_SV,
+    );
 
     // basic: the quote can be used as the answer with one button (exact text, no retyping).
     const editor = await fillEditor(page, {
@@ -207,11 +228,17 @@ test.describe('authoring', () => {
       question: 'What is stroke volume?',
       answer: 'x',
     });
-    await editor.getByRole('button', { name: 'Use the quote as the answer' }).click();
+    // The source quote is shown as a read-only quotation (labelled for screen readers), not a field.
+    await expect(editor.locator('blockquote')).toHaveText(`Source quote: ${QUOTE_SV}`);
+    await expect(editor.getByRole('textbox', { name: /source|quote/i })).toHaveCount(0);
+    await editor.getByRole('button', { name: 'Use as answer' }).click();
     await expect(editor.getByRole('textbox', { name: 'Answer', exact: true })).toHaveValue(
       QUOTE_SV,
     );
-    await expect(page.getByTestId(TID.preview)).toContainText('1 card will be created');
+    // A single card: the preview shows its two faces (the "N cards will be created" line is only
+    // shown for two or more); the deck step says "1 card ready" (checked in saveEditor).
+    await expect(page.getByTestId(TID.preview)).toContainText('What is stroke volume?');
+    await expect(page.getByTestId(TID.preview)).not.toContainText('cards will be created');
     await saveEditor(
       page,
       {
@@ -313,7 +340,8 @@ test.describe('authoring', () => {
     const row = page.getByTestId(`rv-card-${basic.id}`);
     await expect(row).toContainText('What is stroke volume?');
     await row.getByRole('button', { name: 'Edit', exact: true }).click();
-    const edit = row.getByTestId(TID.editor);
+    // The edit form opens in a side sheet (a modal dialog named after it).
+    const edit = page.getByRole('dialog', { name: 'Edit card' }).getByTestId(TID.editor);
     await expect(edit.getByLabel('Front')).toHaveValue('What is stroke volume?');
     // Provenance is not an editable field.
     await expect(edit.getByLabel(/source|quote|highlight/i)).toHaveCount(0);
@@ -335,15 +363,23 @@ test.describe('authoring', () => {
     await expect(cardRow(page, 'Define stroke volume (edited)')).toBeVisible();
     await expect(cardRow(page, 'What is stroke volume?')).toHaveCount(0);
 
-    // A second highlight, bulk-created: one basic card per highlight, quote = answer.
-    await gotoTab(page, 'Create cards');
-    await page
-      .getByRole('checkbox', { name: new RegExp(`^Select for bulk: ${QUOTE_CO.slice(0, 20)}`) })
-      .check();
-    await page.getByRole('tab', { name: /^From several/ }).click();
+    // A second highlight, bulk-created ("Several"): one basic card per highlight, quote = answer.
+    await gotoTab(page, 'Create');
+    const wizard = createWizard(page);
+    await pick(wizard.getByRole('radio', { name: /^Several/ }));
+    await wizardNext(page, 'Pick highlights');
+    const coRow = page.getByTestId(`rv-pick-${co.id}`);
+    await expect(coRow).toContainText(QUOTE_CO);
+    await coRow.click();
+    await expect(coRow.getByRole('checkbox')).toBeChecked();
+    await expect(page.getByTestId(`rv-pick-${sv.id}`).getByRole('checkbox')).not.toBeChecked();
+    await wizardNext(page, 'Write questions');
     const bulk = page.getByTestId(TID.bulk);
+    await expect(bulk).toContainText(QUOTE_CO);
     await bulk.getByLabel('Question', { exact: true }).fill('How is cardiac output calculated?');
-    await page.getByTestId(TID.bulkCreate).click();
+    await wizardNext(page, 'Pick a deck');
+    await expect(wizard).toContainText('1 card ready');
+    await wizard.getByRole('button', { name: 'Create 1 card', exact: true }).click();
     await expect.poll(async () => cardCount(page)).toBe(7);
     const bulked = liveCards(await readStudyDb(page)).find((c) => c.highlightId === co.id)!;
     expect(bulked.front).toBe('How is cardiac output calculated?');
@@ -353,26 +389,33 @@ test.describe('authoring', () => {
     noErrors(page);
   });
 
-  test('an incomplete card is explained, not saved: the button is disabled with the reason', async ({
+  test('an incomplete card is explained, not saved: Next stays on the card and says why', async ({
     context,
     extensionId,
   }) => {
     const page = await openReview({ context, extensionId, origin: '' });
     await openTypedCard(page);
-    const save = page.getByTestId(TID.saveCards);
+    const step = wizardStep(page);
+    const alert = createWizard(page).getByRole('alert');
+    // Next on an incomplete card keeps the learner on "Write the card" and names the problem.
+    const refused = async (why: RegExp) => {
+      await createWizard(page).getByRole('button', { name: 'Next', exact: true }).click();
+      await expect(alert).toContainText(why);
+      await expect(step).toHaveText('Write the card');
+    };
 
-    // Nothing typed: disabled, and the button says why.
-    await expect(save).toHaveAttribute('aria-disabled', 'true');
-    await expect(save).toHaveAttribute('title', /empty|incomplete|complete/i);
+    // Nothing typed: refused, with the reason.
+    await fillEditor(page, { t: 'basic', question: '', answer: '' });
+    await refused(/empty|incomplete|complete/i);
 
     // basic: a question but no answer.
     await fillEditor(page, { t: 'basic', question: 'Only a question', answer: '' });
-    await expect(save).toHaveAttribute('aria-disabled', 'true');
+    await refused(/back of the card is empty/i);
     await expect(page.getByTestId(TID.previewIssues)).toContainText(/back of the card is empty/i);
 
     // cloze with no deletion.
     await fillEditor(page, { t: 'cloze', markup: 'A sentence with no deletion.' });
-    await expect(save).toHaveAttribute('aria-disabled', 'true');
+    await refused(/Add at least one deletion/);
 
     // mcq with one option.
     await fillEditor(page, {
@@ -381,7 +424,7 @@ test.describe('authoring', () => {
       choices: ['Only option', '', '', ''],
       correct: 0,
     });
-    await expect(save).toHaveAttribute('aria-disabled', 'true');
+    await refused(/at least 2 choices/);
     await expect(page.getByTestId(TID.previewIssues)).toContainText(/at least 2 choices/);
     expect(await cardCount(page)).toBe(0);
     noErrors(page);
@@ -495,17 +538,15 @@ test.describe('study session', () => {
     expect(await questionText(page)).toBe(QP);
     await expect(page.getByTestId(TID.ratings)).toHaveCount(0);
     await expect(page.getByTestId(TID.answer)).toHaveCount(0);
-    // Controls that cannot act yet say why instead of doing nothing.
+    // Controls that cannot act yet say why instead of doing nothing (a tooltip that describes them).
     await expect(page.getByTestId(TID.undo)).toHaveAttribute('aria-disabled', 'true');
-    await expect(page.getByTestId(TID.undo)).toHaveAttribute('title', 'Nothing to undo yet.');
+    await expect(page.getByTestId(TID.undo)).toHaveAccessibleDescription('Nothing to undo yet.');
     await expect(page.getByTestId(TID.explain)).toHaveAttribute('aria-disabled', 'true');
-    await expect(page.getByTestId(TID.explain)).toHaveAttribute(
-      'title',
+    await expect(page.getByTestId(TID.explain)).toHaveAccessibleDescription(
       'Show the answer first to see the explanation.',
     );
     await expect(page.getByTestId(TID.source)).toHaveAttribute('aria-disabled', 'true');
-    await expect(page.getByTestId(TID.source)).toHaveAttribute(
-      'title',
+    await expect(page.getByTestId(TID.source)).toHaveAccessibleDescription(
       'This card has no source: it was typed in by hand.',
     );
 
@@ -629,13 +670,30 @@ test.describe('study session', () => {
     expect(countedLogs(finalDb)).toHaveLength(5);
     expect(finalDb.logs).toHaveLength(6); // plus the undone one, kept as history
     const b = dueBuckets(finalDb, T0);
+    // What is left now (the header's count: active cards due at this instant, new ones counted
+    // apart) and the reviews of the next study day, as the stored rows say.
+    const dueNow = liveCards(finalDb).filter(
+      (c) => !c.suspended && c.buriedUntil === null && Date.parse(c.fsrs.due) <= T0,
+    );
+    const dueNew = dueNow.filter((c) => c.fsrs.state === 'new').length;
+    const left =
+      dueNow.length === 0
+        ? 'Nothing is due right now'
+        : `${plural(dueNow.length, 'card')} still due now${dueNew > 0 ? ` (${dueNew} new)` : ''}`;
     await expect(page.getByTestId(TID.summaryNext)).toHaveText(
-      `${plural(b.overdue.length + b.today.length, 'card')} still due today, ${b.tomorrow.length} due tomorrow.`,
+      `${left}, ${plural(b.tomorrow.length, 'review')} due tomorrow.`,
     );
 
     // --- back to the decks: nothing due; the suspended card lives in the card browser -----
     await summary.getByRole('button', { name: 'Back to decks' }).click();
-    await expect(page.getByText('Nothing is due right now.').first()).toBeVisible();
+    await expect(
+      page.getByText('Nothing is due right now.', { exact: true }).filter({ visible: true }),
+    ).toBeVisible();
+    // Start review stays focusable and says why it cannot start.
+    await expect(page.getByTestId(TID.startAll)).toHaveAttribute('aria-disabled', 'true');
+    await expect(page.getByTestId(TID.startAll)).toHaveAccessibleDescription(
+      'Nothing is due right now.',
+    );
     await expectDue(page, 0);
 
     await gotoTab(page, 'Cards');
@@ -825,12 +883,20 @@ test.describe('study session from a PDF', () => {
     expect(hl.anchorSet.type).toBe('pdf');
     await reader.close();
 
-    // A card from it, in the review page; the picker names the page.
+    // A card from it, in the review page; the picker names the document (and the page).
     const page = await openReview(ctx);
-    await gotoTab(page, 'Create cards');
-    await expect(page.getByTestId(`rv-pick-${hl.id}`)).toBeVisible();
+    await gotoTab(page, 'Create');
+    await pick(createWizard(page).getByRole('radio', { name: /^A highlight/ }));
+    await wizardNext(page, 'Pick a highlight');
+    const hlRow = page.getByTestId(`rv-pick-${hl.id}`);
+    await expect(hlRow).toContainText('Page 2 line 1');
+    await expect(hlRow).toContainText('Renal physiology');
     await openHighlightInAuthor(page, hl.id);
-    await expect(page.getByText('From Renal physiology, page 2.')).toBeVisible();
+    // Provenance stays in sight: the quote on "Card type" names the document and the PDF page.
+    await expect(
+      page.getByTestId(TID.author),
+      'the author view names the PDF page of the highlight',
+    ).toContainText(/Renal physiology.{0,5}(page|p\.)\s*2(?!\d)/i);
     await saveEditor(
       page,
       { t: 'basic', question: 'PDF-card: which line is this?', answer: hl.exactQuote },
@@ -852,7 +918,7 @@ test.describe('study session from a PDF', () => {
     expect(address.searchParams.get('highlight')).toBe(hl.id);
     expect(address.searchParams.get('doc')).toBeTruthy();
     // No copy of the file was kept, and the reader says so instead of pretending.
-    await expect(pdf.getByText(/does not keep a copy of that PDF/)).toBeVisible();
+    await expect(pdf.getByText(/No stored copy of that PDF/)).toBeVisible();
     // Choosing the same file again brings the saved highlight back, on page 2.
     await chooseFile(pdf, 'renal.pdf', bytes);
     await expect(pdf.getByTestId('pdf-viewer')).toBeVisible({ timeout: 90_000 });
@@ -888,8 +954,8 @@ test.describe('persistence', () => {
     await expect(page.getByTestId(TID.progressText)).toHaveText('1 answered, 2 left (33%)');
 
     await reloadTo(page, 'Study');
-    await expect(page.getByTestId(TID.deckPicker)).toContainText('A session is in progress');
-    await expect(page.getByTestId(TID.deckPicker)).toContainText('You answered 1 so far.');
+    await expect(page.getByTestId(TID.deckPicker)).toContainText('Session in progress');
+    await expect(page.getByTestId(TID.deckPicker)).toContainText('1 done · 2 left');
     await expect(page.getByTestId(TID.continue)).toHaveText('Continue (2 left)');
     await page.getByTestId(TID.continue).click();
     expect(await questionText(page), 'the answered card is not shown again').toBe('Q-two');
@@ -1041,7 +1107,7 @@ test.describe('persistence', () => {
         expect(due.new).toBe(1);
         expect(due.learning).toBe(1);
         await expect(page2.getByTestId(TID.continue)).toHaveText('Continue (2 left)');
-        await expect(page2.getByTestId(TID.deckPicker)).toContainText('You answered 2 so far.');
+        await expect(page2.getByTestId(TID.deckPicker)).toContainText('2 done · 2 left');
 
         // Continue: the unanswered card first, then the learning step; no card twice, none lost.
         await page2.getByTestId(TID.continue).click();
@@ -1296,10 +1362,10 @@ test.describe('daily caps and the study day', () => {
       leechThreshold: '8',
     } as const;
     const label = {
-      targetRetentionPct: 'Target retention (%)',
-      newPerDay: 'New cards per day',
+      targetRetentionPct: 'Target retention',
+      newPerDay: 'New per day',
       reviewsPerDay: 'Reviews per day',
-      maxIntervalDays: 'Maximum interval (days)',
+      maxIntervalDays: 'Max interval',
       learningSteps: 'Learning steps',
       relearnSteps: 'Relearning steps',
       leechThreshold: 'Leech threshold',
@@ -1331,7 +1397,7 @@ test.describe('daily caps and the study day', () => {
       await expect(form.getByText(message)).toBeVisible();
       await expect(input).toHaveAttribute('aria-invalid', 'true');
       await expect(save).toHaveAttribute('aria-disabled', 'true');
-      await expect(save).toHaveAttribute('title', 'Fix the fields marked with a cross first.');
+      await expect(save).toHaveAttribute('title', 'Fix the fields marked in red first.');
       await input.fill(defaults[field]);
       await expect(form.getByText(message)).toHaveCount(0);
     }
@@ -1375,7 +1441,7 @@ test.describe('daily caps and the study day', () => {
     await reloadTo(page, 'Settings');
     const again = await openDeckForm(page, 'General');
     await expect(again.getByLabel('Learning steps', { exact: true })).toHaveValue('2m 20m');
-    await expect(again.getByLabel('New cards per day', { exact: true })).toHaveValue('5');
+    await expect(again.getByLabel('New per day', { exact: true })).toHaveValue('5');
 
     // The new steps are what the buttons offer for the next answer.
     await gotoTab(page, 'Study');
@@ -1398,7 +1464,7 @@ test.describe('daily caps and the study day', () => {
       timeZone: 'Europe/Berlin',
       rolloverHour: 6,
     });
-    await expect(day).toContainText(/it is study day \d{4}-\d{2}-\d{2} now/);
+    await expect(day).toContainText(/It is study day \d{4}-\d{2}-\d{2} now/);
     await reloadTo(page, 'Settings');
     await expect(page.getByTestId(TID.timeZone)).toHaveValue('Europe/Berlin');
     await expect(page.getByTestId(TID.rollover)).toHaveValue('6');
@@ -1437,7 +1503,7 @@ test.describe('daily caps and the study day', () => {
     ) => {
       await setStudyDayInUi(page, { timeZone: zone, rolloverHour: hour });
       await expect(page.getByTestId(TID.studyDay)).toContainText(
-        `it is study day ${studyDayKey} now`,
+        `It is study day ${studyDayKey} now`,
       );
       await gotoTab(page, 'Study');
       await expect(page.getByTestId(TID.dueTotal), why).toHaveText(String(due));
@@ -1518,14 +1584,21 @@ test.describe('backlog recovery', () => {
     await setClock(ctx, now);
     await reloadTo(page, 'Study');
     await expectDue(page, 24);
-    const summary = page.getByText('24 overdue reviews: recover from the backlog');
+    const summary = page.getByText('24 overdue reviews', { exact: true });
     await expect(summary).toBeVisible();
     const backlog = page.getByTestId(TID.backlog);
     await expect(backlog).toBeVisible(); // open by itself from 20 overdue cards up
 
     // Plan: 10 reviews per day over 3 days.
-    await backlog.getByLabel('Reviews per day, per deck').fill('10');
-    await backlog.getByTestId(TID.backlogDays).selectOption('3');
+    await backlog.getByLabel('Daily cap per deck', { exact: true }).fill('10');
+    // The span is a slider over 2, 3, 5, 7, 10, 14, 21, 30 days, moved with the keyboard.
+    await backlog.getByTestId(TID.backlogDays).focus();
+    await page.keyboard.press('Home'); // 2 days
+    await page.keyboard.press('ArrowRight'); // 3 days
+    await expect(backlog.getByTestId(TID.backlogDays)).toHaveAttribute(
+      'aria-valuetext',
+      '3 days, today included',
+    );
     const plan = page.getByTestId(TID.backlogPlan);
     await expect(plan).toContainText('10 overdue cards stay due today');
     await expect(plan).toContainText('14 cards move to later days:');
@@ -1574,10 +1647,15 @@ test.describe('backlog recovery', () => {
 
     // A budget that cannot hold the rest: reported with the number, apply is disabled.
     // (Fewer than 20 overdue cards: the recovery section is collapsed until it is opened.)
-    await page.getByText('10 overdue reviews: recover from the backlog').click();
+    await page.getByText('10 overdue reviews', { exact: true }).click();
     const again = page.getByTestId(TID.backlog);
-    await again.getByLabel('Reviews per day, per deck').fill('2');
-    await again.getByTestId(TID.backlogDays).selectOption('2');
+    await again.getByLabel('Daily cap per deck', { exact: true }).fill('2');
+    await again.getByTestId(TID.backlogDays).focus();
+    await page.keyboard.press('Home'); // 2 days
+    await expect(again.getByTestId(TID.backlogDays)).toHaveAttribute(
+      'aria-valuetext',
+      '2 days, today included',
+    );
     const tight = page.getByTestId(TID.backlogPlan);
     await expect(tight).toContainText('2 overdue cards stay due today');
     await expect(tight).toContainText('0 cards move to later days.');
@@ -1609,9 +1687,9 @@ test.describe('analytics', () => {
     const ctx: Ctx = env;
     await setClock(ctx, T0);
     const page = await openReview(ctx, { settings: UTC_DAY });
-    await gotoTab(page, 'Analytics');
+    await gotoTab(page, 'Stats');
     await expect(page.getByTestId(TID.analyticsEmpty)).toContainText(
-      'Charts appear here once you have cards and have answered some. Nothing is estimated or filled in before then.',
+      'Charts appear once you make and answer cards.',
     );
     for (const id of [TID.streak, TID.forecast, TID.retention, TID.studyLog, TID.counts]) {
       await expect(page.getByTestId(id)).toHaveCount(0);
@@ -1622,22 +1700,18 @@ test.describe('analytics', () => {
       ['An-two', 'b'],
       ['An-three', 'c'],
     ]);
-    await gotoTab(page, 'Analytics');
+    await gotoTab(page, 'Stats');
     const retention = page.getByTestId(TID.retention);
     await expect(page.getByTestId(TID.retentionInsufficient)).toHaveText(
-      'True retention needs at least 20 reviews of learned cards; you have 0. It is not estimated before then.',
+      'Needs 20 reviews of learned cards; you have 0.',
     );
     await expect(retention).not.toContainText('%');
-    await expect(retention).toContainText(
-      'The memory model has no learned cards to estimate from yet.',
-    );
+    await expect(retention).toContainText('No model estimate yet.');
     await expect(retention.locator('.rv-share')).toHaveCount(0);
     const streak = page.getByTestId(TID.streak);
     await expect(streak.locator('.rv-count')).toHaveText('0');
-    await expect(streak.locator('.sv-small')).toHaveText('day streak; best 0');
-    await expect(page.getByTestId(TID.studyLog)).toContainText(
-      'No reviews were recorded in the last 30 days.',
-    );
+    await expect(streak.locator('.sv-small')).toHaveText('Study days · best 0');
+    await expect(page.getByTestId(TID.studyLog)).toContainText('No reviews in the last 30 days.');
     // 3 new cards, none studied: the forecast table is all zeros and says 0 are coming.
     const forecast = await tableRows(page.getByTestId(TID.forecastTable));
     expect(forecast).toHaveLength(30);
@@ -1687,9 +1761,9 @@ test.describe('analytics', () => {
 
     // 19 learned-card reviews are not enough: retention says so and shows no percentage.
     await page.getByTestId(TID.leave).click();
-    await gotoTab(page, 'Analytics');
+    await gotoTab(page, 'Stats');
     await expect(page.getByTestId(TID.retentionInsufficient)).toHaveText(
-      'True retention needs at least 20 reviews of learned cards; you have 19. It is not estimated before then.',
+      'Needs 20 reviews of learned cards; you have 19.',
     );
     await expect(page.getByTestId(TID.retention).locator('.rv-count')).toHaveCount(0);
 
@@ -1700,7 +1774,7 @@ test.describe('analytics', () => {
     await expect(page.getByTestId(TID.summaryAnswered)).toContainText('You answered 24 cards');
 
     // ---- the numbers, computed from the sequence above ------------------------------------
-    await gotoTab(page, 'Analytics');
+    await gotoTab(page, 'Stats');
     const db = await readStudyDb(page);
     expect(countedLogs(db)).toHaveLength(46); // 20 + 1 + 1 + 24
     const retention = page.getByTestId(TID.retention);
@@ -1720,17 +1794,21 @@ test.describe('analytics', () => {
     // Streak: days 0, 1, 2 and 20 were studied, today is day 20.
     const streak = page.getByTestId(TID.streak);
     await expect(streak.locator('.rv-count')).toHaveText('1');
-    await expect(streak.locator('.sv-small')).toHaveText('day streak; best 3');
+    await expect(streak.locator('.sv-small')).toHaveText('Study days · best 3');
 
     // Reviews recorded and the headline numbers.
     const stats = page.locator('.rv-stat');
     const b = dueBuckets(db, day20);
     expect(b.overdue).toHaveLength(0);
-    await expect(stats.nth(0)).toContainText(
-      `${b.overdue.length + b.today.length}due today (including ${b.overdue.length} overdue)`,
+    await expect(stats.nth(0).locator('.rv-count')).toHaveText(
+      String(b.overdue.length + b.today.length),
     );
-    await expect(stats.nth(2)).toContainText('46reviews recorded');
-    await expect(stats.nth(3)).toContainText('0new cards waiting');
+    // The overdue part of the label is only shown when there are overdue cards (none here).
+    await expect(stats.nth(0).locator('.sv-small')).toHaveText(
+      b.overdue.length > 0 ? `Due today · ${b.overdue.length} overdue` : 'Due today',
+    );
+    await expect(stats.nth(2)).toContainText('46Reviews done');
+    await expect(stats.nth(3)).toContainText('0New waiting');
 
     // Forecast table: every studied card is in exactly one day of the next 30 (or beyond).
     const forecast = await tableRows(page.getByTestId(TID.forecastTable));
@@ -1798,8 +1876,10 @@ test.describe('accessibility', () => {
 
     await expectAccessible(page, 'deck picker, no cards yet');
 
-    // Author view: every card template, with the editor open.
+    // Author view (the Create wizard): the card types, then every card template in the editor.
     await openTypedCard(page);
+    await expectAccessible(page, 'author: card type step');
+    await fillEditor(page, { t: 'basic', question: '', answer: '' });
     await expectAccessible(page, 'author: typed card, question and answer');
     const specs: CardSpec[] = [
       { t: 'cloze', markup: 'The {{c1::heart}} has {{c2::four}} chambers.' },
@@ -1831,6 +1911,7 @@ test.describe('accessibility', () => {
       { t: 'basic', question: 'A-basic: resting heart rate?', answer: '60 to 100' },
       1,
     );
+    await expectAccessible(page, 'author: card created');
     await saveEditor(
       page,
       {
@@ -1888,19 +1969,23 @@ test.describe('accessibility', () => {
       .first()
       .getByRole('button', { name: 'Edit', exact: true })
       .click();
+    const sheet = page.getByRole('dialog', { name: 'Edit card' });
+    await expect(sheet.getByTestId(TID.editor)).toBeVisible();
     await expectAccessible(page, 'card browser: edit form');
+    await sheet.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(sheet).toHaveCount(0);
 
-    await gotoTab(page, 'Analytics');
+    await gotoTab(page, 'Stats');
     await expect(page.getByTestId(TID.analytics)).toBeVisible();
     await expectAccessible(page, 'analytics with data');
-    await page.getByText('Show the data as a table').first().click();
+    await page.getByText('Show as table').first().click();
     await expectAccessible(page, 'analytics with the data table open');
 
     await gotoTab(page, 'Settings');
     await expectAccessible(page, 'settings');
     const deck = await openDeckForm(page, 'General');
     await expectAccessible(page, 'settings: deck rules open');
-    await deck.getByLabel('Target retention (%)', { exact: true }).fill('5');
+    await deck.getByLabel('Target retention', { exact: true }).fill('5');
     await page.getByTestId(TID.timeZone).fill('Nowhere/Land');
     await expectAccessible(page, 'settings: validation messages shown');
     noErrors(page);
@@ -1990,29 +2075,54 @@ test.describe('accessibility', () => {
           return raw.endsWith('ms') ? parseFloat(raw) : parseFloat(raw) * 1000;
         })(),
         // One duration per transitioned property ("0.12s, 0.12s"): collapse to the distinct values.
-        transition: [
-          ...new Set(
-            getComputedStyle(document.querySelector('.sv-btn') as Element)
-              .transitionDuration.split(',')
-              .map((d) => d.trim()),
-          ),
-        ].join(','),
+        // (A running session has no .sv-btn: its controls are the chunky buttons.)
+        transition: (() => {
+          const button = document.querySelector('.sv-btn');
+          if (!button) return 'no .sv-btn on screen';
+          return [
+            ...new Set(
+              getComputedStyle(button)
+                .transitionDuration.split(',')
+                .map((d) => d.trim()),
+            ),
+          ].join(',');
+        })(),
         scroll: getComputedStyle(document.documentElement).scrollBehavior,
-        running: document.getAnimations().length,
+        // Running animations that move something: any animated property but opacity. The one
+        // allowed under reduced motion is the "+1 XP" fade in place (UX_DESIGN 2.8: opacity only).
+        moving: document
+          .getAnimations()
+          .filter((a) =>
+            ((a.effect as KeyframeEffect | null)?.getKeyframes() ?? []).some((frame) =>
+              Object.keys(frame).some(
+                (k) => !['offset', 'computedOffset', 'easing', 'composite', 'opacity'].includes(k),
+              ),
+            ),
+          )
+          .map((a) => (a as CSSAnimation).animationName ?? a.constructor.name),
+        // Every running animation by name: only the XP fade may be among them.
+        running: document
+          .getAnimations()
+          .map((a) => (a as CSSAnimation).animationName ?? a.constructor.name),
       }));
+    const onlyXpFade = (names: string[]) => names.filter((n) => n !== 'sv-xp-fade');
 
     await page.emulateMedia({ reducedMotion: 'no-preference' });
-    expect(await motion()).toMatchObject({ tokenMs: 120, transition: '0.12s' });
+    expect(await motion()).toMatchObject({ tokenMs: 140, transition: '0.14s' });
 
     await page.emulateMedia({ reducedMotion: 'reduce' });
     expect(await motion()).toMatchObject({ tokenMs: 0, transition: '0s', scroll: 'auto' });
     await startAll(page);
     for (let i = 0; i < 2; i++) {
       await page.keyboard.press('Space');
-      expect((await motion()).running, 'no running animation on the answer side').toBe(0);
+      const answer = await motion();
+      expect(answer.moving, 'nothing moves on the answer side').toEqual([]);
+      expect(onlyXpFade(answer.running), 'no animation but the XP fade').toEqual([]);
       await page.keyboard.press('3');
       await expect(page.getByTestId(TID.ratings)).toHaveCount(0);
-      expect((await motion()).running).toBe(0);
+      const next = await motion();
+      expect(next.moving, 'nothing moves on the next card').toEqual([]);
+      expect(onlyXpFade(next.running), 'no animation but the XP fade').toEqual([]);
     }
     noErrors(page);
   });
@@ -2040,7 +2150,7 @@ test.describe('accessibility', () => {
       const done = await answerAll(page, [4, 4]);
       expect(done).toHaveLength(2);
       await expect(page.getByTestId(TID.summaryAnswered)).toContainText('You answered 2 cards');
-      await gotoTab(page, 'Analytics');
+      await gotoTab(page, 'Stats');
       await expect(page.getByTestId(TID.retention)).toBeVisible();
       await expect(page.getByTestId(TID.streak).locator('.rv-count')).toHaveText('1');
       await reloadTo(page, 'Cards');

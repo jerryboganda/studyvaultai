@@ -111,6 +111,18 @@ for (const file of walk(prod).filter((f) => f.endsWith('.css'))) {
 }
 if (walk(prod).some((f) => f.endsWith('.map'))) fail('source maps are shipped');
 
+// --- bundled font: OFL-1.1 requires its licence text to ship with the font files (ADR-021) ----
+const nunito = walk(prod).filter((f) => /nunito[^/\\]*\.woff2$/i.test(f));
+const ofl = join(prod, 'licenses', 'Nunito-OFL.txt');
+if (nunito.length && !(existsSync(ofl) && /SIL Open Font License/.test(readFileSync(ofl, 'utf8'))))
+  fail(
+    `${nunito.length} Nunito woff2 files ship without licenses/Nunito-OFL.txt (public/licenses/)`,
+  );
+// The overlay uses system fonts: an @font-face in the content script would be hoisted into the page.
+const contentScript = join(prod, 'content-scripts', 'highlighter.js');
+if (existsSync(contentScript) && readFileSync(contentScript, 'utf8').includes('@font-face'))
+  fail('content-scripts/highlighter.js declares an @font-face (web fonts are for extension pages)');
+
 // --- size budgets (regress guard; tighten as the lazy-mount work lands) ---------------------
 const KB = 1024;
 const size = (rel) => statSync(join(prod, rel)).size;
@@ -130,8 +142,10 @@ for (const [rel, max] of budgets) {
 }
 // The OCR engine (wasm + traineddata, packages/ocr) is large by design and has its own budget below.
 const ocrDir = join(prod, 'ocr');
+// The on-device matching model (docs/adr/025) is data with its own exact-files budget below.
+const modelsDir = join(prod, 'models');
 const total = walk(prod)
-  .filter((f) => !f.startsWith(ocrDir + sep))
+  .filter((f) => !f.startsWith(ocrDir + sep) && !f.startsWith(modelsDir + sep))
   .reduce((n, f) => n + statSync(f).size, 0);
 // Phase 1 shipped ~1.1 MB. PDF.js (worker, CJK character maps, standard fonts) and the pages take the
 // non-OCR total to ~6.3 MB after the Preact content script (-200 KB, docs/adr/012). The finish wave
@@ -141,9 +155,41 @@ const total = walk(prod)
 // (temml 0.14.0 with mhchem, ~207 KB minified, ~61 KB gzip, fetched only when a note holds a formula)
 // and 2 KB of its stylesheet: measured 6662 KB before it, so 7000 KB keeps ~2% headroom. OCR assets are
 // budgeted separately above. Raise this only with a reason in the commit.
-const TOTAL_BUDGET_KB = 7000;
+// The Sunny Vault redesign (docs/adr/021) bundles Nunito (5 woff2 subsets, 134 KB; a page fetches only the
+// subsets it needs) with its OFL licence and the Sunny stylesheets (~30 KB): ~7076 KB estimated against 6903 KB
+// measured in run 38560072781 (7093 KB measured after it). The redesigned review page and dashboard (Home,
+// wizards, charts, game UI, lucide icons) measured 7355 KB at 626591f (+262 KB: ~90 KB page CSS, ~84 KB page
+// code, ~37 KB shared components). With every surface redesigned the build measured 7578 KB (run 38748059185):
+// 7800 KB keeps ~3% headroom.
+const TOTAL_BUDGET_KB = 7800;
 if (total > TOTAL_BUDGET_KB * KB)
   fail(`total extension size ${Math.round(total / KB)} KB exceeds ${TOTAL_BUDGET_KB} KB`);
+
+// --- smart-matching model: exactly the audited files (docs/adr/025) -----------------------------
+const MODEL_FILES = {
+  'potion-base-8m-int8.bin': 'c5c497e9be7d6061ee550e1b742e34d57026835abcc89cdd0fa8bf006e1c6073',
+  'potion-base-8m-vocab.json': 'd4ab4b07a2a344ca0fe621703f599a1d146b741725eeeca03115c22169a73927',
+};
+if (!existsSync(modelsDir)) {
+  fail('models/ is missing from the build (public/models was not copied)');
+} else {
+  const shipped = readdirSync(modelsDir).sort();
+  const wanted = Object.keys(MODEL_FILES).sort();
+  if (shipped.join(',') !== wanted.join(',')) {
+    fail(`models/ holds "${shipped}" but ${wanted} are expected`);
+  } else {
+    for (const name of wanted) {
+      const digest = createHash('sha256')
+        .update(readFileSync(join(modelsDir, name)))
+        .digest('hex');
+      if (digest !== MODEL_FILES[name])
+        fail(`models/${name} digest ${digest} is not the audited one`);
+    }
+    const modelBytes = wanted.reduce((n, f) => n + statSync(join(modelsDir, f)).size, 0);
+    if (modelBytes > 9 * 1024 * KB)
+      fail(`models/ is ${Math.round(modelBytes / KB)} KB, budget 9216 KB`);
+  }
+}
 
 // --- OCR assets: exactly the audited files (packages/ocr/assets.manifest.json), within budget ---
 // Generated into public/ocr by scripts/copy-ocr-assets.mjs (WXT module modules/ocr-assets.ts).

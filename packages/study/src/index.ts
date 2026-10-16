@@ -7,3 +7,4 @@ export * from './scheduler';
 export * from './cards';
 export * from './queue';
 export * from './analytics';
+export * from './game';

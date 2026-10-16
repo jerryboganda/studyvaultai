@@ -22,6 +22,9 @@ async function mount(vault: FakeVault, ui: (api: ReturnType<FakeVault['api']>) =
 }
 
 const dialog = () => screen.getByRole('dialog', { hidden: true });
+const NOW = '2026-10-10T10:00:00.000Z';
+// Several agents share the CPU: a slow re-render is not a failure.
+const SLOW = { timeout: 8000 };
 
 describe('TrashView', () => {
   const trashed = () =>
@@ -50,6 +53,8 @@ describe('TrashView', () => {
     const restore = screen.getByTestId('trash-restore');
     expect(restore.getAttribute('aria-disabled')).toBe('true');
     fireEvent.click(first!);
+    // The same button, now available (it is never re-created under the keyboard).
+    expect(screen.getByTestId('trash-restore')).toBe(restore);
     fireEvent.click(restore);
     await waitFor(() => expect(vault.called('restore')).toHaveLength(1));
     expect(vault.called('restore')[0]!.args[0]).toEqual([
@@ -87,7 +92,7 @@ describe('TrashView', () => {
     expect(vault.called('emptyTrash')).toHaveLength(0);
     fireEvent.click(within(dialog()).getByTestId('dialog-confirm'));
     await waitFor(() => expect(vault.called('emptyTrash')).toHaveLength(1));
-    await waitFor(() => expect(screen.getByText('The trash is empty')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Trash is empty')).toBeTruthy());
   });
 
   it('words the empty-trash counts in the singular for a single item', async () => {
@@ -104,7 +109,93 @@ describe('TrashView', () => {
 
   it('shows the empty state', async () => {
     await mount(new FakeVault([{ id: 'hl-00000001', quote: 'x' }]), () => <TrashView />);
-    expect(await screen.findByText('The trash is empty')).toBeTruthy();
+    expect(await screen.findByText('Trash is empty')).toBeTruthy();
+  });
+
+  it('restores one item from its own card, without selecting it first', async () => {
+    const vault = trashed();
+    await mount(vault, () => <TrashView />);
+    const [first] = await screen.findAllByTestId('trash-item-restore');
+    fireEvent.click(first!);
+    await waitFor(() => expect(vault.called('restore')).toHaveLength(1));
+    expect(vault.called('restore')[0]!.args[0]).toHaveLength(1);
+    expect((await screen.findByTestId('trash-outcome')).textContent).toBe('Restored 1 item.');
+  });
+
+  it('deletes one item forever only after confirming it', async () => {
+    const vault = trashed();
+    await mount(vault, () => <TrashView />);
+    const [, second] = await screen.findAllByTestId('trash-item-purge');
+    fireEvent.click(second!);
+    expect(within(dialog()).getByTestId('explain-lines').textContent).toContain(
+      '1 highlight will be removed for good.',
+    );
+    expect(vault.called('purge')).toHaveLength(0);
+    fireEvent.click(within(dialog()).getByTestId('dialog-confirm'));
+    await waitFor(() => expect(vault.called('purge')).toHaveLength(1));
+    expect(vault.called('purge')[0]!.args[0]).toHaveLength(1);
+  });
+
+  it('filters by kind with the chips', async () => {
+    await mount(trashed(), () => <TrashView />);
+    await screen.findAllByTestId('trash-item-check');
+    const kinds = within(screen.getByTestId('trash-kind'));
+    expect((kinds.getByRole('radio', { name: /All/ }) as HTMLInputElement).checked).toBe(true);
+    fireEvent.click(kinds.getByRole('radio', { name: /Highlights/ }));
+    expect(screen.getAllByTestId('trash-item-check')).toHaveLength(2);
+  });
+
+  it('names each item in its own buttons, and keeps the keyboard in the list after one goes', async () => {
+    const vault = trashed();
+    await mount(vault, () => <TrashView />);
+    const buttons = await screen.findAllByTestId('trash-item-restore');
+    expect(buttons.map((b) => b.getAttribute('aria-label'))).toEqual(
+      expect.arrayContaining(['Restore: First deleted quote', 'Restore: Second deleted quote']),
+    );
+    buttons[0]!.focus();
+    fireEvent.click(buttons[0]!);
+    await waitFor(() => expect(screen.getAllByTestId('trash-item-restore')).toHaveLength(1), SLOW);
+    // The restored item's button is gone: focus is on the same button of the item left.
+    await waitFor(
+      () => expect(document.activeElement).toBe(screen.getAllByTestId('trash-item-restore')[0]),
+      SLOW,
+    );
+  });
+
+  it('shows everything again when the last item of the shown kind leaves the trash', async () => {
+    const vault = trashed();
+    const api = vault.api();
+    let items: Array<{ kind: 'highlight' | 'note'; id: string; label: string; deletedAt: string }> =
+      [
+        { kind: 'highlight', id: 'hl-00000001', label: 'A deleted quote', deletedAt: NOW },
+        { kind: 'note', id: 'note-0000001', label: 'A deleted note', deletedAt: NOW },
+      ];
+    api.listTrash = async () => items.map((i) => ({ ...i, context: '' }));
+    api.restore = async (refs) => {
+      const ids = new Set(refs.map((r) => (typeof r === 'string' ? r : r.id)));
+      items = items.filter((i) => !ids.has(i.id));
+      return { restored: ids.size };
+    };
+    const tree = await loadTreeData(api);
+    render(
+      <Harness api={api} tree={tree}>
+        <TrashView />
+      </Harness>,
+    );
+    await screen.findAllByTestId('trash-item-check', undefined, SLOW);
+    fireEvent.click(within(screen.getByTestId('trash-kind')).getByRole('radio', { name: /Notes/ }));
+    expect(screen.getAllByTestId('trash-item-check')).toHaveLength(1);
+    fireEvent.click(screen.getByTestId('trash-item-restore'));
+    await waitFor(
+      () =>
+        expect(
+          within(screen.getByTestId('trash-kind')).queryByRole('radio', { name: /Notes/ }),
+        ).toBeNull(),
+      SLOW,
+    );
+    const all = within(screen.getByTestId('trash-kind')).getByRole('radio', { name: /All/ });
+    expect((all as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByTestId('trash-list').textContent).toContain('A deleted quote');
   });
 
   it('summarises a purge in words', () => {
@@ -163,7 +254,8 @@ describe('DuplicatesView', () => {
     await mount(vault, () => <DuplicatesView focusHighlightId={null} onShow={onShow} />);
     const cluster = await screen.findByTestId('duplicate-cluster');
     expect(cluster.textContent).toContain('Same words');
-    expect(cluster.textContent).toContain('Saved 2 times from 2 sources');
+    expect(cluster.textContent).toContain('2 copies');
+    expect(cluster.textContent).toContain('2 sources');
     const members = within(cluster).getAllByTestId('duplicate-member');
     expect(members).toHaveLength(2);
     expect(members[0]!.textContent).toContain('Page A');
@@ -185,6 +277,18 @@ describe('DuplicatesView', () => {
     expect(vault.called('softDeleteHighlight')[0]!.args).toEqual(['hl-00000002']);
     fireEvent.click(await screen.findByRole('button', { name: 'Undo' }));
     await waitFor(() => expect(vault.called('restoreHighlight')).toHaveLength(1));
+  });
+
+  it('keeps one copy and moves the others to the trash, with one Undo for all', async () => {
+    const vault = dupes();
+    await mount(vault, () => <DuplicatesView focusHighlightId={null} onShow={() => undefined} />);
+    const members = await screen.findAllByTestId('duplicate-member');
+    fireEvent.click(within(members[0]!).getByTestId('duplicate-keep'));
+    await waitFor(() => expect(vault.called('softDeleteHighlight')).toHaveLength(1));
+    expect(vault.called('softDeleteHighlight')[0]!.args).toEqual(['hl-00000002']);
+    fireEvent.click(await screen.findByRole('button', { name: 'Undo' }));
+    await waitFor(() => expect(vault.called('restoreHighlight')).toHaveLength(1));
+    expect(vault.called('restoreHighlight')[0]!.args).toEqual(['hl-00000002']);
   });
 
   it('opens a source link safely', async () => {

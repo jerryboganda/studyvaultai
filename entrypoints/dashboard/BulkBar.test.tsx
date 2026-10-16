@@ -75,10 +75,10 @@ describe('BulkBar', () => {
 
   it('wires move, tags, delete and clear', () => {
     const props = setup();
-    fireEvent.click(screen.getByRole('button', { name: 'Move to…' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Tags…' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Move to trash' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Clear selection' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Tags' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Trash' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear' }));
     expect(props.onMove).toHaveBeenCalledTimes(1);
     expect(props.onTags).toHaveBeenCalledTimes(1);
     expect(props.onDelete).toHaveBeenCalledTimes(1);
@@ -87,10 +87,10 @@ describe('BulkBar', () => {
 
   it('ignores clicks on actions while one is running', () => {
     const props = setup({ busy: true });
-    const trash = screen.getByRole('button', { name: 'Move to trash' });
+    const trash = screen.getByRole('button', { name: 'Trash' });
     expect(trash.getAttribute('aria-busy')).toBe('true');
     fireEvent.click(trash);
-    fireEvent.click(screen.getByRole('button', { name: 'Move to…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Move' }));
     expect(props.onDelete).not.toHaveBeenCalled();
     expect(props.onMove).not.toHaveBeenCalled();
   });

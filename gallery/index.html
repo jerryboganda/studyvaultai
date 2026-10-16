@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>StudyVault screen gallery</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f6f7f9;
+        --panel: #ffffff;
+        --ink: #1f2328;
+        --muted: #59636e;
+        --rule: #d1d9e0;
+        --link: #0b57d0;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          color-scheme: dark;
+          --bg: #0d1117;
+          --panel: #151b23;
+          --ink: #e6edf3;
+          --muted: #9198a1;
+          --rule: #3d444d;
+          --link: #6cb6ff;
+        }
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--ink);
+        font:
+          14px/1.5 system-ui,
+          sans-serif;
+      }
+      a {
+        color: var(--link);
+      }
+      .top,
+      main {
+        padding: 16px 24px;
+      }
+      .top {
+        border-bottom: 1px solid var(--rule);
+        background: var(--panel);
+      }
+      h1 {
+        margin: 0;
+        font-size: 22px;
+      }
+      h2 {
+        margin: 0;
+        font-size: 18px;
+      }
+      .note {
+        margin: 4px 0;
+        color: var(--muted);
+      }
+      .controls,
+      .links,
+      .surface__head {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px 20px;
+        align-items: center;
+        margin-top: 8px;
+      }
+      fieldset {
+        display: flex;
+        gap: 12px;
+        border: 0;
+        margin: 0;
+        padding: 0;
+      }
+      legend {
+        float: left;
+        margin-right: 8px;
+      }
+      .surface {
+        margin: 0 0 32px;
+        padding: 16px;
+        border: 1px solid var(--rule);
+        border-radius: 8px;
+        background: var(--panel);
+      }
+      .frames {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 24px;
+        margin-top: 12px;
+      }
+      .frame {
+        margin: 0;
+      }
+      .frame__box {
+        overflow: hidden;
+        border: 1px solid var(--rule);
+        max-width: calc(100vw - 96px);
+      }
+      .frame iframe {
+        display: block;
+        border: 0;
+        transform-origin: 0 0;
+        background: #fff;
+      }
+      figcaption {
+        margin-top: 4px;
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./index.tsx"></script>
+  </body>
+</html>

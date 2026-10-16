@@ -24,6 +24,7 @@ import {
   type TableRegistry,
   type TableSpec,
 } from '@shared';
+import { GameEventRow, GameFactRow } from '@study/game';
 import { STUDY_TABLE_SPECS } from '@study/schema';
 import { DB_VERSION, withDb, type StudyVaultDb } from './db';
 import { normaliseRow } from './rows';
@@ -171,6 +172,22 @@ const SPECS: readonly Spec[] = [
   { name: 'filingRules', primaryKey: 'id', schema: FilingRule, softDelete: true },
   { name: 'syllabi', primaryKey: 'id', schema: Syllabus, softDelete: true },
   { name: 'relations', primaryKey: 'id', schema: Relation, softDelete: true },
+  // Game ledger (schema v5, ADR-022). Append-only, never soft-deleted. No `references`: an event
+  // outlives the row it was derived from (a purge keeps the XP), so it is never an orphan.
+  {
+    name: 'gameEvents',
+    primaryKey: 'id',
+    schema: GameEventRow,
+    softDelete: false,
+    bookkeeping: true,
+  },
+  {
+    name: 'gameFacts',
+    primaryKey: 'id',
+    schema: GameFactRow,
+    softDelete: false,
+    bookkeeping: true,
+  },
 ];
 
 interface NestedReference {

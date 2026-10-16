@@ -1,7 +1,21 @@
 import { useEffect, useId, useRef, useState } from 'react';
+import {
+  Archive,
+  CalendarClock,
+  CircleCheck,
+  FileArchive,
+  FolderOpen,
+  FolderSync,
+  History,
+  ShieldCheck,
+  SlidersHorizontal,
+  TriangleAlert,
+  X,
+} from 'lucide-react';
 import type { ExportProgress } from '@backup';
 import { backupDue, type BackupFolderState } from '@storage';
 import { Button } from '../Button';
+import { ChunkyButton } from '../design/Buttons';
 import { useAsync, useDataEpoch } from '../hooks';
 import { InlineNotice } from '../Notice';
 import { errorMessage, plural } from '../text';
@@ -10,6 +24,7 @@ import type { BackupDeps, FolderBackupOutcome } from './deps';
 import { explainBackupError, type ErrorExplanation } from './explain';
 import { ExportProgressView } from './ExportProgressView';
 import { formatBytes, formatWhen } from './format';
+import { Chip, Disclosure, Fact, Facts, Outcome } from './kit';
 import {
   PassphraseSetup,
   emptyPassphrase,
@@ -34,9 +49,9 @@ export const FOLDER_PERMISSION_NOTE = [
 ] as const;
 
 /**
- * Dated backups into a folder the person picked (File System Access API, ADR-016): "Back up now",
- * keep the newest N, a check of the written file, and an honest status. Where the browser has no
- * folder picker the panel says so and the regular download above stays the way to back up.
+ * Dated backups into a folder the person picked (File System Access API, ADR-016): one click on
+ * "Back up now", keep the newest N, a check of the written file, and an honest status. Where the
+ * browser has no folder picker the card says so and the backup file above stays the way to back up.
  */
 export function BackupFolder({ deps }: { deps: BackupDeps }) {
   const folder = deps.folder;
@@ -118,7 +133,7 @@ export function BackupFolder({ deps }: { deps: BackupDeps }) {
       setState(null);
       setRun({ step: 'idle' });
       setNotice(
-        `StudyVault no longer uses “${name}”. The backups already in it were not touched, and the permission Chrome gave stays listed until you remove it in Chrome’s site settings.`,
+        `StudyVault no longer uses “${name}”. The backups already in it were not touched. Chrome lists its permission until you remove it in site settings.`,
       );
       notifyBackupFolderChanged();
     } catch (err) {
@@ -167,46 +182,65 @@ export function BackupFolder({ deps }: { deps: BackupDeps }) {
     }
   }
 
+  const due = state ? backupDue(state, deps.now()) : null;
+  const last = state?.last ?? null;
+  const cached = pdfs.data;
+
+  const head = (
+    <div className="sd-row">
+      <span className="sd-tile sd-tile--sm sv-art--sun" aria-hidden="true">
+        <FolderSync strokeWidth={2.4} />
+      </span>
+      <h3 className="sd-card__title sd-grow">Backup folder</h3>
+      {state ? (
+        due?.due ? (
+          <Chip icon={TriangleAlert} tone="warning" testId="backup-folder-status">
+            Backup due
+          </Chip>
+        ) : last ? (
+          <Chip icon={CircleCheck} tone="success" testId="backup-folder-status">
+            Up to date
+          </Chip>
+        ) : (
+          <Chip icon={History} testId="backup-folder-status">
+            No backup yet
+          </Chip>
+        )
+      ) : null}
+    </div>
+  );
+
+  const permission = (
+    <Disclosure
+      summary="What Chrome allows"
+      icon={ShieldCheck}
+      testId="backup-folder-permission-note"
+    >
+      {FOLDER_PERMISSION_NOTE.map((paragraph) => (
+        <p key={paragraph} className="sv-small">
+          {paragraph}
+        </p>
+      ))}
+    </Disclosure>
+  );
+
   if (!supported) {
     return (
-      <div className="sv-stack" data-testid="backup-folder">
-        <h3>Back up to a folder</h3>
+      <div className="sd-card" data-testid="backup-folder">
+        {head}
         <div data-testid="backup-folder-unsupported">
-          <InlineNotice tone="info" title="Saving into a folder you choose is not available here">
-            This browser does not give extensions a folder picker (the File System Access API), so
-            StudyVault cannot write into a folder of your choice. Use “Create backup file” above:
-            the file goes to your browser’s download location, and you can move it from there.
+          <InlineNotice tone="info" title="Not available in this browser">
+            It has no folder picker for extensions. Use “Back up now” above and move the file from
+            your downloads.
           </InlineNotice>
         </div>
       </div>
     );
   }
 
-  const cached = pdfs.data;
-  const due = state ? backupDue(state, deps.now()) : null;
-  const last = state?.last ?? null;
-
   return (
-    <div className="sv-stack" data-testid="backup-folder">
-      <h3>Back up to a folder</h3>
-      <p>
-        Pick a folder once (an external drive, a folder your cloud-drive app keeps in sync, a USB
-        stick) and StudyVault saves dated backup files into it each time you press the button.
-        Nothing is uploaded by StudyVault: the files are written to that folder on this computer. If
-        another program syncs or shares that folder, protect the backup with a passphrase below:
-        anyone who can open the folder can read an unencrypted file.
-      </p>
-
-      <details data-testid="backup-folder-permission-note">
-        <summary>What permission this uses, and what StudyVault will and will not do</summary>
-        <div className="sv-stack sv-stack--tight">
-          {FOLDER_PERMISSION_NOTE.map((paragraph) => (
-            <p key={paragraph} className="sv-small">
-              {paragraph}
-            </p>
-          ))}
-        </div>
-      </details>
+    <div className="sd-card" data-testid="backup-folder">
+      {head}
 
       {problem ? (
         <InlineNotice tone="error" title={problem.title}>
@@ -220,171 +254,82 @@ export function BackupFolder({ deps }: { deps: BackupDeps }) {
       ) : null}
 
       {state === undefined ? (
-        <p className="sv-muted" role="status">
+        <p className="sd-line" role="status">
           Checking for a backup folder…
         </p>
       ) : state === null ? (
-        <div>
-          <Button
-            variant="primary"
-            data-testid="backup-folder-choose"
-            onClick={() => void choose()}
-          >
-            Choose a backup folder…
-          </Button>
-        </div>
+        <>
+          <p className="sd-line">Pick a folder once; each click saves a dated copy into it.</p>
+          <div className="sd-row">
+            <ChunkyButton
+              variant="primary"
+              icon={FolderOpen}
+              data-testid="backup-folder-choose"
+              onClick={() => void choose()}
+            >
+              Choose a folder
+            </ChunkyButton>
+          </div>
+          {permission}
+        </>
       ) : (
         <>
-          <dl className="bk-facts">
-            <div>
-              <dt>Folder</dt>
-              <dd className="sv-wrap" data-testid="backup-folder-name">
-                {state.folderName}
-              </dd>
-            </div>
-            <div>
-              <dt>Last backup</dt>
-              <dd data-testid="backup-folder-last">
-                {last
-                  ? `${formatWhen(last.at)} (${due && due.days > 0 ? `${plural(due.days, 'day')} ago` : 'today'})`
-                  : 'None yet to this folder'}
-              </dd>
-            </div>
-            {last ? (
-              <>
-                <div>
-                  <dt>File</dt>
-                  <dd className="sv-wrap" data-testid="backup-folder-last-file">
-                    {last.fileName}, {formatBytes(last.bytes)},{' '}
-                    {last.encrypted ? 'encrypted' : 'not encrypted'}; read back and checked after
-                    writing
-                  </dd>
-                </div>
-                <div>
-                  <dt>SHA-256 of the file</dt>
-                  <dd className="bk-mono sv-wrap" data-testid="backup-folder-sha">
-                    {last.sha256}
-                  </dd>
-                </div>
-              </>
-            ) : null}
-          </dl>
-          <p className="sv-small sv-muted">
-            Chrome tells StudyVault the folder’s name, not where it is, so only the name is shown.
-          </p>
+          <Facts>
+            <Fact icon={FolderOpen} label="Folder" testId="backup-folder-name">
+              {state.folderName}
+            </Fact>
+            <Fact icon={CalendarClock} label="Last backup" testId="backup-folder-last">
+              {last
+                ? `${formatWhen(last.at)} (${due && due.days > 0 ? `${plural(due.days, 'day')} ago` : 'today'})`
+                : 'None yet to this folder'}
+            </Fact>
+          </Facts>
 
-          <div className="sv-field">
-            <label className="sv-label" htmlFor={`${uid}-keep`}>
-              Newest backups to keep in this folder
-            </label>
-            <select
-              id={`${uid}-keep`}
-              className="sv-control"
-              value={state.keepLast}
-              aria-describedby={`${uid}-keep-hint`}
-              disabled={working}
-              data-testid="backup-folder-keep"
-              onChange={(e) => void savePrefs({ keepLast: Number(e.target.value) })}
-            >
-              {[...new Set([...KEEP_CHOICES, state.keepLast])]
-                .sort((a, b) => a - b)
-                .map((n) => (
-                  <option key={n} value={n}>
-                    {n}
-                  </option>
-                ))}
-            </select>
-            <p id={`${uid}-keep-hint`} className="sv-small sv-muted">
-              After a backup is saved and checked, older files StudyVault itself made in this folder
-              are removed down to this number. Other files are never removed.
-            </p>
-          </div>
-
-          <div className="sv-field">
-            <label className="sv-label" htmlFor={`${uid}-remind`}>
-              Remind me when the last backup is older than
-            </label>
-            <select
-              id={`${uid}-remind`}
-              className="sv-control"
-              value={state.remindAfterDays}
-              aria-describedby={`${uid}-remind-hint`}
-              data-testid="backup-folder-remind"
-              onChange={(e) => void savePrefs({ remindAfterDays: Number(e.target.value) })}
-            >
-              {[...new Set([...REMIND_CHOICES, state.remindAfterDays])]
-                .sort((a, b) => a - b)
-                .map((n) => (
-                  <option key={n} value={n}>
-                    {n === 0 ? 'Never remind me' : plural(n, 'day')}
-                  </option>
-                ))}
-            </select>
-            <p id={`${uid}-remind-hint`} className="sv-small sv-muted">
-              The reminder appears on the dashboard and in settings. StudyVault does not back up by
-              itself in the background: Chrome only lets it write to the folder while you press
-              “Back up now”.
-              {due?.due ? ' This backup is overdue by that rule.' : ''}
-            </p>
-          </div>
-
-          <div className="sv-check">
-            <input
-              id={`${uid}-pdfs`}
-              type="checkbox"
-              checked={includePdfs}
-              disabled={working || !cached || cached.count === 0}
-              data-testid="backup-folder-include-pdfs"
-              onChange={(e) => setIncludePdfs(e.target.checked)}
-            />
-            <label htmlFor={`${uid}-pdfs`}>
-              Include cached PDF files
-              {cached && cached.count > 0
-                ? ` (${plural(cached.count, 'file')}, ${formatBytes(cached.bytes)})`
-                : ' (none are cached)'}
-            </label>
-          </div>
-
-          <PassphraseSetup
-            state={pass}
-            onChange={setPass}
-            idPrefix={`${uid}-pass`}
-            testId="backup-folder-pass"
-          />
-          {pass.enabled ? (
-            <p className="sv-small sv-muted">
-              The passphrase is not stored: enter it again after reloading this page.
-            </p>
-          ) : null}
-
-          <div className="sv-row">
-            <Button
+          <div className="sd-row">
+            <ChunkyButton
               id={`${uid}-now`}
               variant="primary"
-              busy={working}
+              size="lg"
+              icon={Archive}
+              aria-busy={working || undefined}
               {...(passProblem ? { disabledReason: passProblem } : {})}
               data-testid="backup-folder-now"
-              onClick={() => void start()}
+              onClick={working ? undefined : () => void start()}
             >
-              {`Back up now to “${state.folderName}”`}
-            </Button>
+              Back up now
+              {/* Visible label first, the folder after it (WCAG 2.5.3); the name is shown above. */}
+              <span className="sv-vh">{` to “${state.folderName}”`}</span>
+            </ChunkyButton>
             {working ? (
-              <Button data-testid="backup-folder-cancel" onClick={() => abort.current?.abort()}>
+              <ChunkyButton
+                icon={X}
+                data-testid="backup-folder-cancel"
+                onClick={() => abort.current?.abort()}
+              >
                 Cancel
-              </Button>
+              </ChunkyButton>
             ) : (
               <>
-                <Button data-testid="backup-folder-change" onClick={() => void choose()}>
-                  Choose another folder…
-                </Button>
-                <Button data-testid="backup-folder-forget" onClick={() => void forget()}>
+                <ChunkyButton
+                  variant="ghost"
+                  icon={FolderOpen}
+                  data-testid="backup-folder-change"
+                  onClick={() => void choose()}
+                >
+                  Change folder
+                </ChunkyButton>
+                <ChunkyButton
+                  variant="ghost"
+                  data-testid="backup-folder-forget"
+                  onClick={() => void forget()}
+                >
                   Stop using this folder
-                </Button>
+                </ChunkyButton>
               </>
             )}
           </div>
           {passProblem && !working ? (
-            <p className="sv-small sv-muted" data-testid="backup-folder-problem">
+            <p className="sd-line" data-testid="backup-folder-problem">
               {passProblem}
             </p>
           ) : null}
@@ -424,27 +369,26 @@ export function BackupFolder({ deps }: { deps: BackupDeps }) {
           ) : null}
 
           {run.step === 'done' ? (
-            <div className="sv-stack sv-stack--tight" data-testid="backup-folder-done">
-              <InlineNotice
-                tone="success"
-                live
+            <div className="sd-stack" data-testid="backup-folder-done" role="status">
+              <Outcome
+                focus={false}
                 title={`Backup saved to “${run.outcome.state.folderName}”`}
-              >
-                <p data-testid="backup-folder-done-file">
-                  {run.outcome.file.fileName}, {formatBytes(run.outcome.file.bytes)},{' '}
-                  {run.outcome.encrypted ? 'encrypted with your passphrase' : 'not encrypted'}.
+                line={
+                  <>
+                    <span data-testid="backup-folder-done-file">
+                      {run.outcome.file.fileName}, {formatBytes(run.outcome.file.bytes)},{' '}
+                      {run.outcome.encrypted ? 'encrypted with your passphrase' : 'not encrypted'}.
+                    </span>{' '}
+                    Read back and checked, byte for byte.
+                  </>
+                }
+              />
+              {run.outcome.file.pruned.length > 0 ? (
+                <p className="sd-line" data-testid="backup-folder-pruned">
+                  Removed {plural(run.outcome.file.pruned.length, 'older backup')} that StudyVault
+                  made, keeping the newest {run.outcome.state.keepLast}.
                 </p>
-                <p>
-                  Checked: StudyVault read the file back from the folder and it matches what was
-                  written, byte for byte.
-                </p>
-                {run.outcome.file.pruned.length > 0 ? (
-                  <p data-testid="backup-folder-pruned">
-                    Removed {plural(run.outcome.file.pruned.length, 'older backup')} that StudyVault
-                    made, keeping the newest {run.outcome.state.keepLast}.
-                  </p>
-                ) : null}
-              </InlineNotice>
+              ) : null}
               {run.outcome.file.pruneFailed.length > 0 ? (
                 <InlineNotice tone="warning" title="Some older backups could not be removed">
                   {run.outcome.file.pruneFailed.join(', ')} could not be deleted (is it open in
@@ -453,6 +397,115 @@ export function BackupFolder({ deps }: { deps: BackupDeps }) {
               ) : null}
             </div>
           ) : null}
+
+          <Disclosure
+            summary={pass.enabled ? 'Options: locked' : 'Options'}
+            icon={SlidersHorizontal}
+            testId="backup-folder-options"
+          >
+            <div className="bk-prefs">
+              <div className="sv-field">
+                <label className="sv-label" htmlFor={`${uid}-keep`}>
+                  Copies to keep
+                </label>
+                <select
+                  id={`${uid}-keep`}
+                  className="sv-control"
+                  value={state.keepLast}
+                  aria-describedby={`${uid}-keep-hint`}
+                  disabled={working}
+                  data-testid="backup-folder-keep"
+                  onChange={(e) => void savePrefs({ keepLast: Number(e.target.value) })}
+                >
+                  {[...new Set([...KEEP_CHOICES, state.keepLast])]
+                    .sort((a, b) => a - b)
+                    .map((n) => (
+                      <option key={n} value={n}>
+                        {n}
+                      </option>
+                    ))}
+                </select>
+                <p id={`${uid}-keep-hint`} className="sv-small sv-muted">
+                  Older StudyVault files go; others never.
+                </p>
+              </div>
+              <div className="sv-field">
+                <label className="sv-label" htmlFor={`${uid}-remind`}>
+                  Remind me after
+                </label>
+                <select
+                  id={`${uid}-remind`}
+                  className="sv-control"
+                  value={state.remindAfterDays}
+                  aria-describedby={`${uid}-remind-hint`}
+                  data-testid="backup-folder-remind"
+                  onChange={(e) => void savePrefs({ remindAfterDays: Number(e.target.value) })}
+                >
+                  {[...new Set([...REMIND_CHOICES, state.remindAfterDays])]
+                    .sort((a, b) => a - b)
+                    .map((n) => (
+                      <option key={n} value={n}>
+                        {n === 0 ? 'Never remind me' : plural(n, 'day')}
+                      </option>
+                    ))}
+                </select>
+                <p id={`${uid}-remind-hint`} className="sv-small sv-muted">
+                  Only a reminder: nothing runs in the background.
+                  {due?.due ? ' This backup is overdue by that rule.' : ''}
+                </p>
+              </div>
+            </div>
+
+            <div className="sv-check">
+              <input
+                id={`${uid}-pdfs`}
+                type="checkbox"
+                checked={includePdfs}
+                disabled={working || !cached || cached.count === 0}
+                data-testid="backup-folder-include-pdfs"
+                onChange={(e) => setIncludePdfs(e.target.checked)}
+              />
+              <label htmlFor={`${uid}-pdfs`}>
+                Add cached PDFs
+                {cached && cached.count > 0
+                  ? ` (${plural(cached.count, 'file')}, ${formatBytes(cached.bytes)})`
+                  : ' (none are cached)'}
+              </label>
+            </div>
+
+            <PassphraseSetup
+              state={pass}
+              onChange={setPass}
+              idPrefix={`${uid}-pass`}
+              testId="backup-folder-pass"
+            />
+            {pass.enabled ? (
+              <p className="sd-line">Not stored: enter it again after reloading this page.</p>
+            ) : null}
+          </Disclosure>
+
+          {last ? (
+            <Disclosure summary="Last file" icon={FileArchive}>
+              <Facts>
+                <Fact icon={FileArchive} label="File" testId="backup-folder-last-file" wide>
+                  {last.fileName}, {formatBytes(last.bytes)},{' '}
+                  {last.encrypted ? 'encrypted' : 'not encrypted'}; read back and checked after
+                  writing
+                </Fact>
+                <Fact
+                  icon={ShieldCheck}
+                  label="SHA-256 of the file"
+                  testId="backup-folder-sha"
+                  mono
+                  wide
+                >
+                  {last.sha256}
+                </Fact>
+              </Facts>
+              <p className="sd-line">Chrome shares the folder’s name only, not where it is.</p>
+            </Disclosure>
+          ) : null}
+          {permission}
         </>
       )}
     </div>

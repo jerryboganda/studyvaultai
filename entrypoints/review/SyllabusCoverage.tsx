@@ -1,4 +1,17 @@
 import { useId, useMemo, useState } from 'react';
+import {
+  Check,
+  CircleDashed,
+  CircleDot,
+  ListTree,
+  Pencil,
+  Plus,
+  Search,
+  SlidersHorizontal,
+  Timer,
+  Unlink,
+} from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { flattenSyllabus, type Syllabus } from '@shared';
 import {
   DEFAULT_COVERAGE_THRESHOLDS,
@@ -16,7 +29,17 @@ import {
   loadSyllabusCoverageData,
   saveCoverageThresholds,
 } from '@storage/syllabusCoverage';
-import { Button, EmptyState, InlineNotice, plural, useAction, useAsync, useDataEpoch } from '@ui';
+import {
+  Button,
+  ChunkyButton,
+  InfoTip,
+  InlineNotice,
+  ProgressRing,
+  plural,
+  useAction,
+  useAsync,
+  useDataEpoch,
+} from '@ui';
 import {
   TID,
   clockKey,
@@ -32,7 +55,7 @@ import {
 } from '@ui/review';
 import { openDashboard, type DashboardTarget } from '@ui/vault/dashboardLink';
 import { subtreeMappings, topicLibraryTarget, type TopicLibraryTarget } from '@ui/vault/topicLink';
-import { BarChart } from './Charts';
+import { Disclosure, Empty, Loading, Panel, Pill } from './ManageKit';
 
 /**
  * Coverage of a custom syllabus (ADR-020 part 2): per topic, what the vault holds and how well it is
@@ -41,10 +64,13 @@ import { BarChart } from './Charts';
  * where it cannot be (a topic with too few reviews shows no retention).
  */
 
-const STATE_TEXT: Record<CoverageState, { glyph: string; label: string }> = {
-  covered: { glyph: '✓', label: 'Covered' },
-  thin: { glyph: '◐', label: 'Thin' },
-  none: { glyph: '–', label: 'None' },
+const STATE_TEXT: Record<
+  CoverageState,
+  { icon: LucideIcon; label: string; tone: 'success' | 'warning' | undefined }
+> = {
+  covered: { icon: Check, label: 'Covered', tone: 'success' },
+  thin: { icon: CircleDot, label: 'Thin', tone: 'warning' },
+  none: { icon: CircleDashed, label: 'None', tone: undefined },
 };
 const STATE_RANK: Record<CoverageState, number> = { none: 0, thin: 1, covered: 2 };
 
@@ -189,38 +215,38 @@ export default function SyllabusCoverage({
     return (
       <InlineNotice
         tone="error"
-        title="Syllabus coverage could not be loaded"
+        title="Coverage could not load"
         action={model.retryable ? <Button onClick={model.refresh}>Retry</Button> : undefined}
       >
         {model.error}
       </InlineNotice>
     );
   }
-  if (!model.data) return <p className="sv-muted">Loading syllabus coverage…</p>;
+  if (!model.data) return <Loading>Loading coverage…</Loading>;
 
   if (syllabi.length === 0 || syllabus === null) {
     return (
-      <section className="sv-stack" aria-labelledby="rv-syl-h" data-testid={TID.syllabus}>
-        <h2 id="rv-syl-h">Syllabus coverage</h2>
-        <EmptyState
-          title="You have no syllabus yet"
-          action={
-            <Button
-              onClick={() => void open.run({ view: 'syllabus' })}
-              data-testid={TID.syllabusCreate}
-            >
-              Create a syllabus
-            </Button>
+      <Panel icon={ListTree} tone="violet" title="Syllabus coverage" testId={TID.syllabus}>
+        <Empty
+          pose="wave"
+          title="No syllabus yet"
+          line={
+            <span data-testid={TID.syllabusEmpty}>
+              Outline your exam to see coverage per topic.
+            </span>
           }
         >
-          <span data-testid={TID.syllabusEmpty}>
-            A syllabus is your own outline of an exam or course. Point its topics at your banks and
-            tags and this section shows, per topic, how much you have saved, how many cards are due
-            and how well you remember them.
-          </span>
-        </EmptyState>
+          <ChunkyButton
+            variant="primary"
+            icon={Plus}
+            onClick={() => void open.run({ view: 'syllabus' })}
+            data-testid={TID.syllabusCreate}
+          >
+            Create syllabus
+          </ChunkyButton>
+        </Empty>
         {open.error ? <InlineNotice tone="error">{open.error}</InlineNotice> : null}
-      </section>
+      </Panel>
     );
   }
 
@@ -236,12 +262,6 @@ export default function SyllabusCoverage({
       })
     : topics;
   const roots = topics.filter((t) => t.parentId === null);
-  const bars = roots.map((t, i) => ({
-    label: `${i + 1}. ${t.title}`,
-    tick: String(i + 1),
-    value: pct(t.covered),
-    extra: Math.max(0, pct(t.started) - pct(t.covered)),
-  }));
   const counts = { covered: 0, thin: 0, none: 0 };
   for (const t of roots) counts[t.state] += 1;
 
@@ -280,43 +300,81 @@ export default function SyllabusCoverage({
     setSort((s) =>
       s?.key !== k ? { key: k, dir: 'asc' } : s.dir === 'asc' ? { key: k, dir: 'desc' } : null,
     );
+  const thresholdInput = (
+    which: 'h' | 'c',
+    label: string,
+    value: string,
+    set: (v: string) => void,
+    ok: boolean,
+    testId: string,
+  ) => (
+    <div className="sv-field">
+      <label className="sv-label" htmlFor={`${selectId}-${which}`}>
+        {label}
+      </label>
+      <input
+        id={`${selectId}-${which}`}
+        className="sv-control rv-syl-num"
+        inputMode="numeric"
+        value={value}
+        autoComplete="off"
+        aria-invalid={!ok || undefined}
+        onChange={(e) => set(e.target.value)}
+        onBlur={commitThresholds}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            commitThresholds();
+          }
+        }}
+        data-testid={testId}
+      />
+    </div>
+  );
 
   return (
-    <section className="sv-stack" aria-labelledby="rv-syl-h" data-testid={TID.syllabus}>
-      <h2 id="rv-syl-h">Syllabus coverage</h2>
-
-      <div className="sv-row">
-        {syllabi.length > 1 ? (
-          <div className="sv-field">
-            <label className="sv-label" htmlFor={selectId}>
-              Syllabus
-            </label>
-            <select
-              id={selectId}
-              className="sv-control"
-              value={syllabus.id}
-              onChange={(e) => setPickedId(e.target.value)}
-              data-testid={TID.syllabusSelect}
-            >
-              {syllabi.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.name}
-                </option>
-              ))}
-            </select>
-          </div>
-        ) : (
-          <p className="rv-syl-name">
-            <strong dir="auto">{syllabus.name}</strong>
-          </p>
-        )}
-        <Button
-          onClick={() => void open.run({ view: 'syllabus', syllabus: syllabus.id })}
-          data-testid={TID.syllabusEdit}
-        >
-          Edit this syllabus
-        </Button>
-      </div>
+    <Panel
+      icon={ListTree}
+      tone="violet"
+      title="Syllabus coverage"
+      testId={TID.syllabus}
+      end={
+        <>
+          {syllabi.length > 1 ? (
+            <div className="rvm-unit">
+              <label className="sv-vh" htmlFor={selectId}>
+                Syllabus
+              </label>
+              <select
+                id={selectId}
+                className="sv-control"
+                value={syllabus.id}
+                onChange={(e) => setPickedId(e.target.value)}
+                data-testid={TID.syllabusSelect}
+              >
+                {syllabi.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : (
+            <Pill icon={ListTree} tone="violet">
+              <span dir="auto">{syllabus.name}</span>
+            </Pill>
+          )}
+          <ChunkyButton
+            size="sm"
+            icon={Pencil}
+            onClick={() => void open.run({ view: 'syllabus', syllabus: syllabus.id })}
+            data-testid={TID.syllabusEdit}
+          >
+            Edit syllabus
+          </ChunkyButton>
+        </>
+      }
+    >
       {open.error ? (
         <InlineNotice tone="error" title="Could not open the dashboard">
           <span data-testid={TID.syllabusError}>{open.error}</span>
@@ -324,122 +382,118 @@ export default function SyllabusCoverage({
       ) : null}
 
       {report === null || flat.length === 0 ? (
-        <EmptyState title="This syllabus has no topics yet">
-          Add topics in the editor, then point them at banks and tags.
-        </EmptyState>
+        <Empty title="No topics yet" line="Add topics, then point them at banks and tags." />
       ) : (
         <>
-          <div className="rv-stats" data-testid={TID.syllabusOverall}>
-            <div className="rv-stat">
-              <span className="rv-count">{percent(report.covered)}</span>
-              <span className="sv-small">
-                of the syllabus is covered, by weight (topics with at least{' '}
-                {plural(thresholds.minHighlights, 'highlight')} and{' '}
-                {plural(thresholds.minCards, 'card')})
-              </span>
-            </div>
-            <div className="rv-stat">
-              <span className="rv-count">{percent(report.started)}</span>
-              <span className="sv-small">has at least some material (covered or thin)</span>
-            </div>
-            <div className="rv-stat">
-              <span className="rv-count">{report.unmapped}</span>
-              <span className="sv-small">
-                of {plural(topics.length, 'topic')} point at no bank or tag yet
-              </span>
+          <div className="rvm-ringrow" data-testid={TID.syllabusOverall}>
+            <Ring value={report.covered} label="Covered" tone="success" />
+            <Ring value={report.started} label="Started" tone="primary" />
+            <div className="rvm-ringrow__text">
+              <p className="rvm-line">
+                <span className="rv-count">{report.unmapped}</span> of{' '}
+                {plural(topics.length, 'topic')} unmapped
+              </p>
+              <p className="rvm-line">
+                Covered from {plural(thresholds.minHighlights, 'highlight')} and{' '}
+                {plural(thresholds.minCards, 'card')}
+              </p>
             </div>
           </div>
 
-          <fieldset className="rv-syl-thresholds">
-            <legend>When does a topic count as covered?</legend>
-            <div className="sv-row">
-              <div className="sv-field">
-                <label className="sv-label" htmlFor={`${selectId}-h`}>
-                  Highlights needed
-                </label>
-                <input
-                  id={`${selectId}-h`}
-                  className="sv-control rv-syl-num"
-                  inputMode="numeric"
-                  value={minHighlights}
-                  autoComplete="off"
-                  aria-invalid={!typedHighlights.ok || undefined}
-                  onChange={(e) => setMinHighlights(e.target.value)}
-                  onBlur={commitThresholds}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      commitThresholds();
-                    }
+          <ul
+            className="rvm-rings"
+            data-testid={TID.syllabusChart}
+            aria-label={`${plural(roots.length, 'top-level topic')}: ${counts.covered} covered, ${counts.thin} thin, ${counts.none} with no material`}
+          >
+            {roots.map((t) => {
+              const state = STATE_TEXT[t.state];
+              return (
+                <li key={t.id}>
+                  <ProgressRing
+                    value={pct(t.covered)}
+                    max={100}
+                    label={`${t.title} covered`}
+                    unit="%"
+                    tone="success"
+                    size={72}
+                    stroke={9}
+                  >
+                    <span>{pct(t.covered)}%</span>
+                  </ProgressRing>
+                  <span className="rvm-rings__name" dir="auto">
+                    {t.title}
+                  </span>
+                  <Pill icon={state.icon} tone={state.tone}>
+                    {state.label}
+                  </Pill>
+                </li>
+              );
+            })}
+          </ul>
+
+          <Disclosure
+            summary={
+              <>
+                <SlidersHorizontal aria-hidden="true" width={18} height={18} />
+                Coverage rule
+              </>
+            }
+          >
+            <fieldset className="rvm-fieldset rv-syl-thresholds">
+              <legend>Covered when</legend>
+              <div className="rvm-row">
+                {thresholdInput(
+                  'h',
+                  'Highlights needed',
+                  minHighlights,
+                  setMinHighlights,
+                  typedHighlights.ok,
+                  TID.syllabusMinHighlights,
+                )}
+                {thresholdInput(
+                  'c',
+                  'Cards needed',
+                  minCards,
+                  setMinCards,
+                  typedCards.ok,
+                  TID.syllabusMinCards,
+                )}
+                <Button
+                  disabledReason={isDefault ? 'These are already the defaults.' : undefined}
+                  onClick={() => {
+                    setMinHighlights(String(DEFAULT_COVERAGE_THRESHOLDS.minHighlights));
+                    setMinCards(String(DEFAULT_COVERAGE_THRESHOLDS.minCards));
+                    void persist.run({ ...DEFAULT_COVERAGE_THRESHOLDS });
                   }}
-                  data-testid={TID.syllabusMinHighlights}
-                />
+                  data-testid={TID.syllabusReset}
+                >
+                  Reset to {DEFAULT_COVERAGE_THRESHOLDS.minHighlights} and{' '}
+                  {DEFAULT_COVERAGE_THRESHOLDS.minCards}
+                </Button>
               </div>
-              <div className="sv-field">
-                <label className="sv-label" htmlFor={`${selectId}-c`}>
-                  Cards needed
-                </label>
-                <input
-                  id={`${selectId}-c`}
-                  className="sv-control rv-syl-num"
-                  inputMode="numeric"
-                  value={minCards}
-                  autoComplete="off"
-                  aria-invalid={!typedCards.ok || undefined}
-                  onChange={(e) => setMinCards(e.target.value)}
-                  onBlur={commitThresholds}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      commitThresholds();
-                    }
-                  }}
-                  data-testid={TID.syllabusMinCards}
-                />
-              </div>
-              <Button
-                disabledReason={isDefault ? 'These are already the defaults.' : undefined}
-                onClick={() => {
-                  setMinHighlights(String(DEFAULT_COVERAGE_THRESHOLDS.minHighlights));
-                  setMinCards(String(DEFAULT_COVERAGE_THRESHOLDS.minCards));
-                  void persist.run({ ...DEFAULT_COVERAGE_THRESHOLDS });
-                }}
-                data-testid={TID.syllabusReset}
-              >
-                Reset to {DEFAULT_COVERAGE_THRESHOLDS.minHighlights} and{' '}
-                {DEFAULT_COVERAGE_THRESHOLDS.minCards}
-              </Button>
-            </div>
-            {thresholdError ? (
-              <p className="rv-syl-error sv-small" role="alert">
-                {thresholdError}
+              {thresholdError ? (
+                <p className="rvm-fielderr" role="alert">
+                  {thresholdError}
+                </p>
+              ) : null}
+              <p className="rvm-line">
+                Fewer is thin; nothing at all is none. Kept on this device.
               </p>
-            ) : null}
-            <p className="sv-small sv-muted">
-              A topic with fewer of either is thin; one with no highlight and no card is none. Your
-              choice is kept on this device only.
-            </p>
-            <p className="sv-small" role="status" data-testid={TID.syllabusThresholdStatus}>
-              {persist.error ?? thresholdStatus}
-            </p>
-          </fieldset>
+              <p className="rvm-line" role="status" data-testid={TID.syllabusThresholdStatus}>
+                {persist.error ?? thresholdStatus}
+              </p>
+            </fieldset>
+          </Disclosure>
 
-          <BarChart
-            testId={TID.syllabusChart}
-            title="Covered share of each top-level topic"
-            summary={`${plural(roots.length, 'top-level topic')}: ${counts.covered} covered, ${counts.thin} thin, ${counts.none} with no material. The whole syllabus is ${percent(
-              report.covered,
-            )} covered by weight. The table below has every topic.`}
-            bars={bars}
-            valueLabel="Covered, % of the topic"
-            extraLabel="Some material but not covered, %"
-            categoryLabel="Topic"
-            columns={{
-              header: 'Share of the syllabus',
-              cells: roots.map((t) => percent(t.share, 1)),
-            }}
-          />
-
+          <div className="rvm-card__head">
+            <h3>All topics</h3>
+            <InfoTip label="About the topic table">
+              Highlights and cards count once per topic, with its subtopics; deleted and suspended
+              ones do not count. Share comes from the weights; due is today&apos;s reviews plus
+              learning steps due now. Retention covers the last 12 months and shows from{' '}
+              {MIN_TOPIC_RETENTION_REVIEWS} reviews.
+            </InfoTip>
+          </div>
           <div className="rv-tablewrap">
             <table className="rv-table rv-syl-table" data-testid={TID.syllabusTable}>
               <caption className="sv-sr">
@@ -495,10 +549,10 @@ export default function SyllabusCoverage({
                           <span className="sv-small sv-muted"> in {parent}</span>
                         ) : null}
                         {!t.subtreeMapped ? (
-                          <span className="sv-small sv-muted">
+                          <>
                             {' '}
-                            (map a bank or tag to this topic)
-                          </span>
+                            <Pill icon={Unlink}>Not mapped</Pill>
+                          </>
                         ) : null}
                       </th>
                       <td className="rv-syl-numeric">{percent(t.share, 1)}</td>
@@ -510,11 +564,13 @@ export default function SyllabusCoverage({
                           ? `n/a (${t.retention.reviews})`
                           : `${percent(t.retention.value)} (${t.retention.reviews})`}
                       </td>
-                      <td>
+                      <td className="rv-syl-when">
                         {t.lastStudiedAt === null ? 'Never' : formatWhen(t.lastStudiedAt, tz)}
                       </td>
                       <td>
-                        <span aria-hidden="true">{state.glyph}</span> {state.label}
+                        <Pill icon={state.icon} tone={state.tone}>
+                          {state.label}
+                        </Pill>
                         {t.scoredFrom === 'subtopics' ? (
                           <span className="sv-small sv-muted">
                             {' '}
@@ -530,7 +586,7 @@ export default function SyllabusCoverage({
                             }
                             aria-label={`Map a bank or tag to ${t.title}`}
                           >
-                            Map a bank or tag
+                            Map
                           </Button>
                         ) : (
                           <Button
@@ -539,7 +595,7 @@ export default function SyllabusCoverage({
                             aria-label={`Show highlights of ${t.title}`}
                             data-testid={syllabusShowId(t.id)}
                           >
-                            Show
+                            <Search aria-hidden="true" width={16} height={16} /> Show
                           </Button>
                         )}
                       </td>
@@ -557,7 +613,7 @@ export default function SyllabusCoverage({
                             aria-label={`Exam on this topic: ${t.title}`}
                             data-testid={syllabusExamId(t.id)}
                           >
-                            Exam on this topic
+                            <Timer aria-hidden="true" width={16} height={16} /> Exam
                           </Button>
                         </td>
                       ) : null}
@@ -567,22 +623,41 @@ export default function SyllabusCoverage({
               </tbody>
             </table>
           </div>
-          <div className="sv-small sv-muted sv-stack sv-stack--tight">
-            <p>
-              <strong>How to read this.</strong> Highlights and cards are counted once per topic,
-              including its subtopics; deleted highlights and deleted or suspended cards are not
-              counted. Share is the topic&apos;s part of the syllabus from the weights (equal when
-              none is set). Due is review cards due by the end of today plus learning steps due now.
-            </p>
-            <p>
-              Retention is the share of reviews of learned cards, over the last 12 months, that were
-              remembered (Hard, Good or Easy), with the number of reviews in brackets; it shows only
-              from {MIN_TOPIC_RETENTION_REVIEWS} reviews. A topic with subtopics that point at
-              something is judged from them.
-            </p>
-          </div>
         </>
       )}
-    </section>
+    </Panel>
+  );
+}
+
+/** Share of the syllabus (0..1) as a ring with the number in its centre and a word under it. */
+function Ring({
+  value,
+  label,
+  tone,
+}: {
+  value: number | null;
+  label: string;
+  tone: 'success' | 'primary';
+}) {
+  return (
+    <div className="rvm-rings__one">
+      {value === null ? (
+        // No weight to share out yet: no ring, never a zero.
+        <span className="rvm-big">n/a</span>
+      ) : (
+        <ProgressRing
+          value={pct(value)}
+          max={100}
+          label={`${label} by weight`}
+          unit="%"
+          tone={tone}
+          size={96}
+          stroke={11}
+        >
+          <span className="rv-count">{percent(value)}</span>
+        </ProgressRing>
+      )}
+      <span className="rvm-line">{label}</span>
+    </div>
   );
 }

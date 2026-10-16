@@ -92,4 +92,23 @@ describe('retrieveForChat', () => {
     expect(r.passages.length).toBeLessThan(5);
     expect(r.passages.reduce((n, p) => n + p.text.length, 0)).toBeLessThanOrEqual(CHAT_MAX_CHARS);
   });
+
+  it('does not offer a chat saved as a note back to a chat, unless asked', async () => {
+    const rows = [
+      ref({ id: 'n1', kind: 'note', sourceTitle: 'AI chat: beta blockers', text: 'AI said so.' }),
+      ref({ id: 'n2', kind: 'note', sourceTitle: 'My revision', text: 'My own note.' }),
+    ];
+    const idx = index([
+      { id: 'n1', docType: 'note' },
+      { id: 'n2', docType: 'note' },
+    ]);
+    const plain = await retrieveForChat(idx, { question: 'beta blockers' }, resolver(rows));
+    expect(plain.passages.map((p) => p.id)).toEqual(['n2']);
+    const all = await retrieveForChat(
+      idx,
+      { question: 'beta blockers', includeAiNotes: true },
+      resolver(rows),
+    );
+    expect(all.passages.map((p) => p.id)).toEqual(['n1', 'n2']);
+  });
 });

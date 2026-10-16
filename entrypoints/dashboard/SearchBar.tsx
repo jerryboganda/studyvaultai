@@ -1,8 +1,11 @@
 import { useId, useState, type Ref } from 'react';
+import { CircleHelp, RotateCcw, Search } from 'lucide-react';
 import { MAX_QUERY_LENGTH, QUERY_SYNTAX, type DidYouMean, type QueryWarning } from '@search';
+import { KIND_LABELS, type HighlightKind, type ResolveStatus } from '@shared';
 import { Button, Kbd } from '@ui';
 import type { SearchHostState } from '@ui/vault/searchHost';
 import { hasFacetToken, toggleFacetToken, type FacetKey } from './filters';
+import { STATUS_SHORT } from './format';
 import type { SearchExtras } from './results';
 
 /** Human sentence for what the index is doing; null when there is nothing to say. */
@@ -21,13 +24,20 @@ export function describeIndexState(state: SearchHostState): string | null {
         state.total !== null && state.total > 0
           ? `${state.done.toLocaleString()} of ${state.total.toLocaleString()}`
           : `${state.done.toLocaleString()} so far`;
-      return `${why}: ${progress}. Browsing works meanwhile; search results appear when this finishes.`;
+      return `${why}: ${progress}. You can browse meanwhile.`;
     }
     case 'error':
       return `Search is unavailable: ${state.message}`;
     default:
       return null;
   }
+}
+
+/** A facet's words: kinds and statuses by name; banks, tags and sites are shown as they are. */
+function facetText(key: FacetKey, value: string): string {
+  if (key === 'kind') return KIND_LABELS[value as HighlightKind]?.label ?? value;
+  if (key === 'status') return STATUS_SHORT[value as ResolveStatus] ?? value;
+  return value;
 }
 
 const FACETS: Array<{ key: FacetKey; label: string }> = [
@@ -67,16 +77,17 @@ export function SearchBar({
 
   return (
     <div className="dash-search" role="search">
-      <div className="sv-row dash-search__row">
+      <div className="dash-search__row">
         <label className="sv-sr" htmlFor={`${id}-input`}>
           Search highlights and notes
         </label>
+        <Search aria-hidden="true" className="dash-search__icon" strokeWidth={2.5} />
         <input
           ref={inputRef}
           id={`${id}-input`}
           type="search"
           className="sv-control dash-search__input"
-          placeholder={'Search your vault: "cell membrane", tag:neuro, kind:formula'}
+          placeholder="Search your vault"
           value={value}
           maxLength={MAX_QUERY_LENGTH}
           autoComplete="off"
@@ -90,17 +101,16 @@ export function SearchBar({
           aria-controls={`${id}-help`}
           onClick={() => setHelpOpen((v) => !v)}
           data-testid="search-help-toggle"
+          className="dash-search__help"
         >
-          Syntax help
+          <CircleHelp aria-hidden="true" className="dash-btn-icon" />
+          <span className="dash-search__helpText">Syntax help</span>
         </Button>
       </div>
 
       {helpOpen ? (
         <div id={`${id}-help`} className="dash-help" data-testid="search-help">
-          <p className="sv-small sv-muted">
-            Words are all required, and typos and word beginnings still match. Click “Use” to put an
-            example into the search box.
-          </p>
+          <p className="sv-small sv-muted">Every word must match; small typos still do.</p>
           <ul className="sv-stack sv-stack--tight">
             {QUERY_SYNTAX.map((row) => (
               <li key={row.example} className="sv-row">
@@ -131,10 +141,11 @@ export function SearchBar({
               ) : null}
             </>
           ) : (
-            'Press / to search. Ctrl+K opens the command palette.'
+            <span className="sv-vh">Press / to search. Ctrl+K opens the command palette.</span>
           ))}{' '}
         {hostState.phase === 'error' ? (
           <Button variant="ghost" onClick={onRebuild}>
+            <RotateCcw aria-hidden="true" className="dash-btn-icon" />
             Rebuild the index
           </Button>
         ) : null}
@@ -192,7 +203,7 @@ export function SearchBar({
                       data-testid={`facet-${key}`}
                       onClick={() => onChange(toggleFacetToken(value, key, f.value))}
                     >
-                      <span dir="auto">{f.value}</span>
+                      <span dir="auto">{facetText(key, f.value)}</span>
                       <span className="sv-muted"> {f.count}</span>
                     </button>
                   );

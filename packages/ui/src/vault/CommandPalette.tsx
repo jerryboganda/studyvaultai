@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
+import { Command as CommandIcon, Search, X } from 'lucide-react';
 
 export interface Command {
   id: string;
@@ -115,31 +116,44 @@ export function CommandPalette({
         e.preventDefault();
         onClose();
       }}
+      // A click on the backdrop (the dialog box itself, outside its body) closes it too.
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
     >
       <div className="sv-dialog__body sv-stack sv-stack--tight">
-        <label className="sv-label" htmlFor={`${uid}-input`}>
-          Type a command
-        </label>
-        <input
-          ref={input}
-          id={`${uid}-input`}
-          className="sv-control"
-          role="combobox"
-          aria-expanded="true"
-          aria-controls={`${uid}-list`}
-          aria-autocomplete="list"
-          aria-activedescendant={current ? optionId(current.id) : undefined}
-          autoComplete="off"
-          spellCheck={false}
-          value={query}
-          data-testid="palette-input"
-          onChange={(e) => {
-            setQuery(e.target.value);
-            setActive(0);
-            setNote('');
-          }}
-          onKeyDown={onKeyDown}
-        />
+        <div className="sv-palette__head">
+          <CommandIcon aria-hidden="true" className="sv-palette__mark" strokeWidth={2.5} />
+          <label className="sv-label sv-palette__title" htmlFor={`${uid}-input`}>
+            Type a command
+          </label>
+          <button type="button" className="sv-palette__close" aria-label="Close" onClick={onClose}>
+            <X aria-hidden="true" strokeWidth={2.6} />
+          </button>
+        </div>
+        <div className="sv-palette__field">
+          <Search aria-hidden="true" className="sv-palette__icon" strokeWidth={2.5} />
+          <input
+            ref={input}
+            id={`${uid}-input`}
+            className="sv-control"
+            role="combobox"
+            aria-expanded="true"
+            aria-controls={`${uid}-list`}
+            aria-autocomplete="list"
+            aria-activedescendant={current ? optionId(current.id) : undefined}
+            autoComplete="off"
+            spellCheck={false}
+            value={query}
+            data-testid="palette-input"
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setActive(0);
+              setNote('');
+            }}
+            onKeyDown={onKeyDown}
+          />
+        </div>
         <div
           id={`${uid}-list`}
           role="listbox"
@@ -168,8 +182,9 @@ export function CommandPalette({
                 {c.disabledReason ? (
                   <span className="sv-palette__reason sv-muted sv-small">{c.disabledReason}</span>
                 ) : null}
-                <span className="sv-palette__meta sv-muted sv-small">
-                  {c.hint ? <kbd className="sv-kbd">{c.hint}</kbd> : null} {c.group}
+                <span className="sv-palette__meta">
+                  {c.hint ? <kbd className="sv-kbd">{c.hint}</kbd> : null}
+                  <span className="sv-palette__group">{c.group}</span>
                 </span>
               </div>
             ))

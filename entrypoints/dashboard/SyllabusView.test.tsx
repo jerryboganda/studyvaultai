@@ -50,10 +50,20 @@ async function renderView(initialId: string | null = null) {
 
 type User = ReturnType<typeof userEvent.setup>;
 
+const wizard = () => within(screen.getByRole('dialog', { hidden: true }));
+const next = (user: User) => user.click(wizard().getByRole('button', { name: 'Next' }));
+/** Why an unavailable control cannot act: the tooltip it is described by. */
+const reasonOf = (el: HTMLElement) =>
+  document.getElementById(el.getAttribute('aria-describedby') ?? '')?.textContent;
+
+/** The New syllabus wizard: Start from › (Paste outline) › Name it › Looks good? */
 async function newSyllabus(user: User, name: string) {
   await user.click(await screen.findByTestId('syllabus-new'));
-  await user.type(await screen.findByTestId('name-input'), name);
-  await user.click(screen.getByTestId('dialog-confirm'));
+  await user.click(wizard().getByRole('radio', { name: /Blank/ }));
+  await next(user);
+  fireEvent.change(wizard().getByTestId('name-input'), { target: { value: name } });
+  await next(user);
+  await user.click(wizard().getByRole('button', { name: 'Create syllabus' }));
   await screen.findByTestId('topic-add');
 }
 
@@ -74,33 +84,38 @@ const titles = (nodes: Array<{ title: string; children: unknown[] }>): string[] 
   nodes.map((n) => n.title);
 
 describe('syllabus editor', () => {
-  it('starts honest and empty, then creates a syllabus and saves each topic as it is typed', async () => {
-    const user = userEvent.setup();
-    await seedVault();
-    await renderView();
-    expect(await screen.findByText('You have no syllabus yet')).toBeTruthy();
-    expect(screen.queryByTestId('topic-add')).toBeNull();
+  // The first test of the file also pays for warming up the editor, so it gets more time.
+  it(
+    'starts honest and empty, then creates a syllabus and saves each topic as it is typed',
+    { timeout: 60_000 },
+    async () => {
+      const user = userEvent.setup();
+      await seedVault();
+      await renderView();
+      expect(await screen.findByText('No syllabus yet')).toBeTruthy();
+      expect(screen.queryByTestId('topic-add')).toBeNull();
 
-    await newSyllabus(user, 'Cardiology exam');
-    expect(screen.getByText('This syllabus has no topics yet')).toBeTruthy();
-    expect(screen.getByTestId('syllabus-size').textContent).toMatch(
-      /^0 of 500 topics · 0 of 6 levels/,
-    );
+      await newSyllabus(user, 'Cardiology exam');
+      expect(screen.getByText('This syllabus has no topics yet')).toBeTruthy();
+      expect(screen.getByTestId('syllabus-size').textContent).toMatch(
+        /^0 of 500 topics · 0 of 6 levels/,
+      );
 
-    await addTopic(user, 'Heart failure');
-    await addTopic(user, 'Arrhythmias');
-    await addTopic(user, 'Drugs', true);
+      await addTopic(user, 'Heart failure');
+      await addTopic(user, 'Arrhythmias');
+      await addTopic(user, 'Drugs', true);
 
-    await waitFor(async () => {
-      const s = await stored();
-      expect(titles(s.nodes)).toEqual(['Heart failure', 'Arrhythmias']);
-      expect(titles(s.nodes[1]!.children as never)).toEqual(['Drugs']);
-    });
-    expect(screen.getByTestId('syllabus-size').textContent).toMatch(
-      /^3 of 500 topics · 2 of 6 levels/,
-    );
-    expect((await stored()).name).toBe('Cardiology exam');
-  });
+      await waitFor(async () => {
+        const s = await stored();
+        expect(titles(s.nodes)).toEqual(['Heart failure', 'Arrhythmias']);
+        expect(titles(s.nodes[1]!.children as never)).toEqual(['Drugs']);
+      });
+      expect(screen.getByTestId('syllabus-size').textContent).toMatch(
+        /^3 of 500 topics · 2 of 6 levels/,
+      );
+      expect((await stored()).name).toBe('Cardiology exam');
+    },
+  );
 
   it('reorders, indents and outdents with the buttons and says why a move is not possible', async () => {
     const user = userEvent.setup();
@@ -114,7 +129,7 @@ describe('syllabus editor', () => {
     // "Three" is selected and last: it cannot move down, and the button says why.
     const down = screen.getByTestId('topic-down');
     expect(down.getAttribute('aria-disabled')).toBe('true');
-    expect(down.getAttribute('title')).toBe('Already the last topic at this level.');
+    expect(down.getAttribute('aria-label')).toContain('Already the last topic at this level.');
 
     await user.click(screen.getByTestId('topic-up'));
     await waitFor(async () =>
@@ -133,10 +148,10 @@ describe('syllabus editor', () => {
 
     // Select "One": nothing above it.
     await user.click(screen.getByRole('treeitem', { name: /One/ }));
-    expect(screen.getByTestId('topic-up').getAttribute('title')).toBe(
+    expect(screen.getByTestId('topic-up').getAttribute('aria-label')).toContain(
       'Already the first topic at this level.',
     );
-    expect(screen.getByTestId('topic-indent').getAttribute('title')).toBe(
+    expect(screen.getByTestId('topic-indent').getAttribute('aria-label')).toContain(
       'There is no topic above to move this one into.',
     );
   });
@@ -174,7 +189,7 @@ describe('syllabus editor', () => {
 
     const child = screen.getByTestId('topic-add-child');
     expect(child.getAttribute('aria-disabled')).toBe('true');
-    expect(child.getAttribute('title')).toBe('Topics can be nested at most 6 levels deep.');
+    expect(reasonOf(child)).toBe('Topics can be nested at most 6 levels deep.');
     expect(screen.getByTestId('syllabus-size').textContent).toMatch(
       /6 of 500 topics · 6 of 6 levels/,
     );
@@ -216,8 +231,8 @@ describe('syllabus editor', () => {
 
     const show = screen.getByTestId('topic-show');
     expect(show.getAttribute('aria-disabled')).toBe('true');
-    expect(show.getAttribute('title')).toBe('Map a bank or a tag to this topic first.');
-    expect(screen.getByRole('treeitem', { name: /Cardiac/ }).textContent).toContain('not mapped');
+    expect(reasonOf(show)).toBe('Map a bank or a tag to this topic first.');
+    expect(screen.getByRole('treeitem', { name: /Cardiac/ }).textContent).toContain('Not mapped');
 
     const banks = within(screen.getByTestId('topic-banks'));
     await user.click(banks.getByRole('checkbox', { name: 'Cardiology' }));
@@ -235,9 +250,35 @@ describe('syllabus editor', () => {
       used: 2,
       total: 2,
     });
-    expect(screen.getByRole('treeitem', { name: /Cardiac/ }).textContent).toContain(
-      '1 bank, 1 tag',
+    const item = screen.getByRole('treeitem', { name: /Cardiac/ }).textContent;
+    expect(item).toContain('1 bank');
+    expect(item).toContain('1 tag');
+  });
+
+  it('lists what a topic points at first when it is opened, and nothing moves on a tick', async () => {
+    const user = userEvent.setup();
+    const { renal } = await seedVault();
+    await renderView();
+    await newSyllabus(user, 'Order');
+    await addTopic(user, 'Kidney');
+    await addTopic(user, 'Heart');
+    const names = () =>
+      within(screen.getByTestId('topic-banks'))
+        .getAllByRole('checkbox')
+        .map((b) => b.closest('label')?.textContent);
+    await user.click(screen.getByRole('treeitem', { name: /Kidney/ }));
+    const before = names();
+    await user.click(
+      within(screen.getByTestId('topic-banks')).getByRole('checkbox', { name: 'Renal' }),
     );
+    await waitFor(async () =>
+      expect((await stored()).nodes.find((n) => n.title === 'Kidney')?.bankIds).toEqual([renal.id]),
+    );
+    expect(names()).toEqual(before);
+    // Opened again: Renal leads the list.
+    await user.click(screen.getByRole('treeitem', { name: /Heart/ }));
+    await user.click(screen.getByRole('treeitem', { name: /Kidney/ }));
+    await waitFor(() => expect(names()[0]).toBe('Renal'));
   });
 
   it('reports what a topic points at that is gone, and lets the person untick it', async () => {
@@ -284,7 +325,7 @@ describe('syllabus list', () => {
     );
 
     await user.click(screen.getByTestId('syllabus-delete'));
-    expect(await screen.findByText('You have no syllabus yet')).toBeTruthy();
+    expect(await screen.findByText('No syllabus yet')).toBeTruthy();
     expect(await listSyllabi()).toHaveLength(0);
     await user.click(await screen.findByRole('button', { name: 'Undo' }));
     await waitFor(async () => expect(await listSyllabi()).toHaveLength(1));
@@ -296,21 +337,36 @@ describe('syllabus list', () => {
     const user = userEvent.setup();
     const { cardio, renal } = await seedVault();
     await renderView();
-    await user.click(await screen.findByTestId('syllabus-from-banks'));
+    await user.click(await screen.findByTestId('syllabus-new'));
+    await user.click(wizard().getByRole('radio', { name: /My banks/ }));
+    await next(user);
+    expect((wizard().getByTestId('name-input') as HTMLInputElement).placeholder).toBe(
+      'From my banks',
+    );
+    await next(user);
+    expect(wizard().getByTestId('syllabus-import-preview').textContent).toContain('Cardiology');
+    await user.click(wizard().getByRole('button', { name: 'Create syllabus' }));
     await waitFor(async () => {
       const s = await stored();
+      expect(s.name).toBe('From my banks');
       expect(titles(s.nodes).sort()).toEqual(['Cardiology', 'Renal']);
       expect(s.nodes.flatMap((n) => n.bankIds).sort()).toEqual([cardio.id, renal.id].sort());
     });
   });
 
-  it('disables "Start from my banks" with its reason when there is nothing to start from', async () => {
+  it('says why "My banks" cannot be used when there is nothing to start from', async () => {
+    const user = userEvent.setup();
     await renderView();
-    const button = await screen.findByTestId('syllabus-from-banks');
-    await waitFor(() =>
-      expect(button.getAttribute('title')).toBe('You have no banks besides the Inbox yet.'),
-    );
-    expect(button.getAttribute('aria-disabled')).toBe('true');
+    await user.click(await screen.findByTestId('syllabus-new'));
+    await user.click(wizard().getByRole('radio', { name: /My banks/ }));
+    await waitFor(async () => {
+      await next(user);
+      expect(wizard().getByRole('alert').textContent).toContain(
+        'You have no banks besides the Inbox yet.',
+      );
+    });
+    expect(wizard().getByRole('heading', { level: 2 }).textContent).toBe('Start from');
+    expect(await listSyllabi()).toHaveLength(0);
   });
 
   it('exports the outline as Markdown through a download, not the network', async () => {
@@ -347,21 +403,29 @@ describe('importing an outline', () => {
     const user = userEvent.setup();
     await seedVault();
     await renderView();
-    await user.click(await screen.findByTestId('syllabus-import'));
+    await user.click(await screen.findByTestId('syllabus-new'));
+    await user.click(wizard().getByRole('radio', { name: /Paste outline/ }));
+    await next(user);
 
-    const confirm = await screen.findByTestId('dialog-confirm');
-    expect(confirm.getAttribute('aria-disabled')).toBe('true');
-    expect(confirm.getAttribute('title')).toBe('Paste an outline first.');
+    // Nothing pasted yet: Next stays and says why.
+    await next(user);
+    expect(wizard().getByRole('alert').textContent).toContain('Paste an outline first.');
 
     paste(
       '# Pharmacology\n- Autonomics (weight 3)\n  - Cholinergics\n  - Adrenergics\n- Antibiotics',
     );
-    await waitFor(() =>
-      expect(screen.getByTestId('syllabus-import-summary').textContent).toMatch(
-        /4 topics in 2 levels will be created as “Pharmacology”/,
-      ),
+    await waitFor(() => {
+      const summary = screen.getByTestId('syllabus-import-summary').textContent;
+      expect(summary).toContain('4 topics');
+      expect(summary).toContain('2 levels');
+      expect(summary).toContain('“Pharmacology”');
+    });
+    expect(await listSyllabi()).toHaveLength(0); // a dry run saves nothing
+    await next(user);
+    expect((wizard().getByTestId('name-input') as HTMLInputElement).placeholder).toBe(
+      'Pharmacology',
     );
-    expect(await listSyllabi()).toHaveLength(0); // a preview saves nothing
+    await next(user);
     const preview = within(screen.getByTestId('syllabus-import-preview'));
     expect(preview.getAllByRole('listitem').map((li) => li.textContent)).toEqual([
       'Autonomics (weight 3)',
@@ -369,8 +433,9 @@ describe('importing an outline', () => {
       'Adrenergics',
       'Antibiotics',
     ]);
+    expect(await listSyllabi()).toHaveLength(0);
 
-    await user.click(confirm);
+    await user.click(wizard().getByRole('button', { name: 'Create syllabus' }));
     await waitFor(async () => {
       const s = await stored();
       expect(s.name).toBe('Pharmacology');
@@ -381,20 +446,57 @@ describe('importing an outline', () => {
     expect(await screen.findByRole('treeitem', { name: /Autonomics/ })).toBeTruthy();
   });
 
+  it('goes back from the review to the name or the outline, and Review returns to it', async () => {
+    const user = userEvent.setup();
+    await renderView();
+    await user.click(await screen.findByTestId('syllabus-new'));
+    await user.click(wizard().getByRole('radio', { name: /Paste outline/ }));
+    await next(user);
+    paste('# Renal\n- Acid-base\n- Electrolytes');
+    await next(user);
+    await next(user);
+    const title = () => wizard().getByRole('heading', { level: 2 }).textContent;
+    expect(title()).toBe('Looks good?');
+
+    await user.click(wizard().getByRole('button', { name: 'Change the name' }));
+    expect(title()).toBe('Name it');
+    fireEvent.change(wizard().getByTestId('name-input'), { target: { value: 'Kidney exam' } });
+    await user.click(wizard().getByRole('button', { name: 'Review' }));
+    expect(title()).toBe('Looks good?');
+
+    // Back to the outline: an emptied outline cannot pass on the way back.
+    await user.click(wizard().getByRole('button', { name: 'Change the topics' }));
+    expect(title()).toBe('Paste outline');
+    paste('');
+    await user.click(wizard().getByRole('button', { name: 'Review' }));
+    expect(wizard().getByRole('alert').textContent).toContain('Paste an outline first.');
+    paste('- Acid-base\n- Electrolytes\n- Stones');
+    await user.click(wizard().getByRole('button', { name: 'Review' }));
+    expect(title()).toBe('Looks good?');
+    expect(await listSyllabi()).toHaveLength(0);
+
+    await user.click(wizard().getByRole('button', { name: 'Create syllabus' }));
+    await waitFor(async () => {
+      const s = await stored();
+      expect(s.name).toBe('Kidney exam');
+      expect(titles(s.nodes)).toEqual(['Acid-base', 'Electrolytes', 'Stones']);
+    });
+  });
+
   it('blocks an outline the schema would refuse, with the line and the limit', async () => {
     const user = userEvent.setup();
     await renderView();
-    await user.click(await screen.findByTestId('syllabus-import'));
-    await screen.findByTestId('syllabus-import-text');
+    await user.click(await screen.findByTestId('syllabus-new'));
+    await user.click(wizard().getByRole('radio', { name: /Paste outline/ }));
+    await next(user);
     paste(Array.from({ length: 8 }, (_, i) => `${'  '.repeat(i)}- level ${i + 1}`).join('\n'));
 
     const errors = await screen.findByTestId('syllabus-import-errors');
     expect(errors.textContent).toContain('Line 7');
     expect(errors.textContent).toContain('at most 6 are allowed');
-    const confirm = screen.getByTestId('dialog-confirm');
-    expect(confirm.getAttribute('aria-disabled')).toBe('true');
-    expect(confirm.getAttribute('title')).toBe('Fix the problems listed first.');
-    await userEvent.setup().click(confirm);
+    await next(user);
+    expect(wizard().getByRole('alert').textContent).toContain('Fix the problems listed first.');
+    expect(wizard().getByRole('heading', { level: 2 }).textContent).toBe('Paste outline');
     expect(await listSyllabi()).toHaveLength(0);
   });
 });

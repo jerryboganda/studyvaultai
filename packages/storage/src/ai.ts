@@ -14,6 +14,7 @@ import {
   type AiTaskKind,
 } from '@ai';
 import { Highlight, IsoDate, Note, SCHEMA_VERSION, StudyVaultError } from '@shared';
+import { cardEvent } from '@study/game';
 import { Card, Deck, KnowledgePoint } from '@study/schema';
 import {
   cmp,
@@ -28,6 +29,7 @@ import {
   unique,
 } from './core';
 import { withDb, withWritableDb, type ForeignRow, type StudyVaultDb } from './db';
+import { addMissing } from './game';
 import { registerTableSchema } from './registry';
 
 /**
@@ -41,20 +43,49 @@ import { registerTableSchema } from './registry';
  * origin it was saved for. Backup, export and migration snapshots must skip `AI_SECRET_META_KEYS`.
  */
 
-export const AI_PROVIDERS = ['openai_compatible', 'anthropic'] as const;
+/** Wire protocols. `codex_responses` (ChatGPT Codex OAuth) is the primary provider only. */
+export const AI_PROVIDERS = ['openai_compatible', 'anthropic', 'codex_responses'] as const;
 export type AiProviderId = (typeof AI_PROVIDERS)[number];
+/** What a fallback provider can be (the Codex login belongs to the primary provider). */
+export const AI_PROFILE_PROVIDERS = ['openai_compatible', 'anthropic'] as const;
+
+/** The preset a provider was set up from: drives model lists, reasoning mapping and usage. */
+export const AI_VENDORS = [
+  'openai',
+  'anthropic',
+  'ollama',
+  'lmstudio',
+  'custom',
+  'ubag',
+  'nvidia_nim',
+  'opencode_go',
+  'openrouter',
+  'chatgpt_codex',
+] as const;
+export type AiVendorId = (typeof AI_VENDORS)[number];
+
+export const AI_EFFORTS = ['', 'minimal', 'low', 'medium', 'high', 'max'] as const;
+export type AiEffort = (typeof AI_EFFORTS)[number];
+/** `basic`: the stored key is `user:password`, sent as HTTP Basic (UBAG's public gateway). */
+export const AI_AUTH_SCHEMES = ['bearer', 'basic'] as const;
+export type AiAuthScheme = (typeof AI_AUTH_SCHEMES)[number];
 
 const KEY_SETTINGS = 'aiSettings';
 const KEY_API_KEY = 'aiKey';
 const KEY_PROFILE_KEYS = 'aiProfileKeys';
 const KEY_BUDGET = 'aiBudget';
+const KEY_CODEX_AUTH = 'aiCodexAuth';
 
 /**
  * `meta` keys that hold secrets: every export, backup and snapshot must leave these rows out
  * (`meta` is not a backup table at all, and it is local-only for sync). `aiKey` is the primary
  * provider's key; `aiProfileKeys` holds one `{apiKey, origin}` per fallback provider.
  */
-export const AI_SECRET_META_KEYS: readonly string[] = [KEY_API_KEY, KEY_PROFILE_KEYS];
+export const AI_SECRET_META_KEYS: readonly string[] = [
+  KEY_API_KEY,
+  KEY_PROFILE_KEYS,
+  KEY_CODEX_AUTH,
+];
 
 // ---------------------------------------------------------------------------------------------
 // Settings (meta 'aiSettings')
@@ -74,12 +105,16 @@ const AiPricingSchema = z.strictObject({
 export const AiProfileSchema = z.strictObject({
   id: z.string().regex(/^p-[a-z0-9]{6,20}$/),
   label: z.string().trim().min(1).max(40),
-  provider: z.enum(AI_PROVIDERS),
+  provider: z.enum(AI_PROFILE_PROVIDERS),
   baseUrl: z.string().trim().max(300),
   model: z.string().trim().max(120),
   jsonMode: z.boolean(),
   maxTokensParam: z.enum(['max_tokens', 'max_completion_tokens']),
   pricing: AiPricingSchema.nullable(),
+  vendor: z.enum(AI_VENDORS).default('custom'),
+  /** '' = the model's own default. */
+  reasoningEffort: z.enum(AI_EFFORTS).default(''),
+  authScheme: z.enum(AI_AUTH_SCHEMES).default('bearer'),
   /** Used when an earlier provider is not answering (network error, 5xx, timeout), never otherwise. */
   fallback: z.boolean(),
 });
@@ -94,6 +129,9 @@ export const AiSettingsSchema = z
     /** Ask OpenAI-compatible servers for `response_format: json_object` (some servers reject it). */
     jsonMode: z.boolean(),
     maxTokensParam: z.enum(['max_tokens', 'max_completion_tokens']),
+    vendor: z.enum(AI_VENDORS).default('custom'),
+    reasoningEffort: z.enum(AI_EFFORTS).default(''),
+    authScheme: z.enum(AI_AUTH_SCHEMES).default('bearer'),
     limits: BudgetLimits,
     /** null = unknown: estimates show "unknown" and a cost cap cannot be enforced. */
     pricing: AiPricingSchema.nullable(),
@@ -120,7 +158,15 @@ export type AiSettings = z.infer<typeof AiSettingsSchema>;
 /** The fields every provider has, whether it is the primary one or a fallback. */
 export type AiProfileSettings = Pick<
   AiSettings,
-  'provider' | 'baseUrl' | 'model' | 'jsonMode' | 'maxTokensParam' | 'pricing'
+  | 'provider'
+  | 'baseUrl'
+  | 'model'
+  | 'jsonMode'
+  | 'maxTokensParam'
+  | 'pricing'
+  | 'vendor'
+  | 'reasoningEffort'
+  | 'authScheme'
 >;
 
 export function defaultAiSettings(): AiSettings {
@@ -130,6 +176,9 @@ export function defaultAiSettings(): AiSettings {
     model: '',
     jsonMode: true,
     maxTokensParam: 'max_tokens',
+    vendor: 'custom',
+    reasoningEffort: '',
+    authScheme: 'bearer',
     limits: { maxRequestsPerDay: 30, maxCostUsdPerDay: null },
     pricing: null,
     preferences: { flashcardCount: 5, mcqChoices: 4 },
@@ -149,7 +198,10 @@ function readSettings(stored: unknown): AiSettings {
   if (typeof stored !== 'object' || stored === null) return defaults;
   const raw = stored as Record<string, unknown>;
   const fallbacks = (Array.isArray(raw.fallbacks) ? raw.fallbacks : [])
-    .filter((p) => AiProfileSchema.safeParse(p).success)
+    .flatMap((p) => {
+      const r = AiProfileSchema.safeParse(p);
+      return r.success ? [r.data] : [];
+    })
     .slice(0, AI_MAX_FALLBACKS);
   const storedRoutes =
     typeof raw.routes === 'object' && raw.routes !== null && !Array.isArray(raw.routes)
@@ -247,6 +299,7 @@ export type AiEndpointCheck =
 const DEFAULT_BASE_URL: Record<AiProviderId, string> = {
   openai_compatible: '',
   anthropic: 'https://api.anthropic.com',
+  codex_responses: 'https://chatgpt.com/backend-api/codex',
 };
 
 /**
@@ -426,6 +479,36 @@ export async function clearAiProfileApiKey(profileId: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------------------------
+// ChatGPT Codex login (meta 'aiCodexAuth'): OAuth tokens, same containment as the API key
+// ---------------------------------------------------------------------------------------------
+
+export const CodexAuthRow = z.strictObject({
+  accessToken: z.string().min(1).max(8192),
+  refreshToken: z.string().min(1).max(8192),
+  /** Epoch ms after which the access token must be refreshed. */
+  expiresAt: z.number().int().min(0),
+  accountId: z.string().min(1).max(200),
+});
+export type CodexAuth = z.infer<typeof CodexAuthRow>;
+
+export async function getCodexAuth(): Promise<CodexAuth | null> {
+  const row = await withDb((db) => db.meta.get(KEY_CODEX_AUTH));
+  const parsed = CodexAuthRow.safeParse(row?.value);
+  return parsed.success ? parsed.data : null;
+}
+
+export async function setCodexAuth(auth: CodexAuth): Promise<void> {
+  const value = parseInput(CodexAuthRow, auth, 'Codex login');
+  await withWritableDb((db) => db.meta.put({ key: KEY_CODEX_AUTH, value, updatedAt: now() }));
+  await signalChange();
+}
+
+export async function clearCodexAuth(): Promise<void> {
+  await withWritableDb((db) => db.meta.delete(KEY_CODEX_AUTH));
+  await signalChange();
+}
+
+// ---------------------------------------------------------------------------------------------
 // Budget ledger (meta 'aiBudget')
 // ---------------------------------------------------------------------------------------------
 
@@ -485,8 +568,10 @@ const AiReview = z.strictObject({
   acceptedAt: IsoDate.nullable(),
   /** Per item (JSON pointer; '' = the whole result): what the user decided. */
   items: z.record(z.string().max(120), AiItemReview),
-  /** `explain` only: the question that was asked (the engine's result does not keep it). */
-  question: z.string().max(500).optional(),
+  /** `explain` and `chat`: the question that was asked (the engine's result does not keep it). */
+  question: z.string().max(4000).optional(),
+  /** `chat` only: the conversation this turn belongs to (see chat.ts). */
+  threadId: z.string().max(40).optional(),
 });
 type AiReview = z.infer<typeof AiReview>;
 
@@ -543,17 +628,42 @@ async function readResult(db: StudyVaultDb, id: string): Promise<StoredAiResult>
  */
 export async function saveAiResult(
   result: AiResult,
-  extra: { question?: string } = {},
+  extra: { question?: string; threadId?: string } = {},
 ): Promise<StoredAiResult> {
   const parsed = parseInput(AiResult, result, 'AI result');
   const question = extra.question?.trim() || undefined;
+  const threadId = extra.threadId;
   const row = await withWritableDb((db) =>
     db.transaction('rw', [db.aiResults, db.highlights], async () => {
       const existing = await db.aiResults.get(parsed.id);
       if (existing) {
         const current = await readResult(db, parsed.id);
-        if (question === undefined || current.question !== undefined) return current;
-        const next = { ...current, question } as StoredAiResult;
+        if (
+          threadId !== undefined &&
+          current.threadId !== undefined &&
+          current.threadId !== threadId
+        ) {
+          // The same answer served from the cache to another conversation: a row of its own there.
+          const copy = {
+            ...current,
+            id: `${parsed.id.slice(0, 40)}-${Math.random().toString(36).slice(2, 10)}`,
+            threadId,
+            ...(question === undefined ? {} : { question }),
+          } as StoredAiResult;
+          await db.aiResults.put(asRow(copy));
+          return copy;
+        }
+        if (
+          (question === undefined || current.question !== undefined) &&
+          (threadId === undefined || current.threadId !== undefined)
+        ) {
+          return current;
+        }
+        const next = {
+          ...current,
+          ...(current.question === undefined && question !== undefined ? { question } : {}),
+          ...(current.threadId === undefined && threadId !== undefined ? { threadId } : {}),
+        } as StoredAiResult;
         await db.aiResults.put(asRow(next));
         return next;
       }
@@ -571,6 +681,7 @@ export async function saveAiResult(
         acceptedAt: parsed.acceptedByUserAt,
         items: {},
         ...(question === undefined ? {} : { question }),
+        ...(threadId === undefined ? {} : { threadId }),
       } as StoredAiResult;
       await db.aiResults.put(asRow(created));
       return created;
@@ -599,7 +710,11 @@ export async function listAiResults(query: AiResultQuery = {}): Promise<StoredAi
   const limit = Math.min(Math.max(Math.floor(query.limit ?? 100), 1), 1000);
   const wanted = query.highlightIds ? new Set(query.highlightIds) : null;
   return withDb(async (db) => {
-    const rows = await db.aiResults.toArray();
+    // The `kind` index keeps a chat (thousands of turns) from reading every other AI result too.
+    const rows =
+      query.kind !== undefined
+        ? await db.aiResults.where('kind').equals(query.kind).toArray()
+        : await db.aiResults.toArray();
     return rows
       .map((r) => parseRow(StoredAiResultSchema, r, 'aiResult'))
       .filter(notNull)
@@ -701,7 +816,16 @@ export async function acceptAiItem(input: AiAcceptInput): Promise<AiAcceptOutcom
   const outcome = await withWritableDb((db) =>
     db.transaction(
       'rw',
-      [db.aiResults, db.knowledgePoints, db.decks, db.cards, db.notes, db.highlights, db.sources],
+      [
+        db.aiResults,
+        db.knowledgePoints,
+        db.decks,
+        db.cards,
+        db.notes,
+        db.highlights,
+        db.sources,
+        db.gameEvents,
+      ],
       async (): Promise<AiAcceptOutcome> => {
         const current = await readResult(db, input.resultId);
         if (!aiItemPaths(toResult(current)).includes(input.itemPath)) {
@@ -776,6 +900,7 @@ export async function acceptAiItem(input: AiAcceptInput): Promise<AiAcceptOutcom
             )
             .map((c) => (c.deckId === deckId ? c : { ...c, deckId }));
           await db.cards.bulkPut(stored);
+          await addMissing(db.gameEvents, stored.map(cardEvent));
           targets.push(...stored.map((c) => ({ table: 'cards' as const, id: c.id })));
         }
         if (note) {
@@ -839,8 +964,8 @@ export function createAiCache(): AiCache {
 
 export interface AiSourceRef {
   id: string;
-  kind: 'highlight' | 'note';
-  /** The immutable quote (highlight) or the note body. */
+  kind: 'highlight' | 'note' | 'card' | 'knowledge_point';
+  /** The immutable quote (highlight), the note body, a card's question and answer, or a knowledge point. */
   text: string;
   /** The page/document the passage came from (null for a note without one). */
   sourceId: string | null;
@@ -849,49 +974,109 @@ export interface AiSourceRef {
   deleted: boolean;
 }
 
-/** Resolves chunk ids (highlights, then notes) to what the vault holds. Unknown ids are absent. */
+/** What a flashcard says, as the passage the assistant may cite (the text is exactly what is sent). */
+export function cardPassage(c: Card): string {
+  if (c.cardType === 'cloze' && c.cloze) return `Flashcard (cloze): ${c.cloze.text}`;
+  if (c.cardType === 'mcq') {
+    const answer = c.choices?.find((x) => x.id === c.answerChoiceId)?.text;
+    return `Flashcard (multiple choice): ${c.front}${
+      answer
+        ? `
+Correct answer: ${answer}`
+        : ''
+    }`;
+  }
+  return `Flashcard question: ${c.front}
+Answer: ${c.back}`;
+}
+
+/** A knowledge point as one passage: its one-liner, exam pearl and misconception. */
+export function knowledgePointPassage(k: KnowledgePoint): string {
+  return [
+    `Knowledge point: ${k.shortOneLiner}`,
+    k.examPearl ? `Exam pearl: ${k.examPearl}` : '',
+    k.misconception ? `Common misconception: ${k.misconception}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+/** Resolves chunk ids (highlights, notes, cards, knowledge points) to what the vault holds. Unknown ids are absent. */
 export async function resolveAiSources(ids: readonly string[]): Promise<Map<string, AiSourceRef>> {
   const wanted = unique(ids);
   return withDb((db) =>
-    db.transaction('r', [db.highlights, db.notes, db.sources], async () => {
-      const out = new Map<string, AiSourceRef>();
-      if (wanted.length === 0) return out;
-      const highlights = (await db.highlights.bulkGet(wanted))
-        .map((r) => (r ? parseRow(Highlight, r, 'highlight') : null))
-        .filter(notNull);
-      const sources = await readSources(
-        db,
-        highlights.map((h) => h.sourceId),
-      );
-      for (const h of highlights) {
-        const s = sources.get(h.sourceId);
-        out.set(h.id, {
-          id: h.id,
-          kind: 'highlight',
-          text: h.exactQuote,
-          sourceId: h.sourceId,
-          sourceTitle: s?.title ?? null,
-          host: s?.host ?? null,
-          deleted: h.deletedAt !== null,
-        });
-      }
-      const rest = wanted.filter((id) => !out.has(id));
-      for (const row of await db.notes.bulkGet(rest)) {
-        const n = row ? parseRow(Note, row, 'note') : null;
-        if (n) {
-          out.set(n.id, {
-            id: n.id,
-            kind: 'note',
-            text: n.body,
-            sourceId: n.sourceId,
-            sourceTitle: n.title || null,
-            host: null,
-            deleted: n.deletedAt !== null,
+    db.transaction(
+      'r',
+      [db.highlights, db.notes, db.sources, db.cards, db.knowledgePoints],
+      async () => {
+        const out = new Map<string, AiSourceRef>();
+        if (wanted.length === 0) return out;
+        const highlights = (await db.highlights.bulkGet(wanted))
+          .map((r) => (r ? parseRow(Highlight, r, 'highlight') : null))
+          .filter(notNull);
+        const sources = await readSources(
+          db,
+          highlights.map((h) => h.sourceId),
+        );
+        for (const h of highlights) {
+          const s = sources.get(h.sourceId);
+          out.set(h.id, {
+            id: h.id,
+            kind: 'highlight',
+            text: h.exactQuote,
+            sourceId: h.sourceId,
+            sourceTitle: s?.title ?? null,
+            host: s?.host ?? null,
+            deleted: h.deletedAt !== null,
           });
         }
-      }
-      return out;
-    }),
+        const rest = wanted.filter((id) => !out.has(id));
+        for (const row of await db.notes.bulkGet(rest)) {
+          const n = row ? parseRow(Note, row, 'note') : null;
+          if (n) {
+            out.set(n.id, {
+              id: n.id,
+              kind: 'note',
+              text: n.body,
+              sourceId: n.sourceId,
+              sourceTitle: n.title || null,
+              host: null,
+              deleted: n.deletedAt !== null,
+            });
+          }
+        }
+        const study = wanted.filter((id) => !out.has(id));
+        for (const row of await db.cards.bulkGet(study)) {
+          const c = row ? parseRow(Card, row, 'card') : null;
+          if (c) {
+            out.set(c.id, {
+              id: c.id,
+              kind: 'card',
+              text: cardPassage(c),
+              sourceId: null,
+              sourceTitle: null,
+              host: null,
+              deleted: c.deletedAt !== null,
+            });
+          }
+        }
+        for (const row of await db.knowledgePoints.bulkGet(study.filter((id) => !out.has(id)))) {
+          const k = row ? parseRow(KnowledgePoint, row, 'knowledge point') : null;
+          if (k) {
+            out.set(k.id, {
+              id: k.id,
+              kind: 'knowledge_point',
+              text: knowledgePointPassage(k),
+              sourceId: null,
+              sourceTitle: null,
+              host: null,
+              deleted: k.deletedAt !== null,
+            });
+          }
+        }
+        return out;
+      },
+    ),
   );
 }
 
@@ -921,7 +1106,14 @@ export async function clearAiData(): Promise<void> {
   await withWritableDb((db) =>
     db.transaction('rw', [db.aiResults, db.meta], async () => {
       await db.aiResults.clear();
-      await db.meta.bulkDelete([KEY_SETTINGS, KEY_API_KEY, KEY_PROFILE_KEYS, KEY_BUDGET]);
+      await db.meta.bulkDelete([
+        KEY_SETTINGS,
+        KEY_API_KEY,
+        KEY_PROFILE_KEYS,
+        KEY_BUDGET,
+        KEY_CODEX_AUTH,
+        'aiChatThreads',
+      ]);
     }),
   );
   await signalChange();

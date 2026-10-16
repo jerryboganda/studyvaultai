@@ -38,15 +38,18 @@ export const VERIFICATION_LABELS: Record<VerificationState, string> = {
 /** One user-approved passage: a saved highlight (exactQuote) or a note body. */
 export const SourceChunk = z.strictObject({
   id: ChunkId,
-  kind: z.enum(['highlight', 'note']),
+  /** `card` and `knowledge_point` are the person's own study items, offered like notes. */
+  kind: z.enum(['highlight', 'note', 'card', 'knowledge_point']),
   text: z.string().min(1).max(100_000),
 });
 export type SourceChunk = z.infer<typeof SourceChunk>;
 
 export const AiSelection = z.strictObject({
-  chunks: z.array(SourceChunk).min(1).max(50),
+  // `chat` may send no passage at all (a general conversation); every other kind needs one
+  // (TaskDef.minChunks, enforced in prepare).
+  chunks: z.array(SourceChunk).min(0).max(50),
   /** explain: the user's question. Treated as untrusted data as well. */
-  question: z.string().trim().min(1).max(500).optional(),
+  question: z.string().trim().min(1).max(4000).optional(),
   /** compare_topics: optional topic names to compare (otherwise the model derives 2-6). */
   topics: z.array(short(80)).min(2).max(6).optional(),
   /** fact_check: the statements to check against the selected chunks. */
@@ -56,10 +59,12 @@ export const AiSelection = z.strictObject({
    * every other block, are never citeable and are treated as untrusted data.
    */
   history: z
-    .array(z.strictObject({ role: z.enum(['user', 'assistant']), text: short(1500) }))
+    .array(z.strictObject({ role: z.enum(['user', 'assistant']), text: short(2000) }))
     .min(1)
-    .max(6)
+    .max(12)
     .optional(),
+  /** chat: rolling summary of the earlier conversation. Previewed, never citeable, untrusted. */
+  memory: short(4000).optional(),
   options: z
     .strictObject({
       /** flashcards: how many cards (1-20, default 5). */
@@ -178,6 +183,14 @@ export const ExplainOutput = z.strictObject({
   evidence: z.array(Evidence).max(8),
 });
 
+/** chat: `notes` rests on cited passages, `mixed` adds general knowledge, `general` uses none. */
+export const CHAT_BASES = ['notes', 'mixed', 'general'] as const;
+export const ChatOutput = z.strictObject({
+  answer: short(3000),
+  basis: z.enum(CHAT_BASES),
+  evidence: z.array(Evidence).max(8),
+});
+
 export const NOT_STATED = 'Not stated in the selected sources';
 const CompareCell = z
   .strictObject({
@@ -292,6 +305,7 @@ export const OUTPUT_SCHEMAS = {
   flashcards: FlashcardsOutput,
   mcq: McqOutput,
   explain: ExplainOutput,
+  chat: ChatOutput,
   compare_topics: CompareTopicsOutput,
   contradictions: ContradictionsOutput,
   fact_check: FactCheckOutput,
@@ -315,12 +329,16 @@ export const Citation = z
   .strictObject({
     highlightId: ChunkId.optional(),
     noteId: ChunkId.optional(),
+    cardId: ChunkId.optional(),
+    knowledgePointId: ChunkId.optional(),
     /** Verbatim text that was found in the cited chunk as sent (after redaction). */
     quote: z.string().min(1).max(600),
   })
   .refine(
-    (c) => (c.highlightId === undefined) !== (c.noteId === undefined),
-    'exactly one of highlightId/noteId',
+    (c) =>
+      [c.highlightId, c.noteId, c.cardId, c.knowledgePointId].filter((v) => v !== undefined)
+        .length === 1,
+    'exactly one of highlightId/noteId/cardId/knowledgePointId',
   );
 export type Citation = z.infer<typeof Citation>;
 
@@ -341,7 +359,7 @@ export type Grounding = z.infer<typeof Grounding>;
 
 const resultBase = {
   id: z.string().min(8).max(64),
-  inputSourceIds: z.array(ChunkId).min(1).max(50),
+  inputSourceIds: z.array(ChunkId).max(50),
   inputFingerprint: Sha256Hex,
   provider: z.string().min(1).max(120),
   model: z.string().min(1).max(120),
@@ -367,6 +385,7 @@ export const AiResult = z.discriminatedUnion('kind', [
   variant('flashcards', FlashcardsOutput),
   variant('mcq', McqOutput),
   variant('explain', ExplainOutput),
+  variant('chat', ChatOutput),
   variant('compare_topics', CompareTopicsOutput),
   variant('contradictions', ContradictionsOutput),
   variant('fact_check', FactCheckOutput),
@@ -418,8 +437,17 @@ export const AiRequestPreview = z.strictObject({
   chunks: z.array(
     z.strictObject({
       id: ChunkId,
-      /** `question`, `claim` and `history` blocks are sent too but are not citeable. */
-      kind: z.enum(['highlight', 'note', 'question', 'claim', 'history']),
+      /** `question`, `claim`, `history` and `memory` blocks are sent too but are not citeable. */
+      kind: z.enum([
+        'highlight',
+        'note',
+        'card',
+        'knowledge_point',
+        'question',
+        'claim',
+        'history',
+        'memory',
+      ]),
       originalChars: z.number().int().min(0),
       truncated: z.boolean(),
       /** Sanitised, truncated, NOT yet redacted: redaction offsets refer to this text. */

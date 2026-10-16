@@ -33,6 +33,7 @@ import {
   viewing,
   type Env,
 } from './helpers.pages';
+import { openDisclosure } from './helpers.backup';
 
 /**
  * The in-page overlay contract after ADR-005 (free text only in extension origins) and the wave-4
@@ -60,9 +61,12 @@ async function overlayTextControls(page: Page): Promise<string[]> {
   }, OVERLAY_HOST);
 }
 
-async function overlaySelectCount(page: Page): Promise<number> {
+/** Pickers inside the overlay: the bank <select> and the button-based Kind / Priority radio groups. */
+async function overlayPickerCount(page: Page): Promise<number> {
   return page.evaluate(
-    (host) => document.querySelector(host)?.shadowRoot?.querySelectorAll('select').length ?? 0,
+    (host) =>
+      document.querySelector(host)?.shadowRoot?.querySelectorAll('select, [role="radiogroup"]')
+        .length ?? 0,
     OVERLAY_HOST,
   );
 }
@@ -216,17 +220,25 @@ test.describe('hand-over to the side panel (ADR-005)', () => {
     expect(await pendingFocusLog(ext), 'no highlight to focus: nothing is handed over').toEqual([]);
     await expect(dialog).toBeVisible(); // the page's panel stays open for the user to come back to
 
-    // The Banks tab validates, creates, and lists.
+    // The Banks tab's "New bank" wizard validates, creates, and lists.
     await side.getByRole('tab', { name: 'Banks' }).click();
-    await side.getByRole('button', { name: 'Create bank' }).click();
+    await side.getByRole('button', { name: 'New bank', exact: true }).click();
+    const wizard = side.getByRole('dialog', { name: 'New bank' });
+    const next = wizard.getByRole('button', { name: 'Next', exact: true });
+    await next.click();
     await expect(
-      side.getByRole('alert').filter({ hasText: 'Enter a name for the bank.' }),
+      wizard.getByRole('alert').filter({ hasText: 'Enter a name for the bank.' }),
     ).toBeVisible();
-    await side.getByLabel('New bank').fill('Cardiology');
-    await side.getByRole('button', { name: 'Create bank' }).click();
+    await wizard.getByLabel('Bank name').fill('Cardiology');
+    for (let step = 0; step < 3; step++) await next.click(); // name, icon, colour
+    await wizard.getByRole('button', { name: 'Create bank', exact: true }).click();
     await expect(side.getByText('Bank "Cardiology" created.')).toBeVisible();
+    const done = side.getByTestId('new-bank-done');
+    await expect(done.getByRole('heading', { name: 'Bank ready!' })).toBeVisible();
+    await done.getByRole('button', { name: 'Done', exact: true }).click();
+    await expect(done).toHaveCount(0);
+    await expect(wizard).toHaveCount(0);
     await expect(side.getByRole('list', { name: 'Your banks' })).toContainText('Cardiology');
-    await expect(side.getByLabel('New bank')).toHaveValue('');
 
     // Back in the page: the overlay refreshes its bank list when the page window regains focus.
     // Playwright pins focus emulation on, so no real focus event is ever delivered: send the one
@@ -260,11 +272,11 @@ test.describe('overlay exposes no free-text surface to the page (ADR-005)', () =
     const ext = await openExt(env, 'options');
     const page = await openFixture(env, '/article.html');
     const states: string[] = [];
-    const audit = async (what: string, minSelects = 0): Promise<void> => {
+    const audit = async (what: string, minPickers = 0): Promise<void> => {
       const found = await overlayTextControls(page);
       expect(found, `${what}: free-text controls in the overlay`).toEqual([]);
-      expect(await overlaySelectCount(page), `${what}: pickers present`).toBeGreaterThanOrEqual(
-        minSelects,
+      expect(await overlayPickerCount(page), `${what}: pickers present`).toBeGreaterThanOrEqual(
+        minPickers,
       );
       states.push(what);
     };
@@ -277,7 +289,7 @@ test.describe('overlay exposes no free-text surface to the page (ADR-005)', () =
     await expect(page.getByRole('dialog', { name: 'Save with details' })).toBeVisible();
     // The bank picker appears once the list of banks has loaded.
     await expect(page.getByRole('combobox', { name: 'Bank' })).toBeVisible();
-    await audit('More options panel', 3); // bank, type, priority
+    await audit('More options panel', 3); // bank, kind, priority
     await page.getByRole('button', { name: 'Cancel' }).click();
     await page.getByRole('button', { name: 'Save selection', exact: true }).click();
     await expect(page.getByText('Saved to Inbox')).toBeVisible();
@@ -298,7 +310,7 @@ test.describe('overlay exposes no free-text surface to the page (ADR-005)', () =
       await openPopoverOn(page, '#p-intro');
       await expect(popover).toContainText('A long private thought.', { timeout: 1_000 });
     }).toPass({ timeout: 15_000 });
-    await audit('popover with a note', 2); // type, priority
+    await audit('popover with a note', 2); // kind, priority
     expect(states).toHaveLength(5);
   });
 
@@ -363,14 +375,23 @@ test.describe('overlay exposes no free-text surface to the page (ADR-005)', () =
     await page.getByRole('button', { name: 'Save as Formula' }).hover();
     await page.getByRole('button', { name: 'More options', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Save with details' });
-    await dialog.getByRole('combobox', { name: 'Type' }).selectOption({ label: 'ƒ Formula' });
-    await dialog.getByRole('combobox', { name: 'Priority' }).selectOption('5');
+    await dialog
+      .getByRole('radiogroup', { name: 'Kind' })
+      .getByRole('radio', { name: 'Formula' })
+      .click();
+    await dialog
+      .getByRole('radiogroup', { name: 'Priority' })
+      .getByRole('radio', { name: '5 (highest)' })
+      .click();
     await dialog.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(page.getByText('Saved to Inbox')).toBeVisible();
     await page.getByRole('button', { name: 'Dismiss notification' }).click();
     await openPopoverOn(page, '#p-intro');
     const popover = page.getByRole('dialog', { name: 'Highlight details' });
-    await popover.getByRole('combobox', { name: 'Priority' }).selectOption('2');
+    await popover
+      .getByRole('radiogroup', { name: 'Priority' })
+      .getByRole('radio', { name: '2', exact: true })
+      .click();
     await expect(popover.getByText('Saved', { exact: true })).toBeVisible();
     await popover.getByRole('button', { name: 'Close highlight details' }).click();
 
@@ -379,8 +400,9 @@ test.describe('overlay exposes no free-text surface to the page (ADR-005)', () =
       pointerLog.filter((e) => e.type !== 'input'),
       'no key, composition, paste or beforeinput event may come from a pointer session',
     ).toEqual([]);
-    // A <select> reports its change with a plain `input` Event (no data, not an InputEvent): the
-    // page can tell that a picker moved, never what text was typed (none can be).
+    // The pickers are buttons (role=radio) and the bank <select> was not touched, so there should be
+    // no input event at all; a <select> would report a plain `input` Event (no data, not an
+    // InputEvent): the page could tell that a picker moved, never what text was typed (none can be).
     for (const e of pointerLog) {
       expect(e.isInputEvent, 'select input events are plain Events').toBe(false);
       expect(e.data).toBeNull();
@@ -528,6 +550,10 @@ test.describe('keyboard navigation between highlights', () => {
     const page = await openFixture(env, '/compat-inline.html');
     await saveBlock(ext, page, '#focus-p');
     await saveBlock(ext, page, '#plain-after');
+    // Both saved highlights painted (stored is not yet painted on a slow runner) before stepping to one.
+    await expect
+      .poll(() => publishedRangeCount(page), { timeout: 15_000 })
+      .toBeGreaterThanOrEqual(2);
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.locator('#focus-region').focus();
     expect(await page.evaluate(() => document.activeElement?.id)).toBe('focus-region');
@@ -705,7 +731,14 @@ test.describe('per-kind highlight decoration', () => {
       .poll(async () => Object.keys(await paintedByRegistry(page)))
       .toEqual(['sv-hl-amber-essential']);
     const side = await viewing(env, 'sidepanel', page);
-    await side.getByLabel('Kind').selectOption('weak_area');
+    // Kind and priority sit in the card's "More actions" drawer. The radio shows the new kind once
+    // the save has finished (it follows the stored value), so it is clicked, then awaited.
+    await side.getByTestId('card-more').click();
+    const weak = side
+      .getByTestId('card-drawer')
+      .getByRole('radio', { name: KIND_LABELS.weak_area.label });
+    await weak.click();
+    await expect(weak).toBeChecked();
     await expect
       .poll(async () => Object.keys(await paintedByRegistry(page)))
       .toEqual([`sv-hl-${DEFAULT_PALETTE.weak_area}-weak_area`]);
@@ -724,8 +757,10 @@ test.describe('deny list defaults', () => {
       DEFAULT_DENY_HOSTS.length,
       'the starter list is imported, not counted by hand',
     ).toBeGreaterThan(0);
-    const ext = await openExt(env, 'options');
-    const list = ext.getByRole('group', { name: 'Deny list' }).getByRole('listitem');
+    const ext = await openExt(env, 'options', 'site-access');
+    const deny = ext.getByRole('region', { name: 'Deny list', exact: true });
+    await openDisclosure(deny, 'Starter sites'); // the starter entries sit behind their own disclosure
+    const list = deny.getByRole('listitem');
     await expect(list).toHaveCount(DEFAULT_DENY_HOSTS.length);
     const shown = (await list.allInnerTexts()).map((t) => t.split('\n')[0]!.trim()).sort();
     expect(shown).toEqual([...DEFAULT_DENY_HOSTS].sort());

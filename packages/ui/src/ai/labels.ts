@@ -27,6 +27,11 @@ export const AI_KIND_INFO: Record<AiTaskKind, AiKindInfo> = {
     hint: 'Answer your question using only the selected passages.',
     min: 1,
   },
+  chat: {
+    label: 'Chat',
+    hint: 'A conversation that can use your notes and general knowledge.',
+    min: 0,
+  },
   compare_topics: {
     label: 'Compare topics',
     hint: 'A table of aspects across topics. Needs two or more passages.',
@@ -124,9 +129,9 @@ const HINTS: Record<string, string> = {
   consent_mismatch: 'Open the preview again and confirm it.',
   consent_expired: 'Open the preview again and confirm it.',
   input_too_large: 'Select fewer or shorter passages.',
-  missing_key: 'Add your API key in the AI settings.',
+  missing_key: 'Add your API key (or sign in with ChatGPT) in the AI settings.',
   invalid_endpoint: 'Fix the address in the AI settings.',
-  auth: 'Check the key in the AI settings; it may be wrong, expired or for another provider.',
+  auth: 'Check the key in the AI settings; it may be wrong, expired or for another provider. For ChatGPT, sign in again.',
   quota_exhausted: 'Add credit with your provider, or switch to another provider or a local model.',
   timeout: 'Try again, or select fewer passages.',
   network:

@@ -1,22 +1,37 @@
 import { Suspense, lazy, useCallback, useEffect, useId, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
 import {
+  Ellipsis,
+  ExternalLink,
+  House,
+  Inbox,
+  Layers,
+  ListTree,
+  LocateFixed,
+  NotebookPen,
+  NotebookText,
+  Sparkles,
+  Trash2,
+} from 'lucide-react';
+import {
   HIGHLIGHT_KINDS,
   KIND_LABELS,
   MAX_COMMENT_CHARS,
   isPlaceholderSourceUrl,
+  type BankLite,
   type ColorId,
   type FilingSuggestion,
   type HighlightKind,
   type HighlightPatch,
+  type ResolveStatus,
 } from '@shared';
 import type { HighlightDetail, HighlightListItem, RelationRef } from '@storage';
 import {
   Badge,
   Button,
+  InfoTip,
   InlineNotice,
   KindChip,
-  ResolveBadge,
   describeResolveState,
   errorMessage,
   isRetryable,
@@ -35,12 +50,15 @@ import {
 import { CardNotes } from './CardNotes';
 import { CardTags } from './CardTags';
 import { FilingChip } from './FilingChip';
+import { IconAction } from './IconAction';
 import { extensionPageUrl, optionsUrl } from './links';
 import type { RevealAvailability } from './model';
 import { REVEAL_NOT_FOUND, sourceLinkFor } from './model';
+import { useCardMemory } from './useCardMemory';
 
 export const COMMENT_DEBOUNCE_MS = 600;
-const QUOTE_PREVIEW_CHARS = 280;
+// About four lines in a 320 px panel; the rest is one "Show full quote" away.
+const QUOTE_PREVIEW_CHARS = 180;
 
 // The AI engine and its screens are fetched when a card's AI drafts are opened, not with the panel.
 const HighlightAiActions = lazy(() =>
@@ -100,6 +118,13 @@ type Op =
   | { t: 'dashboard' }
   | { t: 'flashcard' };
 
+const FLASHCARD_OFF = 'Review is turned off in Settings, so flashcards cannot be made.';
+
+/**
+ * One highlight (UX_DESIGN 6.18): a colour strip, kind, quote, the quick note (always one tap
+ * away: it is the page overlay's hand-over target), bank and tag chips, and three actions. The
+ * editors (kind, priority, tags, study notes, links, related, AI, delete) sit behind "More actions".
+ */
 export function HighlightCard({
   item,
   detail,
@@ -123,6 +148,7 @@ export function HighlightCard({
   const uid = useId();
   const { announce, push } = useToast();
   const [expanded, setExpanded] = useState(false);
+  const [open, setOpen] = useCardMemory(`${highlight.id}:open`, false);
   const [aiOpen, setAiOpen] = useState(false);
   const [revealNote, setRevealNote] = useState<{ ok: boolean; text: string } | null>(null);
   const state = describeResolveState(highlight.resolveStatus);
@@ -165,36 +191,48 @@ export function HighlightCard({
     source.title,
     isPlaceholderSourceUrl(source.originalUrl) ? '' : source.host,
   ].filter((x) => x !== '');
+  const tags = detail?.tags ?? [];
+  const noteCount = detail?.notes.length ?? 0;
+  const drawerId = `${uid}-more`;
 
   return (
     <article
-      className="hl-card"
+      className={`hl-card sp-sw--${highlight.color}`}
       data-highlight-id={highlight.id}
       aria-label={`${KIND_LABELS[highlight.kind].label}: ${truncate(quote, 60)}`}
     >
-      <div className="sv-row">
+      <div className="hl-card__top">
         <KindChip kind={highlight.kind} color={highlight.color} />
-        <ResolveBadge status={highlight.resolveStatus} />
+        {highlight.resolveStatus === 'resolved' ? null : (
+          <span className="hl-card__state">
+            <StatusBadge status={highlight.resolveStatus} />
+            {state.attention && state.explanation ? (
+              <InfoTip label="Why it needs a look" align="end">
+                {state.explanation}
+              </InfoTip>
+            ) : null}
+          </span>
+        )}
       </div>
 
-      <div className="sv-stack sv-stack--tight">
-        <blockquote className="sv-quote" dir="auto">
-          {long && !expanded ? truncate(quote, QUOTE_PREVIEW_CHARS) : quote}
-        </blockquote>
-        {long ? (
-          <div>
-            <Button variant="ghost" aria-expanded={expanded} onClick={() => setExpanded((v) => !v)}>
-              {expanded ? 'Show less' : 'Show full quote'}
-            </Button>
-          </div>
-        ) : null}
-        {state.attention && state.explanation ? (
-          <p className="sv-small sv-muted">{state.explanation}</p>
-        ) : null}
-      </div>
+      <blockquote className="hl-card__quote" dir="auto">
+        {long && !expanded ? truncate(quote, QUOTE_PREVIEW_CHARS) : quote}
+      </blockquote>
+      {long ? (
+        <div>
+          <button
+            type="button"
+            className="sp-link"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((v) => !v)}
+          >
+            {expanded ? 'Show less' : 'Show full quote'}
+          </button>
+        </div>
+      ) : null}
 
       {showSource ? (
-        <p className="sv-small sv-muted sv-wrap" dir="auto">
+        <p className="hl-card__meta sv-wrap" dir="auto">
           From {where.length > 0 ? where.join(' · ') : 'an imported source'}
           {link.kind === 'web' ? (
             <>
@@ -213,23 +251,40 @@ export function HighlightCard({
           ) : null}
         </p>
       ) : highlight.headingContext ? (
-        <p className="sv-small sv-muted sv-wrap" dir="auto">
+        <p className="hl-card__meta sv-wrap" dir="auto">
+          <ListTree aria-hidden="true" strokeWidth={2.4} />
           Under: {highlight.headingContext}
         </p>
       ) : null}
 
-      <div className="sv-row">
-        <span className="sv-label">Banks</span>
+      <CommentField
+        id={`${uid}-note`}
+        value={highlight.userComment}
+        onSave={(text) => actions.update(highlight.id, { userComment: text })}
+      />
+
+      <ul className="hl-chips" aria-label="Banks and tags">
         {banks.length === 0 ? (
-          <span className="sv-muted sv-small">none</span>
+          <li className="hl-chip hl-chip--none">No bank</li>
         ) : (
-          banks.map((b) => (
-            <Badge key={b.id}>
-              <span dir="auto">{b.name}</span>
-            </Badge>
-          ))
+          banks.map((b) => <BankChip key={b.id} bank={b} />)
         )}
-      </div>
+        {open
+          ? null
+          : tags.map((t) => (
+              <li key={t.id} className="hl-tag" dir="auto">
+                <span aria-hidden="true">#</span>
+                <span>{t.name}</span>
+              </li>
+            ))}
+        {noteCount > 0 && !open ? (
+          <li className="hl-chip">
+            <NotebookText aria-hidden="true" strokeWidth={2.4} />
+            {noteCount}
+            <span className="sv-sr"> {noteCount === 1 ? 'study note' : 'study notes'}</span>
+          </li>
+        ) : null}
+      </ul>
 
       {suggestion && actions.fileSuggestion && actions.dismissSuggestion ? (
         <FilingChip
@@ -239,179 +294,44 @@ export function HighlightCard({
         />
       ) : null}
 
-      <CardTags
-        highlightId={highlight.id}
-        tags={detail === undefined ? undefined : (detail?.tags ?? null)}
-        listId={context.tagListId}
-        onAdd={actions.addTag}
-        onRemove={actions.removeTag}
-      />
-
-      <CommentField
-        id={`${uid}-note`}
-        value={highlight.userComment}
-        onSave={(text) => actions.update(highlight.id, { userComment: text })}
-      />
-
-      <div className="hl-fields">
-        <div className="sv-field">
-          <label className="sv-label" htmlFor={`${uid}-kind`}>
-            Kind
-          </label>
-          <select
-            id={`${uid}-kind`}
-            className="sv-control"
-            value={highlight.kind}
-            onChange={(e) => void act.run({ t: 'kind', kind: e.target.value as HighlightKind })}
-          >
-            {HIGHLIGHT_KINDS.map((k) => (
-              <option key={k} value={k}>
-                {`${KIND_LABELS[k].glyph} ${KIND_LABELS[k].label}`}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="sv-field">
-          <label className="sv-label" htmlFor={`${uid}-priority`}>
-            Priority
-          </label>
-          <select
-            id={`${uid}-priority`}
-            className="sv-control"
-            value={highlight.priority}
-            onChange={(e) => void act.run({ t: 'priority', priority: Number(e.target.value) })}
-          >
-            <option value={1}>1 (lowest)</option>
-            <option value={2}>2</option>
-            <option value={3}>3</option>
-            <option value={4}>4</option>
-            <option value={5}>5 (highest)</option>
-          </select>
-        </div>
-      </div>
-
-      <CardNotes
-        highlightId={highlight.id}
-        sourceId={highlight.sourceId}
-        notes={detail === undefined ? undefined : (detail?.notes ?? null)}
-        onSave={actions.saveNote}
-      />
-
-      <div className="sv-row">
-        <Button
+      <div className="hl-card__actions">
+        <IconAction
+          icon={Layers}
+          label="Make flashcard"
+          busy={act.busy}
+          data-testid="card-flashcard"
+          disabledReason={context.reviewOn ? undefined : FLASHCARD_OFF}
+          onClick={() => void act.run({ t: 'flashcard' })}
+        />
+        <IconAction
+          icon={LocateFixed}
+          label="Show on page"
           busy={act.busy}
           disabledReason={reveal.enabled ? undefined : reveal.reason}
           onClick={() => void act.run({ t: 'reveal' })}
-        >
-          Show on page
-        </Button>
-        <Button
-          busy={act.busy}
-          data-testid="card-flashcard"
-          disabledReason={
-            context.reviewOn
-              ? undefined
-              : 'Review is turned off in Settings, so flashcards cannot be made.'
-          }
-          onClick={() => void act.run({ t: 'flashcard' })}
-        >
-          Make flashcard
-        </Button>
-        <Button
+        />
+        <IconAction
+          icon={House}
+          label="Open in dashboard"
           busy={act.busy}
           data-testid="card-dashboard"
           onClick={() => void act.run({ t: 'dashboard' })}
-        >
-          Open in dashboard
-        </Button>
-        <Button variant="danger" busy={act.busy} onClick={() => void act.run({ t: 'delete' })}>
-          Delete
-        </Button>
+        />
+        <span className="hl-card__spacer" />
+        <IconAction
+          icon={Ellipsis}
+          label="More actions"
+          tipSide="left"
+          aria-expanded={open}
+          aria-controls={drawerId}
+          data-testid="card-more"
+          className={open ? 'is-open' : undefined}
+          onClick={() => setOpen(!open)}
+        />
       </div>
-      {reveal.enabled ? null : (
-        // Also exposed to assistive tech through the button's description.
-        <p className="sv-small sv-muted" aria-hidden="true">
-          {reveal.reason}
-        </p>
-      )}
+
       {revealNote ? (
         <InlineNotice tone={revealNote.ok ? 'success' : 'warning'}>{revealNote.text}</InlineNotice>
-      ) : null}
-      {context.links ? (
-        <LinksSection
-          item={{ kind: 'highlight', id: highlight.id }}
-          port={context.links.port}
-          search={context.links.search}
-          openLabel="Open in dashboard"
-          onOpen={(id) => actions.openDashboard(id)}
-          onShowGraph={context.links.onShowGraph}
-        />
-      ) : null}
-      {context.related ? (
-        <RelatedSection
-          id={highlight.id}
-          port={context.related}
-          openLabel="Open in dashboard"
-          onOpen={(id) => actions.openDashboard(id)}
-          onLink={
-            context.links
-              ? async (otherId) => {
-                  const links = context.links!.port;
-                  const made = await links.create({
-                    fromKind: 'highlight',
-                    fromId: highlight.id,
-                    toKind: 'highlight',
-                    toId: otherId,
-                    type: 'related',
-                  });
-                  push({
-                    message:
-                      made.status === 'existing'
-                        ? 'These are already linked.'
-                        : 'Linked as Related.',
-                    action:
-                      made.status === 'existing'
-                        ? undefined
-                        : {
-                            label: 'Undo',
-                            onClick: () => {
-                              void links.remove(made.relation.id).catch(() => undefined);
-                            },
-                          },
-                  });
-                }
-              : undefined
-          }
-        />
-      ) : null}
-      {context.aiOn === true ? (
-        <div className="sv-stack sv-stack--tight">
-          <div>
-            <Button
-              aria-expanded={aiOpen}
-              data-testid="card-ai-toggle"
-              onClick={() => setAiOpen((v) => !v)}
-            >
-              AI drafts
-            </Button>
-          </div>
-          {aiOpen ? (
-            <Suspense fallback={<p className="sv-small sv-muted">Loading the AI actions…</p>}>
-              <HighlightAiActions
-                highlights={[{ id: highlight.id, exactQuote: highlight.exactQuote }]}
-                onOpenSettings={() => void browser.tabs.create({ url: optionsUrl('ai') })}
-              />
-            </Suspense>
-          ) : null}
-        </div>
-      ) : context.aiOn === false ? (
-        <p className="sv-small sv-muted" data-testid="card-ai-hint">
-          AI drafts are off, so nothing is sent anywhere.{' '}
-          <a href={optionsUrl('ai')} target="_blank" rel="noopener noreferrer">
-            Turn them on in Options
-          </a>
-          .
-        </p>
       ) : null}
       {act.error ? (
         <InlineNotice
@@ -422,7 +342,217 @@ export function HighlightCard({
           {act.error}
         </InlineNotice>
       ) : null}
+
+      {open ? (
+        <div id={drawerId} className="hl-drawer" data-testid="card-drawer">
+          <KindPicker
+            value={highlight.kind}
+            paletteFor={paletteFor}
+            onChange={(kind) => void act.run({ t: 'kind', kind })}
+          />
+          <PriorityPicker
+            value={highlight.priority}
+            onChange={(priority) => void act.run({ t: 'priority', priority })}
+          />
+          <CardTags
+            highlightId={highlight.id}
+            tags={detail === undefined ? undefined : (detail?.tags ?? null)}
+            listId={context.tagListId}
+            onAdd={actions.addTag}
+            onRemove={actions.removeTag}
+          />
+          <CardNotes
+            highlightId={highlight.id}
+            sourceId={highlight.sourceId}
+            notes={detail === undefined ? undefined : (detail?.notes ?? null)}
+            onSave={actions.saveNote}
+          />
+          {context.links ? (
+            <LinksSection
+              item={{ kind: 'highlight', id: highlight.id }}
+              port={context.links.port}
+              search={context.links.search}
+              openLabel="Open in dashboard"
+              onOpen={(id) => actions.openDashboard(id)}
+              onShowGraph={context.links.onShowGraph}
+            />
+          ) : null}
+          {context.related ? (
+            <RelatedSection
+              id={highlight.id}
+              port={context.related}
+              openLabel="Open in dashboard"
+              onOpen={(id) => actions.openDashboard(id)}
+              onLink={
+                context.links
+                  ? async (otherId) => {
+                      const links = context.links!.port;
+                      const made = await links.create({
+                        fromKind: 'highlight',
+                        fromId: highlight.id,
+                        toKind: 'highlight',
+                        toId: otherId,
+                        type: 'related',
+                      });
+                      push({
+                        message:
+                          made.status === 'existing'
+                            ? 'These are already linked.'
+                            : 'Linked as Related.',
+                        action:
+                          made.status === 'existing'
+                            ? undefined
+                            : {
+                                label: 'Undo',
+                                onClick: () => {
+                                  void links.remove(made.relation.id).catch(() => undefined);
+                                },
+                              },
+                      });
+                    }
+                  : undefined
+              }
+            />
+          ) : null}
+          {context.aiOn === true ? (
+            <div className="sv-stack sv-stack--tight">
+              <div>
+                <Button
+                  aria-expanded={aiOpen}
+                  data-testid="card-ai-toggle"
+                  onClick={() => setAiOpen((v) => !v)}
+                >
+                  <Sparkles aria-hidden="true" className="sp-btnicon" strokeWidth={2.4} />
+                  AI drafts
+                </Button>
+              </div>
+              {aiOpen ? (
+                <Suspense fallback={<p className="sv-small sv-muted">Loading the AI actions…</p>}>
+                  <HighlightAiActions
+                    highlights={[{ id: highlight.id, exactQuote: highlight.exactQuote }]}
+                    onOpenSettings={() => void browser.tabs.create({ url: optionsUrl('ai') })}
+                  />
+                </Suspense>
+              ) : null}
+            </div>
+          ) : context.aiOn === false ? (
+            <p className="hl-ai-off" data-testid="card-ai-hint">
+              <Sparkles aria-hidden="true" strokeWidth={2.4} />
+              <span>AI drafts are off.</span>
+              <a href={optionsUrl('ai')} target="_blank" rel="noopener noreferrer">
+                Turn on <span className="sv-sr">AI drafts in Options</span>
+                <ExternalLink aria-hidden="true" strokeWidth={2.4} />
+              </a>
+              <InfoTip label="About AI drafts" side="top" align="end">
+                While AI is off, nothing is sent anywhere.
+              </InfoTip>
+            </p>
+          ) : null}
+          <div className="hl-drawer__foot">
+            <Button variant="danger" busy={act.busy} onClick={() => void act.run({ t: 'delete' })}>
+              <Trash2 aria-hidden="true" className="sp-btnicon" strokeWidth={2.4} />
+              Delete
+            </Button>
+          </div>
+        </div>
+      ) : null}
     </article>
+  );
+}
+
+/**
+ * How the quote was last found on its page, in plain words (UX_DESIGN 6.18 "Not found", 8 no
+ * jargon). The full explanation stays behind the card's (i).
+ */
+const SHORT_STATUS: Partial<Record<ResolveStatus, string>> = {
+  ambiguous: 'Many matches',
+  orphaned: 'Not found',
+};
+
+export function StatusBadge({ status }: { status: ResolveStatus }) {
+  const d = describeResolveState(status);
+  return (
+    <Badge tone={d.tone} glyph={d.glyph}>
+      {SHORT_STATUS[status] ?? d.label}
+    </Badge>
+  );
+}
+
+function BankChip({ bank }: { bank: BankLite }) {
+  return (
+    <li className={`hl-chip sp-sw--${bank.color}`} dir="auto">
+      {bank.isInbox ? (
+        <Inbox aria-hidden="true" strokeWidth={2.4} />
+      ) : (
+        <span className="hl-chip__dot" aria-hidden="true" />
+      )}
+      {bank.name}
+    </li>
+  );
+}
+
+/** The seven kinds as dots in the user's palette, each with its glyph and name (UX_DESIGN 6.19). */
+function KindPicker({
+  value,
+  paletteFor,
+  onChange,
+}: {
+  value: HighlightKind;
+  paletteFor(kind: HighlightKind): ColorId;
+  onChange(kind: HighlightKind): void;
+}) {
+  const name = useId();
+  return (
+    <fieldset className="hl-pick">
+      <legend className="hl-pick__legend">
+        Kind <span className="hl-pick__value">{KIND_LABELS[value].label}</span>
+      </legend>
+      <div className="hl-kinds">
+        {HIGHLIGHT_KINDS.map((k) => (
+          <label key={k} className={`hl-kind sp-sw--${paletteFor(k)}`} title={KIND_LABELS[k].label}>
+            <input
+              type="radio"
+              className="hl-pick__input"
+              name={name}
+              value={k}
+              checked={value === k}
+              onChange={() => onChange(k)}
+            />
+            <span className="hl-kind__dot" aria-hidden="true">
+              {KIND_LABELS[k].glyph}
+            </span>
+            <span className="sv-sr">{KIND_LABELS[k].label}</span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
+const PRIORITIES = [1, 2, 3, 4, 5] as const;
+
+function PriorityPicker({ value, onChange }: { value: number; onChange(p: number): void }) {
+  const name = useId();
+  return (
+    <fieldset className="hl-pick">
+      <legend className="hl-pick__legend">Priority</legend>
+      <div className="hl-seg">
+        {PRIORITIES.map((p) => (
+          <label key={p} className="hl-seg__opt">
+            <input
+              type="radio"
+              className="hl-pick__input"
+              name={name}
+              value={p}
+              checked={value === p}
+              onChange={() => onChange(p)}
+            />
+            <span aria-hidden="true">{p}</span>
+            <span className="sv-sr">{p === 1 ? '1 (lowest)' : p === 5 ? '5 (highest)' : p}</span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
   );
 }
 
@@ -504,17 +634,18 @@ function CommentField({
   );
 
   return (
-    <div className="sv-field">
-      <label className="sv-label" htmlFor={id}>
-        Your note
+    <div className="hl-note">
+      <label className="hl-note__label" htmlFor={id}>
+        <NotebookPen aria-hidden="true" strokeWidth={2.4} />
+        <span className="sv-sr">Your note</span>
       </label>
       <textarea
         id={id}
-        className="sv-control"
-        rows={2}
+        className="hl-note__input"
+        rows={1}
         maxLength={MAX_COMMENT_CHARS}
         value={draft}
-        placeholder="Add your own words (optional)"
+        placeholder="Quick note"
         dir="auto"
         aria-describedby={`${id}-status`}
         onChange={(e) => {
@@ -526,11 +657,11 @@ function CommentField({
         }}
       />
       {/* Saved/Saving are spoken through the surface's one status region (announce above). */}
-      <div id={`${id}-status`} className="sv-small">
-        {status.kind === 'saving' ? <span className="sv-muted">Saving…</span> : null}
-        {status.kind === 'saved' ? <span className="sv-muted">Saved</span> : null}
+      <div id={`${id}-status`} className="hl-note__status">
+        {status.kind === 'saving' ? <span>Saving…</span> : null}
+        {status.kind === 'saved' ? <span>Saved</span> : null}
         {status.kind === 'error' ? (
-          <span role="alert">
+          <span role="alert" className="hl-note__error">
             Not saved: {status.message}{' '}
             {status.retryable ? (
               <Button variant="ghost" onClick={() => void send(draft)}>

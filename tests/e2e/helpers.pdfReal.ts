@@ -14,9 +14,9 @@ import { expect, type Env } from './helpers.pages';
 
 /** What the reader prints in the header for each verdict. */
 export const STATUS_LABEL: Record<RealTextStatus, string> = {
-  text: 'selectable text',
-  scanned: 'scanned (no text)',
-  partial: 'partly scanned',
+  text: 'Selectable text',
+  scanned: 'No text',
+  partial: 'Partly scanned',
 };
 
 /** Overlay vs text boxes: real fonts are not the generator's Helvetica, so a little more slack. */
@@ -51,7 +51,7 @@ export const openReader = (env: Env): Promise<Reader> => openReaderIn(env.contex
 
 export const bytesOf = (pdf: RealPdf): Buffer => fs.readFileSync(pdf.path);
 
-/** Choose the document through the real file chooser behind "Choose a PDF file". */
+/** Choose the document through the real file chooser behind "Choose a PDF". */
 export async function chooseFile(page: Page, pdf: RealPdf, bytes = bytesOf(pdf)): Promise<void> {
   const [chooser] = await Promise.all([
     page.waitForEvent('filechooser'),

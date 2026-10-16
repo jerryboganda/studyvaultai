@@ -1,5 +1,6 @@
 import type { Locator, Page } from '@playwright/test';
 import { strToU8, zipSync } from 'fflate';
+import { showTask } from './helpers.backup';
 
 /**
  * Fixtures and handles for import-formats.spec.ts: Word, PowerPoint, EPUB, HTML and Anki files built
@@ -15,7 +16,9 @@ export interface ImportFile {
   bytes: Uint8Array;
 }
 
+/** "Import", then hand `file` to the importer's file input. */
 export async function chooseImport(page: Page, file: ImportFile): Promise<void> {
+  await showTask(page, 'import');
   await external(page)
     .getByTestId('backup-external-file')
     .setInputFiles({ name: file.name, mimeType: file.mimeType, buffer: Buffer.from(file.bytes) });

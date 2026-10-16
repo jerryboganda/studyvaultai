@@ -4,8 +4,14 @@ import { FilingRule, type FilingRuleIssue } from '@shared';
 import { parseViewLink } from './deepLink';
 import { dashboardPath } from '@ui/vault/dashboardLink';
 import {
+  conditionParts,
   describeConditions,
   describeIssue,
+  draftRule,
+  firstEmptyCondition,
+  keepConditions,
+  suggestName,
+  usedConditions,
   describePlace,
   emptyForm,
   formFromRule,
@@ -16,6 +22,7 @@ import {
   parsePhrase,
   parsePrefixes,
   runRuleTest,
+  sampleFor,
   testCandidate,
   emptyTest,
   type Names,
@@ -216,6 +223,89 @@ describe('running a test', () => {
     const run = runRuleTest([gone], [], candidateFor({ url: 'https://example.com/x' }).candidate);
     expect(run.decision.kind).toBe('none');
     expect(run.rows).toEqual([]);
+  });
+});
+
+describe('the wizard', () => {
+  const form = { ...emptyForm('bank-cardio01'), hosts: ['example.com'], titleContains: ['heart'] };
+
+  it('starts an edited rule on the fields it uses, and drops unticked ones only when saving', () => {
+    expect(usedConditions(form)).toEqual(['hosts', 'titleContains']);
+    const kept = keepConditions(form, ['hosts']);
+    expect(kept.hosts).toEqual(['example.com']);
+    expect(kept.titleContains).toEqual([]);
+    expect(form.titleContains).toEqual(['heart']); // Back keeps the answer
+    expect(formToInput(kept).match).toMatchObject({ hosts: ['example.com'], titleContains: [] });
+  });
+
+  it('asks for the first picked field that has no value', () => {
+    expect(firstEmptyCondition(form, ['hosts', 'kinds', 'tagIds'])).toBe('kinds');
+    expect(firstEmptyCondition(form, ['hosts', 'titleContains'])).toBeNull();
+  });
+
+  it('suggests a name from the first condition and the bank, within the limit', () => {
+    expect(suggestName(form, 'Cardiology')).toBe('example.com to Cardiology');
+    expect(suggestName({ ...emptyForm('b'), urlPrefixes: ['https://a.org/x/'] }, null)).toBe(
+      'a.org/x/',
+    );
+    expect(suggestName({ ...emptyForm('b'), kinds: ['formula'] }, 'Renal')).toBe(
+      'Formula to Renal',
+    );
+    expect(suggestName({ ...emptyForm('b'), hosts: ['x'.repeat(200)] }, 'B').length).toBe(80);
+  });
+
+  it('lists the conditions as short values for the card chips', () => {
+    expect(
+      conditionParts(
+        { match: { hosts: ['a.org'], quoteContains: ['mg/dL'], tagIds: ['tag-hy000001'] } },
+        names,
+      ),
+    ).toEqual([
+      { key: 'hosts', values: ['a.org'] },
+      { key: 'quoteContains', values: ['“mg/dL”'] },
+      { key: 'tagIds', values: ['High yield'] },
+    ]);
+  });
+
+  it('turns the form into a stored rule for "Try it": an edited one keeps its id and place', () => {
+    const base = rule({ id: 'rule-0000001', order: 3 });
+    const edited = draftRule({ ...form, name: '' }, base, 9);
+    expect(FilingRule.safeParse(edited).success).toBe(true);
+    expect(edited).toMatchObject({
+      id: 'rule-0000001',
+      order: 3,
+      name: 'This rule',
+      enabled: true,
+    });
+    const fresh = draftRule({ ...form, name: 'New' }, undefined, 9);
+    expect(fresh).toMatchObject({ order: 9, name: 'New', deletedAt: null });
+    // The draft decides like the stored rule would.
+    const run = runRuleTest(
+      [fresh],
+      [],
+      testCandidate({ ...emptyTest(), url: 'https://example.com/heart', title: 'heart' }).candidate,
+    );
+    expect(run.decision.kind).toBe('plan');
+  });
+
+  it('builds the first "Try it" sample from the rule, and the rule decides it', () => {
+    const sample = sampleFor({ ...form, quoteContains: ['mg/dL'], kinds: ['formula'] });
+    expect(sample).toEqual({
+      url: 'https://example.com/',
+      title: 'heart',
+      quote: 'mg/dL',
+      tagIds: [],
+      sourceType: 'web',
+      kind: 'formula',
+    });
+    const draft = draftRule({ ...form, name: 'X' }, undefined, 0);
+    const run = runRuleTest([draft], [], testCandidate({ ...emptyTest(), ...sample }).candidate);
+    expect(run.decision.kind).toBe('plan');
+    // An address prefix stands in for a missing site; a PDF-only rule gets a PDF sample.
+    expect(
+      sampleFor({ ...emptyForm('b'), urlPrefixes: ['https://a.org/x/'], sourceTypes: ['pdf'] }),
+    ).toMatchObject({ url: 'https://a.org/x/', sourceType: 'pdf' });
+    expect(sampleFor(emptyForm('b'))).toMatchObject({ url: '', title: '', quote: '' });
   });
 });
 

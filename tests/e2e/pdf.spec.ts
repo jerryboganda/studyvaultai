@@ -55,7 +55,7 @@ async function openReader(env: Env, query = ''): Promise<Reader> {
   return { page, errors };
 }
 
-/** Choose a file through the real file chooser behind "Choose a PDF file". */
+/** Choose a file through the real file chooser behind "Choose a PDF". */
 async function chooseFile(page: Page, name: string, bytes: Buffer): Promise<void> {
   const [chooser] = await Promise.all([
     page.waitForEvent('filechooser'),
@@ -384,7 +384,7 @@ test.describe('open and render', () => {
     await chooseFile(page, 'renal.pdf', proseDoc(120));
     await expect(page.getByTestId('pdf-viewer')).toBeVisible({ timeout: 30_000 });
     await expect(page.locator('.sv-doc__title')).toHaveText(PROSE_TITLE);
-    await expect(page.getByTestId('pdf-text-status')).toHaveText('selectable text');
+    await expect(page.getByTestId('pdf-text-status')).toHaveText('Selectable text');
     expect(await textOnPage(page, 1)).toContain('Page 1 line 1: the quick brown fox');
     await expect(page.getByTestId('pdf-page-120')).toBeAttached(); // a slot per page ...
 
@@ -479,7 +479,11 @@ test.describe('highlights', () => {
     await chooseFile(page, 'wrapped.pdf', bytes);
     await expect(page.locator('.sv-pdf-hl').first()).toBeAttached({ timeout: 30_000 });
     await expect(page.getByTestId('pdf-highlight-card')).toHaveCount(1);
-    await expect(page.getByTestId('pdf-highlight-card').first()).toContainText('Found on page');
+    // Found on the page: painted (above) and no status badge, which a card shows only when the
+    // highlight needs a look ("Source changed", ambiguous or orphaned).
+    await expect(page.getByTestId('pdf-highlight-card').first().locator('.sv-badge')).toHaveCount(
+      0,
+    );
     await expect(page.getByLabel('Note').first()).toHaveValue('wraps over two lines');
   });
 
@@ -673,7 +677,10 @@ test.describe('compatibility fixtures', () => {
     await chooseFile(page, 'repeated.pdf', bytes);
     await textOnPage(page, 1);
     await expect(page.locator('.sv-pdf-hl').first()).toBeAttached({ timeout: 30_000 });
-    await expect(page.getByTestId('pdf-highlight-card').first()).toContainText('Found on page');
+    // Found on the page: painted, and no status badge ("Source changed", ambiguous or orphaned).
+    await expect(page.getByTestId('pdf-highlight-card').first().locator('.sv-badge')).toHaveCount(
+      0,
+    );
     // Painted on the second sentence only, not on the first one that reads the same.
     await expectOnWords(page, 1, [REPEATED_SENTENCE], 'second occurrence after reopening', 1);
     const first = await textBox(page, 1, REPEATED_SENTENCE, 0);
@@ -784,7 +791,7 @@ test.describe('scanned pages and OCR', () => {
   }) => {
     const { page } = await openDocument(env, 'mixed.pdf', partlyScannedDoc());
     await textOnPage(page, 1);
-    await expect(page.getByTestId('pdf-text-status')).toHaveText('partly scanned', {
+    await expect(page.getByTestId('pdf-text-status')).toHaveText('Partly scanned', {
       timeout: 30_000,
     });
     // Page 2 is the picture: scroll to it so its verdict is learned.
@@ -795,6 +802,11 @@ test.describe('scanned pages and OCR', () => {
     await expect(banner).toBeVisible();
     await expect(page.getByTestId('pdf-ocr')).toBeEnabled();
     await expect(page.getByTestId('pdf-ocr-this-page')).toBeEnabled();
+    // The on-device promise is one tap away, in the card's (i).
+    await page
+      .getByRole('region', { name: 'Scanned pages' })
+      .getByRole('button', { name: 'About recognising text' })
+      .click();
     await expect(page.getByText('nothing is uploaded, and it works offline')).toBeVisible();
     // The "Page text" tab offers the same action for the page in view.
     await page.getByRole('tab', { name: 'Page text' }).click();
@@ -812,7 +824,7 @@ test.describe('scanned pages and OCR', () => {
     ]);
     await scratch.close();
     const { page, errors } = await openDocument(env, 'scan.pdf', bytes);
-    await expect(page.getByTestId('pdf-text-status')).toHaveText('scanned (no text)', {
+    await expect(page.getByTestId('pdf-text-status')).toHaveText('No text', {
       timeout: 30_000,
     });
     await expect(page.getByTestId('pdf-ocr')).toBeEnabled();
@@ -830,7 +842,8 @@ test.describe('scanned pages and OCR', () => {
     await expect
       .poll(async () => (await textOnPage(page, 1)).toLowerCase(), { timeout: 30_000 })
       .toContain('mitochondria');
-    await expect(page.getByTestId('pdf-text-status')).toContainText('scanned');
+    // Still a scan, whose every page without text now has recognised text.
+    await expect(page.getByTestId('pdf-text-status')).toHaveText('Text recognised');
     await expect(page.getByTestId('pdf-ocr')).toHaveCount(0); // nothing is left to recognise
 
     // A highlight on OCR text is anchored in the OCR stream and says so.
@@ -1101,7 +1114,7 @@ test.describe('web open', () => {
     ]) {
       const { page } = await openReader(env, `?src=${encodeURIComponent(src)}`);
       await expect(page.getByTestId('pdf-web')).toContainText('This address cannot be opened');
-      await expect(page.getByRole('button', { name: /Allow access/ })).toHaveCount(0);
+      await expect(page.getByRole('button', { name: /Allow/ })).toHaveCount(0);
       await page.close();
     }
     expect(server.requests).toHaveLength(0);
@@ -1276,9 +1289,19 @@ test.describe('accessibility', () => {
     await page.getByTestId('pdf-props').locator('summary').click();
     expect(await violations(page)).toBe('');
 
-    await page.getByRole('tab', { name: 'Pages' }).click();
-    await page.getByRole('tab', { name: 'Page text' }).click();
-    expect(await violations(page)).toBe('');
+    // Details is a popover over the side pane's tabs: closed again, as a person would, to reach them.
+    await page.getByTestId('pdf-props').locator('summary').click();
+    // One pane shows one tab at a time (navigation and highlights used to sit side by side), so the
+    // navigation tabs and the page text are each checked in turn.
+    for (const [tab, content] of [
+      ['Outline', 'pdf-outline'],
+      ['Pages', 'pdf-thumbs'],
+      ['Page text', 'pdf-ocr-panel'],
+    ] as const) {
+      await page.getByRole('tab', { name: tab }).click();
+      await expect(page.getByTestId(content)).toBeVisible();
+      expect(await violations(page), `${tab} tab`).toBe('');
+    }
   });
 
   test('the correction view of recognised text has none', async ({ env }) => {

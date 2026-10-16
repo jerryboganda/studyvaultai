@@ -1,50 +1,708 @@
-/* Popup: fixed 360px column; the document scrolls vertically if the content is taller. */
+/*
+ * Popup (UX_DESIGN 7.1): a 400px column, at most 600px high (Chrome's cap). Sunny cards, chunky
+ * actions and icon chips; it reflows down to 320px (and 200% zoom) without horizontal scrolling.
+ * Popup-only pieces (toggle chip, switch, emblem) live here; shared ones come from @ui.
+ */
 html,
 body {
-  width: 360px;
+  width: 400px;
   max-width: 100%;
+}
+body {
+  background: var(--sv-canvas);
 }
 .popup {
   display: flex;
   flex-direction: column;
+  gap: 8px;
   min-height: 160px;
-  max-height: 580px;
-}
-.popup__head {
-  padding: var(--sv-space-3) var(--sv-space-4) var(--sv-space-2);
-  border-bottom: 1px solid var(--sv-border);
+  padding: 10px 16px 8px;
 }
 .popup__main {
-  flex: 1 1 auto;
-  padding: var(--sv-space-3) var(--sv-space-4);
-  overflow-y: auto;
-}
-.popup__study {
-  padding: var(--sv-space-2) var(--sv-space-4);
-  border-top: 1px solid var(--sv-border);
-}
-.popup__foot {
-  padding: var(--sv-space-2) var(--sv-space-3);
-  border-top: 1px solid var(--sv-border);
-}
-.popup__recent {
   display: flex;
   flex-direction: column;
-  gap: var(--sv-space-3);
-}
-.popup__item {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--sv-space-1);
+  gap: 8px;
   min-width: 0;
 }
-.popup__quote {
+.pp-spacer {
+  flex: 1 1 auto;
+}
+
+/* Header ------------------------------------------------------------------------------------ */
+.popup__head {
+  display: grid;
+  gap: 6px;
+}
+.pp-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.pp-logo {
+  flex: none;
+}
+.pp-brand {
+  font-size: 1.125rem;
+  font-weight: 900;
+}
+.pp-brand:focus {
+  outline: none;
+}
+.pp-brand:focus-visible {
+  border-radius: 6px;
+  outline: var(--sv-focus-width) solid var(--sv-focus);
+  outline-offset: 2px;
+}
+
+/* Cards ------------------------------------------------------------------------------------- */
+.pp-card {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 14px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-lg);
+  background: var(--sv-surface);
+  box-shadow: 0 3px 0 var(--sv-border);
+}
+.pp-eyebrow {
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.pp-help {
+  color: var(--sv-ink-2);
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+.pp-help--center {
+  margin-top: -2px;
+  text-align: center;
+}
+
+/* Site card */
+.pp-site__top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.pp-tile {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: var(--sv-primary-soft);
+  color: var(--sv-primary-soft-ink);
+}
+.pp-tile > svg:not(.sv-buddy) {
+  width: 22px;
+  height: 22px;
+}
+.pp-tile:has(.sv-buddy),
+.pp-tile--buddy {
+  background: transparent;
+}
+.pp-where {
+  display: grid;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.pp-where__name,
+.pp-where__sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pp-where__name {
+  font-size: 1rem;
+  font-weight: 900;
+}
+.pp-where__sub {
+  color: var(--sv-ink-2);
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+.pp-where__sub--wrap {
   display: -webkit-box;
   -webkit-line-clamp: 3;
   line-clamp: 3;
   -webkit-box-orient: vertical;
-  overflow: hidden;
-  font-size: var(--sv-text-sm);
   white-space: normal;
+}
+.pp-site__top > .pp-pill,
+.pp-site__top > .pp-inline {
+  flex: none;
+}
+.pp-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.pp-site__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+}
+/* The Always on switch stays at the end of the row, also when the counts push it onto a new line. */
+.pp-site__row > .pp-inline:last-child {
+  margin-left: auto;
+}
+.pp-site__row > .sv-chunky,
+.pp-site__acts .sv-chunky {
+  margin-bottom: var(--sv-press);
+}
+.pp-site__acts {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  align-items: center;
+  gap: 8px;
+}
+.pp-site__acts:not(:has(> :nth-child(3))),
+.pp-site__acts--one {
+  grid-template-columns: 1fr auto;
+}
+.pp-ask {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-warning-soft);
+  color: var(--sv-warning-ink);
+  font-size: var(--sv-text-sm);
+}
+.pp-ask strong {
+  color: var(--sv-ink);
+  font-size: 0.9375rem;
+}
+.pp-ask__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+.pp-ask__head strong {
+  overflow-wrap: anywhere;
+}
+.pp-note {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  color: var(--sv-warning-ink);
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+.pp-note svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  margin-top: 2px;
+}
+
+.pp-tiplink {
+  display: block;
+  margin-top: 8px;
+}
+
+/* Pills: status badges and count chips (icon + text, never colour alone) */
+.pp-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 2px 9px;
+  border-radius: var(--sv-radius-pill);
+  background: var(--sv-sunk);
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+.pp-pill svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+.pp-pill--success {
+  background: var(--sv-success-soft);
+  color: var(--sv-success-ink);
+}
+.pp-pill--primary {
+  background: var(--sv-primary-soft);
+  color: var(--sv-primary-soft-ink);
+}
+.pp-pill--warning {
+  background: var(--sv-warning-soft);
+  color: var(--sv-warning-ink);
+}
+.pp-pill .sv-infotip {
+  margin-right: -6px;
+}
+
+/* Always-on switch (role="switch"; thumb position is the non-colour cue) */
+.pp-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--sv-ink);
+  font: inherit;
+  font-weight: 800;
+  cursor: pointer;
+}
+.pp-switch[aria-busy='true'] {
+  cursor: progress;
+}
+.pp-switch__track {
+  position: relative;
+  flex: none;
+  width: 46px;
+  height: 28px;
+  border-radius: var(--sv-radius-pill);
+  background: var(--sv-sunk);
+  box-shadow: inset 0 0 0 2px var(--sv-line-strong);
+  transition: background var(--sv-motion);
+}
+.pp-switch__thumb {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--sv-surface);
+  box-shadow:
+    0 0 0 2px var(--sv-line-strong),
+    0 2px 0 rgb(0 0 0 / 0.2);
+  transition: transform var(--sv-motion);
+}
+.pp-switch[aria-checked='true'] .pp-switch__track {
+  background: var(--sv-primary);
+  box-shadow: inset 0 -3px 0 var(--sv-primary-edge);
+}
+.pp-switch[aria-checked='true'] .pp-switch__thumb {
+  background: var(--sv-on-primary);
+  box-shadow: 0 2px 0 rgb(0 0 0 / 0.2);
+  transform: translateX(18px);
+}
+
+/* Problems (role="alert") */
+.pp-problem {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 2px solid var(--sv-danger-fill);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-danger-soft);
+  color: var(--sv-danger-ink);
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+.pp-problem__icon {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+.pp-problem__text {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+.pp-problem__text strong {
+  color: var(--sv-ink);
+}
+.pp-problem .sv-chunky {
+  margin-bottom: 3px;
+}
+
+/* Game cluster in the header: ring with today's XP, streak, level (or plain counts) */
+.pp-game {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.pp-game--counting {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+}
+.pp-game__bar {
+  width: 72px;
+}
+.pp-ring__num {
+  font-size: 0.8125rem;
+  font-weight: 900;
+}
+.pp-ring__of {
+  color: var(--sv-ink-2);
+  font-size: 0.625rem;
+  font-weight: 800;
+}
+.pp-game--plain {
+  gap: 4px;
+  color: var(--sv-ink-2);
+  font-size: 0.8125rem;
+  font-weight: 800;
+}
+.pp-game--plain strong {
+  color: var(--sv-ink);
+  font-size: 0.9375rem;
+  font-weight: 900;
+}
+
+/* Level emblem: fixed brand colours (like the mascot), readable on both canvases */
+.pp-emblem {
+  flex: none;
+}
+.pp-emblem__edge {
+  fill: #ffc83d;
+  stroke: #9a6c00;
+  stroke-width: 3;
+  stroke-linejoin: round;
+}
+.pp-emblem__face {
+  fill: #ffe08a;
+}
+.pp-emblem__num {
+  fill: #3a2a00;
+  font-family: var(--sv-font);
+  font-size: 17px;
+  font-weight: 900;
+}
+.pp-emblem__num--3 {
+  font-size: 12px;
+}
+
+/* Big actions */
+.pp-actions {
+  display: grid;
+  gap: 2px;
+}
+.pp-actions .sv-chunky--lg {
+  flex-wrap: wrap;
+  row-gap: 2px;
+  min-height: 48px;
+  padding-block: 6px;
+}
+/* The label never breaks inside; at narrow widths the count pill moves under it instead. */
+.pp-actlabel {
+  white-space: nowrap;
+}
+.popup__study {
+  display: grid;
+  gap: 3px;
+}
+.pp-btnkey {
+  margin-left: 4px;
+  padding: 0 6px;
+  border: 2px solid rgb(255 255 255 / 0.55);
+  border-radius: 7px;
+  font-family: var(--sv-font);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.pp-due {
+  margin-left: 2px;
+  padding: 1px 9px;
+  border-radius: var(--sv-radius-pill);
+  background: var(--sv-on-sun);
+  color: var(--sv-sun);
+  font-size: 0.8125rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+.sv-chunky--secondary .pp-due,
+.sv-chunky[aria-disabled='true'] .pp-due {
+  background: var(--sv-sunk);
+  color: var(--sv-ink-2);
+}
+.pp-due--text {
+  font-weight: 800;
+}
+.pp-remind {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px 0 10px;
+  border: 2px solid var(--sv-sun-line);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-sun-soft);
+  color: var(--sv-sun-soft-ink);
+  font-size: var(--sv-text-sm);
+  font-weight: 800;
+}
+.pp-remind .sv-ibtn {
+  width: 26px;
+  height: 26px;
+}
+.pp-remind__icon {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+.pp-remind__text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.pp-remind__error {
+  color: var(--sv-danger-ink);
+}
+
+/* Quick toggles (UX_DESIGN 6.5) */
+.pp-chips {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.pp-tchip-wrap {
+  display: grid;
+}
+.pp-tchip {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  width: 100%;
+  margin-bottom: 3px;
+  padding: 7px 4px 6px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface);
+  box-shadow: 0 3px 0 var(--sv-edge);
+  color: var(--sv-ink-2);
+  font: inherit;
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+  line-height: 1.2;
+  cursor: pointer;
+  transition:
+    transform var(--sv-motion),
+    box-shadow var(--sv-motion);
+}
+.pp-tchip:active:not([aria-disabled='true']) {
+  transform: translateY(3px);
+  box-shadow: 0 0 0 var(--sv-edge);
+}
+/* Two-tone focus (UX_DESIGN 2.7): the global ring plus its halo, in front of the 3D edge. */
+.pp-tchip:focus-visible {
+  box-shadow:
+    0 0 0 2px var(--sv-focus-halo),
+    0 3px 0 var(--sv-edge);
+}
+.pp-tchip[aria-pressed='true']:focus-visible {
+  box-shadow:
+    0 0 0 2px var(--sv-focus-halo),
+    0 3px 0 var(--sv-primary-edge);
+}
+.pp-tchip[aria-busy='true'] {
+  cursor: progress;
+}
+.pp-tchip[aria-disabled='true'] {
+  cursor: not-allowed;
+  opacity: 0.75;
+}
+.pp-tchip__icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  background: var(--sv-sunk);
+}
+.pp-tchip__icon svg {
+  width: 18px;
+  height: 18px;
+}
+.pp-tchip__label {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pp-tchip__check {
+  position: absolute;
+  top: 4px;
+  right: 5px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--sv-surface);
+  border-radius: 50%;
+  background: var(--sv-primary);
+  color: var(--sv-on-primary);
+}
+.pp-tchip__check svg {
+  width: 10px;
+  height: 10px;
+}
+.pp-tchip[aria-pressed='true'] {
+  border-color: var(--sv-primary);
+  background: var(--sv-primary-soft);
+  box-shadow: 0 3px 0 var(--sv-primary-edge);
+  color: var(--sv-primary-soft-ink);
+}
+.pp-tchip[aria-pressed='true'] .pp-tchip__icon {
+  background: var(--sv-primary);
+  color: var(--sv-on-primary);
+}
+
+/* Recent saves */
+.pp-recent {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.pp-recent__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.pp-bank {
+  max-width: 60%;
+}
+.pp-bank__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pp-saves {
+  display: grid;
+  gap: 4px;
+}
+.pp-save {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  padding: 6px 10px 6px 12px;
+  border: 2px solid var(--sv-border);
+  border-left: 5px solid var(--pp-strip, var(--sv-border));
+  border-radius: 12px;
+  background: var(--sv-surface);
+}
+.pp-save__quote,
+.pp-save__meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pp-save__quote {
+  font-size: var(--sv-text-sm);
+  font-weight: 700;
+}
+.pp-save__meta {
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-xs);
+  font-weight: 700;
+}
+.pp-empty {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border: 2px dashed var(--sv-border);
+  border-radius: var(--sv-radius-md);
+}
+.pp-empty .sv-buddy {
+  flex: none;
+}
+.pp-empty p {
+  display: grid;
+}
+
+/* Footer */
+.popup__foot {
+  display: grid;
+  gap: 6px;
+}
+.pp-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.pp-foot .sv-chunky--ghost {
+  margin-left: -12px;
+}
+.pp-keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--sv-ink-2);
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+
+/* Narrow (320px, or 400px at high zoom): stack the site actions, drop the brand word's weight. */
+@media (max-width: 359px) {
+  .popup {
+    padding-inline: 12px;
+  }
+  /* The game cluster takes its own row under the title and the Settings button. */
+  .pp-game {
+    order: 3;
+    flex-basis: 100%;
+  }
+  .pp-btnkey {
+    display: none;
+  }
+  .pp-site__acts {
+    grid-template-columns: 1fr auto;
+  }
+  .pp-site__acts > .sv-chunky:first-child {
+    grid-column: 1 / -1;
+  }
+}
+@media (max-width: 260px) {
+  .pp-chips {
+    grid-template-columns: 1fr;
+  }
+  /* 400px at 200 % zoom: the page name gets the row, the badge drops under it. */
+  .pp-site__top {
+    flex-wrap: wrap;
+  }
+  .pp-tile {
+    display: none;
+  }
+}
+@media (forced-colors: active) {
+  .pp-card,
+  .pp-tchip,
+  .pp-save,
+  .pp-pill,
+  .pp-due {
+    border: 2px solid CanvasText;
+  }
+  .pp-tchip[aria-pressed='true'] {
+    border-width: 4px;
+  }
+  .pp-switch__track {
+    border: 2px solid ButtonText;
+  }
+  .pp-emblem {
+    forced-color-adjust: none;
+  }
 }

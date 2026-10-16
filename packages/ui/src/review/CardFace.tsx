@@ -1,6 +1,9 @@
 import { renderCloze, type CardType, type Choice, type ClozeData, type McqGrade } from '@study';
 import { TID, blankId, choiceId as choiceTestId } from './testids';
 
+/** Longer answers are set smaller on the review stage, so they never need a scroll. */
+const LONG_ANSWER = 90;
+
 /** What a face needs from a card: also satisfied by an unsaved draft in the authoring preview. */
 export interface FaceCard {
   cardType: CardType;
@@ -133,14 +136,17 @@ export function CardFace({
   }
 
   return (
-    <div className="rv-qa">
+    <div className={reveal ? 'rv-qa rv-qa--revealed' : 'rv-qa'}>
       <p className="rv-face" data-testid={TID.question}>
         {card.front}
       </p>
       {reveal ? (
         <>
           <hr className="rv-rule" />
-          <p className="rv-face rv-face--answer" data-testid={TID.answer}>
+          <p
+            className={`rv-face rv-face--answer${card.back.length > LONG_ANSWER ? ' rv-face--long' : ''}`}
+            data-testid={TID.answer}
+          >
             {card.back}
           </p>
         </>

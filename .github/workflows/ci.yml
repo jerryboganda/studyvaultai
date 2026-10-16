@@ -218,6 +218,35 @@ jobs:
         if: always()
         run: node scripts/license-report.mjs
 
+  gallery:
+    # Design-review screenshots of the real pages on the localhost gallery (gallery/capture.mjs: fake
+    # chrome, seeded data, plain Chromium, no extension). Advisory: not in ci-ok's needs. It fails when
+    # a page throws, renders blank or does not reach its state; the pictures are uploaded either way.
+    name: gallery (screenshots)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Capture every page, state, scenario and theme
+        run: node gallery/capture.mjs
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: gallery-screenshots
+          path: .ci-artifacts/gallery
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
   ci-ok:
     # The one required check. A failed, cancelled or skipped dependency is a failure (AGENTS.md).
     # `stress` is listed so its result is printed, but it does not decide until it is proven (see REQUIRED).

@@ -53,7 +53,8 @@ function invalid(detail: string, issues?: string[]): AiError {
 
 interface Piece {
   id: string;
-  kind: 'highlight' | 'note' | 'question' | 'claim' | 'history';
+  kind:
+    'highlight' | 'note' | 'card' | 'knowledge_point' | 'question' | 'claim' | 'history' | 'memory';
   original: string;
   text: string;
   truncated: boolean;
@@ -119,14 +120,22 @@ export async function prepare(
   if (new Set(sel.chunks.map((c) => c.id)).size !== sel.chunks.length)
     throw invalid('duplicate passage id');
   // `question`, `claim_N` and `history_N` name the non-citeable blocks; a passage must not shadow them.
-  if (sel.chunks.some((c) => c.id === 'question' || /^(?:claim|history)_\d+$/.test(c.id))) {
+  if (
+    sel.chunks.some(
+      (c) => c.id === 'question' || c.id === 'memory' || /^(?:claim|history)_\d+$/.test(c.id),
+    )
+  ) {
     throw invalid('reserved passage id');
   }
   if (sel.chunks.length < task.minChunks)
     throw invalid(`${kind} needs at least ${task.minChunks} passages`);
-  if (kind === 'explain' && !sel.question) throw invalid('explain needs a question');
+  if ((kind === 'explain' || kind === 'chat') && !sel.question)
+    throw invalid(`${kind} needs a question`);
   if (kind === 'fact_check' && !sel.claims) throw invalid('fact_check needs statements to check');
-  if (sel.history && kind !== 'explain') throw invalid('earlier turns are only used by explain');
+  if (sel.history && kind !== 'explain' && kind !== 'chat') {
+    throw invalid('earlier turns are only used by explain and chat');
+  }
+  if (sel.memory && kind !== 'chat') throw invalid('the memory summary is only used by chat');
 
   const pieces: Piece[] = sel.chunks.map((c) =>
     piece(c.id, c.kind, c.text, limits.maxChunkChars, edits),
@@ -144,7 +153,18 @@ export async function prepare(
       ),
     ),
   );
-  if (kind === 'explain' && sel.question) {
+  if (kind === 'chat' && sel.memory) {
+    extras.push(
+      piece(
+        'memory',
+        'memory',
+        `Summary of the earlier conversation: ${sel.memory}`,
+        limits.maxChunkChars,
+        edits,
+      ),
+    );
+  }
+  if ((kind === 'explain' || kind === 'chat') && sel.question) {
     extras.push(piece('question', 'question', sel.question, limits.maxChunkChars, edits));
   }
   if (kind === 'fact_check') {
@@ -154,7 +174,7 @@ export async function prepare(
   }
 
   const chunkTexts = new Map<string, ChunkText>(
-    pieces.map((p) => [p.id, { id: p.id, kind: p.kind as 'highlight' | 'note', sent: p.sent }]),
+    pieces.map((p) => [p.id, { id: p.id, kind: p.kind as ChunkText['kind'], sent: p.sent }]),
   );
   const sentAll = [...pieces, ...extras].map((p) => p.sent).join('\n');
   const candidates =

@@ -1,8 +1,25 @@
 import './ai.css';
 import { useState } from 'react';
+import {
+  AlignLeft,
+  BadgeCheck,
+  Brain,
+  Columns2,
+  Layers,
+  Lightbulb,
+  ListChecks,
+  ListOrdered,
+  ListTree,
+  MessageCircleQuestion,
+  Mic,
+  Scale,
+  Sparkles,
+  type LucideIcon,
+} from 'lucide-react';
 import type { AiTaskKind } from '@ai';
 import type { StoredAiResult } from '@storage';
 import { Button } from '../Button';
+import { InfoTip } from '../design/InfoTip';
 import { InlineNotice } from '../Notice';
 import { AiResultsList } from './AiResultsList';
 import { ConsentPreviewDialog, type AiHighlightInput } from './ConsentPreviewDialog';
@@ -23,10 +40,27 @@ export interface HighlightAiActionsProps {
 
 const MAX = 50;
 
+/** One icon per task, so the chips read at a glance (the label is always next to it). */
+const KIND_ICON: Record<AiTaskKind, LucideIcon> = {
+  exam_pearl: Lightbulb,
+  summary: AlignLeft,
+  structured_notes: ListTree,
+  flashcards: Layers,
+  mcq: ListChecks,
+  explain: MessageCircleQuestion,
+  chat: MessageCircleQuestion,
+  compare_topics: Columns2,
+  contradictions: Scale,
+  fact_check: BadgeCheck,
+  mnemonic: Brain,
+  short_viva: Mic,
+  study_outline: ListOrdered,
+};
+
 /**
- * AI actions for the given highlights. Everything is opt-in: with the feature flag off the buttons
- * are disabled with the reason and nothing is read from any provider. Each action opens the
- * consent preview; nothing is sent before "Send" is pressed there.
+ * AI actions for the given highlights, as compact chips. Everything is opt-in: with the feature flag
+ * off the chips are disabled with the reason and nothing is read from any provider. Each action
+ * opens the consent preview; nothing is sent before "Send" is pressed there.
  */
 export function HighlightAiActions({
   highlights,
@@ -61,8 +95,15 @@ export function HighlightAiActions({
   const problem = flag.on ? (cfg.data?.problem ?? null) : null;
 
   return (
-    <section className="sv-stack sv-stack--tight" aria-label="AI drafts" data-testid="ai-actions">
-      <h3>AI drafts (optional)</h3>
+    <section className="ai-actions" aria-label="AI drafts" data-testid="ai-actions">
+      <h3 className="ai-actions__title">
+        <Sparkles aria-hidden="true" strokeWidth={2.4} />
+        AI drafts
+        <InfoTip label="About AI drafts" align="start">
+          You see the exact text first. Nothing is sent until you press Send in the preview. Every
+          result is an unverified draft.
+        </InfoTip>
+      </h3>
       {flag.known && !flag.on ? (
         <InlineNotice
           tone="info"
@@ -89,25 +130,25 @@ export function HighlightAiActions({
           {flag.error}
         </InlineNotice>
       ) : null}
-      <div className="sv-row sv-wrap">
+      <div className="ai-chips">
         {AI_ACTION_KINDS.map((kind) => {
           const reason = reasonFor(kind);
+          const Icon = KIND_ICON[kind];
           return (
             <Button
               key={kind}
+              className="ai-chip"
               data-testid={`ai-action-${kind}`}
               title={reason ?? AI_KIND_INFO[kind].hint}
               {...(reason ? { disabledReason: reason } : {})}
               onClick={() => setOpen(kind)}
             >
+              <Icon aria-hidden="true" strokeWidth={2.4} />
               {AI_KIND_INFO[kind].label}
             </Button>
           );
         })}
       </div>
-      <p className="sv-muted sv-small">
-        You see the exact text first. Nothing is sent until you press Send in the preview.
-      </p>
       {open && cfg.data ? (
         <ConsentPreviewDialog
           kind={open}

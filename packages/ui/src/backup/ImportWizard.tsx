@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
+import { ArchiveRestore, FileArchive, GitMerge, Info, Replace, ShieldCheck, X } from 'lucide-react';
 import type { PreparedRestore, RestoreProgress, RestoreReport, RestoreResult } from '@backup';
 import type { IntegrityReport } from '@storage';
 import { Button } from '../Button';
+import { BarMeter } from '../design/BarMeter';
+import { ChunkyButton } from '../design/Buttons';
+import { Stepper } from '../design/Stepper';
 import { InlineNotice } from '../Notice';
 import { plural } from '../text';
 import type { BackupDeps } from './deps';
@@ -12,6 +16,7 @@ import {
   type ErrorExplanation,
 } from './explain';
 import { formatBytes, tableLabel } from './format';
+import { Chip, Choices, Counts, Disclosure, FilePick, Outcome } from './kit';
 import {
   PassphraseSetup,
   emptyPassphrase,
@@ -37,6 +42,15 @@ interface Done {
 }
 
 const CONFIRM_WORD = 'REPLACE';
+
+/** The restore's progress bar: choose the file, check it, choose how, done. */
+const STAGES = ['File', 'Check', 'Choose', 'Done'];
+
+/** The step's visible name where nothing else on the step names it (notices and outcomes do). */
+const STEP_TITLE: Partial<Record<Step, string>> = {
+  idle: 'Pick a file',
+  review: 'Merge or replace?',
+};
 
 const ANNOUNCE: Record<Step, string> = {
   idle: '',
@@ -83,7 +97,6 @@ export function ImportWizard({
   const [safety, setSafety] = useState(false);
   const [safetyPass, setSafetyPass] = useState<PassphraseState>(emptyPassphrase);
   const [typed, setTyped] = useState('');
-  const [dragging, setDragging] = useState(false);
   const [syncActive, setSyncActive] = useState(false);
   const live = useRef<{
     controller: AbortController | null;
@@ -312,91 +325,69 @@ export function ImportWizard({
 
   const working = step === 'working' || step === 'restoring';
   const committing = progress?.phase === 'committing';
+  const stage =
+    step === 'idle' ? 0 : step === 'review' || step === 'restoring' ? 2 : step === 'done' ? 3 : 1;
+  const written = done ? Object.values(done.result.written).reduce((a, b) => a + b, 0) : 0;
 
   return (
-    <div className="sv-stack" data-testid="backup-import">
-      <h3>Restore from a backup file</h3>
-      <p>
-        Choose a StudyVault backup. StudyVault first checks the whole file and shows you what would
-        change; nothing is written until you confirm.
-      </p>
-      <p className="sv-small sv-muted" data-testid="backup-import-scope">
-        A backup holds {BACKUP_HOLDS}. Restoring changes only those: it does not read or change{' '}
-        {BACKUP_LEAVES_OUT}.
-      </p>
+    <div className="sd-card" data-testid="backup-import">
+      <div className="sd-row">
+        <span className="sd-tile sd-tile--sm sv-art--success" aria-hidden="true">
+          <ArchiveRestore strokeWidth={2.4} />
+        </span>
+        <h3 className="sd-card__title sd-grow">Restore a backup</h3>
+      </div>
+      <Stepper steps={STAGES} current={stage} label="Restore" />
+      {STEP_TITLE[step] ? <h4 className="bk-steptitle">{STEP_TITLE[step]}</h4> : null}
+      {step === 'idle' || step === 'review' ? (
+        <p className="sd-line">Checked first: nothing changes until you confirm.</p>
+      ) : null}
 
       <p className="sv-sr" role="status" data-testid="backup-import-announce">
         {ANNOUNCE[step]}
       </p>
 
       {step === 'idle' ? (
-        <div
-          className={`bk-drop${dragging ? ' bk-drop--active' : ''}`}
-          data-testid="backup-import-drop"
-          onDragOver={(e) => {
-            e.preventDefault();
-            setDragging(true);
-          }}
-          onDragLeave={() => setDragging(false)}
-          onDrop={(e) => {
-            e.preventDefault();
-            setDragging(false);
-            void chosen(e.dataTransfer?.files?.[0]);
-          }}
-        >
-          <label className="sv-label" htmlFor="bk-import-file">
-            Backup file
-          </label>
-          <input
-            id="bk-import-file"
-            type="file"
-            accept=".zip,.svbackup,.json,application/zip,application/json,application/octet-stream"
-            data-testid="backup-import-file"
-            onChange={(e) => {
-              const picked = e.target.files?.[0];
-              e.target.value = '';
-              void chosen(picked);
-            }}
-          />
-          <p className="sv-small sv-muted">
-            Or drag a backup file onto this box. Files made by “{BACKUP_TITLE}” end in .zip or
-            .svbackup.
-          </p>
-        </div>
+        <FilePick
+          id="bk-import-file"
+          title="Drop a backup here"
+          line={`Made by “${BACKUP_TITLE}”: .zip or .svbackup`}
+          accept=".zip,.svbackup,.json,application/zip,application/json,application/octet-stream"
+          icon={FileArchive}
+          tone="success"
+          testId="backup-import-file"
+          dropTestId="backup-import-drop"
+          pickLabel="Choose backup file"
+          onFile={(picked) => void chosen(picked)}
+        />
       ) : null}
 
       {working ? (
-        <div
-          className="sv-stack sv-stack--tight"
-          role="status"
-          data-testid="backup-import-progress"
-        >
-          <progress
-            aria-label="Restore progress"
-            className="bk-progress"
-            {...(progress && progress.rowsTotal > 0
-              ? { value: progress.rowsDone, max: progress.rowsTotal }
-              : {})}
+        <div className="sd-progress" data-testid="backup-import-progress">
+          <BarMeter
+            value={progress?.rowsDone ?? 0}
+            max={progress && progress.rowsTotal > 0 ? progress.rowsTotal : 1}
+            size="lg"
+            label="Restore progress"
+            valueText={progress ? PHASE[progress.phase] : 'Opening the file'}
           />
-          <p className="sv-small">
+          <p className="sd-progress__line" role="status">
             {progress ? PHASE[progress.phase] : 'Opening the file'}
             {progress && progress.rowsTotal > 0
               ? `… ${progress.rowsDone} of ${progress.rowsTotal} items`
               : '…'}
           </p>
           {committing ? (
-            <p className="sv-small sv-muted">
-              Applying the change in one step. It can no longer be cancelled; it either completes
-              fully or changes nothing.
-            </p>
+            <p className="sd-line">Applying in one step: it completes fully or changes nothing.</p>
           ) : (
-            <div>
-              <Button
+            <div className="sd-row">
+              <ChunkyButton
+                icon={X}
                 data-testid="backup-import-cancel"
                 onClick={() => live.current.controller?.abort()}
               >
                 Cancel
-              </Button>
+              </ChunkyButton>
             </div>
           )}
         </div>
@@ -404,7 +395,7 @@ export function ImportWizard({
 
       {step === 'passphrase' && file ? (
         <form
-          className="sv-stack sv-stack--tight"
+          className="sd-stack"
           data-testid="backup-import-passphrase"
           onSubmit={(e) => {
             e.preventDefault();
@@ -414,7 +405,7 @@ export function ImportWizard({
         >
           <InlineNotice
             tone={problem ? 'error' : 'info'}
-            title={problem?.title ?? 'This backup is encrypted'}
+            title={problem?.title ?? 'This backup is locked'}
           >
             {problem?.body ?? `Enter the passphrase for ${file.name}.`}
           </InlineNotice>
@@ -432,7 +423,7 @@ export function ImportWizard({
               onChange={(e) => setPassphrase(e.target.value)}
             />
           </div>
-          <div className="sv-row">
+          <div className="sd-row">
             <Button
               variant="primary"
               disabledReason={passphrase ? undefined : 'Enter the passphrase.'}
@@ -445,13 +436,15 @@ export function ImportWizard({
             >
               Unlock and check
             </Button>
-            <Button onClick={reset}>Choose another file</Button>
+            <ChunkyButton variant="ghost" onClick={reset}>
+              Choose another file
+            </ChunkyButton>
           </div>
         </form>
       ) : null}
 
       {step === 'blocked' && problem ? (
-        <div className="sv-stack" data-testid="backup-import-blocked">
+        <div className="sd-stack" data-testid="backup-import-blocked">
           <InlineNotice tone="warning" title={problem.title}>
             {problem.body}
           </InlineNotice>
@@ -462,7 +455,7 @@ export function ImportWizard({
               ))}
             </ul>
           ) : null}
-          <div className="sv-row">
+          <div className="sd-row">
             <Button
               variant="primary"
               data-testid="backup-import-skip"
@@ -470,60 +463,59 @@ export function ImportWizard({
                 continueSkipping(problem.action === 'skip_invalid' ? 'invalid' : 'orphans')
               }
             >
-              Restore the rest, leave these items out
+              Restore the rest
             </Button>
-            <Button onClick={reset}>Stop, change nothing</Button>
+            <ChunkyButton variant="ghost" onClick={reset}>
+              Stop, change nothing
+            </ChunkyButton>
           </div>
         </div>
       ) : null}
 
       {step === 'review' && report && file ? (
-        <div className="sv-stack" data-testid="backup-import-review">
-          <p className="sv-small sv-muted">
-            File: <span className="sv-wrap">{file.name}</span> ({formatBytes(file.bytes.length)}).
-            Verified: every checksum matches.
+        <div className="sd-stack" data-testid="backup-import-review">
+          <div className="sd-row">
+            <Chip icon={FileArchive}>
+              <span className="sv-wrap">{file.name}</span> · {formatBytes(file.bytes.length)}
+            </Chip>
+            <Chip icon={ShieldCheck} tone="success">
+              Every checksum matches
+            </Chip>
+          </div>
+          <Choices
+            name="bk-mode"
+            label="How should it be restored?"
+            columns={2}
+            value={mode}
+            onChange={changeMode}
+            options={[
+              {
+                value: 'merge',
+                label: 'Merge',
+                hint: 'Keeps what you have',
+                icon: GitMerge,
+                tone: 'success',
+                testId: 'backup-import-mode-merge',
+              },
+              {
+                value: 'replace',
+                label: 'Replace',
+                hint: 'Becomes the backup',
+                icon: Replace,
+                tone: 'danger',
+                testId: 'backup-import-mode-replace',
+              },
+            ]}
+          />
+          <p className="sd-line" data-testid="backup-import-mode-line">
+            {mode === 'replace'
+              ? 'Replace my study data with the backup: items not in it are deleted. Your settings are not changed.'
+              : 'Adds what is missing and takes newer versions. Never deletes. Your settings are not changed.'}
           </p>
-          <fieldset className="bk-fieldset">
-            <legend className="sv-label">How should it be restored?</legend>
-            <div className="sv-check">
-              <input
-                id="bk-mode-merge"
-                type="radio"
-                name="bk-mode"
-                checked={mode === 'merge'}
-                data-testid="backup-import-mode-merge"
-                onChange={() => changeMode('merge')}
-              />
-              <div>
-                <label htmlFor="bk-mode-merge">Merge into what I have (recommended)</label>
-                <p className="sv-small sv-muted">
-                  Adds what is missing and takes newer versions from the backup. Never deletes
-                  anything you have.
-                </p>
-              </div>
-            </div>
-            <div className="sv-check">
-              <input
-                id="bk-mode-replace"
-                type="radio"
-                name="bk-mode"
-                checked={mode === 'replace'}
-                data-testid="backup-import-mode-replace"
-                onChange={() => changeMode('replace')}
-              />
-              <div>
-                <label htmlFor="bk-mode-replace">Replace my study data with the backup</label>
-                <p className="sv-small sv-muted">
-                  Makes your banks, highlights, notes and study data identical to the backup. Items
-                  that are not in it are deleted. Your settings are not changed.
-                </p>
-              </div>
-            </div>
-          </fieldset>
 
           <RestoreReportView report={report} />
 
-          <div className="sv-stack sv-stack--tight">
+          <div className="sd-stack">
             <div className="sv-check">
               <input
                 id="bk-safety"
@@ -533,20 +525,18 @@ export function ImportWizard({
                 onChange={(e) => setSafety(e.target.checked)}
               />
               <label htmlFor="bk-safety">
-                Download a safety backup of my current data first
-                {mode === 'replace' ? ' (recommended before replacing)' : ''}
+                Download a safety backup first
+                {mode === 'replace' ? ' (recommended)' : ''}
               </label>
             </div>
             {safety ? (
-              <div className="bk-indent">
-                <p className="sv-small sv-muted">
-                  If the safety backup cannot be saved, nothing is restored.
-                </p>
+              <div className="bk-indent sd-stack">
+                <p className="sd-line">If it cannot be saved, nothing is restored.</p>
                 <PassphraseSetup
                   state={safetyPass}
                   onChange={setSafetyPass}
                   idPrefix="bk-safety-pass"
-                  label="Encrypt the safety backup with a passphrase"
+                  label="Lock the safety backup"
                   testId="backup-import-safety-pass"
                 />
               </div>
@@ -562,7 +552,7 @@ export function ImportWizard({
           {mode === 'replace' ? (
             <div className="sv-field">
               <label className="sv-label" htmlFor="bk-confirm-word">
-                Type {CONFIRM_WORD} to confirm that your current data will be replaced
+                Type {CONFIRM_WORD} to confirm
               </label>
               <input
                 id="bk-confirm-word"
@@ -576,26 +566,28 @@ export function ImportWizard({
             </div>
           ) : null}
 
-          <div className="sv-row">
+          <div className="sd-row">
             <Button
               variant={mode === 'replace' ? 'danger' : 'primary'}
               disabledReason={confirmProblem ?? undefined}
               data-testid="backup-import-restore"
               onClick={() => void restore()}
             >
-              {mode === 'replace'
-                ? 'Replace my data with this backup'
-                : 'Merge this backup into my data'}
+              {mode === 'replace' ? 'Replace my data' : 'Merge into my data'}
             </Button>
-            <Button data-testid="backup-import-discard" onClick={reset}>
+            <ChunkyButton variant="ghost" data-testid="backup-import-discard" onClick={reset}>
               Cancel
-            </Button>
+            </ChunkyButton>
           </div>
+          {/* A missing confirm word is already said by its field's label. */}
+          {confirmProblem && !(mode === 'replace' && typed !== CONFIRM_WORD) ? (
+            <p className="sd-line">{confirmProblem}</p>
+          ) : null}
         </div>
       ) : null}
 
       {step === 'failed' && problem ? (
-        <div className="sv-stack" data-testid="backup-import-failed">
+        <div className="sd-stack" data-testid="backup-import-failed">
           <InlineNotice
             tone="error"
             title={problem.title}
@@ -619,43 +611,34 @@ export function ImportWizard({
           >
             {problem.body}
           </InlineNotice>
-          <div>
-            <Button data-testid="backup-import-reset" onClick={reset}>
+          <div className="sd-row">
+            <ChunkyButton data-testid="backup-import-reset" onClick={reset}>
               Choose another file
-            </Button>
+            </ChunkyButton>
           </div>
         </div>
       ) : null}
 
       {step === 'done' && done ? (
-        <div className="sv-stack" data-testid="backup-import-done">
-          <InlineNotice
-            tone="success"
-            live
-            title={done.result.mode === 'replace' ? 'Your data was replaced' : 'Backup merged'}
-          >
-            {plural(
-              Object.values(done.result.written).reduce((a, b) => a + b, 0),
-              'item',
-            )}{' '}
-            written. Search is marked out of date so it can be rebuilt from the restored data.
-          </InlineNotice>
+        <div className="sd-stack" data-testid="backup-import-done">
+          <div role="status">
+            <Outcome
+              title={done.result.mode === 'replace' ? 'Your data was replaced' : 'Backup merged'}
+              line={`${plural(written, 'item')} written. Search is rebuilt from the restored data.`}
+            />
+          </div>
           {done.safetyFile ? (
-            <p data-testid="backup-import-safety-file">
+            <p className="sd-line" data-testid="backup-import-safety-file">
               Your previous data was saved first as{' '}
               <strong className="sv-wrap">{done.safetyFile}</strong>.
             </p>
           ) : null}
-          <ul className="bk-counts" data-testid="backup-import-written">
-            {Object.entries(done.result.written)
+          <Counts
+            testId="backup-import-written"
+            items={Object.entries(done.result.written)
               .filter(([, n]) => n > 0)
-              .map(([name, n]) => (
-                <li key={name}>
-                  <span>{tableLabel(name)}</span>
-                  <span>{n}</span>
-                </li>
-              ))}
-          </ul>
+              .map(([name, n]) => ({ label: tableLabel(name), value: n }))}
+          />
           {done.integrity ? (
             done.integrity.ok ? (
               <InlineNotice tone="success" title="Integrity check passed">
@@ -671,7 +654,7 @@ export function ImportWizard({
                 <ul className="bk-files" data-testid="backup-import-integrity-issues">
                   {done.integrity.issues.slice(0, 10).map((i) => (
                     <li key={`${i.table}:${i.key}:${i.code}`}>
-                      {tableLabel(i.table)} <code className="bk-mono">{i.key.slice(0, 40)}</code>{' '}
+                      {tableLabel(i.table)} <code className="sd-mono">{i.key.slice(0, 40)}</code>{' '}
                       {describeIntegrityIssue(i.code)}
                     </li>
                   ))}
@@ -680,16 +663,24 @@ export function ImportWizard({
             )
           ) : (
             <InlineNotice tone="warning" title="The integrity check could not run">
-              {done.integrityError ?? 'Try again from the storage section.'}
+              {done.integrityError ??
+                'The restore itself finished; only the check after it did not run.'}
             </InlineNotice>
           )}
-          <div>
-            <Button data-testid="backup-import-again" onClick={reset}>
+          <div className="sd-row">
+            <ChunkyButton data-testid="backup-import-again" onClick={reset}>
               Restore another file
-            </Button>
+            </ChunkyButton>
           </div>
         </div>
       ) : null}
+
+      <Disclosure summary="What a restore changes" icon={Info}>
+        <p className="sv-small" data-testid="backup-import-scope">
+          A backup holds {BACKUP_HOLDS}. Restoring changes only those: it does not read or change{' '}
+          {BACKUP_LEAVES_OUT}.
+        </p>
+      </Disclosure>
     </div>
   );
 }

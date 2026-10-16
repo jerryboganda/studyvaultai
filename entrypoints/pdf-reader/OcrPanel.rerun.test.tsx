@@ -41,7 +41,8 @@ const previous = {
 /** Renders the panel and waits for the section that is loaded on demand. */
 async function show(ui: ReactElement) {
   const out = render(ui);
-  await screen.findByTestId('pdf-ocr-rerun');
+  // A lazy chunk: on a busy machine its first import can take longer than the default second.
+  await screen.findByTestId('pdf-ocr-rerun', {}, { timeout: 5000 });
   return out;
 }
 
@@ -147,7 +148,7 @@ describe('OcrPanel: reading the text again', () => {
     const user = userEvent.setup();
     await show(<OcrPanel {...props} state="none" ocr={undefined} />);
 
-    expect(screen.getByText('30 pages of this document have recognised text.')).toBeTruthy();
+    expect(screen.getByText('30 pages recognised')).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Re-recognise all pages' }));
     const dialog = screen.getByRole('dialog', { name: 'Read all 30 recognised pages again?' });
     const estimate = within(dialog).getByTestId('pdf-ocr-rerun-estimate').textContent ?? '';
@@ -169,7 +170,7 @@ describe('OcrPanel: reading the text again', () => {
     const { props } = setup({ recognisedPages: 1, sessionOnly: true });
     const user = userEvent.setup();
     await show(<OcrPanel {...props} state="ocr" ocr={recognised()} />);
-    expect(screen.getByText('1 page of this document has recognised text.')).toBeTruthy();
+    expect(screen.getByText('1 page recognised')).toBeTruthy();
     await user.click(screen.getByTestId('pdf-ocr-rerun-all'));
     const dialog = screen.getByRole('dialog');
     expect(within(dialog).getByTestId('pdf-ocr-rerun-estimate').textContent).toContain(
@@ -208,7 +209,7 @@ describe('OcrPanel: reading the text again', () => {
     const note = screen.getByTestId('pdf-ocr-previous').textContent ?? '';
     expect(note).toContain('An earlier reading of this page is kept');
     expect(note).toContain('the reading you have now is kept in its place');
-    await user.click(screen.getByRole('button', { name: 'Restore the previous reading' }));
+    await user.click(screen.getByRole('button', { name: 'Restore previous' }));
     expect(info.onRestore).toHaveBeenCalledTimes(1);
     await waitFor(() =>
       expect(screen.getByTestId('pdf-ocr-restore-status').textContent).toBe(

@@ -1,0 +1,1405 @@
+{
+  "scenarios": [
+    {
+      "id": "student",
+      "title": "Medical student: two months of highlights, cards and reviews"
+    },
+    {
+      "id": "fresh",
+      "title": "Just installed: nothing saved, tour not taken"
+    },
+    {
+      "id": "heavy",
+      "title": "Heavy vault: 1,200 highlights"
+    },
+    {
+      "id": "edge",
+      "title": "Edge states: restricted, deny-listed and not-yet-enabled pages"
+    }
+  ],
+  "surfaces": [
+    {
+      "id": "popup",
+      "title": "Popup",
+      "viewport": {
+        "width": 400,
+        "height": 600
+      },
+      "fullPage": false,
+      "scenarios": ["fresh", "student", "heavy"],
+      "states": [
+        {
+          "id": "default",
+          "title": "Active tab (scenario default)"
+        },
+        {
+          "id": "game",
+          "title": "Game cluster: goal ring, streak and level",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "game-off",
+          "title": "Game mode off: plain counts",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "browser-page",
+          "title": "Browser page (chrome://)",
+          "scenarios": ["edge"],
+          "query": {
+            "tab": "chrome"
+          }
+        },
+        {
+          "id": "deny-listed",
+          "title": "Deny-listed site",
+          "scenarios": ["edge"],
+          "query": {
+            "tab": "denied"
+          }
+        },
+        {
+          "id": "deny-confirm",
+          "title": "Allow a deny-listed site: confirmation",
+          "scenarios": ["edge"],
+          "query": {
+            "tab": "denied"
+          }
+        },
+        {
+          "id": "not-running",
+          "title": "Not running on this tab",
+          "scenarios": ["edge"],
+          "query": {
+            "tab": "inactive"
+          }
+        },
+        {
+          "id": "activated",
+          "title": "Activated on this tab only",
+          "scenarios": ["edge"],
+          "query": {
+            "tab": "inactive"
+          }
+        },
+        {
+          "id": "pdf",
+          "title": "PDF in Chrome's viewer",
+          "scenarios": ["edge"],
+          "query": {
+            "tab": "pdf"
+          }
+        },
+        {
+          "id": "no-address",
+          "title": "Chrome did not share the address",
+          "scenarios": ["edge"],
+          "query": {
+            "tab": "newtab"
+          }
+        },
+        {
+          "id": "no-tab",
+          "title": "No active tab",
+          "scenarios": ["edge"],
+          "query": {
+            "tab": "none"
+          }
+        },
+        {
+          "id": "reminder",
+          "title": "Daily review reminder",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "checking",
+          "title": "Fault: checking this tab (site check never answers)",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "site.status:hang"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "check-error",
+          "title": "Fault: could not check this tab",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "site.status:error"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "page-error",
+          "title": "Fault: could not read this page",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "content.pageStatus:error"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "storage-unavailable",
+          "title": "Fault: storage unavailable",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "db.*:unavailable"
+          },
+          "expectErrors": true
+        }
+      ]
+    },
+    {
+      "id": "sidepanel",
+      "title": "Side panel",
+      "viewport": {
+        "width": 360,
+        "height": 800
+      },
+      "widths": [320],
+      "fullPage": false,
+      "scenarios": ["fresh", "student", "heavy"],
+      "states": [
+        {
+          "id": "default",
+          "title": "This page"
+        },
+        {
+          "id": "recent",
+          "title": "Recent",
+          "scenarios": ["fresh", "student"],
+          "hash": "recent"
+        },
+        {
+          "id": "search",
+          "title": "Search",
+          "scenarios": ["student"],
+          "hash": "search"
+        },
+        {
+          "id": "search-results",
+          "title": "Search results",
+          "scenarios": ["student"],
+          "hash": "search"
+        },
+        {
+          "id": "banks",
+          "title": "Banks",
+          "scenarios": ["student"],
+          "hash": "banks"
+        },
+        {
+          "id": "review",
+          "title": "Review",
+          "scenarios": ["fresh", "student"],
+          "hash": "review"
+        },
+        {
+          "id": "more",
+          "title": "More tab",
+          "scenarios": ["fresh", "student"],
+          "hash": "more"
+        },
+        {
+          "id": "new-bank",
+          "title": "Banks: new bank wizard, name",
+          "scenarios": ["student"],
+          "hash": "banks"
+        },
+        {
+          "id": "new-bank-review",
+          "title": "Banks: new bank wizard, looks good?",
+          "scenarios": ["student"],
+          "hash": "banks"
+        },
+        {
+          "id": "browser-page",
+          "title": "Browser page (chrome://)",
+          "scenarios": ["edge"],
+          "query": {
+            "tab": "chrome"
+          }
+        },
+        {
+          "id": "deny-listed",
+          "title": "Deny-listed site",
+          "scenarios": ["edge"],
+          "query": {
+            "tab": "denied"
+          }
+        },
+        {
+          "id": "not-running",
+          "title": "Not running, saved highlights listed",
+          "scenarios": ["edge"],
+          "query": {
+            "tab": "inactive"
+          }
+        },
+        {
+          "id": "pdf",
+          "title": "PDF in Chrome's viewer",
+          "scenarios": ["edge"],
+          "query": {
+            "tab": "pdf"
+          }
+        },
+        {
+          "id": "reminder",
+          "title": "Daily review reminder",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "filing-suggestion",
+          "title": "Filing rule suggestion on a card",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "card-links",
+          "title": "Card links section open",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "card-drawer",
+          "title": "Card: More actions drawer open",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "start-failed",
+          "title": "Fault: could not start (tabs unavailable)",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "chrome.tabs.query:error"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "page-loading",
+          "title": "Fault: loading this page",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "content.pageStatus:hang"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "list-error",
+          "title": "Fault: could not load highlights",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "db.highlights:error"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "search-building",
+          "title": "Fault: search index building",
+          "scenarios": ["student"],
+          "hash": "search",
+          "query": {
+            "fault": "db.notes.query.primary:hang"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "ai-drafts",
+          "title": "AI configured: AI drafts on a card",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "ai-result",
+          "title": "AI configured: exam pearl answered (sample provider)",
+          "scenarios": ["student"]
+        }
+      ]
+    },
+    {
+      "id": "dashboard",
+      "title": "Dashboard",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "fullPage": false,
+      "scenarios": ["fresh", "student", "heavy"],
+      "states": [
+        {
+          "id": "default",
+          "title": "Home (Game mode on)"
+        },
+        {
+          "id": "home-game-off",
+          "title": "Home, Game mode off",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "home-narrow",
+          "title": "Home at phone width (390 px)",
+          "scenarios": ["student"],
+          "viewport": {
+            "width": 390,
+            "height": 844
+          }
+        },
+        {
+          "id": "badges",
+          "title": "Badges and level sheet",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "library",
+          "title": "Library",
+          "query": {
+            "view": "library"
+          }
+        },
+        {
+          "id": "more",
+          "title": "More tools",
+          "scenarios": ["fresh", "student"],
+          "query": {
+            "view": "more"
+          }
+        },
+        {
+          "id": "preview",
+          "title": "Highlight preview",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "search",
+          "title": "Search results",
+          "scenarios": ["student"],
+          "query": {
+            "q": "beta blocker"
+          }
+        },
+        {
+          "id": "graph",
+          "title": "Knowledge graph",
+          "scenarios": ["fresh", "student"],
+          "query": {
+            "view": "graph"
+          }
+        },
+        {
+          "id": "syllabus",
+          "title": "Syllabus",
+          "scenarios": ["fresh", "student"],
+          "query": {
+            "view": "syllabus"
+          }
+        },
+        {
+          "id": "rules",
+          "title": "Filing rules",
+          "scenarios": ["fresh", "student"],
+          "query": {
+            "view": "rules"
+          }
+        },
+        {
+          "id": "syllabus-wizard",
+          "title": "New syllabus wizard: start from",
+          "scenarios": ["student"],
+          "query": {
+            "view": "syllabus"
+          }
+        },
+        {
+          "id": "syllabus-wizard-paste",
+          "title": "New syllabus wizard: outline pasted and checked",
+          "scenarios": ["student"],
+          "query": {
+            "view": "syllabus"
+          }
+        },
+        {
+          "id": "syllabus-wizard-review",
+          "title": "New syllabus wizard: looks good?",
+          "scenarios": ["student"],
+          "query": {
+            "view": "syllabus"
+          }
+        },
+        {
+          "id": "rule-dialog",
+          "title": "New filing rule wizard: when",
+          "scenarios": ["student"],
+          "query": {
+            "view": "rules"
+          }
+        },
+        {
+          "id": "rule-edit",
+          "title": "Edit rule wizard: looks good?",
+          "scenarios": ["student"],
+          "query": {
+            "view": "rules"
+          }
+        },
+        {
+          "id": "rule-edit-match",
+          "title": "Edit rule wizard: what matches",
+          "scenarios": ["student"],
+          "query": {
+            "view": "rules"
+          }
+        },
+        {
+          "id": "rule-edit-file",
+          "title": "Edit rule wizard: file into",
+          "scenarios": ["student"],
+          "query": {
+            "view": "rules"
+          }
+        },
+        {
+          "id": "rule-edit-try",
+          "title": "Edit rule wizard: try it",
+          "scenarios": ["student"],
+          "query": {
+            "view": "rules"
+          }
+        },
+        {
+          "id": "chat",
+          "title": "Chat (AI off)",
+          "scenarios": ["student"],
+          "query": {
+            "view": "chat"
+          }
+        },
+        {
+          "id": "duplicates",
+          "title": "Duplicate quotes",
+          "scenarios": ["student"],
+          "query": {
+            "view": "duplicates"
+          }
+        },
+        {
+          "id": "trash",
+          "title": "Trash",
+          "scenarios": ["student"],
+          "query": {
+            "view": "trash"
+          }
+        },
+        {
+          "id": "storage",
+          "title": "Storage",
+          "scenarios": ["student"],
+          "query": {
+            "view": "storage"
+          }
+        },
+        {
+          "id": "palette",
+          "title": "Command palette",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "new-bank",
+          "title": "New bank wizard: name",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "new-bank-icon",
+          "title": "New bank wizard: icon",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "new-bank-colour",
+          "title": "New bank wizard: colour",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "new-bank-review",
+          "title": "New bank wizard: looks good?",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "new-bank-done",
+          "title": "New bank wizard: bank ready",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "bank-menu",
+          "title": "Bank context menu",
+          "scenarios": ["student"],
+          "query": {
+            "view": "library"
+          }
+        },
+        {
+          "id": "compact-contrast",
+          "title": "Library, compact density, high contrast",
+          "scenarios": ["student"],
+          "query": {
+            "view": "library"
+          }
+        },
+        {
+          "id": "loading",
+          "title": "Fault: storage slow (loading)",
+          "scenarios": ["student"],
+          "query": {
+            "view": "library",
+            "fault": "db.highlights:hang"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "load-failed",
+          "title": "Fault: could not load highlights",
+          "scenarios": ["student"],
+          "query": {
+            "view": "library",
+            "fault": "db.highlights:error"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "index-building",
+          "title": "Fault: search index building",
+          "scenarios": ["student"],
+          "query": {
+            "view": "library",
+            "fault": "db.notes.query.primary:hang"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "chat-consent",
+          "title": "AI configured: chat consent preview",
+          "scenarios": ["student"],
+          "query": {
+            "view": "chat"
+          }
+        },
+        {
+          "id": "chat-answer",
+          "title": "AI configured: chat answer (sample provider)",
+          "scenarios": ["student"],
+          "query": {
+            "view": "chat"
+          }
+        },
+        {
+          "id": "tablet",
+          "title": "Library at tablet width (1024 px)",
+          "scenarios": ["student"],
+          "query": {
+            "view": "library"
+          },
+          "viewport": {
+            "width": 1024,
+            "height": 768
+          }
+        },
+        {
+          "id": "narrow",
+          "title": "Library at phone width (390 px)",
+          "scenarios": ["student"],
+          "query": {
+            "view": "library"
+          },
+          "viewport": {
+            "width": 390,
+            "height": 844
+          }
+        },
+        {
+          "id": "narrow-tree",
+          "title": "Library at phone width: bank tree open",
+          "scenarios": ["student"],
+          "query": {
+            "view": "library"
+          },
+          "viewport": {
+            "width": 390,
+            "height": 844
+          }
+        }
+      ]
+    },
+    {
+      "id": "review",
+      "title": "Review page",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "fullPage": true,
+      "scenarios": ["fresh", "student", "heavy"],
+      "states": [
+        {
+          "id": "default",
+          "title": "Study: deck picker"
+        },
+        {
+          "id": "session",
+          "title": "Study session: question",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "answer",
+          "title": "Study session: answer and ratings",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "session-done",
+          "title": "Study session complete (celebration)",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "exam",
+          "title": "Exam wizard: first step",
+          "scenarios": ["fresh", "student"],
+          "query": {
+            "view": "exam"
+          }
+        },
+        {
+          "id": "exam-count",
+          "title": "Exam wizard: how many questions",
+          "scenarios": ["student"],
+          "query": {
+            "view": "exam"
+          }
+        },
+        {
+          "id": "exam-time",
+          "title": "Exam wizard: time limit",
+          "scenarios": ["student"],
+          "query": {
+            "view": "exam"
+          }
+        },
+        {
+          "id": "exam-plan",
+          "title": "Exam wizard: looks good?",
+          "scenarios": ["student"],
+          "query": {
+            "view": "exam"
+          }
+        },
+        {
+          "id": "create",
+          "title": "Create cards",
+          "scenarios": ["fresh", "student"],
+          "query": {
+            "view": "create"
+          }
+        },
+        {
+          "id": "create-highlight",
+          "title": "Create a card from a highlight",
+          "scenarios": ["student"],
+          "query": {
+            "view": "create"
+          }
+        },
+        {
+          "id": "cards",
+          "title": "Card browser",
+          "scenarios": ["student"],
+          "query": {
+            "view": "cards"
+          }
+        },
+        {
+          "id": "analytics",
+          "title": "Analytics and syllabus coverage",
+          "scenarios": ["fresh", "student"],
+          "query": {
+            "view": "analytics"
+          }
+        },
+        {
+          "id": "settings",
+          "title": "Study settings",
+          "scenarios": ["student"],
+          "query": {
+            "view": "settings"
+          }
+        },
+        {
+          "id": "loading",
+          "title": "Fault: loading the decks",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "db.cards:hang"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "load-failed",
+          "title": "Fault: decks could not be loaded",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "db.cards:error"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "kp-editor",
+          "title": "Knowledge-point editor",
+          "scenarios": ["student"],
+          "query": {
+            "view": "create"
+          },
+          "fullPage": false
+        },
+        {
+          "id": "exam-run",
+          "title": "Exam in progress",
+          "scenarios": ["student"],
+          "query": {
+            "view": "exam"
+          }
+        },
+        {
+          "id": "exam-results",
+          "title": "Exam results",
+          "scenarios": ["student"],
+          "query": {
+            "view": "exam"
+          }
+        },
+        {
+          "id": "card-edit",
+          "title": "Card browser: editing a card",
+          "scenarios": ["student"],
+          "query": {
+            "view": "cards"
+          },
+          "fullPage": false
+        },
+        {
+          "id": "backlog",
+          "title": "Backlog recovery planner (25 overdue)",
+          "scenarios": ["student"]
+        }
+      ]
+    },
+    {
+      "id": "options",
+      "title": "Settings",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "fullPage": true,
+      "scenarios": ["fresh", "student"],
+      "states": [
+        {
+          "id": "default",
+          "title": "Settings home (top 4000 px)"
+        },
+        {
+          "id": "game",
+          "title": "Game: goal, XP and streak",
+          "scenarios": ["student"],
+          "hash": "game",
+          "fullPage": false
+        },
+        {
+          "id": "reminders",
+          "title": "Reminders",
+          "scenarios": ["student"],
+          "hash": "reminders",
+          "fullPage": false
+        },
+        {
+          "id": "site-access",
+          "title": "Site access",
+          "scenarios": ["student"],
+          "hash": "site-access",
+          "fullPage": false
+        },
+        {
+          "id": "appearance",
+          "title": "Appearance",
+          "scenarios": ["student"],
+          "hash": "appearance",
+          "fullPage": false
+        },
+        {
+          "id": "capture",
+          "title": "Capture",
+          "scenarios": ["student"],
+          "hash": "capture",
+          "fullPage": false
+        },
+        {
+          "id": "review",
+          "title": "Review",
+          "scenarios": ["student"],
+          "hash": "review",
+          "fullPage": false
+        },
+        {
+          "id": "ai",
+          "title": "AI assistance",
+          "scenarios": ["student"],
+          "hash": "ai",
+          "fullPage": false
+        },
+        {
+          "id": "sync",
+          "title": "Sync off: setup, what is shared",
+          "scenarios": ["student"],
+          "hash": "sync",
+          "fullPage": false
+        },
+        {
+          "id": "sync-wizard-server",
+          "title": "Sync setup: server",
+          "scenarios": ["student"],
+          "hash": "sync",
+          "fullPage": false
+        },
+        {
+          "id": "sync-wizard-signin",
+          "title": "Sync setup: sign-in provider",
+          "scenarios": ["student"],
+          "hash": "sync",
+          "fullPage": false
+        },
+        {
+          "id": "sync-wizard-check",
+          "title": "Sync setup: looks good?",
+          "scenarios": ["student"],
+          "hash": "sync",
+          "fullPage": false
+        },
+        {
+          "id": "backup",
+          "title": "Backup hub: back up task",
+          "scenarios": ["student"],
+          "hash": "backup",
+          "fullPage": false
+        },
+        {
+          "id": "backup-restore",
+          "title": "Backup: restore task",
+          "scenarios": ["student"],
+          "hash": "backup",
+          "fullPage": false
+        },
+        {
+          "id": "backup-import",
+          "title": "Backup: import task",
+          "scenarios": ["student"],
+          "hash": "backup",
+          "fullPage": false
+        },
+        {
+          "id": "backup-export",
+          "title": "Backup: export task",
+          "scenarios": ["student"],
+          "hash": "backup",
+          "fullPage": false
+        },
+        {
+          "id": "storage",
+          "title": "Storage",
+          "scenarios": ["student"],
+          "hash": "storage",
+          "fullPage": false
+        },
+        {
+          "id": "shortcuts",
+          "title": "Keyboard shortcuts",
+          "scenarios": ["student"],
+          "hash": "shortcuts",
+          "fullPage": false
+        },
+        {
+          "id": "privacy",
+          "title": "Privacy",
+          "scenarios": ["student"],
+          "hash": "privacy",
+          "fullPage": false
+        },
+        {
+          "id": "about",
+          "title": "About",
+          "scenarios": ["student"],
+          "hash": "about",
+          "fullPage": false
+        },
+        {
+          "id": "data",
+          "title": "Your data",
+          "scenarios": ["student"],
+          "hash": "data",
+          "fullPage": false
+        },
+        {
+          "id": "delete-dialog",
+          "title": "Delete all data: first step",
+          "scenarios": ["student"],
+          "hash": "data",
+          "fullPage": false
+        },
+        {
+          "id": "all-sites-dialog",
+          "title": "Site access wizard: all sites, Chrome asks",
+          "scenarios": ["student"],
+          "hash": "site-access",
+          "fullPage": false
+        },
+        {
+          "id": "site-wizard",
+          "title": "Site access wizard: where to run",
+          "scenarios": ["student"],
+          "hash": "site-access",
+          "fullPage": false
+        },
+        {
+          "id": "site-wizard-sites",
+          "title": "Site access wizard: some sites added",
+          "scenarios": ["student"],
+          "hash": "site-access",
+          "fullPage": false
+        },
+        {
+          "id": "ai-on",
+          "title": "AI turned on, not configured: setup, pick a provider",
+          "scenarios": ["student"],
+          "hash": "ai",
+          "fullPage": false
+        },
+        {
+          "id": "load-failed",
+          "title": "Fault: settings could not be read",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "chrome.storage.local.get:error"
+          },
+          "fullPage": false,
+          "expectErrors": true
+        },
+        {
+          "id": "save-failed",
+          "title": "Fault: change not saved",
+          "scenarios": ["student"],
+          "hash": "appearance",
+          "query": {
+            "fault": "db.meta.mutate:error"
+          },
+          "fullPage": false,
+          "expectErrors": true
+        },
+        {
+          "id": "ai-configured",
+          "title": "AI configured (sample provider and key)",
+          "scenarios": ["student"],
+          "hash": "ai",
+          "fullPage": false
+        },
+        {
+          "id": "ai-wizard-address",
+          "title": "AI setup (edit): address and model",
+          "scenarios": ["student"],
+          "hash": "ai",
+          "fullPage": false
+        },
+        {
+          "id": "ai-wizard-key",
+          "title": "AI setup (edit): API key",
+          "scenarios": ["student"],
+          "hash": "ai",
+          "fullPage": false
+        },
+        {
+          "id": "ai-wizard-limit",
+          "title": "AI setup (edit): daily limit",
+          "scenarios": ["student"],
+          "hash": "ai",
+          "fullPage": false
+        },
+        {
+          "id": "ai-wizard-save",
+          "title": "AI setup (edit): save and test",
+          "scenarios": ["student"],
+          "hash": "ai",
+          "fullPage": false
+        },
+        {
+          "id": "ai-test-success",
+          "title": "AI configured: Test connection succeeded",
+          "scenarios": ["student"],
+          "hash": "ai",
+          "fullPage": false
+        },
+        {
+          "id": "ai-routing",
+          "title": "AI configured: more providers and routing",
+          "scenarios": ["student"],
+          "hash": "ai",
+          "fullPage": false
+        },
+        {
+          "id": "ai-ledger",
+          "title": "AI configured: usage ledger",
+          "scenarios": ["student"],
+          "hash": "ai",
+          "fullPage": false
+        },
+        {
+          "id": "sync-signed-in",
+          "title": "Sync: signed in, up to date, encrypted",
+          "scenarios": ["student"],
+          "hash": "sync",
+          "fullPage": false
+        },
+        {
+          "id": "sync-encryption-choice",
+          "title": "Sync: signed in, choose encryption",
+          "scenarios": ["student"],
+          "hash": "sync",
+          "fullPage": false
+        },
+        {
+          "id": "sync-locked",
+          "title": "Sync: encryption locked",
+          "scenarios": ["student"],
+          "hash": "sync",
+          "fullPage": false
+        },
+        {
+          "id": "sync-conflicts",
+          "title": "Sync: a conflict to decide",
+          "scenarios": ["student"],
+          "hash": "sync",
+          "fullPage": false
+        },
+        {
+          "id": "restore-review",
+          "title": "Restore: backup checked, choose how",
+          "scenarios": ["student"],
+          "hash": "backup",
+          "fullPage": false
+        },
+        {
+          "id": "restore-passphrase",
+          "title": "Restore: protected backup asks for the passphrase",
+          "scenarios": ["student"],
+          "hash": "backup",
+          "fullPage": false
+        },
+        {
+          "id": "restore-done",
+          "title": "Restore: merged",
+          "scenarios": ["student"],
+          "hash": "backup",
+          "fullPage": false
+        },
+        {
+          "id": "import-anki",
+          "title": "Import highlights: Anki text file read",
+          "scenarios": ["student"],
+          "hash": "backup",
+          "fullPage": false
+        },
+        {
+          "id": "backup-folder",
+          "title": "Backup folder chosen, backup written",
+          "scenarios": ["student"],
+          "hash": "backup",
+          "fullPage": false
+        },
+        {
+          "id": "restore-invalid",
+          "title": "Restore: old-model backup, items need a decision",
+          "scenarios": ["student"],
+          "hash": "backup",
+          "fullPage": false
+        }
+      ]
+    },
+    {
+      "id": "onboarding",
+      "title": "Welcome tour",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "fullPage": true,
+      "scenarios": ["fresh"],
+      "states": [
+        {
+          "id": "default",
+          "title": "Step 1: welcome and daily goal"
+        },
+        {
+          "id": "welcome-game-off",
+          "title": "Step 1: welcome, Game mode off (no goal)"
+        },
+        {
+          "id": "privacy",
+          "title": "Step 2: privacy choices"
+        },
+        {
+          "id": "access",
+          "title": "Step 3: site access"
+        },
+        {
+          "id": "banks",
+          "title": "Step 4: first bank (blank)"
+        },
+        {
+          "id": "banks-medicine",
+          "title": "Step 4: Medicine preset"
+        },
+        {
+          "id": "look",
+          "title": "Step 5: theme and density"
+        },
+        {
+          "id": "keys",
+          "title": "Step 6: keyboard shortcuts"
+        },
+        {
+          "id": "done",
+          "title": "Step 7: you are ready"
+        },
+        {
+          "id": "skipped",
+          "title": "Tour skipped"
+        },
+        {
+          "id": "start-error",
+          "title": "Fault: the tour could not start",
+          "query": {
+            "fault": "chrome.storage.local.get:error"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "banks-created",
+          "title": "Step 4: Medicine bank created"
+        }
+      ]
+    },
+    {
+      "id": "pdf-reader",
+      "title": "PDF reader",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "fullPage": false,
+      "scenarios": ["fresh", "student"],
+      "states": [
+        {
+          "id": "default",
+          "title": "Stored copy opened (open screen when none)"
+        },
+        {
+          "id": "open",
+          "title": "Open screen with stored copies",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "highlight",
+          "title": "Opened on a highlight",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "sidepane",
+          "title": "Outline and pages",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "search",
+          "title": "Find in this PDF",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "savebar",
+          "title": "Save bar on a selection",
+          "scenarios": ["student"]
+        },
+        {
+          "id": "web-permission",
+          "title": "Web address: needs site access",
+          "scenarios": ["fresh"],
+          "query": {
+            "src": "https://www.cdc.gov/vaccines/hcp/imz-schedules/downloads/adult/adult-combined-schedule.pdf"
+          }
+        },
+        {
+          "id": "web-invalid",
+          "title": "Web address that cannot be opened",
+          "scenarios": ["fresh"],
+          "query": {
+            "src": "http://example.com/papers/cardiology.pdf"
+          }
+        },
+        {
+          "id": "loading",
+          "title": "Fault: reading the stored copy never answers",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "db.attachments:hang"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "load-failed",
+          "title": "Fault: reading the stored copy fails",
+          "scenarios": ["student"],
+          "query": {
+            "fault": "db.attachments:error"
+          },
+          "expectErrors": true
+        },
+        {
+          "id": "password",
+          "title": "Password-protected PDF",
+          "scenarios": ["fresh"]
+        },
+        {
+          "id": "scanned",
+          "title": "Scanned PDF: OCR offered",
+          "scenarios": ["fresh"]
+        },
+        {
+          "id": "ocr-running",
+          "title": "Scanned PDF: recognising a page (OCR)",
+          "scenarios": ["fresh"]
+        },
+        {
+          "id": "ocr-done",
+          "title": "Scanned PDF: page recognised, page text",
+          "scenarios": ["fresh"]
+        }
+      ]
+    },
+    {
+      "id": "overlay",
+      "title": "In-page overlay",
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "fullPage": false,
+      "scenarios": ["student"],
+      "states": [
+        {
+          "id": "default",
+          "title": "Toolbar above the selection"
+        },
+        {
+          "id": "toolbar-below",
+          "title": "Toolbar below the selection"
+        },
+        {
+          "id": "toolbar-edge",
+          "title": "Toolbar on the viewport edge"
+        },
+        {
+          "id": "toolbar-caption",
+          "title": "Toolbar caption on hover"
+        },
+        {
+          "id": "toolbar-focused",
+          "title": "Toolbar keyboard focus"
+        },
+        {
+          "id": "toolbar-busy",
+          "title": "Toolbar saving"
+        },
+        {
+          "id": "toolbar-compact",
+          "title": "Toolbar, compact density"
+        },
+        {
+          "id": "composer",
+          "title": "Save with details"
+        },
+        {
+          "id": "composer-loading",
+          "title": "Save with details: loading banks"
+        },
+        {
+          "id": "composer-no-banks",
+          "title": "Save with details: no banks"
+        },
+        {
+          "id": "composer-error",
+          "title": "Save with details: banks failed"
+        },
+        {
+          "id": "composer-saving",
+          "title": "Save with details: saving"
+        },
+        {
+          "id": "popover",
+          "title": "Highlight popover"
+        },
+        {
+          "id": "popover-note",
+          "title": "Highlight popover with a note"
+        },
+        {
+          "id": "popover-saved",
+          "title": "Popover: change saved"
+        },
+        {
+          "id": "popover-error",
+          "title": "Popover: change not saved"
+        },
+        {
+          "id": "popover-deleting",
+          "title": "Popover: deleting"
+        },
+        {
+          "id": "toast-saved",
+          "title": "Toast: saved with Undo"
+        },
+        {
+          "id": "toast-xp",
+          "title": "Toast: saved, +2 XP (Game mode on)"
+        },
+        {
+          "id": "toast-note",
+          "title": "Toast: saved, note in the side panel"
+        },
+        {
+          "id": "toast-error",
+          "title": "Toast: save failed"
+        },
+        {
+          "id": "toast-retry",
+          "title": "Toast: error with Retry"
+        },
+        {
+          "id": "toast-filed",
+          "title": "Toast: filed by a rule"
+        },
+        {
+          "id": "toast-suggested",
+          "title": "Toast: filing suggestion"
+        },
+        {
+          "id": "toast-unavailable",
+          "title": "Toast: rule could not file"
+        },
+        {
+          "id": "toast-deleted",
+          "title": "Toast: highlight deleted"
+        },
+        {
+          "id": "toast-stack",
+          "title": "Toast stack"
+        }
+      ]
+    }
+  ]
+}

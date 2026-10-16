@@ -1,31 +1,28 @@
-import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { browser } from 'wxt/browser';
-import { DEFAULT_DENY_HOSTS, DENY_LIST_SCOPE_NOTE, type Settings } from '@shared';
+import { Check, Earth, Globe, KeyRound, MousePointerClick, Plus, X } from 'lucide-react';
+import type { Settings } from '@shared';
 import { getAiEndpointPatterns } from '@storage';
 import {
   ALL_SITES_ORIGINS,
   Badge,
+  BuddyEmptyState,
   Button,
-  ConfirmDialog,
+  IconButton,
   InlineNotice,
-  editDenyList,
+  VaultBuddy,
   grantSiteAccess,
+  plural,
   revokeSiteAccess,
   useAction,
   useAsync,
   useToast,
 } from '@ui';
 import { useSyncApi } from '@ui/sync';
-import {
-  addDenyEntry,
-  missingDefaults,
-  originKey,
-  otherGrants,
-  removeDenyEntry,
-  sortedDeny,
-  splitOrigins,
-  type SiteEntry,
-} from './model';
+import { DenyList } from './DenyList';
+import { SiteWizard, type SitePlan } from './SiteWizard';
+import { originKey, otherGrants, splitOrigins, type SiteEntry } from './model';
+import { Act, Card } from './ui';
 
 /** Chrome fires these when access is granted or revoked, including from chrome://extensions. */
 function usePermissionChanges(): number {
@@ -43,19 +40,19 @@ function usePermissionChanges(): number {
   return tick;
 }
 
-/** Above this many missing starter sites the list is summarised, not spelled out. */
-const MAX_NAMED = 8;
+const LEVELS_INFO =
+  'This tab: turn it on from the popup; it works there until you leave. One site: Chrome asks about that site, and it stays on there. All sites: StudyVault runs everywhere except your deny list.';
 
 export function SiteAccess({ settings }: { settings: Settings }) {
-  const headingId = useId();
   const { announce } = useToast();
   const changes = usePermissionChanges();
   const { allSites: listedAll, sites } = splitOrigins(settings.persistentOrigins);
   const listKey = settings.persistentOrigins.join('\n');
   const [warning, setWarning] = useState<string | null>(null);
+  const [done, setDone] = useState<string | null>(null);
   const [asking, setAsking] = useState(false);
   // Focus lands on these headings when the button that had it is replaced or removed.
-  const allHeading = useRef<HTMLHeadingElement>(null);
+  const whereHeading = useRef<HTMLHeadingElement>(null);
   const sitesHeading = useRef<HTMLHeadingElement>(null);
 
   const grants = useAsync(
@@ -70,32 +67,48 @@ export function SiteAccess({ settings }: { settings: Settings }) {
     [changes],
   );
 
+  const tell = (text: string, ok: boolean) => {
+    if (ok) setDone(text);
+    else setWarning(text);
+    announce(text);
+  };
+
   const allAct = useAction(async (op: 'enable' | 'revoke') => {
     setWarning(null);
+    setDone(null);
     if (op === 'enable') {
       // First await in the click: Chrome needs the user gesture for the permission prompt.
       const { granted, notRegistered } = await grantSiteAccess(ALL_SITES_ORIGINS);
-      if (!granted) {
-        const text =
-          'Chrome did not grant access to all sites. Nothing was changed; StudyVault keeps working on the tabs and sites you enable one by one.';
-        setWarning(text);
-        announce(text);
-        return;
-      }
-      if (notRegistered.length > 0) {
-        const text =
-          'Chrome granted access to all sites, but StudyVault could not set itself to start there automatically. Reload the extension or try again.';
-        setWarning(text);
-        announce(text);
-      } else {
-        announce('StudyVault is now on for all sites.');
-      }
+      if (!granted) tell('Chrome did not grant access to all sites. Nothing changed.', false);
+      else if (notRegistered.length > 0) {
+        tell(
+          'Chrome granted access to all sites, but StudyVault could not set itself to start there. Reload the extension or try again.',
+          false,
+        );
+      } else tell('StudyVault is now on for all sites.', true);
     } else {
       await revokeSiteAccess(ALL_SITES_ORIGINS);
       announce('All-sites access revoked.');
     }
     grants.refresh();
-    allHeading.current?.focus();
+    whereHeading.current?.focus();
+  });
+
+  const sitesAct = useAction(async (picks: Array<{ pattern: string; host: string }>) => {
+    setWarning(null);
+    setDone(null);
+    const names = picks.map((p) => p.host).join(', ');
+    // First await in the click, as above.
+    const { granted, notRegistered } = await grantSiteAccess(picks.map((p) => p.pattern));
+    if (!granted) tell(`Chrome did not grant access to ${names}. Nothing changed.`, false);
+    else if (notRegistered.length > 0) {
+      tell(
+        `Chrome granted access, but StudyVault could not set itself to start on ${names}.`,
+        false,
+      );
+    } else tell(`StudyVault is now on for ${names}.`, true);
+    grants.refresh();
+    sitesHeading.current?.focus();
   });
 
   const siteAct = useAction(async (site: SiteEntry) => {
@@ -107,175 +120,137 @@ export function SiteAccess({ settings }: { settings: Settings }) {
 
   const grantedAll = grants.data?.all ?? false;
   const allOn = grantedAll && listedAll;
-  const stayOff = sortedDeny(settings.denyList);
+  const allState = grants.loading
+    ? { text: 'Checking…', tone: 'neutral' as const }
+    : allOn
+      ? { text: 'On', tone: 'success' as const }
+      : grantedAll
+        ? { text: 'Not in use', tone: 'warning' as const }
+        : { text: 'Off', tone: 'neutral' as const };
+  const busy = allAct.busy || sitesAct.busy;
+  const failure = allAct.error ?? sitesAct.error ?? grants.error;
+
+  const finish = (plan: SitePlan) => {
+    setAsking(false);
+    // Still inside the wizard's last click: the request below is its first await.
+    if (plan.scope === 'all') void allAct.run('enable');
+    else void sitesAct.run(plan.picks);
+  };
 
   return (
-    <section className="sv-stack" aria-labelledby={headingId}>
-      <h2 id={headingId}>Site access</h2>
-      <p>
-        StudyVault reads a page only after you ask. There are three levels, from narrowest to
-        widest:
-      </p>
-      <dl className="opt-modes">
-        <div>
-          <dt>This tab</dt>
-          <dd>
-            Click the StudyVault toolbar button on a page. It works in that tab until you navigate
-            away or reload. No extra permission is needed.
-          </dd>
-        </div>
-        <div>
-          <dt>This site</dt>
-          <dd>
-            In the popup choose &ldquo;Always enable on&hellip;&rdquo;. Chrome asks about that one
-            site, and your highlights come back every time you visit it.
-          </dd>
-        </div>
-        <div>
-          <dt>All sites</dt>
-          <dd>
-            Below. StudyVault runs automatically on every http and https page except the sites on
-            your deny list. Most people do not need this.
-          </dd>
-        </div>
-      </dl>
-
-      <div className="opt-card sv-stack sv-stack--tight">
-        <h3 ref={allHeading} tabIndex={-1}>
-          All sites
-        </h3>
-        <p>
-          {grants.loading ? (
-            'Checking Chrome…'
-          ) : allOn ? (
-            <>
-              <Badge tone="success" glyph="✓">
-                On
-              </Badge>{' '}
-              StudyVault runs on every site that is not on the deny list.
-            </>
-          ) : grantedAll ? (
-            <>
-              <Badge tone="warning" glyph="!">
-                Allowed by Chrome, not in use
-              </Badge>{' '}
-              Chrome lets StudyVault run everywhere, but StudyVault is not set to use it yet.
-            </>
-          ) : (
-            <>
-              <Badge glyph="–">Off</Badge> StudyVault runs only where you enabled it.
-            </>
-          )}
-        </p>
-        <p className="sv-muted sv-small">
-          Turning this on shows Chrome&apos;s permission prompt for reading and changing pages on
-          all websites. Your highlights stay on this device either way
-          {settings.features.sync
-            ? ' (unless you turned sync on, which sends them to your server)'
-            : ''}
-          , and you can revoke access here at any time.
-        </p>
+    <div className="opt-stack">
+      <Card title="Where it runs" icon={Globe} headingRef={whereHeading} info={LEVELS_INFO}>
+        <ul className="opt-levels" aria-label="Where StudyVault runs">
+          <li className="opt-level-tile">
+            <span className="opt-art sv-art--neutral" aria-hidden="true">
+              <MousePointerClick strokeWidth={2.4} />
+            </span>
+            <span className="opt-level-tile__label">This tab</span>
+            <span className="opt-level-tile__state">From the popup</span>
+          </li>
+          <li className="opt-level-tile">
+            <span className="opt-art sv-art--primary" aria-hidden="true">
+              <Globe strokeWidth={2.4} />
+            </span>
+            <span className="opt-level-tile__label">Your sites</span>
+            <span className="opt-level-tile__state">
+              {sites.length > 0 ? plural(sites.length, 'site') : 'None yet'}
+            </span>
+          </li>
+          <li className="opt-level-tile">
+            <span className="opt-art sv-art--warning" aria-hidden="true">
+              <Earth strokeWidth={2.4} />
+            </span>
+            <span className="opt-level-tile__label">All sites</span>
+            <Badge tone={allState.tone} glyph={allOn ? '✓' : undefined}>
+              {allState.text}
+            </Badge>
+          </li>
+        </ul>
+        {grantedAll && !listedAll && !grants.loading ? (
+          <p className="opt-line">Chrome allows all sites, but StudyVault is not set to use it.</p>
+        ) : null}
         {warning ? <InlineNotice tone="warning">{warning}</InlineNotice> : null}
-        {allAct.error || grants.error ? (
+        {done ? (
+          <div className="opt-done" role="group" aria-label="Done">
+            <VaultBuddy pose="cheer" size={56} />
+            <p>
+              <strong>All set!</strong> {done}
+            </p>
+          </div>
+        ) : null}
+        {failure ? (
           <InlineNotice
             tone="error"
             title="That did not work"
             action={
-              (allAct.error ? allAct.retryable : grants.retryable) ? (
+              (
+                allAct.error
+                  ? allAct.retryable
+                  : sitesAct.error
+                    ? sitesAct.retryable
+                    : grants.retryable
+              ) ? (
                 <Button
-                  busy={allAct.error ? allAct.busy : grants.refreshing}
-                  onClick={allAct.error ? allAct.retry : grants.refresh}
+                  busy={
+                    allAct.error ? allAct.busy : sitesAct.error ? sitesAct.busy : grants.refreshing
+                  }
+                  onClick={
+                    allAct.error ? allAct.retry : sitesAct.error ? sitesAct.retry : grants.refresh
+                  }
                 >
                   Retry
                 </Button>
               ) : undefined
             }
           >
-            {allAct.error ?? grants.error}
+            {failure}
           </InlineNotice>
         ) : null}
         <div className="sv-row">
-          {allOn ? null : (
-            <Button variant="primary" busy={allAct.busy} onClick={() => setAsking(true)}>
-              Enable on all sites
-            </Button>
-          )}
+          <Act variant="primary" icon={Plus} busy={busy} onClick={() => setAsking(true)}>
+            Choose sites
+          </Act>
           {grantedAll || listedAll ? (
             <Button busy={allAct.busy} onClick={() => void allAct.run('revoke')}>
-              Revoke all-sites access
+              Revoke all sites
             </Button>
           ) : null}
         </div>
-      </div>
+      </Card>
 
       {asking ? (
-        <ConfirmDialog
-          title="Turn StudyVault on for all sites?"
-          confirmLabel="Continue to Chrome's prompt"
-          onCancel={() => setAsking(false)}
-          onConfirm={() => {
-            // This click is the user gesture permissions.request needs: it is the first await.
-            setAsking(false);
-            void allAct.run('enable');
-          }}
-        >
-          <p>
-            StudyVault will start by itself on every http and https page you open, except the sites
-            on your deny list. It reads the page text on this device to place your highlights, and
-            does not send the page text anywhere.
-            {settings.features.sync
-              ? ' Because you turned sync on, the highlights you save are sent to your sync server.'
-              : ''}
-          </p>
-          <p>{DENY_LIST_SCOPE_NOTE}</p>
-          {stayOff.length === 0 ? (
-            <p>
-              <strong>Your deny list is empty</strong>, so StudyVault would also run on sign-in,
-              mail and banking pages.
-            </p>
-          ) : (
-            <>
-              <p>
-                <strong>StudyVault will stay off on these {stayOff.length} sites</strong> and their
-                subdomains. Any site not listed is included.
-              </p>
-              <div
-                className="sv-dialog__scroll"
-                role="region"
-                aria-label="Sites on your deny list"
-                tabIndex={0}
-              >
-                <ul className="sv-stack sv-stack--tight">
-                  {stayOff.map((host) => (
-                    <li key={host} className="sv-wrap">
-                      {host}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </>
-          )}
-          <p>Add your own sites to the deny list before you continue if they are not shown.</p>
-          <p className="sv-muted sv-small">Chrome then asks for its own confirmation.</p>
-        </ConfirmDialog>
+        <SiteWizard settings={settings} onClose={() => setAsking(false)} onFinish={finish} />
       ) : null}
 
-      <div className="opt-card sv-stack sv-stack--tight">
-        <h3 ref={sitesHeading} tabIndex={-1}>
-          Sites enabled one by one
-        </h3>
+      <Card
+        title="Your sites"
+        icon={Check}
+        tone="success"
+        headingRef={sitesHeading}
+        aside={
+          sites.length > 0 ? (
+            <span className="opt-count">{plural(sites.length, 'site')}</span>
+          ) : null
+        }
+      >
         {sites.length === 0 ? (
-          <p className="sv-muted">
-            None yet. Open a page, click the StudyVault button and choose &ldquo;Always enable
-            on&hellip;&rdquo;.
-          </p>
+          <BuddyEmptyState
+            pose="sleep"
+            mascotSize={72}
+            title="No sites yet"
+            text="Add one with Choose sites, or from the popup."
+          />
         ) : (
-          <ul className="opt-list">
+          <ul className="opt-rows">
             {sites.map((site, i) => {
               const granted = grants.data?.each[i];
               return (
-                <li key={site.pattern} className="opt-item">
-                  <span className="sv-grow sv-wrap">{site.host}</span>
+                <li key={site.pattern} className="opt-rowitem">
+                  <Globe aria-hidden="true" strokeWidth={2.4} className="opt-rowitem__icon" />
+                  <span className="opt-rowitem__text" dir="ltr">
+                    {site.host}
+                  </span>
                   {granted === undefined ? null : granted ? (
                     <Badge tone="success" glyph="✓">
                       Allowed
@@ -285,13 +260,15 @@ export function SiteAccess({ settings }: { settings: Settings }) {
                       Not allowed in Chrome
                     </Badge>
                   )}
-                  <Button
-                    busy={siteAct.busy}
-                    aria-label={`Revoke access for ${site.host}`}
-                    onClick={() => void siteAct.run(site)}
-                  >
-                    Revoke
-                  </Button>
+                  <IconButton
+                    icon={X}
+                    tipSide="left"
+                    label={`Revoke access for ${site.host}`}
+                    aria-disabled={siteAct.busy || undefined}
+                    onClick={() => {
+                      if (!siteAct.busy) void siteAct.run(site);
+                    }}
+                  />
                 </li>
               );
             })}
@@ -312,12 +289,12 @@ export function SiteAccess({ settings }: { settings: Settings }) {
             {siteAct.error}
           </InlineNotice>
         ) : null}
-      </div>
-
-      <OtherAccess settings={settings} changes={changes} />
+      </Card>
 
       <DenyList settings={settings} />
-    </section>
+
+      <OtherAccess settings={settings} changes={changes} />
+    </div>
   );
 }
 
@@ -379,34 +356,35 @@ function OtherAccess({ settings, changes }: { settings: Settings; changes: numbe
     known.data ?? { ai: null, syncServer: null, syncIssuer: null },
   );
   return (
-    <div className="opt-card sv-stack sv-stack--tight" data-testid="other-access">
-      <h3 ref={heading} tabIndex={-1}>
-        Other access
-      </h3>
-      <p className="sv-muted">
-        Access Chrome gave StudyVault for one address at a time, apart from the sites above: the AI
-        provider, the sync server and its sign-in provider, and any other address you allowed from a
-        prompt. Revoking one makes the feature that used it ask again the next time you use it.
-      </p>
+    <Card
+      title="Other access"
+      icon={KeyRound}
+      tone="neutral"
+      headingRef={heading}
+      testId="other-access"
+      info="Addresses Chrome allowed one at a time: the AI provider, the sync server and its sign-in, or a site you allowed from a prompt. Revoke one and its feature asks again next time."
+    >
       {grants.loading ? (
         <p className="sv-muted">Checking Chrome…</p>
       ) : grants.error ? null : list.length === 0 ? (
         <p className="sv-muted">Nothing else is allowed.</p>
       ) : (
-        <ul className="opt-list" aria-label="Other access Chrome holds for StudyVault">
+        <ul className="opt-rows" aria-label="Other access Chrome holds for StudyVault">
           {list.map((grant) => (
-            <li key={grant.pattern} className="opt-item">
-              <span className="sv-grow sv-wrap" dir="ltr">
+            <li key={grant.pattern} className="opt-rowitem">
+              <span className="opt-rowitem__text" dir="ltr">
                 {grant.origin}
               </span>
               <Badge>{grant.purpose}</Badge>
-              <Button
-                busy={revoke.busy}
-                aria-label={`Revoke access for ${grant.origin}`}
-                onClick={() => void revoke.run(grant)}
-              >
-                Revoke
-              </Button>
+              <IconButton
+                icon={X}
+                tipSide="left"
+                label={`Revoke access for ${grant.origin}`}
+                aria-disabled={revoke.busy || undefined}
+                onClick={() => {
+                  if (!revoke.busy) void revoke.run(grant);
+                }}
+              />
             </li>
           ))}
         </ul>
@@ -429,176 +407,6 @@ function OtherAccess({ settings, changes }: { settings: Settings; changes: numbe
           {revoke.error ?? grants.error}
         </InlineNotice>
       ) : null}
-    </div>
-  );
-}
-
-function DenyList({ settings }: { settings: Settings }) {
-  const uid = useId();
-  const { announce } = useToast();
-  const heading = useRef<HTMLHeadingElement>(null);
-  const edit = useAction(
-    async (change: (list: string[]) => string[], spoken: string, focusHeading: boolean) => {
-      await editDenyList(change);
-      announce(spoken);
-      // A removed row takes its button (and focus) with it.
-      if (focusHeading) heading.current?.focus();
-    },
-  );
-  const defaults = [...DEFAULT_DENY_HOSTS];
-  const lacking = missingDefaults(settings.denyList, defaults);
-
-  return (
-    <div className="opt-card sv-stack sv-stack--tight" role="group" aria-labelledby={`${uid}-h`}>
-      <h3 id={`${uid}-h`} ref={heading} tabIndex={-1}>
-        Deny list
-      </h3>
-      <p>
-        StudyVault is switched off on these sites and all of their subdomains: no toolbar, no
-        highlights, nothing saved.
-      </p>
-      <p>{DENY_LIST_SCOPE_NOTE}</p>
-      <AddSite
-        denyList={settings.denyList}
-        busy={edit.busy}
-        onAdd={(host) =>
-          void edit.run(
-            (list) => [...list.filter((h) => h !== host), host],
-            `Added ${host} to the deny list.`,
-            false,
-          )
-        }
-      />
-      {edit.error ? (
-        <InlineNotice
-          tone="error"
-          title="Could not update the deny list"
-          action={
-            edit.retryable ? (
-              <Button busy={edit.busy} onClick={edit.retry}>
-                Retry
-              </Button>
-            ) : undefined
-          }
-        >
-          {edit.error}
-        </InlineNotice>
-      ) : null}
-      {settings.denyList.length === 0 ? (
-        <p className="sv-muted">The deny list is empty: StudyVault may run on any enabled site.</p>
-      ) : (
-        <ul className="opt-list">
-          {sortedDeny(settings.denyList).map((host) => (
-            <li key={host} className="opt-item">
-              <span className="sv-grow sv-wrap">{host}</span>
-              {defaults.includes(host) ? <Badge>Default</Badge> : null}
-              <Button
-                busy={edit.busy}
-                aria-label={`Remove ${host} from the deny list`}
-                onClick={() =>
-                  void edit.run(
-                    (list) => removeDenyEntry(list, host),
-                    `Removed ${host} from the deny list.`,
-                    true,
-                  )
-                }
-              >
-                Remove
-              </Button>
-            </li>
-          ))}
-        </ul>
-      )}
-      <div className="sv-stack sv-stack--tight">
-        <Button
-          busy={edit.busy}
-          disabledReason={
-            lacking.length === 0 ? 'All default sites are already on the list.' : undefined
-          }
-          onClick={() =>
-            void edit.run(
-              (list) => [...list, ...missingDefaults(list, defaults)],
-              'Default sites restored to the deny list.',
-              false,
-            )
-          }
-        >
-          Restore default sites
-        </Button>
-        {lacking.length === 0 ? (
-          <p className="sv-muted sv-small" aria-hidden="true">
-            All default sites are already on the list.
-          </p>
-        ) : (
-          <p className="sv-muted sv-small">
-            {lacking.length <= MAX_NAMED
-              ? `Missing: ${lacking.join(', ')}.`
-              : `${lacking.length} of the ${defaults.length} starter sites are not on your list yet (a list saved by an earlier version is shorter).`}{' '}
-            Restoring adds the missing ones; the sites you added yourself stay.
-          </p>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/** Own component so typing re-renders this form, not the (long) list below it. */
-function AddSite({
-  denyList,
-  busy,
-  onAdd,
-}: {
-  denyList: readonly string[];
-  busy: boolean;
-  onAdd(host: string): void;
-}) {
-  const uid = useId();
-  const [text, setText] = useState('');
-  const [problem, setProblem] = useState<string | null>(null);
-
-  const submit = (e: FormEvent) => {
-    e.preventDefault();
-    const result = addDenyEntry(denyList, text);
-    if (!result.ok) {
-      setProblem(result.error);
-      return;
-    }
-    setProblem(null);
-    setText('');
-    onAdd(result.host);
-  };
-
-  return (
-    <form className="sv-stack sv-stack--tight" onSubmit={submit} noValidate>
-      <label className="sv-label" htmlFor={`${uid}-input`}>
-        Add a site
-      </label>
-      <div className="sv-row">
-        <input
-          id={`${uid}-input`}
-          className="sv-control opt-input"
-          type="text"
-          inputMode="url"
-          autoComplete="off"
-          spellCheck={false}
-          placeholder="example.com"
-          value={text}
-          aria-invalid={problem ? true : undefined}
-          aria-describedby={problem ? `${uid}-err` : undefined}
-          onChange={(e) => {
-            setText(e.target.value);
-            setProblem(null);
-          }}
-        />
-        <Button type="submit" variant="primary" busy={busy}>
-          Add to deny list
-        </Button>
-      </div>
-      {problem ? (
-        <p id={`${uid}-err`} role="alert" className="opt-error">
-          {problem}
-        </p>
-      ) : null}
-    </form>
+    </Card>
   );
 }

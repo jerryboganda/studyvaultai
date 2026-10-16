@@ -6,13 +6,45 @@
  */
 import {
   StudyVaultError,
+  type ColorId,
   type FilingOutcome,
   type FilingSuggestion,
   type Note,
   type SearchDocument,
 } from '@shared';
 import type { DueSummary, FolderNode, TagLite } from '@storage';
+import { screen, within } from '@testing-library/react';
+import { expect } from 'vitest';
+import userEvent from '@testing-library/user-event';
 import { store } from '@ui/testing/fakes';
+
+/** Recent lives under the More tab: open More, then its Recent tile. */
+export async function showRecent() {
+  await userEvent.click(await screen.findByRole('tab', { name: 'More' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'Recent' }));
+}
+
+/**
+ * Opens a card's "More actions" (kind, priority, tags, study notes, links, AI, delete). Found by
+ * test id: a role-and-name query costs seconds per try on a large card list under jsdom.
+ */
+export async function openCard(card?: HTMLElement) {
+  const [button] = await (card ? within(card) : screen).findAllByTestId(
+    'card-more',
+    {},
+    { timeout: 10_000 },
+  );
+  expect(button!.getAttribute('aria-label')).toBe('More actions');
+  await userEvent.click(button!);
+}
+
+/** The text an element's aria-describedby points at (why a control is unavailable). */
+export const description = (el: Element): string =>
+  (el.getAttribute('aria-describedby') ?? '')
+    .split(/\s+/)
+    .map((id) => (id ? (document.getElementById(id)?.textContent ?? '') : ''))
+    .join(' ')
+    .trim();
 
 interface FakeTag extends TagLite {
   nameKey: string;
@@ -31,6 +63,8 @@ class PanelExtras {
   suggestions: FilingSuggestion[] = [];
   /** What the next acceptFiling answers instead of filing (e.g. the bank was deleted). */
   acceptAnswer: FilingOutcome | null = null;
+  /** Bank icons (emoji) by bank id; colours live on the FakeStore's banks. */
+  icons = new Map<string, string>();
   private seq = 0;
 
   reset() {
@@ -43,6 +77,7 @@ class PanelExtras {
     this.failNext = {};
     this.suggestions = [];
     this.acceptAnswer = null;
+    this.icons.clear();
     this.seq = 0;
   }
 
@@ -61,7 +96,27 @@ class PanelExtras {
     return item;
   }
 
+  private bankInfo(id: string) {
+    const bank = store.banks.find((b) => b.id === id);
+    if (!bank) throw new StudyVaultError('not_found', 'Bank not found');
+    return { ...bank, icon: this.icons.get(id) ?? null, position: 0, createdAt: '', updatedAt: '' };
+  }
+
   readonly module = {
+    listBankInfos: async () => store.banks.map((b) => this.bankInfo(b.id)),
+    setBankColor: async (id: string, color: ColorId) => {
+      this.call('setBankColor', [id, color]);
+      store.banks = store.banks.map((b) => (b.id === id ? { ...b, color } : b));
+      store.notify();
+      return this.bankInfo(id);
+    },
+    setBankIcon: async (id: string, icon: string | null) => {
+      this.call('setBankIcon', [id, icon]);
+      if (icon === null) this.icons.delete(id);
+      else this.icons.set(id, icon);
+      store.notify();
+      return this.bankInfo(id);
+    },
     listFilingSuggestions: async () => [...this.suggestions],
     acceptFiling: async (id: string): Promise<FilingOutcome> => {
       this.call('acceptFiling', [id]);

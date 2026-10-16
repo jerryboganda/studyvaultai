@@ -111,3 +111,54 @@ Imported Word, PowerPoint, EPUB, HTML and Anki files add no new table: each file
 own (`urlKey` `imported:<batchId>:<n>`) and highlights with `captureMethod: 'import'`,
 `customFields.importedFrom` (`anki`, `html`, `epub`, `docx`, `pptx`), `needsReview`, `importedFile`
 and `importedLocator`.
+
+## As implemented: schema v5, the game layer (ADR-022, 2026-10-14)
+
+Dexie version **5** adds two append-only ledger tables and changes no existing table or index. The
+upgrade from version 4 only advances `meta['schema']` (`migratedFrom: 4`, `dbVersion: 5`,
+`v5MigratedAt`) and reads or writes no vault row; the ledger of an existing vault is filled afterwards
+by a resumable backfill (below). XP, level, streak, freezes, badges and celebrations are never stored:
+they are a replay of both tables with the device's study-day boundary (`getGameState`).
+
+### Tables added in Dexie version 5
+
+Both hold the same row, `GameRow` (`packages/study/src/game.ts`): `id`, `schemaVersion` 1, `kind`,
+`at` (ISO instant), `ref` (the source or session id, or null) and `value` (an integer or null). Rows
+are only ever added; nothing updates or deletes them except a replace restore and "Delete all data".
+
+| Table | Rows | Key and indexes | In a backup | Sync |
+| --- | --- | --- | --- | --- |
+| `gameEvents` | one per XP-earning source row, a pure function of it: `rv_<logId>` (review, at `reviewedAt`), `hs_<highlightId>` (save, at `createdAt`; none for `captureMethod: 'import'`), `cd_<cardId>` (card, at `createdAt`) | `id, at, schemaVersion` | yes | **never**: every device derives the same rows from the source rows it holds (live writes, the sync applier, its own backfill) |
+| `gameFacts` | what cannot be re-derived: `ru_<logId>` (review undone, at the review's `reviewedAt`), `hu_<highlightId>` (save deleted within 10 minutes, at its `createdAt`), `cu_<cardId>` (a card a merge restore added, at its `createdAt`), `sb_<sessionId>` (review session finished with at least one answer), `gs_<uuid>` (daily goal, `value` 10, 30, 50 or 100), `gm_<uuid>` (Game mode, `value` 1 or 0), `gx_<uuid>` (game start on this vault, the epoch), and a copy of any `gameEvents` row whose source a purge removed (same id and content) | `id, at, [kind+at], schemaVersion` | yes | append-only (`STUDYVAULT_SYNC_POLICY.gameFacts`), only when sync is on |
+
+XP per kind is a rule, not data (`XP` under `GAME_RULES_VERSION` 1): review 1, save 2, card 3,
+session 5; `ru_`, `hu_` and `cu_` cancel their event. A level needs `25·L·(L−1)` XP in all. A day without a
+chosen goal is judged against 30; a goal change applies from the current study day. A new goal or
+Game mode fact is dated after the latest one of its kind, so one stamped by a clock that ran ahead
+never outranks a later choice. Rows whose ids
+collide are identical by construction, so a retry, the backfill, the applier, a merge restore and a
+sync pull add each row at most once (`addMissing`).
+
+Writes happen in the same transaction as the action that earned them: `reviewCard`,
+`undoLastReview`, the four card creators and `acceptAiItem`, `saveCapture` and `savePdfHighlight`
+(status `created` only), `softDeleteHighlight` and `bulkDelete` (the 10-minute undo),
+`completeStudySession` (called by the review page when a session is done; it also clears the stored
+session), the sync applier (on a remote delete too, before the row goes), and `purgeInTx` (it first
+derives the purged rows' ledger rows, so a purge before the backfill keeps their XP, then copies
+them). Imports, duplicates, Trash restores, `restoreCards` and merge restores earn nothing: a merge
+writes the canceller (`ru_`, `hu_`, `cu_`) of every source row it adds whose event the vault does
+not hold, so the backfill, another device's applier and a later re-derivation all net 0.
+
+### `meta` rows added by the game layer
+
+Device-local like every `meta` row: never backed up, never synchronised.
+
+| Key | Holds | Notes |
+| --- | --- | --- |
+| `game.backfill` | `{ v: 1, runId, rulesVersion, status: 'running' \| 'done' \| 'failed', table, after, added, done, total, startedAt, heartbeatAt, error? }` | missing means not started. Each page of at most 1,000 source rows writes its ledger rows and this checkpoint in one transaction, and stops when `runId` changed. Started by the worker on install, update and browser start, and by any page whose state is not ready; a Web Lock keeps two contexts from doing the work twice. A newer `GAME_RULES_VERSION` runs it again |
+| `game.seen` | `{ v: 1, baselineAt, keys }` | written when the backfill finishes. Celebrations are claimed here once per device in one read-write transaction; nothing dated before `baselineAt` is celebrated. Dated keys older than three days are pruned |
+| `game.cache` | `{ v: 1, key, timeZone, rolloverHour, cutDay, count, days }` | per-day totals of closed days; used only while its key (rules version, study-day boundary, last restore) and its row count below the cut still match. Disposable |
+
+A replace restore deletes all three rows in its commit, so the backfill derives the ledger again from
+the restored rows (a v1 to v4 archive gets a new start fact; its goals, session bonuses and undos are
+not invented). `BACKUP_MIGRATIONS` has `{ from: 4 }`; a version 4 archive restores unchanged.

@@ -49,6 +49,7 @@ import { TID, toBoundary, type ExamTarget, type StudySettings } from '@ui/review
 import { ExamMarking, ExamRun } from './ExamRun';
 import { ExamResults } from './ExamResults';
 import { ExamSetup } from './ExamSetup';
+import { Loading } from './StudyView';
 
 /**
  * Exam simulation (ADR-020). One exam at a time, kept in the device-local `meta` table after every
@@ -62,10 +63,13 @@ export function ExamView({
   settings,
   onFocusMode,
   target = null,
+  onCreateCards,
 }: {
   settings: StudySettings;
   onFocusMode(active: boolean): void;
   target?: ExamTarget | null;
+  /** The empty state's action: open the Create tab. */
+  onCreateCards?(): void;
 }) {
   const stored = useAsync(() => loadExamSession(Date.now()), []);
   if (stored.error) {
@@ -79,7 +83,7 @@ export function ExamView({
       </InlineNotice>
     );
   }
-  if (!stored.data) return <p className="sv-muted">Loading…</p>;
+  if (!stored.data) return <Loading />;
   return (
     <ExamFlow
       settings={settings}
@@ -88,6 +92,7 @@ export function ExamView({
       expired={stored.data.expired}
       unreadable={stored.data.unreadable === true}
       target={target}
+      onCreateCards={onCreateCards}
     />
   );
 }
@@ -99,6 +104,7 @@ function ExamFlow({
   expired,
   unreadable,
   target,
+  onCreateCards,
 }: {
   settings: StudySettings;
   onFocusMode(active: boolean): void;
@@ -106,6 +112,7 @@ function ExamFlow({
   expired: boolean;
   unreadable: boolean;
   target: ExamTarget | null;
+  onCreateCards?(): void;
 }) {
   const boundary = toBoundary(settings);
   const epoch = useDataEpoch();
@@ -343,6 +350,7 @@ function ExamFlow({
         onShowResults={() => setScreen('exam')}
         onDiscard={() => (exam?.phase === 'finished' ? void closeExam.run() : setAsking('discard'))}
         onClearHistory={() => setAsking('clear')}
+        onCreateCards={onCreateCards}
       />
     );
   } else if (!cardsLoad.data) {
@@ -355,7 +363,7 @@ function ExamFlow({
         {cardsLoad.error}
       </InlineNotice>
     ) : (
-      <p className="sv-muted">Loading the questions…</p>
+      <Loading label="Loading the questions…" />
     );
   } else if (exam.phase === 'answering') {
     body = (
@@ -400,7 +408,7 @@ function ExamFlow({
   }
 
   return (
-    <div className="sv-stack">
+    <div className="rv-examflow">
       {/* One polite region for the whole exam: it outlives each screen, so "time is up" is heard. */}
       <p className="sv-sr" role="status" aria-live="polite" data-testid={TID.examAnnounce}>
         {announcement}
@@ -429,7 +437,11 @@ function ExamFlow({
           confirmLabel="Discard exam"
           cancelLabel="Keep it"
           danger
-          onConfirm={() => void closeExam.run()}
+          onConfirm={() => {
+            // Close first: a failure is then shown on the page, not behind the modal.
+            setAsking(null);
+            void closeExam.run();
+          }}
           onCancel={() => setAsking(null)}
         >
           <p>
@@ -442,7 +454,10 @@ function ExamFlow({
           title="Clear the list of recent exams?"
           confirmLabel="Clear the list"
           danger
-          onConfirm={() => void clearList.run()}
+          onConfirm={() => {
+            setAsking(null);
+            void clearList.run();
+          }}
           onCancel={() => setAsking(null)}
         >
           <p>

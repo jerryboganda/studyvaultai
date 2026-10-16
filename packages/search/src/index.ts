@@ -2,6 +2,15 @@ export { SearchDocumentSchema, SEARCH_FIELDS, FIELD_WEIGHTS } from './schema';
 export type { SearchDocument, SearchField } from './schema';
 
 export { createSearchIndex, deserializeSearchIndex } from './searchIndex';
+export {
+  basicWords,
+  cosine,
+  createStaticEmbedder,
+  parseEmbeddingModel,
+  rankBySimilarity,
+  wordPieceIds,
+} from './embed';
+export type { EmbeddingModel, SemanticHit, StaticEmbedder } from './embed';
 export type {
   ApplyAsyncOptions,
   ApplyResult,

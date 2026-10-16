@@ -7,6 +7,7 @@ import {
   createDeck,
   createManualCards,
   getCard,
+  getDb,
   listReviewLogs,
   loadStudySession,
   reviewCard,
@@ -158,6 +159,24 @@ describe('the session flow', () => {
     expect(await loadStudySession()).toBeNull();
   });
 
+  it('leaving while an answer is still being saved keeps the person out of the session', async () => {
+    await seed(3);
+    const c = make();
+    await c.start(null);
+    c.reveal();
+    const saving = c.rate(4);
+    c.leave();
+    await saving;
+    const s = c.getState();
+    expect(s.phase).toBe('idle');
+    expect(s.current).toBeNull();
+    expect(s.answered).toBe(1); // the answer itself was kept
+    expect((await loadStudySession())!.answered).toBe(1);
+    // Continuing brings the next card back.
+    await c.resume();
+    expect(c.getState().phase).toBe('question');
+  });
+
   it('honours the daily cap: only the allowed new cards are in the session', async () => {
     await seed(5, { newPerDay: 2 });
     const c = make();
@@ -176,6 +195,49 @@ describe('the session flow', () => {
   });
 });
 
+describe('the session bonus (ADR-022)', () => {
+  it('is recorded once when the session is done, in the same step that clears it', async () => {
+    await seed(2);
+    const c = make();
+    await c.start(null);
+    const id = c.getState().session!.id;
+    expect(c.getState().bonus).toBeNull();
+    c.reveal();
+    await c.rate(4);
+    expect(c.getState().bonus).toBeNull(); // nothing mid-session
+    c.reveal();
+    await c.rate(4);
+    expect(c.getState()).toMatchObject({ phase: 'done', bonus: 'awarded' });
+    expect(await getDb().gameFacts.get(`sb_${id}`)).toMatchObject({ kind: 'session', ref: id });
+    expect(await loadStudySession()).toBeNull();
+  });
+
+  it('stays after an undo on the done screen: finishing again reports it as already earned', async () => {
+    await seed(1);
+    const c = make();
+    await c.start(null);
+    const id = c.getState().session!.id;
+    c.reveal();
+    await c.rate(4);
+    expect(c.getState().bonus).toBe('awarded');
+
+    await c.undo();
+    expect(c.getState()).toMatchObject({ phase: 'question', bonus: null });
+    c.reveal();
+    await c.rate(4);
+    expect(c.getState()).toMatchObject({ phase: 'done', bonus: 'already' });
+    expect(await getDb().gameFacts.where('id').equals(`sb_${id}`).count()).toBe(1);
+  });
+
+  it('is not given for a session with nothing answered', async () => {
+    await seed(1, { newPerDay: 0 });
+    const c = make();
+    await c.start(null);
+    expect(c.getState()).toMatchObject({ phase: 'done', bonus: 'no_answers' });
+    expect(await getDb().gameFacts.count()).toBe(0);
+  });
+});
+
 describe('undo', () => {
   it('puts the card back as it was and shows it again', async () => {
     const { cards } = await seed(2);
@@ -185,6 +247,8 @@ describe('undo', () => {
     c.reveal();
     await c.rate(3);
     expect(c.getState().lastAnswer?.cardId).toBe(first.id);
+    // Written now: the page may show its XP.
+    expect(c.getState().lastAnswer?.fresh).toBe(true);
 
     await c.undo();
     const s = c.getState();

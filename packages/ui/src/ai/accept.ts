@@ -10,6 +10,12 @@ import type { AiAcceptInput, AiSourceRef } from '@storage';
 export type Sources = ReadonlyMap<string, AiSourceRef>;
 
 /** A result as stored: `explain` keeps the question that was asked. */
+export const BASIS_TEXT = {
+  notes: 'your notes',
+  mixed: 'your notes and general knowledge',
+  general: 'general knowledge (not from your notes)',
+} as const;
+
 type WithQuestion = AiResult & { question?: string | undefined };
 
 /** What the person sees and may edit before accepting. */
@@ -58,7 +64,7 @@ function citedSection(result: AiResult, sources: Sources): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
   for (const c of result.citations) {
-    const id = c.highlightId ?? c.noteId;
+    const id = c.highlightId ?? c.noteId ?? c.cardId ?? c.knowledgePointId;
     if (id === undefined || seen.has(id)) continue;
     seen.add(id);
     const ref = sources.get(id);
@@ -95,6 +101,10 @@ export function toMarkdown(result: WithQuestion, sources: Sources): string {
       if (result.output.uncertainty)
         body.push('', `Not settled by the sources: ${esc(result.output.uncertainty)}`);
       body.push('', `Answer state: ${result.output.answerState.replace(/_/g, ' ')}`);
+      break;
+    case 'chat':
+      if (result.question) body.push(`**Question:** ${esc(result.question)}`, '');
+      body.push(esc(result.output.answer), '', `Based on: ${BASIS_TEXT[result.output.basis]}`);
       break;
     case 'compare_topics':
       for (const row of result.output.rows) {
@@ -153,6 +163,7 @@ export function toMarkdown(result: WithQuestion, sources: Sources): string {
 const NOTE_TITLES: Partial<Record<AiResult['kind'], string>> = {
   summary: 'AI summary',
   explain: 'AI answer',
+  chat: 'AI chat answer',
   contradictions: 'AI contradiction check',
   fact_check: 'AI statement check',
   mnemonic: 'AI memory aids',

@@ -74,12 +74,24 @@ async function adoptStored(): Promise<Settings> {
  * page (deny list) cannot overwrite each other. The base value is the authoritative copy, so a value
  * planted in chrome.storage.local is corrected by the next legitimate write instead of adopted.
  * Content scripts must treat settings as read-only.
+ *
+ * The trusted copy is written first: the worker treats the chrome.storage.local change event as the
+ * signal to re-read it. A failed write rejects and leaves both copies as they were, so the trusted
+ * copy is put back when the display write fails. Otherwise it would keep a value the caller was told
+ * was not saved, and the next, unrelated change would publish it.
  */
 export async function updateSettings(mutate: (current: Settings) => Settings): Promise<Settings> {
   return withSettingsLock(async () => {
-    const next = parseSettings(mutate(trusted ? await adoptStored() : await getSettings()));
+    const current = trusted ? await adoptStored() : await getSettings();
+    const next = parseSettings(mutate(current));
     await trusted?.save(next);
-    await browser.storage.local.set({ [KEY]: next });
+    try {
+      await browser.storage.local.set({ [KEY]: next });
+    } catch (error) {
+      // ponytail: best effort; if the rollback write fails too, the drift stays until the next save.
+      await trusted?.save(current).catch(() => undefined);
+      throw error;
+    }
     return next;
   });
 }

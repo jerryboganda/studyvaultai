@@ -2,13 +2,18 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_DENY_HOSTS } from '@shared';
 import { SETTINGS_SECTIONS } from '@ui/shell/paths';
 import {
+  OPTION_SECTIONS,
   addDenyEntry,
+  isDeleteWord,
+  keyParts,
   missingDefaults,
   moveIndex,
   originKey,
   otherGrants,
   removeDenyEntry,
   sectionFromHash,
+  sectionGroups,
+  sitePatternFromInput,
   sortedDeny,
   splitOrigins,
   storageLabel,
@@ -99,6 +104,79 @@ describe('sectionFromHash', () => {
       'privacy',
       'data',
     ]);
+  });
+});
+
+describe('OPTION_SECTIONS', () => {
+  it('keeps every public deep link and adds the new sections once each', () => {
+    const ids = OPTION_SECTIONS.map((s) => s.id);
+    for (const { id } of SETTINGS_SECTIONS) expect(ids).toContain(id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const id of ['game', 'reminders', 'about']) expect(sectionFromHash(`#${id}`)).toBe(id);
+  });
+
+  it('labels and helper lines stay short (UX_DESIGN 8)', () => {
+    for (const s of OPTION_SECTIONS) {
+      expect(s.label.split(' ').length, s.label).toBeLessThanOrEqual(3);
+      expect(s.line.length, s.line).toBeLessThanOrEqual(60);
+    }
+  });
+
+  it('groups the home tiles in order without losing a section', () => {
+    const groups = sectionGroups();
+    expect(groups.map((g) => g.group)).toEqual(['Everyday', 'Study', 'Your data', 'Extras']);
+    expect(groups.flatMap((g) => g.sections.map((s) => s.id))).toEqual(
+      OPTION_SECTIONS.map((s) => s.id),
+    );
+  });
+});
+
+describe('sitePatternFromInput', () => {
+  const o = { denyList: ['paypal.com'], taken: ['https://taken.example/*'] };
+
+  it('turns a name or an address into the origin pattern, https for a bare name', () => {
+    expect(sitePatternFromInput(' Example.org ', o)).toEqual({
+      ok: true,
+      pattern: 'https://example.org/*',
+      host: 'example.org',
+    });
+    expect(sitePatternFromInput('http://Intranet.example:8080/wiki/page?q=1', o)).toEqual({
+      ok: true,
+      pattern: 'http://intranet.example:8080/*',
+      host: 'intranet.example:8080',
+    });
+    expect(sitePatternFromInput('*.wiki.example', o)).toMatchObject({
+      ok: true,
+      pattern: 'https://wiki.example/*',
+    });
+  });
+
+  it('refuses empty input, non-web addresses, paths, denied sites and sites already on', () => {
+    const error = (input: string) => {
+      const r = sitePatternFromInput(input, o);
+      return r.ok ? null : r.error;
+    };
+    expect(error('')).toMatch(/Type a site/);
+    expect(error('ftp://files.example')).toMatch(/http:\/\/ or https:\/\//);
+    expect(error('example.org/path')).toMatch(/only the site name/);
+    expect(error('a b')).toMatch(/only the site name/);
+    expect(error('www.paypal.com')).toMatch(/on your deny list \(paypal.com\)/);
+    expect(error('https://taken.example/x')).toMatch(/already on/);
+  });
+});
+
+describe('small helpers', () => {
+  it('splits a shortcut into keys, keeping a "+" key', () => {
+    expect(keyParts('Alt+Shift+]')).toEqual(['Alt', 'Shift', ']']);
+    expect(keyParts('Ctrl++')).toEqual(['Ctrl', '+']);
+    expect(keyParts('F2')).toEqual(['F2']);
+  });
+
+  it('accepts the delete word in any case, nothing else', () => {
+    expect(isDeleteWord(' DELETE ')).toBe(true);
+    expect(isDeleteWord('delete')).toBe(true);
+    expect(isDeleteWord('delete all')).toBe(false);
+    expect(isDeleteWord('')).toBe(false);
   });
 });
 

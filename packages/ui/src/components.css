@@ -1,37 +1,10 @@
 /*
- * StudyVault extension-page components (popup, side panel, options). Plain CSS on the tokens in
- * tokens.css. Dense and editorial: 13px body, 4/8/12/16/24/32 spacing, 8/12 radii, one blue accent.
- * Meaning never relies on colour alone; every colour here is paired with a glyph or a label.
+ * StudyVault extension-page components in the Sunny Vault style (UX_DESIGN.md section 6): the class
+ * names every page already uses, restyled on tokens.css, plus the design/ component library.
+ * Chunky and friendly: Nunito 600 body, 2px borders, a 3D bottom edge on buttons, 10/12/16/20 radii.
+ * Meaning never relies on colour alone; every colour here is paired with a glyph, a label or a shape.
  */
-
-/* Status tones are not in tokens.css; they follow the same light/dark/system switching. */
-:root {
-  --sv-info: #1d4ed8;
-  --sv-info-bg: #e8f0fe;
-  --sv-warning: #92400e;
-  --sv-warning-bg: #fef3c7;
-  --sv-danger-bg: #fee2e2;
-  --sv-success-bg: #dcfce7;
-  --sv-serif: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, 'Times New Roman', serif;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
-    --sv-info: #93c5fd;
-    --sv-info-bg: #14233f;
-    --sv-warning: #fcd34d;
-    --sv-warning-bg: #3a2a08;
-    --sv-danger-bg: #3b1515;
-    --sv-success-bg: #0f2e1a;
-  }
-}
-:root[data-theme='dark'] {
-  --sv-info: #93c5fd;
-  --sv-info-bg: #14233f;
-  --sv-warning: #fcd34d;
-  --sv-warning-bg: #3a2a08;
-  --sv-danger-bg: #3b1515;
-  --sv-success-bg: #0f2e1a;
-}
+@import './design/components.css';
 
 /* Base ------------------------------------------------------------------------------------- */
 *,
@@ -46,7 +19,11 @@ body {
   margin: 0;
   background: var(--sv-bg);
   color: var(--sv-text);
-  font: var(--sv-text-sm) / var(--sv-leading) var(--sv-font);
+  /* Nunito is thin below 600 (UX_DESIGN 2.4): 600 is the body weight, emphasis is 700-900. */
+  font: 600 var(--sv-text-sm) / var(--sv-leading) var(--sv-font);
+  -webkit-font-smoothing: antialiased;
+  /* A long URL or host breaks instead of widening a 160 CSS px panel (320 px at 200% zoom). */
+  overflow-wrap: break-word;
 }
 h1,
 h2,
@@ -67,23 +44,40 @@ ol {
 }
 h1 {
   font-size: var(--sv-text-lg);
-  line-height: 1.3;
+  font-weight: 900;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
 }
 h2 {
   font-size: var(--sv-text-md);
-  line-height: 1.3;
+  font-weight: 800;
+  line-height: 1.25;
 }
 h3 {
   font-size: var(--sv-text-sm);
+  font-weight: 800;
   line-height: 1.3;
 }
 a {
   color: var(--sv-accent);
+  font-weight: 700;
   text-underline-offset: 2px;
 }
+/*
+ * Two-tone focus (UX_DESIGN 2.7): the ring, plus a halo painted in the offset gap so one of the two
+ * keeps 3:1 on any background. The halo rule has zero specificity, so an element's own shadow (a
+ * card, the 3D edge) wins over it; the 3D button below adds the halo in front of its edge itself.
+ */
 :focus-visible {
-  outline: 2px solid var(--sv-focus);
+  outline: var(--sv-focus-width) solid var(--sv-focus);
   outline-offset: 2px;
+}
+:where(:focus-visible) {
+  box-shadow: 0 0 0 2px var(--sv-focus-halo);
+}
+input[type='checkbox'],
+input[type='radio'] {
+  accent-color: var(--sv-primary);
 }
 .sv-sr {
   position: absolute;
@@ -125,55 +119,100 @@ a {
   min-width: 0;
 }
 
-/* Buttons ---------------------------------------------------------------------------------- */
+/* Buttons: chunky 3D (UX_DESIGN 2.7, 6.1) --------------------------------------------------- */
+/*
+ * The bottom edge is a hard shadow; margin-bottom reserves it, so a press (translateY by the same
+ * amount, edge to 0) never moves the layout. Every transition reads --sv-motion (0 when reduced).
+ */
 .sv-btn {
+  --sv-btn-bg: var(--sv-surface);
+  --sv-btn-ink: var(--sv-ink);
+  --sv-btn-line: var(--sv-border);
+  --sv-btn-edge: var(--sv-edge);
+  --sv-btn-press: 3px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: var(--sv-space-1);
-  min-height: 28px;
-  min-width: 24px;
-  padding: 4px 12px;
-  border: 1px solid var(--sv-border);
-  border-radius: var(--sv-radius-sm);
-  background: var(--sv-surface-raised);
-  color: var(--sv-text);
+  gap: 6px;
+  /* 36px, 28px under compact density; never below the 24px target size. */
+  min-height: calc(var(--sv-control-h) - 8px);
+  min-width: 28px;
+  margin-bottom: var(--sv-btn-press);
+  padding: 4px 14px;
+  border: 2px solid var(--sv-btn-line);
+  border-radius: 12px;
+  background: var(--sv-btn-bg);
+  color: var(--sv-btn-ink);
+  box-shadow: 0 var(--sv-btn-press) 0 var(--sv-btn-edge);
   font: inherit;
-  font-weight: 500;
-  line-height: 1.3;
+  font-weight: 800;
+  line-height: 1.2;
   text-align: center;
+  text-decoration: none;
   cursor: pointer;
   transition:
+    transform var(--sv-motion) var(--sv-ease-spring),
+    box-shadow var(--sv-motion) var(--sv-ease-spring),
     background-color var(--sv-motion),
     border-color var(--sv-motion);
+  -webkit-tap-highlight-color: transparent;
 }
 .sv-btn:hover {
-  background: var(--sv-surface);
+  background-color: var(--sv-surface-2);
+}
+.sv-btn:active:not([aria-disabled='true']) {
+  transform: translateY(var(--sv-btn-press));
+  box-shadow: 0 0 0 var(--sv-btn-edge);
+}
+.sv-btn:focus-visible {
+  box-shadow:
+    0 0 0 2px var(--sv-focus-halo),
+    0 var(--sv-btn-press) 0 var(--sv-btn-edge);
 }
 .sv-btn--primary {
-  background: var(--sv-accent);
-  border-color: var(--sv-accent);
-  color: var(--sv-accent-text);
-}
-.sv-btn--primary:hover {
-  background: var(--sv-accent-hover);
-  border-color: var(--sv-accent-hover);
-}
-.sv-btn--ghost {
-  background: transparent;
-  border-color: transparent;
-  color: var(--sv-accent);
-}
-.sv-btn--ghost:hover {
-  background: var(--sv-surface);
+  --sv-btn-bg: var(--sv-primary);
+  --sv-btn-line: var(--sv-primary);
+  --sv-btn-edge: var(--sv-primary-edge);
+  --sv-btn-ink: var(--sv-on-primary);
 }
 .sv-btn--danger {
-  border-color: var(--sv-danger);
-  color: var(--sv-danger);
+  --sv-btn-bg: var(--sv-danger-fill);
+  --sv-btn-line: var(--sv-danger-fill);
+  --sv-btn-edge: var(--sv-danger-edge);
+  --sv-btn-ink: var(--sv-on-primary);
+}
+/* Darker, not lighter, on hover: white text keeps (and gains) contrast on the fill. */
+.sv-btn--primary:hover,
+.sv-btn--danger:hover {
+  background-color: var(--sv-btn-bg);
+  filter: brightness(0.92);
+}
+.sv-btn--ghost {
+  --sv-btn-bg: transparent;
+  --sv-btn-line: transparent;
+  --sv-btn-edge: transparent;
+  --sv-btn-ink: var(--sv-accent);
+  --sv-btn-press: 0px;
+  padding-inline: var(--sv-space-2);
+}
+.sv-btn--ghost:hover {
+  background-color: var(--sv-primary-soft);
 }
 .sv-btn[aria-disabled='true'] {
-  opacity: 0.65;
+  --sv-btn-bg: var(--sv-sunk);
+  --sv-btn-line: var(--sv-sunk);
+  --sv-btn-edge: var(--sv-border);
+  --sv-btn-ink: var(--sv-ink-2);
   cursor: not-allowed;
+}
+.sv-btn--ghost[aria-disabled='true'] {
+  --sv-btn-bg: transparent;
+  --sv-btn-line: transparent;
+  --sv-btn-edge: transparent;
+}
+.sv-btn[aria-disabled='true']:hover {
+  background-color: var(--sv-btn-bg);
+  filter: none;
 }
 .sv-btn[aria-busy='true'] {
   cursor: progress;
@@ -183,34 +222,44 @@ a {
 /* A field is found by its edge: the boundary must reach 3:1 (WCAG 1.4.11), unlike the soft --sv-border. */
 .sv-control {
   width: 100%;
-  min-height: 28px;
-  padding: 4px 8px;
-  border: 1px solid var(--sv-border-strong);
-  border-radius: var(--sv-radius-sm);
-  background: var(--sv-surface-raised);
+  /* 40px, 32px under compact density (UX_DESIGN 6.16 asks 48px for wizard inputs). */
+  min-height: calc(var(--sv-control-h) - 4px);
+  padding: 6px 12px;
+  border: 2px solid var(--sv-border-strong);
+  border-radius: 12px;
+  background: var(--sv-surface-2);
   color: var(--sv-text);
   font: inherit;
+  font-weight: 700;
+  transition: border-color var(--sv-motion);
+}
+.sv-control:focus {
+  border-color: var(--sv-primary);
+}
+.sv-control[aria-invalid='true'] {
+  border-color: var(--sv-danger);
 }
 /* Browsers dim placeholders to ~50%; keep them at the muted text colour (>= 4.5:1 on the field). */
 .sv-control::placeholder {
   color: var(--sv-text-muted);
+  font-weight: 600;
   opacity: 1;
 }
 textarea.sv-control {
   resize: vertical;
-  min-height: 56px;
+  min-height: 72px;
   line-height: 1.4;
 }
 .sv-field {
   display: flex;
   flex-direction: column;
-  gap: var(--sv-space-1);
+  gap: 6px;
   min-width: 0;
 }
 .sv-label {
-  font-size: var(--sv-text-xs);
-  font-weight: 600;
-  color: var(--sv-text-muted);
+  font-size: var(--sv-text-sm);
+  font-weight: 800;
+  color: var(--sv-text);
 }
 .sv-check {
   display: flex;
@@ -218,11 +267,50 @@ textarea.sv-control {
   gap: var(--sv-space-2);
 }
 .sv-check input {
-  width: 16px;
-  height: 16px;
-  margin: 2px 0 0;
+  width: 20px;
+  height: 20px;
+  margin: 0;
   flex: none;
-  accent-color: var(--sv-accent);
+}
+/*
+ * AsyncSwitch: a checkbox drawn as a switch (UX_DESIGN 6.17). The thumb position is the cue that
+ * does not depend on colour; off = sunk track with a strong inset line, on = primary with its edge.
+ */
+.sv-check input.sv-switch {
+  appearance: none;
+  position: relative;
+  width: 46px;
+  height: 28px;
+  margin-top: -3px;
+  border-radius: var(--sv-radius-pill);
+  background: var(--sv-sunk);
+  box-shadow: inset 0 0 0 2px var(--sv-line-strong);
+  cursor: pointer;
+  transition: background-color var(--sv-motion);
+}
+.sv-switch::before {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--sv-surface);
+  box-shadow: 0 0 0 2px var(--sv-line-strong);
+  content: '';
+  transition: transform var(--sv-motion) var(--sv-ease-spring);
+}
+.sv-check input.sv-switch:checked {
+  background: var(--sv-primary);
+  box-shadow: inset 0 -3px 0 var(--sv-primary-edge);
+}
+.sv-switch:checked::before {
+  background: var(--sv-on-primary);
+  box-shadow: none;
+  transform: translateX(18px);
+}
+.sv-switch[aria-busy='true'] {
+  cursor: progress;
 }
 
 /* Badges and chips ------------------------------------------------------------------------- */
@@ -230,90 +318,89 @@ textarea.sv-control {
   display: inline-flex;
   align-items: baseline;
   gap: var(--sv-space-1);
+  /* Natural width, capped at the row: overflow-wrap: anywhere makes min-content one letter, so a
+     shrinking flex item would stack "1 card" one letter per line. */
+  flex-shrink: 0;
   max-width: 100%;
-  padding: 1px 8px;
-  border: 1px solid var(--sv-border);
-  border-radius: 999px;
-  background: var(--sv-surface);
+  padding: 1px 10px;
+  /* Transparent, not none: forced colours paint it, so the pill keeps its outline there. */
+  border: 1px solid transparent;
+  border-radius: var(--sv-radius-pill);
+  background: var(--sv-sunk);
   color: var(--sv-text);
   font-size: var(--sv-text-xs);
-  font-weight: 600;
+  font-weight: 800;
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
 .sv-badge--info {
-  border-color: var(--sv-info);
   background: var(--sv-info-bg);
+  color: var(--sv-info);
 }
 .sv-badge--success {
-  border-color: var(--sv-success);
   background: var(--sv-success-bg);
+  color: var(--sv-success);
 }
 .sv-badge--warning {
-  border-color: var(--sv-warning);
   background: var(--sv-warning-bg);
+  color: var(--sv-warning);
 }
 .sv-badge--danger {
-  border-color: var(--sv-danger);
   background: var(--sv-danger-bg);
+  color: var(--sv-danger);
 }
 .sv-chip {
-  border-color: var(--sv-border);
-  border-left: 4px solid var(--sv-chip, var(--sv-border));
-  border-radius: 6px;
-  background: var(--sv-surface-raised);
+  border: 2px solid var(--sv-border);
+  border-left: 6px solid var(--sv-chip, var(--sv-border));
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface);
+  color: var(--sv-text);
 }
 
 /* Notices, empty states -------------------------------------------------------------------- */
 .sv-notice {
   display: flex;
-  gap: var(--sv-space-2);
-  padding: var(--sv-space-2) var(--sv-space-3);
-  border: 1px solid var(--sv-border);
-  border-left-width: 4px;
-  border-radius: var(--sv-radius-sm);
+  gap: 10px;
+  padding: 10px 14px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-md);
   background: var(--sv-surface);
   min-width: 0;
 }
 .sv-notice--info {
-  border-color: var(--sv-info);
-  background: var(--sv-info-bg);
+  --sv-notice-tone: var(--sv-info);
+  --sv-notice-bg: var(--sv-info-bg);
 }
 .sv-notice--success {
-  border-color: var(--sv-success);
-  background: var(--sv-success-bg);
+  --sv-notice-tone: var(--sv-success);
+  --sv-notice-bg: var(--sv-success-bg);
 }
 .sv-notice--warning {
-  border-color: var(--sv-warning);
-  background: var(--sv-warning-bg);
+  --sv-notice-tone: var(--sv-warning);
+  --sv-notice-bg: var(--sv-warning-bg);
 }
 .sv-notice--error {
-  border-color: var(--sv-danger);
-  background: var(--sv-danger-bg);
+  --sv-notice-tone: var(--sv-danger);
+  --sv-notice-bg: var(--sv-danger-bg);
 }
+.sv-notice[class*='sv-notice--'] {
+  /* The edge is decoration (the glyph and the spoken tone carry the meaning). */
+  border-color: color-mix(in srgb, var(--sv-notice-tone) 40%, transparent);
+  background: var(--sv-notice-bg);
+}
+/* The glyph is the tone colour with the tinted background as its ink: the same 4.5:1 pair, reversed. */
 .sv-notice__glyph {
   flex: none;
-  width: 18px;
-  height: 18px;
-  margin-top: 1px;
-  border: 1.5px solid currentColor;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 15px;
-  text-align: center;
-}
-.sv-notice--info .sv-notice__glyph {
-  color: var(--sv-info);
-}
-.sv-notice--success .sv-notice__glyph {
-  color: var(--sv-success);
-}
-.sv-notice--warning .sv-notice__glyph {
-  color: var(--sv-warning);
-}
-.sv-notice--error .sv-notice__glyph {
-  color: var(--sv-danger);
+  background: var(--sv-notice-tone, var(--sv-text-muted));
+  color: var(--sv-notice-bg, var(--sv-surface));
+  font-size: var(--sv-text-xs);
+  font-weight: 900;
+  line-height: 1;
 }
 .sv-notice__body {
   display: flex;
@@ -323,7 +410,7 @@ textarea.sv-control {
   overflow-wrap: anywhere;
 }
 .sv-notice__title {
-  font-weight: 600;
+  font-weight: 800;
 }
 .sv-notice__text > * + * {
   margin-top: var(--sv-space-1);
@@ -332,13 +419,14 @@ textarea.sv-control {
   margin-top: var(--sv-space-1);
 }
 .sv-empty {
-  padding: var(--sv-space-5) var(--sv-space-3);
-  border: 1px dashed var(--sv-border);
-  border-radius: var(--sv-radius-md);
+  padding: var(--sv-space-5) var(--sv-space-4);
+  border: 2px dashed var(--sv-border);
+  border-radius: var(--sv-radius-lg);
   text-align: center;
 }
 .sv-empty__title {
-  font-weight: 600;
+  font-size: var(--sv-text-md);
+  font-weight: 800;
 }
 .sv-empty__text {
   margin-top: var(--sv-space-1);
@@ -349,32 +437,39 @@ textarea.sv-control {
 }
 
 /* Tabs ------------------------------------------------------------------------------------- */
+/* Selected = soft blue tile with a blue border (UX_DESIGN 6.7): the border is the non-colour cue. */
 .sv-tablist {
   display: flex;
-  border-bottom: 1px solid var(--sv-border);
+  gap: 2px;
+  padding-bottom: 6px;
+  border-bottom: 2px solid var(--sv-border);
 }
 .sv-tab {
   flex: 1 1 0;
   /* Three tabs must still fit a 160 CSS px panel (320 px at 200% zoom): let labels wrap, not overflow. */
   min-width: 0;
   overflow-wrap: anywhere;
-  min-height: 32px;
-  padding: 4px var(--sv-space-2);
-  border: 0;
-  border-bottom: 2px solid transparent;
+  min-height: 36px;
+  padding: 4px var(--sv-space-1);
+  border: 2px solid transparent;
+  border-radius: 12px;
   background: transparent;
   color: var(--sv-text-muted);
   font: inherit;
-  font-weight: 500;
+  /* Tab labels are 12/800 (UX_DESIGN 2.4), so five text tabs still share one row at 360 px. */
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
   cursor: pointer;
+  transition: background-color var(--sv-motion);
 }
 .sv-tab:hover {
+  background: var(--sv-sunk);
   color: var(--sv-text);
 }
 .sv-tab[aria-selected='true'] {
-  border-bottom-color: var(--sv-accent);
-  color: var(--sv-text);
-  font-weight: 700;
+  border-color: var(--sv-primary);
+  background: var(--sv-primary-soft);
+  color: var(--sv-primary-soft-ink);
 }
 .sv-tabpanel:focus {
   outline: none;
@@ -391,7 +486,7 @@ html {
 .sv-toasts {
   position: fixed;
   inset: auto var(--sv-space-2) var(--sv-space-2) var(--sv-space-2);
-  z-index: 10;
+  z-index: var(--sv-z-toast);
   display: flex;
   flex-direction: column;
   gap: var(--sv-space-2);
@@ -402,16 +497,18 @@ html {
   flex-direction: column;
   gap: var(--sv-space-2);
 }
+/* Level 3 (UX_DESIGN 2.7, 6.13): a raised card, so the page's focus ring reads on it unchanged. */
 .sv-toast {
   display: flex;
   align-items: center;
   gap: var(--sv-space-2);
-  padding: var(--sv-space-2) var(--sv-space-3);
-  border: 1px solid var(--sv-text);
-  border-radius: var(--sv-radius-sm);
-  background: var(--sv-text);
-  color: var(--sv-bg);
+  padding: var(--sv-space-2) var(--sv-space-2) var(--sv-space-2) var(--sv-space-3);
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface-raised);
+  color: var(--sv-text);
   box-shadow: var(--sv-shadow);
+  font-weight: 700;
   pointer-events: auto;
 }
 .sv-toast__text {
@@ -421,41 +518,39 @@ html {
 }
 .sv-toast__btn {
   flex: none;
-  min-height: 24px;
-  min-width: 24px;
-  padding: 2px 8px;
-  border: 1px solid currentColor;
-  border-radius: 6px;
-  background: transparent;
-  color: inherit;
+  min-height: 28px;
+  min-width: 28px;
+  padding: 2px 10px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface);
+  color: var(--sv-accent);
   font: inherit;
-  font-weight: 600;
+  font-weight: 800;
   cursor: pointer;
+}
+.sv-toast__btn:hover {
+  background: var(--sv-primary-soft);
 }
 .sv-toast__close {
   border-color: transparent;
+  background: transparent;
+  color: var(--sv-text-muted);
 }
-/*
- * The toast is the inverse of the page, so the blue focus ring (2.7:1 on it in light, 1.8:1 in dark)
- * is too faint against it. The page colour is what reads on that surface (WCAG 1.4.11). The error
- * toast keeps the blue: it sits on a tinted surface where blue has 5:1 or more.
- */
-.sv-toast :focus-visible {
-  outline-color: var(--sv-bg);
-}
-.sv-toast--error :focus-visible {
-  outline-color: var(--sv-focus);
-}
-/* Errors do not use the inverse "snackbar" look: tinted surface, danger edge, glyph, text prefix. */
+/* Errors: tinted surface, danger edge, glyph and a spoken prefix. */
 .sv-toast--error {
-  border: 2px solid var(--sv-danger);
+  border-color: var(--sv-danger);
   background: var(--sv-danger-bg);
+}
+.sv-toast--error .sv-toast__btn:not(.sv-toast__close) {
+  border-color: var(--sv-danger);
+  background: transparent;
   color: var(--sv-text);
 }
 .sv-toast__glyph {
   flex: none;
   color: var(--sv-danger);
-  font-weight: 700;
+  font-weight: 900;
 }
 
 /* Dialogs ---------------------------------------------------------------------------------- */
@@ -463,24 +558,33 @@ html {
   width: min(34rem, calc(100vw - 2 * var(--sv-space-4)));
   max-height: calc(100vh - 2 * var(--sv-space-4));
   padding: 0;
-  border: 1px solid var(--sv-border-strong);
-  border-radius: var(--sv-radius-md);
-  background: var(--sv-surface-raised);
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-lg);
+  background: var(--sv-surface);
   color: var(--sv-text);
-  box-shadow: var(--sv-shadow);
+  box-shadow:
+    0 6px 0 var(--sv-border),
+    var(--sv-shadow);
   overflow: auto;
 }
 .sv-dialog::backdrop {
-  background: rgba(15, 23, 42, 0.6);
+  background: var(--sv-scrim);
 }
 .sv-dialog__body {
-  padding: var(--sv-space-4);
+  padding: var(--sv-space-5);
+}
+.sv-dialog h2 {
+  font-size: var(--sv-text-lg);
+  font-weight: 900;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
 }
 .sv-dialog__scroll {
   max-height: 11rem;
-  padding: var(--sv-space-2);
-  border: 1px solid var(--sv-border-strong);
+  padding: var(--sv-space-2) var(--sv-space-3);
+  border: 2px solid var(--sv-border);
   border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface-2);
   overflow: auto;
 }
 .sv-crash {
@@ -490,13 +594,16 @@ html {
 /* Keys ------------------------------------------------------------------------------------- */
 .sv-kbd {
   display: inline-block;
-  padding: 0 6px;
-  border: 1px solid var(--sv-border-strong);
-  border-radius: 6px;
+  padding: 0 7px;
+  border: 2px solid var(--sv-border);
+  border-bottom-width: 3px;
+  border-radius: 8px;
   background: var(--sv-surface);
   color: var(--sv-text); /* its own surface: never inherit a button's light-on-accent text */
-  font-family: var(--sv-font-mono);
-  font-size: 0.9em;
+  font-family: var(--sv-font);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+  line-height: 1.5;
   white-space: nowrap;
 }
 .sv-hint {
@@ -509,18 +616,26 @@ html {
 /* Quotations ------------------------------------------------------------------------------- */
 .sv-quote {
   /* Logical sides: the bar follows the text direction of Arabic or Hebrew study material. */
-  padding-inline-start: var(--sv-space-2);
-  border-inline-start: 3px solid var(--sv-border);
-  font-family: var(--sv-serif);
+  padding-inline-start: var(--sv-space-3);
+  border-inline-start: 4px solid var(--sv-border);
   font-size: var(--sv-text-md);
+  font-weight: 700;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+/* .sv-small is declared earlier with the same weight, so it would lose to the quote size. */
+.sv-quote.sv-small {
+  font-size: var(--sv-text-xs);
 }
 
 /* Motion and contrast ---------------------------------------------------------------------- */
 @media (prefers-reduced-motion: reduce) {
   * {
     scroll-behavior: auto !important;
+  }
+  /* No press travel (UX_DESIGN 2.8): the edge still flattens, the button does not move. */
+  .sv-btn:active:not([aria-disabled='true']) {
+    transform: none;
   }
 }
 @media (forced-colors: active) {
@@ -531,14 +646,27 @@ html {
   .sv-dialog,
   .sv-kbd,
   .sv-control {
-    border: 1px solid ButtonText;
+    border: 2px solid ButtonText;
   }
   .sv-tab[aria-selected='true'] {
-    border-bottom-color: Highlight;
+    border-color: Highlight;
     text-decoration: underline;
   }
   .sv-btn[aria-disabled='true'] {
     border-color: GrayText;
     color: GrayText;
+  }
+  .sv-notice__glyph {
+    border: 1px solid CanvasText;
+  }
+  /* A drawn switch would lose its track and thumb; the native checkbox is what forced colours paint. */
+  .sv-check input.sv-switch {
+    appearance: auto;
+    width: 20px;
+    height: 20px;
+    margin-top: 0;
+  }
+  .sv-switch::before {
+    content: none;
   }
 }

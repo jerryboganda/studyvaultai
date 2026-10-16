@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { CaptureMethod } from '@shared';
-import { describeCaptureMethod } from './format';
+import { describeCaptureMethod, formatDateTime } from './format';
 
 describe('describeCaptureMethod', () => {
   it('has a plain-language label for every way a highlight can have been captured', () => {
@@ -37,5 +37,18 @@ describe('describeCaptureMethod', () => {
 
   it('ignores importedFrom for a capture made on a page', () => {
     expect(describeCaptureMethod('toolbar', { importedFrom: 'csv' })).toBe('the selection toolbar');
+  });
+});
+
+describe('formatDateTime', () => {
+  it('formats a date and time with its zone, not the raw ISO string', () => {
+    const iso = '2026-10-12T15:36:32.255Z';
+    const text = formatDateTime(iso);
+    expect(text).not.toBe(iso);
+    expect(text).toContain('2026');
+  });
+
+  it('keeps an unreadable value as it is', () => {
+    expect(formatDateTime('not a date')).toBe('not a date');
   });
 });

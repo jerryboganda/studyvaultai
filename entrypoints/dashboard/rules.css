@@ -1,12 +1,52 @@
-/* Filing rules (docs/adr/017-filing-rules.md): the manager, its dialog and the test panel.
-   Tokens only; no raw colours. Reflows to one column at 320 px. */
+/* Filing rules (docs/adr/017-filing-rules.md): the rule cards, the create/edit wizard and the test
+   panel, in the Sunny Vault style. Tokens only; reflows to one column at 320 px; state is never
+   colour only (switch thumb and On/Off text, check marks, icons and words on every chip). */
 
-.rule-top {
-  align-items: flex-start;
-}
-.rule-list {
+.rule-line {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  gap: var(--sv-space-1);
+}
+
+/* Master switch */
+.rule-master {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sv-space-3);
+  padding: var(--sv-space-3) var(--sv-space-4);
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-lg);
+  background: var(--sv-surface);
+  box-shadow: 0 3px 0 var(--sv-border);
+}
+.rule-master .sv-check {
+  flex: 0 1 auto;
+  align-items: center;
+  min-width: 0;
+  font-weight: 800;
+}
+/* Icon, switch and (i) stay on one line down to 320 px; only the label wraps. */
+.rule-master {
+  flex-wrap: nowrap;
+}
+.rule-master__icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--sv-radius-sm);
+}
+.rule-master__icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* Rule cards */
+.rule-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 22rem), 1fr));
   gap: var(--sv-space-3);
   margin: 0;
   padding: 0;
@@ -15,84 +55,232 @@
 .rule-row {
   display: flex;
   flex-direction: column;
-  gap: var(--sv-space-2);
-  padding: var(--sv-space-3);
-  border: 1px solid var(--sv-border);
-  border-radius: var(--sv-radius-md);
+  gap: var(--sv-space-3);
+  min-width: 0;
+  padding: var(--sv-space-3) var(--sv-space-4) var(--sv-space-2);
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-lg);
   background: var(--sv-surface);
+  box-shadow: 0 3px 0 var(--sv-border);
 }
-.rule-row[data-enabled='false'] .rule-row__head strong {
-  color: var(--sv-text-muted);
+.rule-row[data-enabled='false'] {
+  background: var(--sv-surface-2);
+}
+.rule-row[data-enabled='false'] .rule-row__name {
+  color: var(--sv-ink-2);
 }
 .rule-row__head {
+  display: flex;
   align-items: center;
+  gap: var(--sv-space-2);
+  min-width: 0;
 }
 .rule-row__rank {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 24px;
-  min-height: 24px;
-  border: 1px solid var(--sv-border-strong);
-  border-radius: 999px;
-  font-size: var(--sv-text-xs);
-  font-weight: 700;
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-primary-soft);
+  color: var(--sv-primary-soft-ink);
+  font-size: var(--sv-text-sm);
+  font-weight: 900;
   font-variant-numeric: tabular-nums;
 }
+.rule-row__name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: var(--sv-text-md);
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
 .rule-row__switch {
+  flex: none;
   align-items: center;
-  min-height: 24px;
+  gap: var(--sv-space-2);
+  min-height: 32px;
+  margin-inline-start: auto;
+  font-size: var(--sv-text-sm);
+  font-weight: 800;
+}
+.rule-row__summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+.rule-row__arrow,
+.rule-summary__arrow {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  color: var(--sv-ink-2);
+}
+.rule-row__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sv-space-1);
+  /* Cards in one grid row share a height: the actions sit on the bottom edge of each. */
+  margin-top: auto;
+  padding-top: var(--sv-space-2);
+  border-top: 2px solid var(--sv-border);
+}
+/* Narrow cards (320 px, 400 % zoom): the four icon buttons stay on the Edit button's line. */
+@container (max-width: 380px) {
+  .rule-row {
+    padding-inline: var(--sv-space-3);
+  }
+  .rule-row__actions {
+    gap: 0;
+  }
+  .rule-row__actions .sv-ibtn {
+    width: 34px;
+    height: 34px;
+  }
+}
+.rule-row__actions > :first-child {
+  margin-inline-end: auto;
 }
 
-.rule-fieldset {
+/* Test panel (page and wizard) */
+.rule-test-card {
+  gap: var(--sv-space-2);
+}
+.rule-disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sv-space-2);
+  min-height: 40px;
+  padding: 4px 8px;
+  margin-inline-start: -8px;
+  border: 0;
+  border-radius: var(--sv-radius-sm);
+  background: transparent;
+  color: var(--sv-ink);
+  font: inherit;
+  cursor: pointer;
+}
+.rule-disclosure:hover {
+  background: var(--sv-sunk);
+}
+.rule-disclosure svg {
+  width: 20px;
+  height: 20px;
+}
+.rule-disclosure__chev {
+  transition: transform var(--sv-motion) ease;
+}
+.rule-disclosure[aria-expanded='true'] .rule-disclosure__chev {
+  transform: rotate(180deg);
+}
+.rule-tester {
   display: flex;
   flex-direction: column;
   gap: var(--sv-space-3);
   min-width: 0;
-  margin: 0;
-  padding: var(--sv-space-3);
-  border: 1px solid var(--sv-border);
-  border-radius: var(--sv-radius-sm);
 }
-.rule-fieldset > legend {
-  padding: 0 var(--sv-space-1);
+.rule-tester__pair {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+  gap: var(--sv-space-3);
+}
+.rule-tester__more:not([hidden]) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-3);
+}
+.rule-result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+  padding: var(--sv-space-3);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface-2);
+}
+.rule-verdict {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sv-space-2);
+  margin: 0;
   font-weight: 700;
 }
-.rule-fieldset--inner {
-  border-style: dashed;
+.rule-verdict__icon {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  margin-top: 1px;
 }
-.rule-checks {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sv-space-2) var(--sv-space-4);
+.rule-verdict--success .rule-verdict__icon {
+  color: var(--sv-success-ink);
 }
-
-.rule-chips {
+.rule-verdict--warning .rule-verdict__icon {
+  color: var(--sv-warning-ink);
+}
+.rule-verdict--neutral .rule-verdict__icon {
+  color: var(--sv-ink-2);
+}
+.rule-test-rows {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: var(--sv-space-1);
   margin: 0;
   padding: 0;
   list-style: none;
 }
-.rule-chip {
+.rule-test-rows li {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  padding-inline-end: 0;
+  gap: var(--sv-space-2);
+}
+
+/* Chip fields (Chips.tsx): added values as soft blue pills with a round remove button. */
+.rule-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sv-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.rule-chip.sv-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+  padding: 2px 4px 2px 12px;
+  border: 2px solid var(--sv-primary);
+  border-radius: var(--sv-radius-pill);
+  background: var(--sv-primary-soft);
+  color: var(--sv-primary-soft-ink);
+  font-size: var(--sv-text-sm);
+  font-weight: 800;
 }
 .rule-chip__x {
+  display: inline-grid;
+  place-items: center;
   min-width: 24px;
   min-height: 24px;
   padding: 0;
   border: 0;
   border-radius: 999px;
   background: transparent;
-  color: var(--sv-text);
+  color: inherit;
   font: inherit;
-  font-weight: 700;
+  font-size: 1.1em;
+  font-weight: 900;
+  line-height: 1;
   cursor: pointer;
 }
 .rule-chip__x:hover {
-  background: var(--sv-border);
+  background: var(--sv-surface);
+}
+.rule-chip__x:focus-visible {
+  outline: var(--sv-focus-width) solid var(--sv-focus);
+  outline-offset: 1px;
 }
 .rule-chip-input {
   flex: 1 1 12rem;
@@ -101,34 +289,106 @@
 }
 .rule-problem {
   margin: 0;
-  color: var(--sv-danger);
-  font-weight: 600;
+  color: var(--sv-danger-ink);
+  font-weight: 800;
 }
 
-.rule-tester {
-  display: flex;
-  flex-direction: column;
+/* Wizard */
+/* One picked condition on "What matches": its picture tile beside its field. */
+.rule-cond {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
   gap: var(--sv-space-3);
-  padding-top: var(--sv-space-4);
-  border-top: 1px solid var(--sv-border);
+  align-items: start;
+  padding: var(--sv-space-3);
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface-2);
 }
-.rule-test-rows {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sv-space-1);
+.rule-cond__art {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--sv-radius-sm);
+}
+.rule-cond__art svg {
+  width: 22px;
+  height: 22px;
+}
+.rule-cond__field {
+  min-width: 0;
+}
+.rule-cond__field .sv-field {
   margin: 0;
-  padding-inline-start: var(--sv-space-5);
 }
-
-@media (max-width: 480px) {
-  .rule-row .sv-btn {
-    flex: 1 1 auto;
+@container (max-width: 340px) {
+  .rule-cond {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .rule-cond__art {
+    width: 36px;
+    height: 36px;
   }
 }
+.rule-wiz__on {
+  align-items: center;
+  font-weight: 800;
+}
+.rule-emoji {
+  font-size: 2rem;
+  line-height: 1;
+}
+.rule-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+  padding: var(--sv-space-3);
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface-2);
+}
+.rule-summary__row {
+  display: grid;
+  grid-template-columns: 3.25rem minmax(0, 1fr) auto;
+  gap: var(--sv-space-2);
+  align-items: center;
+}
+.rule-summary__row + .rule-summary__row {
+  padding-top: var(--sv-space-2);
+  border-top: 2px solid var(--sv-border);
+}
+.rule-summary__chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+}
+@container (max-width: 340px) {
+  .rule-summary__row {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .rule-summary__chips {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}
+.rule-summary__key {
+  min-width: 3rem;
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 @media (forced-colors: active) {
   .rule-row,
-  .rule-fieldset,
+  .rule-master,
+  .rule-summary,
   .rule-row__rank {
-    border-color: CanvasText;
+    border: 2px solid CanvasText;
   }
 }

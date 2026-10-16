@@ -1,4 +1,5 @@
 import { useEffect, useId, useState } from 'react';
+import { BookmarkPlus, X } from 'lucide-react';
 import {
   createSavedSearch,
   deserializeSavedSearches,
@@ -129,9 +130,7 @@ export function SavedSearches({
       {state === null ? (
         <p className="sv-small sv-muted">Loading…</p>
       ) : state.items.length === 0 ? (
-        <p className="sv-small sv-muted">
-          None yet. Type a search, give it a name below and keep it here.
-        </p>
+        <p className="sv-small sv-muted">None yet. Type a search to keep it.</p>
       ) : (
         <ul className="sv-stack sv-stack--tight">
           {state.items.map((s) => (
@@ -152,7 +151,7 @@ export function SavedSearches({
                 onClick={() => void controller.remove(s.id)}
                 data-testid="saved-search-delete"
               >
-                <span aria-hidden="true">✕</span>
+                <X aria-hidden="true" strokeWidth={3} />
               </button>
             </li>
           ))}
@@ -165,8 +164,10 @@ export function SavedSearches({
             : `${state.rejected} saved search${state.rejected === 1 ? '' : 'es'} could not be read and were skipped.`}
         </InlineNotice>
       ) : null}
+      {/* The name form appears once there is a search to keep. */}
       <form
-        className="sv-stack sv-stack--tight"
+        className="sv-stack sv-stack--tight dash-saved__form"
+        hidden={!canSave && name === '' && !problem}
         onSubmit={(e) => {
           e.preventDefault();
           if (canSave && name.trim() !== '') {
@@ -177,7 +178,7 @@ export function SavedSearches({
         }}
       >
         <label className="sv-label" htmlFor={`${id}-name`}>
-          Name for the current search
+          Name this search
         </label>
         <input
           id={`${id}-name`}
@@ -199,7 +200,8 @@ export function SavedSearches({
           }
           data-testid="saved-search-save"
         >
-          Save this search
+          <BookmarkPlus aria-hidden="true" className="dash-btn-icon" />
+          Save search
         </Button>
         {problem ? (
           <p className="sv-small" role="alert">

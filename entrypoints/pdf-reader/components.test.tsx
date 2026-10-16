@@ -50,16 +50,18 @@ describe('OpenPanel', () => {
     );
     expect(screen.getByText(/needs your permission to contact/)).toBeTruthy();
     expect(screen.getByText(/does not send your cookies or sign-ins/)).toBeTruthy();
-    await userEvent.click(
-      screen.getByRole('button', { name: /Allow access to files\.example\.org and open/ }),
+    // The site is named where the person decides; the button stays short.
+    expect(screen.getByText(/Allow StudyVault to contact/).textContent).toContain(
+      'files.example.org',
     );
+    await userEvent.click(screen.getByRole('button', { name: 'Allow and open' }));
     expect(onAllowAndOpen).toHaveBeenCalledTimes(1);
   });
 
   it('a declined permission leaves the manual file fallback in view', () => {
     render(<OpenPanel {...base} src={src} web={{ t: 'denied' }} />);
     expect(screen.getByText('Access was not granted')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Choose a PDF file' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Choose a PDF' })).toBeTruthy();
   });
 
   const failed = (kind: 'sign-in' | 'network' | 'not-pdf'): WebState => ({
@@ -112,9 +114,7 @@ describe('OpenPanel', () => {
     expect(advice).toMatch(/allow that site for this download only/);
     expect(advice).toMatch(/download the PDF in your browser and choose it below/);
     expect(advice).not.toMatch(/never contacts/);
-    await userEvent.click(
-      screen.getByRole('button', { name: 'Allow access to cdn.example.net and open' }),
-    );
+    await userEvent.click(screen.getByRole('button', { name: 'Allow cdn.example.net' }));
     expect(onAllowAndOpen).toHaveBeenCalledWith(['https://cdn.example.net/*']);
   });
 
@@ -137,7 +137,7 @@ describe('OpenPanel', () => {
     expect(advice).toMatch(/did not use anything the site returned/);
     expect(advice).toMatch(/download the PDF, then choose the downloaded file below/);
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Choose a PDF file' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Choose a PDF' })).toBeTruthy();
   });
 
   it('shows download progress in a status region', () => {
@@ -206,7 +206,7 @@ describe('SaveBar', () => {
     const p = props();
     render(<SaveBar {...p} />);
     expect(screen.getByRole('dialog', { name: 'Save selection from page 3' })).toBeTruthy();
-    await userEvent.selectOptions(screen.getByTestId('pdf-save-kind'), 'formula');
+    await userEvent.click(screen.getByRole('radio', { name: 'Formula' }));
     await userEvent.selectOptions(screen.getByTestId('pdf-save-bank'), BIO.id);
     await userEvent.type(screen.getByTestId('pdf-save-note'), 'remember this');
     await userEvent.click(screen.getByTestId('pdf-save'));
@@ -224,11 +224,23 @@ describe('SaveBar', () => {
         {...props({ selection: selection([4, 'end of page four'], [5, 'start of page five']) })}
       />,
     );
-    expect(screen.getByText('This selection spans more than one page')).toBeTruthy();
+    expect(screen.getByText('Spans pages 4-5')).toBeTruthy();
     expect(
-      screen.getByText(/saves each page's part as its own highlight \(pages 4-5\)/),
+      screen.getByText(/saves each page.s part as its own highlight \(pages 4-5\)/),
     ).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Save 2 highlights' })).toBeTruthy();
+  });
+
+  it('shows the seven kinds as named dots with the default one chosen', () => {
+    render(<SaveBar {...props({ defaultKind: 'question' })} />);
+    const kinds = within(screen.getByRole('group', { name: 'Kind' })).getAllByRole('radio');
+    expect(kinds).toHaveLength(7);
+    expect(screen.getByRole<HTMLInputElement>('radio', { name: 'Question' }).checked).toBe(true);
+  });
+
+  it('says when the banks could not be read', () => {
+    render(<SaveBar {...props({ banks: [], banksError: 'disk busy' })} />);
+    expect(screen.getByText(/Banks not loaded/).getAttribute('role')).toBe('status');
   });
 
   it('creates a bank in the extension origin and selects it', async () => {
@@ -343,9 +355,10 @@ describe('Companion', () => {
       'p. 1',
       'p. 2',
     ]);
-    expect(within(cards[0]!).getByText('Found on page')).toBeTruthy();
+    // Only a status that needs a look gets a badge.
+    expect(within(cards[0]!).queryByText('Found on page')).toBeNull();
     expect(within(cards[1]!).getByText(/Ambiguous/)).toBeTruthy();
-    expect(screen.getByText('1 not painted on the page')).toBeTruthy();
+    expect(screen.getByText('1 highlight not painted')).toBeTruthy();
   });
 
   it('an empty document says how to start', () => {
@@ -359,11 +372,10 @@ describe('Companion', () => {
     expect(screen.getByText(/recognised from a scanned image and may contain errors/)).toBeTruthy();
   });
 
-  it('the source link is real for web PDFs and honestly disabled for local files', () => {
+  it('the source link is real for web PDFs and not offered for local files', () => {
     mount();
-    const disabled = screen.getAllByRole('button', { name: 'Open page in source' })[0]!;
-    expect(disabled.getAttribute('aria-disabled')).toBe('true');
-    expect(disabled.getAttribute('title')).toMatch(/opened from a file on this device/);
+    expect(screen.queryByRole('button', { name: 'Open page in source' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Open page in source' })).toBeNull();
     cleanup();
     mount({ originalUrl: 'https://example.org/doc.pdf' });
     const link = screen.getAllByRole('link', { name: 'Open page in source' })[0]!;
@@ -380,6 +392,65 @@ describe('Companion', () => {
     expect(a.update).toHaveBeenCalledWith('h-bbbbbbb2', { kind: 'formula', color: 'amber' });
     await userEvent.click(within(first).getByRole('button', { name: 'Delete' }));
     expect(a.remove).toHaveBeenCalledWith('h-bbbbbbb2');
+  });
+
+  it('a failed kind change or delete is said on the card', async () => {
+    const a = actions();
+    a.update.mockRejectedValue(new Error('disk full'));
+    a.remove.mockRejectedValue(new Error('locked'));
+    render(
+      <Companion
+        rows={pdfRows([hl('h-aaaaaaa1', 1)])}
+        resolutions={new Map()}
+        banks={[INBOX]}
+        ocrPages={new Set()}
+        originalUrl={null}
+        selectedId={null}
+        paletteFor={() => 'amber'}
+        actions={a}
+      />,
+    );
+    await userEvent.selectOptions(screen.getByLabelText('Kind'), 'formula');
+    expect((await screen.findByRole('alert')).textContent).toContain('disk full');
+    await userEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('locked');
+  });
+
+  it('never claims "no highlights" while loading or when the list could not be read', async () => {
+    const onRetry = vi.fn();
+    const { rerender } = render(
+      <Companion
+        rows={[]}
+        resolutions={new Map()}
+        banks={[]}
+        ocrPages={new Set()}
+        originalUrl={null}
+        selectedId={null}
+        paletteFor={() => 'amber'}
+        actions={actions()}
+        loading
+      />,
+    );
+    expect(screen.getByRole('status').textContent).toContain('Loading highlights');
+    expect(screen.queryByText('No highlights yet')).toBeNull();
+    rerender(
+      <Companion
+        rows={[]}
+        resolutions={new Map()}
+        banks={[]}
+        ocrPages={new Set()}
+        originalUrl={null}
+        selectedId={null}
+        paletteFor={() => 'amber'}
+        actions={actions()}
+        error="disk busy"
+        onRetry={onRetry}
+      />,
+    );
+    expect(screen.getByRole('alert').textContent).toContain('disk busy');
+    expect(screen.queryByText('No highlights yet')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(onRetry).toHaveBeenCalled();
   });
 
   it('saves the note after a pause and on blur, and never touches the quote', async () => {
@@ -430,7 +501,6 @@ describe('Toolbar', () => {
       onFind: vi.fn(),
       onToggleCompanion: vi.fn(),
       onToggleSidePane: vi.fn(),
-      onOpenAnother: vi.fn(),
       ...over,
     };
     render(<Toolbar {...p} />);
@@ -441,7 +511,8 @@ describe('Toolbar', () => {
     mount();
     const prev = screen.getByRole('button', { name: 'Previous page' });
     expect(prev.getAttribute('aria-disabled')).toBe('true');
-    expect(prev.getAttribute('title')).toBe('Already on the first page.');
+    const reason = document.getElementById(prev.getAttribute('aria-describedby') ?? '');
+    expect(reason?.textContent).toBe('Already on the first page.');
   });
 
   it('commits a typed page number clamped to the document', async () => {
@@ -474,6 +545,31 @@ describe('Toolbar', () => {
     cleanup();
     mount({ search: search({ query: 'zzz', status: 'done', total: 0 }) });
     expect(screen.getByTestId('pdf-find-count').textContent).toBe('No matches');
+  });
+
+  it('"More tools" holds zoom, rotation and the shortcuts; Escape closes it back to its button', async () => {
+    mount();
+    const more = screen.getByRole('button', { name: 'More tools' });
+    const panel = document.getElementById(more.getAttribute('aria-controls') ?? '')!;
+    // One copy of each control, inside the panel the button controls.
+    expect(within(panel).getByTestId('pdf-zoom')).toBeTruthy();
+    expect(within(panel).getByRole('button', { name: 'Rotate pages clockwise' })).toBeTruthy();
+    expect(within(panel).getByRole('button', { name: 'Keyboard shortcuts' })).toBeTruthy();
+    expect(more.getAttribute('aria-expanded')).toBe('false');
+    await userEvent.click(more);
+    expect(more.getAttribute('aria-expanded')).toBe('true');
+    within(panel).getByRole('button', { name: 'Zoom in' }).focus();
+    await userEvent.keyboard('{Escape}');
+    expect(more.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(more);
+    await userEvent.click(more);
+    await userEvent.click(document.body);
+    expect(more.getAttribute('aria-expanded')).toBe('false');
+    // Tabbing out of it closes it too.
+    await userEvent.click(more);
+    within(panel).getByRole('button', { name: 'Keyboard shortcuts' }).focus();
+    await userEvent.tab();
+    expect(more.getAttribute('aria-expanded')).toBe('false');
   });
 
   it('Enter in the search box steps forward and Shift+Enter backward', async () => {

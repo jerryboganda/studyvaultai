@@ -20,6 +20,7 @@ const ENTITY: Record<string, string> = {
   reviewLogs: 'Review record',
   documents: 'PDF',
   ocrPages: 'Scanned page text',
+  gameFacts: 'Goal, streak and XP record',
 };
 
 const FIELD: Record<string, string> = {
@@ -63,19 +64,33 @@ export const REASON_TEXT: Record<RejectReason, string> = {
   awaiting_create: 'It is waiting for the item it belongs to, which has not arrived yet.',
 };
 
+/** The status as a short chip label (the e2e suite reads these too). */
 export const STATUS_TEXT: Record<SyncStatus, string> = {
-  disabled: 'Sync is off.',
-  idle: 'Up to date.',
+  disabled: 'Sync is off',
+  idle: 'Up to date',
   syncing: 'Syncing…',
-  offline:
-    'The server cannot be reached. Changes stay on this device and are sent when it is reachable.',
-  backoff: 'The server asked StudyVault to slow down. It will try again shortly.',
+  offline: 'Offline',
+  backoff: 'Slowed down',
+  auth_required: 'Sign in needed',
+  locked: 'Locked',
+  awaiting_encryption_choice: 'Choose protection',
+  resync_required: 'Server data changed',
+  account_mismatch: 'Other account',
+  error: 'Problem',
+};
+
+/** One line under the chip that says what the status means (none for "up to date"). */
+export const STATUS_DETAIL: Record<SyncStatus, string | null> = {
+  disabled: null,
+  idle: null,
+  syncing: null,
+  offline: 'The server cannot be reached. Changes wait here and go when it is back.',
+  backoff: 'The server asked StudyVault to slow down. It tries again shortly.',
   auth_required: 'Sign in to sync.',
-  locked: 'Locked. Enter your sync passphrase to continue.',
-  awaiting_encryption_choice:
-    'Signed in. Nothing has been uploaded yet: choose how your data is protected first.',
-  resync_required:
-    "The server's data was erased, restored or replaced. Nothing was changed on this device.",
+  locked: 'Enter your sync passphrase to continue.',
+  // The notice under the card says it, with where to choose.
+  awaiting_encryption_choice: null,
+  resync_required: "The server's data was erased, restored or replaced. This device is unchanged.",
   account_mismatch: 'This device holds data that belongs to a different account.',
   error: 'Sync ran into a problem.',
 };

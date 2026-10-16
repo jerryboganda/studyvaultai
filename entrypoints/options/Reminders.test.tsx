@@ -75,8 +75,7 @@ beforeEach(async () => {
 });
 afterEach(cleanup);
 
-const toggle = () =>
-  screen.getByRole('switch', { name: /Show how many cards are due/ }) as HTMLInputElement;
+const toggle = () => screen.getByRole('checkbox', { name: 'Badge on icon' }) as HTMLInputElement;
 const timeFieldset = () =>
   screen.getByTestId('reminders-time').closest('fieldset') as HTMLFieldSetElement;
 
@@ -85,12 +84,12 @@ describe('Reminders settings', () => {
     render(<Harness initial={defaultSettings()} />);
     expect(toggle().checked).toBe(false);
     expect(timeFieldset().disabled).toBe(true);
-    expect(screen.getByTestId('reminders-status').textContent).toMatch(
-      /Toolbar count: off\. Nothing is counted and nothing is scheduled\./,
-    );
-    // The honest limits are on the page, not only in documentation.
+    const status = screen.getByTestId('reminders-status').textContent;
+    expect(status).toMatch(/Badge\s*Off/);
+    expect(status).toMatch(/Daily time\s*None/);
+    // The honest limits are on the page (the detail behind (i)), not only in documentation.
     expect(screen.getByText(/Chrome has to be running/)).toBeTruthy();
-    expect(screen.getByText(/never sends system notifications/)).toBeTruthy();
+    expect(screen.getByText(/Never system notifications or email/)).toBeTruthy();
     expect(chrome.permissions.request).not.toHaveBeenCalled();
   });
 
@@ -111,8 +110,8 @@ describe('Reminders settings', () => {
     expect(seen.mock.calls[0]![0].reminders).toEqual({ on: true, dailyAt: null });
     expect(chrome.permissions.request).not.toHaveBeenCalled();
     expect(timeFieldset().disabled).toBe(false);
-    expect(screen.getByTestId('reminders-status').textContent).toMatch(/Toolbar count: on\./);
-    expect(screen.getByTestId('reminders-status').textContent).toMatch(/Daily reminder: none\./);
+    expect(screen.getByTestId('reminders-status').textContent).toMatch(/Badge\s*On/);
+    expect(screen.getByTestId('reminders-status').textContent).toMatch(/Daily time\s*None/);
   });
 
   it('puts the switch back and says why when the change cannot be saved', async () => {
@@ -159,10 +158,8 @@ describe('Reminders settings', () => {
     const note = await screen.findByTestId('reminders-permission-note');
     expect(note.textContent).toMatch(/Chrome did not give it/);
     expect(note.textContent).toMatch(/only lets an extension run at a set time/);
-    expect(note.textContent).toMatch(/count on the icon\s+still works/);
-    expect(screen.getByTestId('reminders-status').textContent).toMatch(
-      /07:45 is saved but not active: Chrome has not given StudyVault the timer permission/,
-    );
+    expect(note.textContent).toMatch(/count on the icon still works/);
+    expect(screen.getByTestId('reminders-status').textContent).toMatch(/07:45 saved, not active/);
 
     // Allowing it later, from its own button, makes the time active without touching anything else.
     wirePermission(true);
@@ -194,13 +191,29 @@ describe('Reminders settings', () => {
     fireEvent.change(screen.getByTestId('reminders-time'), { target: { value: '' } });
     const save = screen.getByTestId('reminders-save');
     expect(save.getAttribute('aria-disabled')).toBe('true');
-    expect(save.title).toBe('Choose a time first.');
+    expect(document.getElementById(save.getAttribute('aria-describedby')!)?.textContent).toBe(
+      'Choose a time first.',
+    );
   });
 
   it('keeps a time that is saved while the count is off, and says it starts later', async () => {
     render(<Harness initial={withReminders({ on: false, dailyAt: '21:00' })} />);
     expect(screen.getByTestId('reminders-status').textContent).toMatch(
-      /21:00 is saved and starts once the toolbar count is on/,
+      /21:00 saved, starts with the badge/,
+    );
+  });
+
+  it('says the badge is paused, not on, while review is turned off', async () => {
+    render(
+      <Harness
+        initial={{
+          ...withReminders({ on: true, dailyAt: null }),
+          features: { ...defaultSettings().features, review: false },
+        }}
+      />,
+    );
+    expect(screen.getByTestId('reminders-status').textContent).toMatch(
+      /Badge\s*Paused \(review off\)/,
     );
   });
 });

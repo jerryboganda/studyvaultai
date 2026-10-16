@@ -8,10 +8,14 @@ import {
   type LogEvent,
   type RedactionEdits,
 } from '@ai';
+import { Coins, KeyRound, Laptop, Send, Server, Sparkles, Zap } from 'lucide-react';
 import type { StoredAiResult } from '@storage';
 import { Button } from '../Button';
+import { BarMeter } from '../design/BarMeter';
+import { InfoTip } from '../design/InfoTip';
 import { useAction, useLatest } from '../hooks';
 import { InlineNotice } from '../Notice';
+import { Chip } from '../backup/kit';
 import { AiResultCard } from './AiResultCard';
 import type { AiChatInput } from './chat';
 import { useAiEnv } from './context';
@@ -163,6 +167,7 @@ export function ConsentPreviewDialog({
 }: ConsentPreviewDialogProps) {
   const env = useAiEnv();
   const dialog = useRef<HTMLDialogElement>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
   const titleId = useId();
   const questionId = useId();
   const topicsId = useId();
@@ -276,6 +281,8 @@ export function ConsentPreviewDialog({
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     if (typeof el.showModal === 'function') el.showModal();
     else el.setAttribute('open', '');
+    // The title, not the first (i) in the destination card: the person hears what this dialog is.
+    heading.current?.focus();
     return () => {
       abort.current?.abort();
       if (typeof el.close === 'function' && el.open) el.close();
@@ -431,7 +438,12 @@ export function ConsentPreviewDialog({
       }}
     >
       <div className="sv-dialog__body sv-stack">
-        <h2 id={titleId}>AI: {info.label}</h2>
+        <h2 id={titleId} className="ai-dlg__title" ref={heading} tabIndex={-1}>
+          <span className="ai-card__tile sv-art--violet" aria-hidden="true">
+            <Sparkles strokeWidth={2.4} />
+          </span>
+          AI: {info.label}
+        </h2>
 
         {phase === 'done' && done ? (
           <>
@@ -453,58 +465,78 @@ export function ConsentPreviewDialog({
           </>
         ) : (
           <>
-            <div className="ai-box ai-box--target" data-testid="ai-endpoint-line">
-              {local ? (
-                <p>
-                  <strong>Nothing will be sent.</strong> The answer is computed on this device.
-                </p>
-              ) : (
-                <p>
-                  <strong>This will be sent to {origin}</strong>
-                </p>
-              )}
-              <p className="sv-small">
-                Provider: {first.provider?.id ?? 'not set up'} · Model:{' '}
-                {first.settings.model || 'not set'} · {keyLine(first)}
-              </p>
-              {!local && backups.length > 0 ? (
-                <div className="sv-stack sv-stack--tight" data-testid="ai-fallbacks">
-                  <p>
-                    <strong>
-                      Only if {host} is not answering (a network error, a server error or no answer
-                      in time), the same text is sent to, one at a time and in this order:
-                    </strong>
+            <div className="ai-dest" data-testid="ai-endpoint-line">
+              <span
+                className={`ai-dest__tile sv-art--${local ? 'success' : 'primary'}`}
+                aria-hidden="true"
+              >
+                {local ? <Laptop strokeWidth={2.4} /> : <Send strokeWidth={2.4} />}
+              </span>
+              <div className="ai-dest__body">
+                {local ? (
+                  <p className="ai-dest__title">
+                    <strong>Nothing will be sent.</strong> The answer is computed on this device.
                   </p>
-                  <ul className="ai-list">
-                    {backups.map((t) => (
-                      <li key={t.id} data-testid="ai-fallback-target">
-                        <strong>{t.endpoint.ok ? t.endpoint.origin : t.label}</strong>{' '}
-                        <span className="sv-small">
-                          · {t.label} · Model: {t.settings.model} · {keyLine(t)}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                  <p className="sv-small">
-                    Any other failure (a rejected key, no quota, a rate limit, a refusal or an
-                    answer that does not fit the format) stops here and nothing is sent on.
+                ) : (
+                  <p className="ai-dest__title">
+                    <strong>This will be sent to {origin}</strong>
                   </p>
+                )}
+                <div className="ai-meta">
+                  <Chip icon={Server}>Provider: {first.provider?.id ?? 'not set up'}</Chip>
+                  <Chip icon={Sparkles}>Model: {first.settings.model || 'not set'}</Chip>
+                  <Chip
+                    icon={KeyRound}
+                    tone={
+                      first.key.state === 'present' || first.key.state === 'not_needed'
+                        ? 'neutral'
+                        : 'warning'
+                    }
+                  >
+                    {keyLine(first)}
+                  </Chip>
                 </div>
-              ) : null}
-              {!local && route.skipped.length > 0 ? (
-                <p className="sv-small" data-testid="ai-fallbacks-skipped">
-                  Not used, because they are not set up:{' '}
-                  {route.skipped.map((t) => t.label).join(', ')}.
-                </p>
-              ) : null}
-              {!local && access === false ? (
-                <p className="sv-small">
-                  Chrome will first ask you to let StudyVault contact{' '}
-                  {origins.length > 1 ? origins.join(' and ') : host}. The permission applies to
-                  {origins.length > 1 ? ' those addresses' : ' that address'} only and you can
-                  remove it in the AI settings.
-                </p>
-              ) : null}
+                {!local && backups.length > 0 ? (
+                  <div className="sd-stack" data-testid="ai-fallbacks">
+                    <p className="ai-dest__sub">
+                      <strong>
+                        Only if {host} is not answering, the same text goes to, in this order:
+                      </strong>{' '}
+                      <InfoTip label="When a fallback is used" align="start">
+                        Not answering means a network error, a server error or no answer in time.
+                        Any other failure (a rejected key, no quota, a rate limit, a refusal or an
+                        answer that does not fit the format) stops here and nothing is sent on.
+                      </InfoTip>
+                    </p>
+                    <ol className="ai-list ai-fallbacks">
+                      {backups.map((t) => (
+                        <li key={t.id} data-testid="ai-fallback-target">
+                          <strong>{t.endpoint.ok ? t.endpoint.origin : t.label}</strong>
+                          <span className="ai-meta">
+                            <Chip>{t.label}</Chip>
+                            <Chip icon={Sparkles}>Model: {t.settings.model}</Chip>
+                            <Chip icon={KeyRound}>{keyLine(t)}</Chip>
+                          </span>
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+                ) : null}
+                {!local && route.skipped.length > 0 ? (
+                  <p className="sv-small" data-testid="ai-fallbacks-skipped">
+                    Not used, because they are not set up:{' '}
+                    {route.skipped.map((t) => t.label).join(', ')}.
+                  </p>
+                ) : null}
+                {!local && access === false ? (
+                  <p className="sv-small">
+                    Chrome will first ask you to let StudyVault contact{' '}
+                    {origins.length > 1 ? origins.join(' and ') : host}. The permission applies to
+                    {origins.length > 1 ? ' those addresses' : ' that address'} only and you can
+                    remove it in the AI settings.
+                  </p>
+                ) : null}
+              </div>
             </div>
 
             {chat ? (
@@ -705,19 +737,39 @@ export function ConsentPreviewDialog({
                   ) : null}
                 </section>
 
-                <section aria-label="Size and cost estimate" data-testid="ai-estimate">
+                <section
+                  className="ai-estimate"
+                  aria-label="Size and cost estimate"
+                  data-testid="ai-estimate"
+                >
                   <h3>Estimate</h3>
-                  <p>
-                    About {preview.estimate.inputTokens} input tokens ({preview.estimate.inputChars}{' '}
-                    characters), at most {preview.estimate.maxOutputTokens} output tokens.{' '}
-                    {preview.estimate.estimatedCostUsd === null
-                      ? 'Cost: unknown, because no pricing is set in the AI settings.'
-                      : `Cost: up to ${usd(preview.estimate.estimatedCostUsd)} by your pricing.`}
-                  </p>
-                  <p className="sv-muted sv-small">
-                    Today: {config.budget.requests} of {config.settings.limits.maxRequestsPerDay}{' '}
-                    requests used.
-                  </p>
+                  <div className="ai-meta">
+                    <Chip icon={Zap}>
+                      About {preview.estimate.inputTokens} input tokens (
+                      {preview.estimate.inputChars} characters), at most{' '}
+                      {preview.estimate.maxOutputTokens} output tokens.
+                    </Chip>
+                    <Chip icon={Coins}>
+                      {preview.estimate.estimatedCostUsd === null
+                        ? 'Cost: unknown, because no pricing is set in the AI settings.'
+                        : `Cost: up to ${usd(preview.estimate.estimatedCostUsd)} by your pricing.`}
+                    </Chip>
+                  </div>
+                  <div className="ai-usage">
+                    <span className="sd-line">Today</span>
+                    <BarMeter
+                      value={config.budget.requests}
+                      max={config.settings.limits.maxRequestsPerDay}
+                      label="AI requests used today"
+                      valueText={`${config.budget.requests} of ${config.settings.limits.maxRequestsPerDay} requests used`}
+                      tone="violet"
+                      size="sm"
+                    />
+                    <span className="ai-usage__num">
+                      Today: {config.budget.requests} of {config.settings.limits.maxRequestsPerDay}{' '}
+                      requests used.
+                    </span>
+                  </div>
                 </section>
 
                 {preview.warnings.length > 0 ? (

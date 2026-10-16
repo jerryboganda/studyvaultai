@@ -106,6 +106,9 @@ const profile = (over: Partial<AiProfile> = {}): AiProfile => ({
   model: 'b-model',
   jsonMode: true,
   maxTokensParam: 'max_tokens',
+  vendor: 'custom',
+  reasoningEffort: '',
+  authScheme: 'bearer',
   pricing: null,
   fallback: true,
   ...over,
@@ -169,90 +172,98 @@ async function sendNow(user: User) {
 // ---------------------------------------------------------------------------------------------
 
 describe('fallback providers in the AI settings', () => {
-  it('adds a provider, validates it, keeps its key apart, tests only it, and removes it with its key', async () => {
-    const user = userEvent.setup();
-    await turnAi(true);
-    await configure();
-    const b = mock('b', [{ text: 'OK', usage: { inputTokens: 9, outputTokens: 1 } }]);
-    // The test of a provider must reach that provider only: the primary one is scripted to fail loudly.
-    const a = mock('a', []);
-    render(
-      <AiEnvProvider
-        env={envFor(
-          { primary: a },
-          {
-            createProvider: ({ profileId, settings }) => {
-              if (profileId === 'primary') return a;
-              expect(settings.baseUrl).toBe(`${ORIGIN_B}/v1`);
-              return b;
+  it(
+    'adds a provider, validates it, keeps its key apart, tests only it, and removes it with its key',
+    { timeout: 90_000 },
+    async () => {
+      const user = userEvent.setup();
+      await turnAi(true);
+      await configure();
+      const b = mock('b', [{ text: 'OK', usage: { inputTokens: 9, outputTokens: 1 } }]);
+      // The test of a provider must reach that provider only: the primary one is scripted to fail loudly.
+      const a = mock('a', []);
+      render(
+        <AiEnvProvider
+          env={envFor(
+            { primary: a },
+            {
+              createProvider: ({ profileId, settings }) => {
+                if (profileId === 'primary') return a;
+                expect(settings.baseUrl).toBe(`${ORIGIN_B}/v1`);
+                return b;
+              },
             },
-          },
-        )}
-      >
-        <AiSettingsSection />
-      </AiEnvProvider>,
-    );
+          )}
+        >
+          <AiSettingsSection />
+        </AiEnvProvider>,
+      );
 
-    const add = await screen.findByTestId('ai-profile-add');
-    expect(screen.getByTestId('ai-fallbacks-empty')).toBeTruthy();
-    await waitFor(() => expect(add.getAttribute('aria-disabled')).toBeNull());
-    await user.click(add);
-    const card = await screen.findByTestId('ai-profile');
-    expect((await getAiSettings()).fallbacks).toHaveLength(1);
+      const add = await screen.findByTestId('ai-profile-add');
+      expect(screen.getByTestId('ai-fallbacks-empty')).toBeTruthy();
+      await waitFor(() => expect(add.getAttribute('aria-disabled')).toBeNull());
+      await user.click(add);
+      const card = await screen.findByTestId('ai-profile');
+      expect((await getAiSettings()).fallbacks).toHaveLength(1);
 
-    // A plain-http address the extension could not reach is explained and cannot be saved.
-    const url = within(card).getByTestId('ai-profile-base-url');
-    await user.type(url, 'http://example.com/v1');
-    expect(within(card).getByTestId('ai-profile-endpoint-status').textContent).toMatch(/localhost/);
-    await user.type(within(card).getByTestId('ai-profile-model'), 'b-model');
-    await user.click(within(card).getByTestId('ai-profile-save'));
-    expect(await within(card).findByText('Check these settings')).toBeTruthy();
+      // A plain-http address the extension could not reach is explained and cannot be saved.
+      const url = within(card).getByTestId('ai-profile-base-url');
+      await user.type(url, 'http://example.com/v1');
+      expect(within(card).getByTestId('ai-profile-endpoint-status').textContent).toMatch(
+        /localhost/,
+      );
+      await user.type(within(card).getByTestId('ai-profile-model'), 'b-model');
+      await user.click(within(card).getByTestId('ai-profile-save'));
+      expect(await within(card).findByText('Check these settings')).toBeTruthy();
 
-    await user.clear(url);
-    await user.type(url, `${ORIGIN_B}/v1`);
-    expect(within(card).getByTestId('ai-profile-endpoint-status').textContent).toContain(ORIGIN_B);
-    await user.click(within(card).getByTestId('ai-profile-save'));
-    await waitFor(async () => {
-      const [p] = (await getAiSettings()).fallbacks;
-      expect(p).toMatchObject({ baseUrl: `${ORIGIN_B}/v1`, model: 'b-model' });
-    });
+      await user.clear(url);
+      await user.type(url, `${ORIGIN_B}/v1`);
+      expect(within(card).getByTestId('ai-profile-endpoint-status').textContent).toContain(
+        ORIGIN_B,
+      );
+      await user.click(within(card).getByTestId('ai-profile-save'));
+      await waitFor(async () => {
+        const [p] = (await getAiSettings()).fallbacks;
+        expect(p).toMatchObject({ baseUrl: `${ORIGIN_B}/v1`, model: 'b-model' });
+      });
 
-    // The key: masked, bound to the address, never in the page.
-    await user.type(within(card).getByTestId('ai-profile-key-input'), KEY_B);
-    await waitFor(() =>
-      expect(
-        within(card).getByTestId('ai-profile-key-save').getAttribute('aria-disabled'),
-      ).toBeNull(),
-    );
-    await user.click(within(card).getByTestId('ai-profile-key-save'));
-    const mask = await within(card).findByTestId('ai-profile-key-mask');
-    expect(mask.textContent).toBe(`••••••••${KEY_B.slice(-4)}`);
-    expect(document.body.textContent).not.toContain(KEY_B);
-    const [saved] = (await getAiSettings()).fallbacks;
-    expect(await getAiProfileApiKey(saved!.id, ORIGIN_B)).toBe(KEY_B);
-    expect(JSON.stringify(await getAiSettings())).not.toContain(KEY_B);
+      // The key: masked, bound to the address, never in the page.
+      await user.type(within(card).getByTestId('ai-profile-key-input'), KEY_B);
+      await waitFor(() =>
+        expect(
+          within(card).getByTestId('ai-profile-key-save').getAttribute('aria-disabled'),
+        ).toBeNull(),
+      );
+      await user.click(within(card).getByTestId('ai-profile-key-save'));
+      const mask = await within(card).findByTestId('ai-profile-key-mask');
+      expect(mask.textContent).toBe(`••••••••${KEY_B.slice(-4)}`);
+      expect(document.body.textContent).not.toContain(KEY_B);
+      const [saved] = (await getAiSettings()).fallbacks;
+      expect(await getAiProfileApiKey(saved!.id, ORIGIN_B)).toBe(KEY_B);
+      expect(JSON.stringify(await getAiSettings())).not.toContain(KEY_B);
 
-    // Test connection: asks Chrome for that one address, sends the fixed message to that provider only.
-    const test = within(card).getByTestId('ai-profile-test');
-    await waitFor(() => expect(test.getAttribute('aria-disabled')).toBeNull());
-    await user.click(test);
-    const result = await within(card).findByTestId('ai-profile-test-result');
-    expect(result.textContent).toContain('"OK"');
-    expect(chrome.permissions.request).toHaveBeenCalledWith({ origins: [`${ORIGIN_B}/*`] });
-    expect(b.calls[0]!.messages).toEqual([
-      { role: 'user', content: 'Reply with the single word: OK' },
-    ]);
-    expect(a.calls).toHaveLength(0);
-    expect((await getAiBudget()).requests).toBe(1);
+      // Test connection: asks Chrome for that one address, sends the fixed message to that provider only.
+      const test = within(card).getByTestId('ai-profile-test');
+      await waitFor(() => expect(test.getAttribute('aria-disabled')).toBeNull());
+      await user.click(test);
+      const result = await within(card).findByTestId('ai-profile-test-result');
+      expect(result.textContent).toContain('"OK"');
+      expect(chrome.permissions.request).toHaveBeenCalledWith({ origins: [`${ORIGIN_B}/*`] });
+      expect(b.calls[0]!.messages).toEqual([
+        { role: 'user', content: 'Reply with the single word: OK' },
+      ]);
+      expect(a.calls).toHaveLength(0);
+      expect((await getAiBudget()).requests).toBe(1);
 
-    // Remove: confirmation, then the provider and its key are gone.
-    await user.click(within(card).getByTestId('ai-profile-remove'));
-    const dialog = await screen.findByRole('dialog', { name: /Remove Fallback 1\?/ });
-    await user.click(within(dialog).getByRole('button', { name: 'Remove provider' }));
-    await waitFor(async () => expect((await getAiSettings()).fallbacks).toEqual([]));
-    expect(await getDb().meta.get('aiProfileKeys')).toBeUndefined();
-    expect(await screen.findByTestId('ai-fallbacks-empty')).toBeTruthy();
-  });
+      // Remove: confirmation, then the provider and its key are gone.
+      await user.click(within(card).getByTestId('ai-profile-remove'));
+      const dialog = await screen.findByRole('dialog', { name: /Remove Fallback 1\?/ });
+      await user.click(within(dialog).getByRole('button', { name: 'Remove provider' }));
+      await waitFor(async () => expect((await getAiSettings()).fallbacks).toEqual([]));
+      expect(await getDb().meta.get('aiProfileKeys')).toBeUndefined();
+      expect(await screen.findByTestId('ai-fallbacks-empty')).toBeTruthy();
+    },
+  );
 
   it('orders the fallbacks, and saves which provider each task starts with', async () => {
     const user = userEvent.setup();

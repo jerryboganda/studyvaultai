@@ -1,5 +1,6 @@
 import './ai.css';
 import { useId, useMemo, useState, type ReactNode } from 'react';
+import { Bot, CalendarClock, Coins, Sparkles, Trash2, Zap } from 'lucide-react';
 import { CLINICAL_NOTICE, VERIFICATION_LABELS, type VerificationState } from '@ai';
 import {
   acceptAiItem,
@@ -17,6 +18,7 @@ import { Button } from '../Button';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { useAction, useAsync, useDataEpoch } from '../hooks';
 import { InlineNotice } from '../Notice';
+import { Chip } from '../backup/kit';
 import { buildAccept, initialDraft, type AiDraft } from './accept';
 import { AI_KIND_INFO } from './labels';
 import { LinkContradiction } from './LinkContradiction';
@@ -249,6 +251,23 @@ function Output({
               <strong>Not settled by your sources:</strong> {result.output.uncertainty}
             </Plain>
           ) : null}
+          <Cites {...c} base="/evidence" evidence={result.output.evidence} />
+        </>
+      );
+    case 'chat':
+      return (
+        <>
+          {result.question ? (
+            <Plain>
+              <strong>Message:</strong> {result.question}
+            </Plain>
+          ) : null}
+          <Badge tone={result.output.basis === 'general' ? 'warning' : 'info'}>
+            {result.output.basis === 'general'
+              ? 'general knowledge'
+              : `from ${result.output.basis}`}
+          </Badge>
+          <Plain>{result.output.answer}</Plain>
           <Cites {...c} base="/evidence" evidence={result.output.evidence} />
         </>
       );
@@ -762,7 +781,10 @@ export function AiResultCard({ result: given, onChanged }: AiResultCardProps) {
       data-testid="ai-result-card"
       data-kind={result.kind}
     >
-      <header className="sv-row sv-wrap">
+      <header className="ai-card__head">
+        <span className="ai-card__tile sv-art--violet" aria-hidden="true">
+          <Sparkles strokeWidth={2.4} />
+        </span>
         <h3 id={headingId}>{AI_KIND_INFO[result.kind].label}</h3>
         <span data-testid="ai-verification" data-state={result.verificationState}>
           <Badge tone={state.tone} glyph={state.glyph}>
@@ -770,13 +792,15 @@ export function AiResultCard({ result: given, onChanged }: AiResultCardProps) {
           </Badge>
         </span>
       </header>
-      <p className="sv-muted sv-small">
-        {result.provider} · {result.model} · {new Date(result.createdAt).toLocaleString()} ·{' '}
-        {result.usage.inputTokens + result.usage.outputTokens} tokens
-        {result.usage.estimatedCostUsd === null
-          ? ''
-          : ` · about $${result.usage.estimatedCostUsd.toFixed(4)}`}
-      </p>
+      <div className="ai-meta" role="group" aria-label="About this draft">
+        <Chip icon={Bot}>{result.provider}</Chip>
+        <Chip icon={Sparkles}>{result.model}</Chip>
+        <Chip icon={CalendarClock}>{new Date(result.createdAt).toLocaleString()}</Chip>
+        <Chip icon={Zap}>{result.usage.inputTokens + result.usage.outputTokens} tokens</Chip>
+        {result.usage.estimatedCostUsd === null ? null : (
+          <Chip icon={Coins}>about ${result.usage.estimatedCostUsd.toFixed(4)}</Chip>
+        )}
+      </div>
       {result.notices.map((n) =>
         n === CLINICAL_NOTICE ? (
           <InlineNotice key={n} tone="warning" title="Study aid">
@@ -806,7 +830,7 @@ export function AiResultCard({ result: given, onChanged }: AiResultCardProps) {
       {result.kind !== 'flashcards' ? review(paths[0] ?? '') : null}
       <div className="sv-row">
         <Button variant="ghost" onClick={() => setAsking(true)}>
-          Delete this AI result
+          <Trash2 aria-hidden="true" className="ai-inline-icon" /> Delete this AI result
         </Button>
       </div>
       {remove.error ? (

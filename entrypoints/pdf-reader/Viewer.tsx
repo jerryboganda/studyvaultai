@@ -573,7 +573,8 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
       className="sv-viewer"
       tabIndex={0}
       role="region"
-      aria-label={`PDF pages. ${doc.pageCount} pages. Press ] and [ to change page, + and - to zoom, R to rotate, slash to search, S or H to save the selected text.`}
+      // The other keys are listed under "Keyboard shortcuts" in the toolbar, not read on every entry.
+      aria-label={`PDF pages, ${doc.pageCount} pages. Select text, then press S to save it.`}
       onKeyDown={onKeyDown}
       data-testid="pdf-viewer"
     >

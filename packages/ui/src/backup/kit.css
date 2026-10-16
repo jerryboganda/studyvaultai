@@ -1,0 +1,389 @@
+/* Shared parts of the data settings (backup, sync, AI): Sunny tokens only (tokens.css). */
+
+/* A section is a stack of level-1 cards under one header. */
+.sd-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-4);
+  min-width: 0;
+}
+.sd-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-3);
+  min-width: 0;
+  padding: var(--sv-space-4);
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-lg);
+  background: var(--sv-surface);
+  box-shadow: 0 3px 0 var(--sv-border);
+}
+.sd-card > h3,
+.sd-card__title {
+  margin: 0;
+  font-size: var(--sv-text-lg);
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+}
+.sd-card--warn {
+  border-color: var(--sv-warning-ink);
+  box-shadow: 0 3px 0 var(--sv-warning-ink);
+}
+.sd-card--danger {
+  border-color: var(--sv-danger-ink);
+  box-shadow: 0 3px 0 var(--sv-danger-ink);
+}
+
+/* Header: art tile, title with (i), one status line, a chip or switch on the right. */
+.sd-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sv-space-3);
+  min-width: 0;
+}
+.sd-tile {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 18px;
+}
+.sd-tile svg {
+  width: 28px;
+  height: 28px;
+}
+.sd-tile--sm {
+  width: 40px;
+  height: 40px;
+  border-radius: 14px;
+}
+.sd-tile--sm svg {
+  width: 22px;
+  height: 22px;
+}
+.sd-head__text {
+  display: grid;
+  flex: 1 1 12rem;
+  gap: 2px;
+  min-width: 0;
+}
+.sd-head__title {
+  display: flex;
+  align-items: center;
+  gap: var(--sv-space-2);
+  min-width: 0;
+}
+.sd-head__title h2 {
+  margin: 0;
+  font-size: var(--sv-text-xl);
+  font-weight: 900;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+}
+.sd-head__line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sv-space-2);
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-sm);
+  font-weight: 700;
+}
+.sd-head__side {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sv-space-2);
+}
+
+/* One short helper line under a title. */
+.sd-line {
+  margin: 0;
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-sm);
+  font-weight: 700;
+}
+.sd-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sv-space-2);
+}
+.sd-row--end {
+  justify-content: flex-end;
+}
+.sd-grow {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Status pill with an icon (on top of .sv-badge). A long value wraps into a rounded box, not a blob. */
+.sd-chip {
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 12px;
+  overflow-wrap: anywhere;
+}
+.sd-chip svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+
+/* Icon facts. auto-fit, not auto-fill: empty tracks collapse, so a few facts share the row and a
+   value (an address) wraps only when it really does not fit. */
+.sd-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr));
+  gap: var(--sv-space-2);
+  margin: 0;
+}
+.sd-fact {
+  display: grid;
+  align-content: start;
+  gap: 2px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface-2);
+}
+.sd-fact--wide {
+  grid-column: 1 / -1;
+}
+.sd-fact dt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+}
+.sd-fact dt svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+}
+.sd-fact dd {
+  min-width: 0; /* a grid item: lets break-word wrap instead of widening the fact */
+  margin: 0;
+  font-weight: 800;
+  overflow-wrap: break-word;
+}
+.sd-mono {
+  font-family: var(--sv-font-mono);
+  font-size: var(--sv-text-xs);
+  font-weight: 600;
+}
+
+/* Count tiles: the number on top (the markup keeps label then value, for scripts and readers). */
+.sd-counts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(120px, 100%), 1fr));
+  gap: var(--sv-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.sd-counts li {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 0;
+  min-width: 0;
+  padding: 8px 12px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface);
+}
+.sd-counts li span:first-child {
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+.sd-counts li span:last-child {
+  font-size: var(--sv-text-lg);
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Chunky disclosure. */
+.sd-more {
+  min-width: 0;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-lg);
+  background: var(--sv-surface);
+  box-shadow: 0 3px 0 var(--sv-border);
+}
+.sd-more > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--sv-space-2);
+  min-height: var(--sv-control-h);
+  padding: 8px 14px;
+  border-radius: var(--sv-radius-lg);
+  font-weight: 800;
+  cursor: pointer;
+  list-style: none;
+}
+.sd-more > summary::-webkit-details-marker {
+  display: none;
+}
+.sd-more > summary:hover {
+  background: var(--sv-surface-2);
+}
+.sd-more > summary:focus-visible {
+  outline: var(--sv-focus-width) solid var(--sv-focus);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--sv-focus-halo);
+}
+.sd-more__icon {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  color: var(--sv-primary-soft-ink);
+}
+.sd-more__label {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.sd-more__chev {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  transition: transform var(--sv-motion) ease;
+}
+.sd-more[open] > summary .sd-more__chev {
+  transform: rotate(180deg);
+}
+.sd-more__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-3);
+  padding: 4px 14px 14px;
+}
+
+/* Outcome of a flow. */
+.sd-outcome {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-3);
+}
+.sd-outcome__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sv-space-3);
+}
+.sd-outcome__text {
+  display: grid;
+  flex: 1 1 14rem;
+  gap: 4px;
+  min-width: 0;
+}
+.sd-outcome__title {
+  margin: 0;
+  font-size: var(--sv-text-xl);
+  font-weight: 900;
+  line-height: 1.15;
+}
+.sd-outcome__title:focus {
+  outline: none;
+}
+.sd-outcome__line {
+  color: var(--sv-ink-2);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+/* Big drop target with a picture: the file input is visually hidden, the card shows its focus. */
+.sd-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sv-space-2);
+  padding: var(--sv-space-5) var(--sv-space-4);
+  border: 2px dashed var(--sv-line-strong);
+  border-radius: var(--sv-radius-lg);
+  background: var(--sv-surface-2);
+  text-align: center;
+}
+.sd-drop--active {
+  border-color: var(--sv-primary);
+  background: var(--sv-primary-soft);
+}
+.sd-drop:has(input:focus-visible) {
+  outline: var(--sv-focus-width) solid var(--sv-focus);
+  outline-offset: 2px;
+}
+.sd-drop__art {
+  display: grid;
+  place-items: center;
+  width: 72px;
+  height: 72px;
+  border-radius: 22px;
+}
+.sd-drop__art svg {
+  width: 38px;
+  height: 38px;
+}
+.sd-drop__title {
+  margin: 0;
+  font-size: var(--sv-text-lg);
+  font-weight: 800;
+}
+/* The visible "Choose file" control is the input's label, styled as a chunky button. */
+.sd-drop__pick {
+  cursor: pointer;
+}
+
+/* A list of selectable rows inside a card (import candidates, banks). */
+.sd-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.sd-list > li {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface);
+}
+
+/* Inline progress (real counts only). */
+.sd-progress {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+}
+.sd-progress__line {
+  margin: 0;
+  font-size: var(--sv-text-sm);
+  font-weight: 700;
+}
+
+@media (forced-colors: active) {
+  .sd-card,
+  .sd-more,
+  .sd-counts li {
+    box-shadow: none;
+  }
+}
+
+.sd-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-space-3);
+  min-width: 0;
+}
+
+/* `hidden` must win over the flex and grid displays above. */
+.sd-section [hidden] {
+  display: none !important;
+}

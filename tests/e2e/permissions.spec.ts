@@ -4,6 +4,9 @@ import { pathToFileURL } from 'node:url';
 import type { Page } from '@playwright/test';
 import { DEFAULT_DENY_HOSTS } from '@shared';
 import { E2E_EXTENSION_PATH, PROD_EXTENSION_PATH } from './fixtures';
+import { settleGameBackfill } from './helpers';
+import { openDisclosure } from './helpers.backup';
+import { pickCard } from './helpers.graph';
 import {
   OVERLAY_HOST,
   activate,
@@ -100,7 +103,7 @@ test.describe('site access', () => {
   test('a stored per-site grant is registered, listed in settings, and auto-injects on a fresh visit', async ({
     env,
   }) => {
-    const ext = await openExt(env, 'options');
+    const ext = await openExt(env, 'options', 'site-access');
     await patchSettings(ext, { persistentOrigins: ['http://127.0.0.1/*'] });
     // Chrome's grants are what is registered: the hint under test plus whatever the e2e build was
     // granted at install (its loopback host permissions). So "contains", not "equals".
@@ -154,24 +157,25 @@ test.describe('site access', () => {
     );
     expect(status).toMatchObject({ supported: true, access: 'persistent', active: true });
 
+    // The popup shows the site as always on; turning the switch off is how it is disabled.
     const popup = await viewing(env, 'popup', page);
-    await expect(popup.getByText('Always on', { exact: false }).first()).toBeVisible();
-    await expect(
-      popup.getByRole('button', { name: 'Disable always-on for this site' }),
-    ).toBeVisible();
+    const alwaysOn = popup.getByRole('switch', { name: 'Always on' });
+    await expect(alwaysOn).toBeVisible();
+    await expect(alwaysOn).toBeChecked();
+    await expect(alwaysOn).toBeEnabled();
   });
 
   test('a deny-list entry is excluded from the persistent registration and from injection', async ({
     env,
   }) => {
-    const ext = await openExt(env, 'options');
+    const ext = await openExt(env, 'options', 'site-access');
     await patchSettings(ext, { persistentOrigins: ['http://127.0.0.1/*'] });
     await bgData(ext, 'site.sync');
 
     // Through the real Settings UI: this is the path that must re-register the script.
     const field = ext.getByRole('textbox', { name: 'Add a site' });
     await field.fill('127.0.0.1');
-    await ext.getByRole('button', { name: 'Add to deny list' }).click();
+    await ext.getByRole('button', { name: 'Add site', exact: true }).click();
     await expect(ext.getByRole('alert')).toHaveCount(0);
     await expect
       .poll(async () => (await storedSettings(ext))?.denyList)
@@ -205,7 +209,7 @@ test.describe('site access', () => {
   }) => {
     // In the e2e build 127.0.0.1 is a REQUIRED host permission, which Chrome refuses to remove;
     // the point is that the refusal is shown and the list is left consistent.
-    const ext = await openExt(env, 'options');
+    const ext = await openExt(env, 'options', 'site-access');
     await patchSettings(ext, { persistentOrigins: ['http://127.0.0.1/*'] });
     await ext.reload();
     const row = ext.locator('#site-access').getByRole('listitem').filter({ hasText: '127.0.0.1' });
@@ -219,42 +223,66 @@ test.describe('site access', () => {
     expect((await storedSettings(ext))?.persistentOrigins).toEqual(['http://127.0.0.1/*']);
   });
 
+  // "Enable on all sites" is now the "Choose sites" wizard: All sites > Stay off on > Ask Chrome.
   test('"Enable on all sites" stays busy while Chrome\'s native prompt is pending and changes nothing', async ({
     env,
   }) => {
-    const ext = await openExt(env, 'options');
+    const ext = await openExt(env, 'options', 'site-access');
     const settingsBefore = await storedSettings(ext);
-    const enable = ext.getByRole('button', { name: 'Enable on all sites' });
-    await expect(ext.getByText('StudyVault runs only where you enabled it.')).toBeVisible();
-    await expect(ext.getByRole('button', { name: 'Revoke all-sites access' })).toHaveCount(0);
+    const enable = ext.getByRole('button', { name: 'Choose sites', exact: true });
+    const allSites = ext
+      .getByRole('list', { name: 'Where StudyVault runs' })
+      .getByRole('listitem')
+      .filter({ hasText: 'All sites' });
+    await expect(allSites).toContainText('Off');
+    await expect(ext.getByRole('button', { name: 'Revoke all sites' })).toHaveCount(0);
 
-    // Step one is StudyVault's own modal: it lists the sites that stay off, starts on Cancel and
-    // asks Chrome for nothing yet.
+    // StudyVault's own wizard comes first and asks Chrome for nothing until its last button.
     await enable.click();
-    const dialog = ext.getByRole('dialog', { name: 'Turn StudyVault on for all sites?' });
+    const dialog = ext.getByRole('dialog', { name: 'Site access', exact: true });
     await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole('heading', { name: 'Where to run' })).toBeFocused();
+    await ext.keyboard.press('Escape'); // nothing chosen yet: it just closes
+    await expect(dialog).toHaveCount(0);
+    await expect(enable, 'focus returns to the control that opened the dialog').toBeFocused();
+    expect(await storedSettings(ext), 'Closing changed nothing').toEqual(settingsBefore);
+
+    // It lists the sites that stay off.
+    await enable.click();
+    await pickCard(dialog.getByRole('radio', { name: /^All sites/ }));
+    await dialog.getByRole('button', { name: 'Next', exact: true }).click();
+    await expect(dialog.getByRole('heading', { name: 'Stay off on' })).toBeFocused();
     await expect(
-      dialog.getByText(`StudyVault will stay off on these ${DEFAULT_DENY_HOSTS.length} sites`),
+      dialog.getByText(`Stays off on these ${DEFAULT_DENY_HOSTS.length} sites`),
     ).toBeVisible();
     const listed = dialog
       .getByRole('region', { name: 'Sites on your deny list' })
       .getByRole('listitem');
     await expect(listed).toHaveCount(DEFAULT_DENY_HOSTS.length);
-    await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
+    // With a choice made, Escape asks first and starts on the safe button.
     await ext.keyboard.press('Escape');
-    await expect(dialog).toHaveCount(0);
-    await expect(enable, 'focus returns to the control that opened the dialog').toBeFocused();
-    expect(await storedSettings(ext), 'Cancel changed nothing').toEqual(settingsBefore);
+    await expect(dialog.getByRole('heading', { name: 'Discard changes?' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Keep editing' })).toBeFocused();
+    await dialog.getByRole('button', { name: 'Keep editing' }).click();
+    expect(await storedSettings(ext), 'nothing is stored before Chrome answers').toEqual(
+      settingsBefore,
+    );
 
-    // Step two: "Continue" is the user gesture that fires Chrome's native prompt.
-    await enable.click();
-    await dialog.getByRole('button', { name: "Continue to Chrome's prompt" }).click();
+    // "Ask Chrome" is the user gesture that fires Chrome's native prompt.
+    await dialog.getByRole('button', { name: 'Next', exact: true }).click();
+    await expect(dialog.getByRole('heading', { name: 'Chrome asks' })).toBeFocused();
+    await expect(dialog.getByText('Chrome shows its own prompt next.')).toBeVisible();
+    await dialog.getByRole('button', { name: 'Ask Chrome' }).click();
+    await expect(dialog).toHaveCount(0);
     await expect(enable).toHaveAttribute('aria-busy', 'true');
-    await expect(enable).toHaveAttribute('aria-disabled', 'true');
-    // The page stays alive and explains what is going on while the (native) prompt is open.
-    await expect(ext.getByText(/shows Chrome's permission prompt/)).toBeVisible();
+    // A second press while Chrome is asking opens nothing.
+    await enable.click();
+    await expect(dialog).toHaveCount(0);
+    // The page stays alive while the (native) prompt is open.
+    await expect(ext.getByRole('heading', { name: 'Where it runs' })).toBeVisible();
     await ext.waitForTimeout(1500);
     await expect(enable).toHaveAttribute('aria-busy', 'true'); // still waiting on the user
+    await expect(dialog).toHaveCount(0);
     // Nothing was granted or stored without the user's answer.
     expect(
       await ext.evaluate(() =>
@@ -265,17 +293,18 @@ test.describe('site access', () => {
     expect(errorsOf(ext)).toEqual([]);
   });
 
+  // The button is now "Revoke all sites".
   test('"Revoke all-sites access" converges when Settings lists it but Chrome holds no grant', async ({
     env,
   }) => {
-    const ext = await openExt(env, 'options');
+    const ext = await openExt(env, 'options', 'site-access');
     // The install-time `site.sync` may still be queued on a slow runner; it would prune a hint that
     // Chrome does not back. Let it finish first (syncs are serialised) so the hint below survives
     // until the user acts, which is the state this test is about.
     await bgData(ext, 'site.sync');
     await patchSettings(ext, { persistentOrigins: ['https://*/*', 'http://*/*'] });
     await ext.reload();
-    const revoke = ext.getByRole('button', { name: 'Revoke all-sites access' });
+    const revoke = ext.getByRole('button', { name: 'Revoke all sites', exact: true });
     await expect(revoke).toBeVisible();
     await revoke.click();
     await expect(revoke).toHaveCount(0);
@@ -605,6 +634,9 @@ test.describe('messaging security: what a web page can and cannot reach', () => 
     env,
   }) => {
     const ext = await openExt(env, 'options');
+    // The install-time game backfill writes and bumps the epoch on its own: let it finish first, so
+    // the baseline below can only move because of one of the messages under test.
+    await settleGameBackfill(ext);
     const epoch = await dataEpoch(ext);
     const probe = (message: unknown) =>
       ext.evaluate(async (m) => {
@@ -679,10 +711,10 @@ test.describe('restricted pages: tab.activate answers with a specific error and 
       expect(reply).toMatchObject({ ok: false, error: { code: c.expectCode } });
       expect((reply as { error: { message: string } }).error.message).toMatch(c.message);
 
-      // The popup explains it instead of offering a dead Activate button.
+      // The popup explains it instead of offering a dead "Turn on" (activate) button.
       const popup = await viewing(env, 'popup', page);
-      await expect(popup.getByText('StudyVault cannot run on this page')).toBeVisible();
-      await expect(popup.getByRole('button', { name: 'Activate on this tab' })).toHaveCount(0);
+      await expect(popup.getByRole('heading', { name: "Can't run here" })).toBeVisible();
+      await expect(popup.getByRole('button', { name: 'Turn on' })).toHaveCount(0);
 
       // The side panel still offers Activate (the address is hidden) and shows the same error.
       const side = await viewing(env, 'sidepanel', page);
@@ -709,8 +741,8 @@ test.describe('restricted pages: tab.activate answers with a specific error and 
     expect(error?.message).not.toMatch(/undefined|\[object/);
 
     const popup = await viewing(env, 'popup', page);
-    await expect(popup.getByText('StudyVault cannot run on this page')).toBeVisible();
-    await expect(popup.getByRole('button', { name: 'Activate on this tab' })).toHaveCount(0);
+    await expect(popup.getByRole('heading', { name: "Can't run here" })).toBeVisible();
+    await expect(popup.getByRole('button', { name: 'Turn on' })).toHaveCount(0);
   });
 
   test('about:blank and data: pages are refused with an actionable message', async ({ env }) => {
@@ -754,18 +786,20 @@ test.describe('restricted pages: tab.activate answers with a specific error and 
       .toBe(true);
 
     const popup = await viewing(env, 'popup', page);
-    await expect(popup.getByText("PDFs open in Chrome's built-in viewer")).toBeVisible();
-    await expect(popup.getByText(/cannot highlight here/)).toBeVisible();
-    await expect(popup.getByRole('button', { name: 'Activate on this tab' })).toHaveCount(0);
+    await expect(popup.getByText('Chrome PDF viewer', { exact: true })).toBeVisible();
+    await expect(popup.getByRole('button', { name: 'Turn on' })).toHaveCount(0);
+    // What is not possible is said behind the (i) next to the reader button.
+    await popup.getByRole('button', { name: 'About PDFs' }).click();
+    await expect(popup.getByText(/built-in viewer, which extensions cannot mark up/)).toBeVisible();
     // What IS possible: StudyVault's own reader (a loopback or https address; the e2e server is
     // loopback). The popup only offers it; the reader itself is covered by pdf.spec.ts.
-    await expect(popup.getByRole('button', { name: 'Open in StudyVault reader' })).toBeVisible();
+    await expect(popup.getByRole('button', { name: 'Open in StudyVault' })).toBeVisible();
     // The side panel works without the page (saved highlights from every page), so it is offered here
     // too; what is not possible on this page is said above.
     await expect(popup.getByRole('button', { name: 'Open side panel' })).toBeVisible();
 
     const side = await viewing(env, 'sidepanel', page);
-    await expect(side.getByText("PDFs open in Chrome's built-in viewer")).toBeVisible();
+    await expect(side.getByRole('heading', { name: 'PDF in Chrome' })).toBeVisible();
     await expect(side.getByRole('button', { name: 'Activate on this tab' })).toHaveCount(0);
   });
 
@@ -779,7 +813,7 @@ test.describe('restricted pages: tab.activate answers with a specific error and 
     // Either an error explanation or success: an endless busy state is neither.
     const answered = side
       .getByRole('alert')
-      .or(side.getByText('No highlights on this page yet'))
+      .or(side.getByRole('heading', { name: 'Nothing saved yet' }))
       .first();
     await expect(
       answered,
@@ -866,12 +900,15 @@ prodTest.describe('production build', () => {
       await page.waitForLoadState('networkidle');
       expect(errorsOf(page), `${name}.html`).toEqual([]);
     }
-    const options = await openExt(env, 'options');
+    // Settings > Privacy keeps the permission list behind its disclosure.
+    const options = await openExt(env, 'options', 'privacy');
     const privacy = options.locator('#privacy');
+    await openDisclosure(privacy, 'Permissions this extension holds');
+    const held = privacy.locator('details', { hasText: 'Permissions this extension holds' });
     for (const p of ['storage', 'sidePanel', 'contextMenus', 'activeTab', 'scripting']) {
-      await expect(privacy.getByText(p, { exact: true })).toBeVisible();
+      await expect(held.getByText(p, { exact: true })).toBeVisible();
     }
-    await expect(privacy.getByText(/Access to websites is not among them/)).toBeVisible();
+    await expect(held.getByText(/Access to websites is not among them/)).toBeVisible();
     expect(errorsOf(options)).toEqual([]);
   });
 
@@ -890,11 +927,15 @@ prodTest.describe('production build', () => {
         await ext.evaluate(() => chrome.permissions.contains({ origins: [`http://127.0.0.1/*`] })),
       ).toBe(false);
 
-      // The genuine popup, with activeTab not granted, says Chrome did not share the address.
+      // The genuine popup, with activeTab not granted, says Chrome did not share the address: the
+      // short reason is shown, the sentence is behind its (i).
       const popup = await openRealPopup(env);
-      const text = await popup.waitForText(/StudyVault cannot run on this page/);
-      expect(text).toContain("Chrome did not share this tab's address");
-      expect(await popup.hasButton('Activate on this tab')).toBe(false);
+      const text = await popup.waitForText(/Can't run here/);
+      expect(text).toContain('Browser page');
+      expect(await popup.eval<string>('document.body.textContent')).toContain(
+        "Chrome did not share this tab's address",
+      );
+      expect(await popup.hasButton('Turn on')).toBe(false);
       await popup.close();
     },
   );

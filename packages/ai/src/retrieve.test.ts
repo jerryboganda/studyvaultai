@@ -26,7 +26,7 @@ describe('retrieval query', () => {
 
   it('cannot carry search operators or filters from the question', () => {
     const q = retrievalQuery('metformin OR NOT bank:"Secrets" -tag:x "quoted" (group) *');
-    expect(q).toBe('(metformin OR bank OR secrets OR tag OR quoted OR group)');
+    expect(q).toBe('(metformin OR bank OR secrets OR tag OR quoted OR group OR secret)');
     // Every character that has a meaning in the grammar was split away from the terms.
     expect(q!.replace(/\sOR\s/g, ' ')).not.toMatch(/[:"*-]/);
     // The only operator is the one this module writes: "OR" in a question is too short to be a term.
@@ -73,5 +73,29 @@ describe('searchPassages', () => {
 
   it('an index with no match gives nothing, and nothing is invented', () => {
     expect(searchPassages(fakeIndex([]), 'zzz', 8)).toEqual({ refs: [], total: 0 });
+  });
+});
+
+describe('stems and abbreviations', () => {
+  it('stems plurals and endings lightly', async () => {
+    const { stem } = await import('./retrieve');
+    expect(stem('inhibitors')).toBe('inhibitor');
+    expect(stem('bleeding')).toBe('bleed');
+    expect(stem('arteries')).toBe('artery');
+    expect(stem('class')).toBe('class');
+  });
+
+  it('keeps original words first, adds stems, and replaces a two-letter abbreviation by its words', async () => {
+    const { expandTerms, questionTerms } = await import('./retrieve');
+    expect(expandTerms(['inhibitors', 'bleeding'])).toEqual([
+      'inhibitors',
+      'bleeding',
+      'inhibitor',
+      'bleed',
+    ]);
+    const terms = expandTerms(questionTerms('What causes HF?'));
+    expect(terms).toContain('heart');
+    expect(terms).toContain('failure');
+    expect(terms).not.toContain('hf');
   });
 });

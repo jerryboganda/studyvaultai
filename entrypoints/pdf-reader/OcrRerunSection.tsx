@@ -1,5 +1,6 @@
 import { useId, useState } from 'react';
-import { Button, ConfirmDialog, InlineNotice, errorMessage, plural } from '@ui';
+import { History, RefreshCcw } from 'lucide-react';
+import { Button, ConfirmDialog, InfoTip, InlineNotice, errorMessage, plural } from '@ui';
 import { estimateRerun, type PageOcr } from './ocrModel';
 import type { RerunInfo } from './OcrPanel';
 
@@ -50,14 +51,17 @@ export function RerunSection({
       aria-labelledby={headingId}
       data-testid="pdf-ocr-rerun"
     >
-      <h3 id={headingId}>Read the text again</h3>
+      <h3 id={headingId} className="sv-ocr-rerun__title">
+        <RefreshCcw aria-hidden="true" strokeWidth={2.4} />
+        Read again
+        <InfoTip label="About reading again" align="end">
+          Reads pages again on this device. A page&rsquo;s text is replaced only when the new
+          reading has succeeded, and the reading it replaces is kept for one step back.
+        </InfoTip>
+      </h3>
 
       {ocr ? (
         <>
-          <p className="sv-small">
-            Reads this page again on this device. Its text is replaced only when the new reading has
-            succeeded, and the reading it replaces is kept for one step back.
-          </p>
           <div className="sv-row">
             <Button
               onClick={() => setAsking('page')}
@@ -65,18 +69,23 @@ export function RerunSection({
               disabledReason={unavailableReason}
               data-testid="pdf-ocr-rerun-page"
             >
+              <RefreshCcw aria-hidden="true" />
               Re-recognise this page
             </Button>
           </div>
           {ocr.previous ? (
             <div className="sv-stack sv-stack--tight">
               <p className="sv-small" data-testid="pdf-ocr-previous">
-                An earlier reading of this page is kept (replaced {when}). Restoring it brings back
-                its text and the corrections it had; the reading you have now is kept in its place.
+                An earlier reading of this page is kept (replaced {when}).{' '}
+                <InfoTip label="About the earlier reading" align="end">
+                  Restoring it brings back its text and the corrections it had; the reading you have
+                  now is kept in its place.
+                </InfoTip>
               </p>
               <div className="sv-row">
                 <Button onClick={() => void restore()} busy={busy} data-testid="pdf-ocr-restore">
-                  Restore the previous reading
+                  <History aria-hidden="true" />
+                  Restore previous
                 </Button>
               </div>
             </div>
@@ -86,9 +95,8 @@ export function RerunSection({
 
       {info.recognisedPages > 0 ? (
         <div className="sv-stack sv-stack--tight">
-          <p className="sv-small">
-            {plural(info.recognisedPages, 'page')} of this document{' '}
-            {info.recognisedPages === 1 ? 'has' : 'have'} recognised text.
+          <p>
+            <span className="sv-pill">{plural(info.recognisedPages, 'page')} recognised</span>
           </p>
           <div className="sv-row">
             <Button
@@ -97,6 +105,7 @@ export function RerunSection({
               disabledReason={unavailableReason}
               data-testid="pdf-ocr-rerun-all"
             >
+              <RefreshCcw aria-hidden="true" />
               Re-recognise all pages
             </Button>
           </div>

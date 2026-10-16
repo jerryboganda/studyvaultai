@@ -1,5 +1,4 @@
-import type { Page } from '@playwright/test';
-import { describeResolveState } from '@ui/resolveState';
+import type { Locator, Page } from '@playwright/test';
 import { expect, test } from './fixtures';
 import {
   activate,
@@ -8,8 +7,10 @@ import {
   liveHighlights,
   norm,
   openExtensionPage,
+  openRecent,
   pageCounts,
   paintedDetail,
+  pickIn,
   readDb,
   saveSelection,
   savedToast,
@@ -336,6 +337,8 @@ const FILLER = 'An unrelated filler paragraph keeps the page long enough to scro
 
 const recentCard = (page: Page, quoteStart: string) =>
   page.locator('article.hl-card', { hasText: quoteStart });
+/** The status badge of a side panel card; there is none while the highlight is found as saved. */
+const statusBadgeOf = (card: Locator) => card.locator('.hl-card__state');
 
 test.describe('source mutated after save (mutable.html variants)', () => {
   test('edited -> changed and painted; removed -> orphaned and never painted; prefixed -> resolved at the shifted place', async ({
@@ -396,13 +399,13 @@ test.describe('source mutated after save (mutable.html variants)', () => {
       // The saved quote is provenance: it still says what the user originally saw.
       expect(liveHighlights(await readDb(ext)).map((h) => h.exactQuote)).toEqual(quoteInDb);
 
-      // The side panel (Recent) says "Source changed" for it.
+      // The side panel (Recent) says "Source changed" for it; a highlight found as saved carries no
+      // status badge at all (only the ones that need a look do).
       const panel = await openExtensionPage(context, extensionId, 'sidepanel.html');
-      await panel.getByRole('tab', { name: /Recent/ }).click();
+      await openRecent(panel);
       await expect(recentCard(panel, 'Calcium channels')).toContainText('Source changed');
-      await expect(recentCard(panel, 'An unrelated filler')).toContainText(
-        describeResolveState('resolved').label,
-      );
+      await expect(recentCard(panel, 'An unrelated filler')).toBeVisible();
+      await expect(statusBadgeOf(recentCard(panel, 'An unrelated filler'))).toHaveCount(0);
 
       // ---- (2) paragraph removed -> orphaned, NOT painted, never on other text ------------------
       fixtureServer.setVariant('removed');
@@ -419,7 +422,7 @@ test.describe('source mutated after save (mutable.html variants)', () => {
       await expect
         .poll(statuses, { timeout: 15_000, message: 'orphaned state persists' })
         .toEqual({ [KEY_TARGET]: 'orphaned', [KEY_FILLER]: 'resolved' });
-      await expect(recentCard(panel, 'Calcium channels')).toContainText('Orphaned');
+      await expect(statusBadgeOf(recentCard(panel, 'Calcium channels'))).toContainText('Not found');
       await expect(recentCard(panel, 'Calcium channels')).toContainText('Calcium channels');
 
       // ---- (3) content inserted above -> still resolved, at the shifted position ----------------
@@ -449,9 +452,8 @@ test.describe('source mutated after save (mutable.html variants)', () => {
       await expect
         .poll(statuses, { timeout: 15_000, message: 'orphaned -> resolved is persisted again' })
         .toEqual({ [KEY_TARGET]: 'resolved', [KEY_FILLER]: 'resolved' });
-      await expect(recentCard(panel, 'Calcium channels')).toContainText(
-        describeResolveState('resolved').label,
-      );
+      await expect(recentCard(panel, 'Calcium channels')).toBeVisible();
+      await expect(statusBadgeOf(recentCard(panel, 'Calcium channels'))).toHaveCount(0);
     } finally {
       fixtureServer.setVariant('original');
     }
@@ -507,7 +509,7 @@ test.describe('undo, duplicate, delete and consistency between tabs', () => {
 
     // Side panel: gone from Recent.
     const panel = await openExtensionPage(context, extensionId, 'sidepanel.html');
-    await panel.getByRole('tab', { name: /Recent/ }).click();
+    await openRecent(panel);
     await expect(panel.getByText('Nothing saved yet')).toBeVisible();
 
     // Same selection again: the deleted row is restored, not duplicated.
@@ -604,7 +606,7 @@ test.describe('undo, duplicate, delete and consistency between tabs', () => {
     // Editing the kind in B updates the colour painted in A.
     await b.bringToFront();
     await openPopover(b, '#p-multiline');
-    await b.getByLabel('Type').selectOption({ label: 'ƒ Formula' });
+    await pickIn(b.getByRole('dialog', { name: 'Highlight details' }), 'Kind', 'Formula').click();
     await expect
       .poll(async () => (await paintedDetail(a)).find((p) => norm(p.text) === MULTILINE)?.color)
       .toBe('blue');

@@ -17,6 +17,7 @@ import {
   unique,
 } from './core';
 import { withWritableDb, type StudyVaultDb } from './db';
+import { revokeQuickSave } from './game';
 import { assertFolderInBank, fileInBank, MEMBERSHIP_TABLES, moveMembership } from './membership';
 import { assertLiveTags, linkTags, unlinkTags } from './tags';
 import { reviveHighlights } from './trash';
@@ -89,7 +90,7 @@ export const bulkSetPriority = async (highlightIds: string[], priority: Priority
 export async function bulkDelete(highlightIds: string[]): Promise<BulkResult> {
   const ids = idList(highlightIds);
   const result = await withWritableDb((db) =>
-    db.transaction('rw', db.highlights, async () => {
+    db.transaction('rw', [db.highlights, db.gameFacts], async () => {
       const rows = await db.highlights.bulkGet(ids);
       if (rows.some((r) => r === undefined)) {
         throw new StudyVaultError(
@@ -102,6 +103,7 @@ export async function bulkDelete(highlightIds: string[]): Promise<BulkResult> {
       for (const row of rows) {
         if (!row || isDeleted(row)) continue;
         await db.highlights.update(row.id, { deletedAt: ts, updatedAt: ts });
+        await revokeQuickSave(db, row, ts); // same rule as the single delete
         changed++;
       }
       return { requested: ids.length, changed };

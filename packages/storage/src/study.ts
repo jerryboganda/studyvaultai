@@ -28,6 +28,7 @@ import {
   buildMcq,
   buildQueue,
   buryCard,
+  cardEvent,
   countToday,
   countsByBank,
   countsByDeck,
@@ -43,7 +44,10 @@ import {
   resetCard,
   resumeSession,
   review,
+  reviewEvent,
+  reviewUndoFact,
   segmentsToText,
+  sessionFact,
   setSuspended,
   startSession,
   studyDayNumber,
@@ -85,6 +89,7 @@ import {
   unique,
 } from './core';
 import { withDb, withWritableDb, type MetaRow, type StudyVaultDb } from './db';
+import { addMissing } from './game';
 
 /**
  * Retention repositories: decks, knowledge points, cards, review logs, the study queue and the
@@ -173,7 +178,12 @@ const STUDY_TABLES = (db: StudyVaultDb) => [
   db.knowledgePoints,
   db.highlights,
   db.highlightBanks,
+  // every card created earns its game event in the same transaction (storeDrafts)
+  db.gameEvents,
 ];
+/** An answer and its game event commit together; so do an undo and its `ru_` fact. */
+const REVIEW_TABLES = (db: StudyVaultDb) => [db.cards, db.decks, db.reviewLogs, db.gameEvents];
+const UNDO_TABLES = (db: StudyVaultDb) => [db.cards, db.reviewLogs, db.gameFacts];
 
 // ---------------------------------------------------------------------------------------------
 // Row readers (all validate; a row that does not parse is invisible, never overwritten)
@@ -726,6 +736,7 @@ async function storeDrafts(
     cards.push(card);
   }
   if (cards.length > 0) await db.cards.bulkAdd(cards);
+  await addMissing(db.gameEvents, cards.map(cardEvent));
   return cards;
 }
 
@@ -1238,7 +1249,7 @@ export async function reviewCard(
   const sessionId = options.sessionId === undefined ? uuidv7() : requireId(options.sessionId);
   const { nowIso: ts, boundary } = clockOf(options);
   const outcome = await withWritableDb((db) =>
-    db.transaction('rw', [db.cards, db.decks, db.reviewLogs], async (): Promise<ReviewOutcome> => {
+    db.transaction('rw', REVIEW_TABLES(db), async (): Promise<ReviewOutcome> => {
       const existing = await db.reviewLogs.get(logId);
       if (existing) {
         const log = parseRow(ReviewLog, existing, 'review log');
@@ -1267,6 +1278,7 @@ export async function reviewCard(
       const validLog = parseOrThrow(ReviewLog, result.log, 'review log');
       await db.cards.put(validCard);
       await db.reviewLogs.add(validLog);
+      await addMissing(db.gameEvents, [reviewEvent(validLog)]);
       return {
         status: 'reviewed',
         card: validCard,
@@ -1299,7 +1311,7 @@ export async function undoLastReview(
   requireId(cardId);
   const ts = options.now === undefined ? nowIso() : toIso(toMs(options.now));
   const outcome = await withWritableDb((db) =>
-    db.transaction('rw', [db.cards, db.reviewLogs], async (): Promise<UndoOutcome> => {
+    db.transaction('rw', UNDO_TABLES(db), async (): Promise<UndoOutcome> => {
       const card = await readCard(db, cardId);
       if (!card || card.deletedAt !== null) return { status: 'refused', reason: 'missing' };
       const logs = (
@@ -1328,6 +1340,8 @@ export async function undoLastReview(
       const validLog = parseOrThrow(ReviewLog, result.log, 'review log');
       await db.cards.put(validCard);
       await db.reviewLogs.put(validLog);
+      // The XP leaves the day it was earned, on every device (the log's own amendment stays local).
+      await addMissing(db.gameFacts, [reviewUndoFact(validLog)]);
       return { status: 'undone', card: validCard, log: validLog };
     }),
   );
@@ -1833,6 +1847,46 @@ export async function clearStudySession(): Promise<void> {
     await db.meta.delete(SESSION_KEY);
   });
   await signalChange();
+}
+
+export type CompleteSessionStatus = 'awarded' | 'already' | 'no_answers';
+
+/**
+ * End a review session on its done screen: clears it (when it is still the stored one) and awards
+ * the session bonus once per session id, when at least one of its answers still stands (an empty
+ * queue also reaches the done screen). Calling it again (an undo after the done screen, then done
+ * again) answers `already` and keeps the bonus. Discarding a session or a day change on resume
+ * still uses `clearStudySession`, which awards nothing; exams never call this.
+ */
+export async function completeStudySession(
+  sessionId: string,
+  opts: StudyClockOptions = {},
+): Promise<{ status: CompleteSessionStatus }> {
+  requireId(sessionId);
+  const { nowIso: ts } = clockOf(opts);
+  const status = await withWritableDb((db) =>
+    db.transaction(
+      'rw',
+      [db.reviewLogs, db.gameFacts, db.meta],
+      async (): Promise<CompleteSessionStatus> => {
+        const stored = await db.meta.get(SESSION_KEY);
+        if (stored && parseSession(stored.value)?.id === sessionId) {
+          await db.meta.delete(SESSION_KEY);
+        }
+        const bonus = sessionFact(sessionId, ts);
+        if (await db.gameFacts.get(bonus.id)) return 'already';
+        const answered = (await db.reviewLogs.where('sessionId').equals(sessionId).toArray())
+          .map((r) => parseRow(ReviewLog, r, 'review log'))
+          .filter(notNull)
+          .filter((l) => !l.userCorrection).length;
+        if (answered === 0) return 'no_answers';
+        await db.gameFacts.add(bonus);
+        return 'awarded';
+      },
+    ),
+  );
+  await signalChange(); // the session was cleared for every viewer
+  return { status };
 }
 
 export interface StartedSession {

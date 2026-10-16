@@ -127,6 +127,17 @@ const asFile = (bytes: Uint8Array, name = 'backup.zip') =>
 
 vi.setConfig({ testTimeout: 60_000 });
 
+type User = ReturnType<typeof userEvent.setup>;
+
+/** The backup-file wizard: from step 1 ("Lock it?") through its last step, then "Back up now". */
+async function backUpNow(user: User): Promise<void> {
+  // Next until the final verb shows (one step without a passphrase, two with one).
+  for (let i = 0; i < 3 && !screen.queryByTestId('backup-export-start'); i++) {
+    await user.click(screen.getByTestId('backup-export-flow-next'));
+  }
+  await user.click(screen.getByTestId('backup-export-start'));
+}
+
 beforeEach(async () => {
   await resetDbForTests();
   fakeBrowser.reset();
@@ -218,7 +229,7 @@ describe('what a backup says it holds', () => {
     expect(leavesOut).toMatch(/^Not in the file:/);
     for (const word of LEAVES_OUT) expect(leavesOut, word).toContain(word);
 
-    await userEvent.setup().click(screen.getByTestId('backup-export-start'));
+    await backUpNow(userEvent.setup());
     await screen.findByTestId('backup-export-done', {}, TIMEOUT);
     const after = screen.getByTestId('backup-export-done-leaves-out').textContent ?? '';
     for (const word of LEAVES_OUT) expect(after, word).toContain(word);
@@ -238,8 +249,18 @@ describe('what a backup says it holds', () => {
     await screen.findByTestId('backup-import-review', {}, TIMEOUT);
     const wizard = screen.getByTestId('backup-import');
     expect(wizard.textContent).not.toMatch(/everything/i);
-    expect(screen.getByText('Replace my study data with the backup')).toBeTruthy();
+    // the two picture cards, then one line for the chosen one
+    expect(screen.getByTestId('backup-import-mode-replace')).toBeTruthy();
     expect(wizard.textContent).toMatch(/Your settings are not changed/);
+    await userEvent.setup().click(screen.getByTestId('backup-import-mode-replace'));
+    // the dry run runs again for the other mode; then the line names the chosen one
+    await waitFor(
+      () =>
+        expect(screen.getByTestId('backup-import-mode-line').textContent).toMatch(
+          /^Replace my study data with the backup: items not in it are deleted\. Your settings are not changed\.$/,
+        ),
+      TIMEOUT,
+    );
   }, 60_000);
 
   it('readable exports point at the full backup by its real name', () => {
@@ -257,6 +278,12 @@ describe('ExportPanel', () => {
     const { deps, downloads } = harness();
     render(<ExportPanel deps={deps} />);
     const user = userEvent.setup();
+    // step 1 is the lock choice, "No lock" already chosen; the last step is the review
+    expect(screen.getByRole('heading', { name: 'Lock it?' })).toBeTruthy();
+    expect((screen.getByTestId('backup-export-pass-off') as HTMLInputElement).checked).toBe(true);
+    await user.click(screen.getByTestId('backup-export-flow-next'));
+    expect(screen.getByRole('heading', { name: 'Looks good?' })).toBeTruthy();
+    expect(screen.getByText('Not locked')).toBeTruthy();
     await user.click(screen.getByTestId('backup-export-start'));
     await screen.findByTestId('backup-export-done', {}, TIMEOUT);
 
@@ -275,11 +302,21 @@ describe('ExportPanel', () => {
     const { deps, downloads } = harness();
     render(<ExportPanel deps={deps} />);
     const user = userEvent.setup();
-    const start = screen.getByTestId('backup-export-start');
+    const next = () => user.click(screen.getByTestId('backup-export-flow-next'));
 
     await user.click(screen.getByTestId('backup-export-pass-enable'));
-    expect(screen.getByText(/If you lose this passphrase, you lose this backup/)).toBeTruthy();
-    expect(start.getAttribute('aria-disabled')).toBe('true');
+    await next();
+    expect(screen.getByRole('heading', { name: 'Passphrase' })).toBeTruthy();
+    expect(screen.getByText(/Lose it, lose the backup/)).toBeTruthy();
+    // Next validates the step and stays on it, with the reason
+    await next();
+    expect(screen.getByRole('alert').textContent).toMatch(/at least 8 characters/);
+    expect(screen.queryByTestId('backup-export-start')).toBeNull();
+    // The error sits with the field it names, and focus goes there (UX_DESIGN 6.9).
+    const value = screen.getByTestId('backup-export-pass-value');
+    expect(value.getAttribute('aria-invalid')).toBe('true');
+    expect(value.getAttribute('aria-describedby')).toContain(screen.getByRole('alert').id);
+    expect(document.activeElement).toBe(value);
 
     await user.type(screen.getByTestId('backup-export-pass-value'), 'correct horse battery');
     expect(screen.getByTestId('backup-export-pass-strength').textContent).toMatch(/Strong|Fair/);
@@ -287,12 +324,28 @@ describe('ExportPanel', () => {
     expect(
       (await screen.findAllByText('The two passphrases do not match.')).length,
     ).toBeGreaterThan(0);
+    // Next on a mismatch: one alert (not the field's and the step's), under the second field.
+    await next();
+    const alerts = screen.getAllByRole('alert');
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]!.textContent).toMatch(/do not match/);
+    const confirm = screen.getByTestId('backup-export-pass-confirm');
+    expect(confirm.getAttribute('aria-describedby')).toBe(alerts[0]!.id);
+    expect(document.activeElement).toBe(confirm);
     await user.type(screen.getByTestId('backup-export-pass-confirm'), 'y');
-    expect(start.getAttribute('aria-disabled')).toBe('true'); // not acknowledged yet
+    await next();
+    expect(screen.getByRole('alert').textContent).toMatch(/lost passphrase cannot be recovered/);
     await user.click(screen.getByTestId('backup-export-pass-ack'));
-    expect(start.getAttribute('aria-disabled')).toBeNull();
+    await next();
+    expect(screen.getByText('Locked with your passphrase')).toBeTruthy();
+    // Back keeps every answer
+    await user.click(screen.getByTestId('backup-export-flow-back'));
+    expect((screen.getByTestId('backup-export-pass-value') as HTMLInputElement).value).toBe(
+      'correct horse battery',
+    );
+    await next();
 
-    await user.click(start);
+    await user.click(screen.getByTestId('backup-export-start'));
     await screen.findByTestId('backup-export-done', {}, TIMEOUT);
     expect(downloads[0]?.name).toMatch(/\.svbackup$/);
     expect(screen.getByText(/Encrypted with your passphrase/)).toBeTruthy();
@@ -311,11 +364,13 @@ describe('ExportPanel', () => {
     });
     render(<ExportPanel deps={deps} />);
     const user = userEvent.setup();
-    await user.click(screen.getByTestId('backup-export-start'));
+    await backUpNow(user);
     await user.click(await screen.findByTestId('backup-export-cancel'));
     await waitFor(() => expect(screen.queryByTestId('backup-export-progress')).toBeNull());
     expect(downloads).toHaveLength(0);
     expect(screen.queryByRole('alert')).toBeNull();
+    // back on the wizard's last step, its title focused (focus never falls to the page)
+    expect(document.activeElement?.textContent).toBe('Looks good?');
   });
 
   it('explains a failure and offers to try again', async () => {
@@ -323,7 +378,7 @@ describe('ExportPanel', () => {
       exportFull: () => Promise.reject(new BackupError('source_error', 'raw')),
     });
     render(<ExportPanel deps={deps} />);
-    await userEvent.setup().click(screen.getByTestId('backup-export-start'));
+    await backUpNow(userEvent.setup());
     expect(await screen.findByText('StudyVault could not read your data')).toBeTruthy();
     expect(screen.getByTestId('backup-export-retry')).toBeTruthy();
   });
@@ -333,6 +388,7 @@ describe('ExportPanel', () => {
       cachedPdfs: () => Promise.resolve({ count: 2, bytes: 5 * 1024 * 1024 }),
     });
     render(<ExportPanel deps={deps} />);
+    await userEvent.setup().click(screen.getByTestId('backup-export-flow-next'));
     expect(await screen.findByText(/2 cached PDFs, 5\.0 MB/)).toBeTruthy();
     expect((screen.getByTestId('backup-include-pdfs') as HTMLInputElement).disabled).toBe(false);
   });
@@ -889,8 +945,20 @@ describe('BackupSection', () => {
     for (const id of ['backup-export', 'backup-import', 'backup-readable', 'backup-external']) {
       expect(screen.getByTestId(id)).toBeTruthy();
     }
-    await userEvent.setup().click(await screen.findByTestId('backup-safety-restore'));
+    // one tool at a time: "Back up" first, the others are a picture card away (and stay mounted)
+    const panel = (task: string) => screen.getByTestId(`backup-panel-${task}`);
+    expect(panel('backup').hidden).toBe(false);
+    for (const task of ['restore', 'import', 'export']) expect(panel(task).hidden).toBe(true);
+    const user = userEvent.setup();
+    await user.click(screen.getByTestId('backup-task-export'));
+    expect(panel('export').hidden).toBe(false);
+    expect(panel('backup').hidden).toBe(true);
+
+    // restoring the safety copy switches to the restore tool with the file loaded
+    await user.click(await screen.findByTestId('backup-safety-restore'));
     await screen.findByTestId('backup-import-review', {}, TIMEOUT);
+    expect(panel('restore').hidden).toBe(false);
+    expect((screen.getByTestId('backup-task-restore') as HTMLInputElement).checked).toBe(true);
     expect(screen.getByText(/before\.zip/)).toBeTruthy();
   }, 60_000);
 

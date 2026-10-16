@@ -1,5 +1,16 @@
 /** Display formatting (pure). Dates are shown in the viewer's own time zone. */
 
+import type { ResolveStatus } from '@shared';
+
+/** Page status in at most two words, for chips (the full wording stays in the preview). */
+export const STATUS_SHORT: Record<ResolveStatus, string> = {
+  unchecked: 'Not checked',
+  resolved: 'Found',
+  changed: 'Changed',
+  ambiguous: 'Many matches',
+  orphaned: 'Not found',
+};
+
 function safeFormat(iso: string, options: Intl.DateTimeFormatOptions): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
@@ -14,7 +25,15 @@ export const formatDate = (iso: string) => safeFormat(iso, { dateStyle: 'medium'
 
 /** "11 Oct 2026, 14:05 GMT+3" */
 export const formatDateTime = (iso: string) =>
-  safeFormat(iso, { dateStyle: 'medium', timeStyle: 'short', timeZoneName: 'short' });
+  // Not dateStyle/timeStyle: Intl rejects them together with timeZoneName (the raw ISO showed).
+  safeFormat(iso, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  });
 
 export function timeZoneName(): string {
   try {

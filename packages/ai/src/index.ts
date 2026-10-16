@@ -14,10 +14,15 @@ export type {
   Pricing,
   RetryPolicy,
 } from './deps';
-export { questionTerms, retrievalQuery, searchPassages } from './retrieve';
+export { expandTerms, questionTerms, retrievalQuery, searchPassages, stem } from './retrieve';
+export { contentTokens } from './candidates';
 export type { PassageRef, PassageSearch } from './retrieve';
 export {
+  basicAuthHeader,
   createAnthropicProvider,
+  createCodexResponsesProvider,
+  parseCodexStream,
+  CODEX_BASE_URL,
   createMockProvider,
   createOpenAICompatibleProvider,
   assertSafeEndpoint,
@@ -30,6 +35,7 @@ export type {
   AiCompletionRequest,
   AiProvider,
   AnthropicConfig,
+  CodexResponsesConfig,
   FetchLike,
   MockProvider,
   MockScript,
@@ -49,3 +55,15 @@ export { groundClaims, MIN_QUOTE_CHARS } from './grounding';
 export { systemClock } from './system';
 export type { SystemClock } from './system';
 export { matchForm, toPlainText } from './text';
+export {
+  CODEX_REDIRECT_URI,
+  buildCodexAuthorizeUrl,
+  codexAccountId,
+  codexAuthOrigins,
+  codexCallbackParams,
+  exchangeCodexCode,
+  fetchCodexUsage,
+  newCodexPkce,
+  refreshCodexTokens,
+} from './codexAuth';
+export type { CodexTokens, CodexUsage, CodexUsageWindow } from './codexAuth';

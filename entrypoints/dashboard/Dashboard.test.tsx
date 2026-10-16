@@ -62,7 +62,8 @@ function vaultWith(highlights: FakeHighlight[] = BIO) {
   return vault;
 }
 
-async function openDashboard(vault: FakeVault, search = '') {
+/** Opens on the highlight list (`?view=library`) unless the address says otherwise. */
+async function openDashboard(vault: FakeVault, search = '?view=library') {
   window.history.replaceState({}, '', `/dashboard.html${search}`);
   render(<Dashboard api={vault.api()} />);
   await screen.findByTestId('dashboard');
@@ -208,7 +209,7 @@ describe('Dashboard: browsing', () => {
 
   it('shows the empty vault state', async () => {
     await openDashboard(new FakeVault());
-    expect(await screen.findByText('Your vault is empty', undefined, WAIT)).toBeTruthy();
+    expect(await screen.findByText('Nothing saved yet', undefined, WAIT)).toBeTruthy();
   });
 });
 
@@ -245,7 +246,7 @@ describe('Dashboard: search', () => {
     await openDashboard(vaultWith());
     typeQuery('cell OR ribosomes OR mitochondria');
     await waitFor(() => expect(rows().length).toBeGreaterThan(0), WAIT);
-    const chips = await screen.findAllByTestId('facet-bank');
+    const chips = await screen.findAllByTestId('facet-bank', undefined, WAIT);
     const biology = chips.find((c) => c.textContent?.includes('Biology'))!;
     fireEvent.click(biology);
     await waitFor(() => expect(searchBox().value).toContain('bank:"Biology"'), WAIT);
@@ -277,7 +278,7 @@ describe('Dashboard: search', () => {
     await openDashboard(vaultWith());
     typeQuery('qqqqzzzz');
     expect(await screen.findByText(/No results for/, undefined, WAIT)).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Clear the search' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Clear search' })).toBeTruthy();
   });
 
   it('offers a correction for a misspelt word and applies it on request', async () => {
@@ -320,11 +321,11 @@ describe('Dashboard: search', () => {
       if (calls === 2) await gate; // hold the build half way
       return original(o);
     };
-    window.history.replaceState({}, '', '/dashboard.html');
+    window.history.replaceState({}, '', '/dashboard.html?view=library');
     render(<Dashboard api={api} />);
     await screen.findByTestId('dashboard');
     typeQuery('mitochondria');
-    expect(await screen.findByText(/not ready yet/, undefined, WAIT)).toBeTruthy();
+    expect(await screen.findByText('Search is warming up', undefined, WAIT)).toBeTruthy();
     const status = await screen.findByText(/of 1,300/, undefined, WAIT);
     expect(status.textContent).toMatch(/Building the search index: 500 of 1,300/);
     expect(screen.getByRole('progressbar', { name: 'Search index progress' })).toBeTruthy();
@@ -505,6 +506,45 @@ describe('Dashboard: large vault', () => {
   }, 30_000);
 });
 
+describe('Dashboard: Home and the rail', () => {
+  it('opens on Home with the rail, and Banks and Search lead to the list', async () => {
+    window.history.replaceState({}, '', '/dashboard.html');
+    render(<Dashboard api={vaultWith().api()} />);
+    expect(await screen.findByTestId('home', undefined, WAIT)).toBeTruthy();
+    const rail = screen.getByRole('navigation', { name: 'Dashboard' });
+    expect(within(rail).getByTestId('nav-home').getAttribute('aria-current')).toBe('page');
+    expect(within(rail).getByTestId('nav-review').getAttribute('href')).toContain('review.html');
+    expect(screen.queryByTestId('search-input')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('nav-banks'));
+    await waitFor(() => expect(rows()).toHaveLength(3), WAIT);
+    expect(screen.getByTestId('nav-banks').getAttribute('aria-current')).toBe('page');
+
+    fireEvent.click(screen.getByTestId('nav-search'));
+    await waitFor(() => expect(document.activeElement).toBe(searchBox()), WAIT);
+    expect(screen.getByTestId('nav-search').getAttribute('aria-current')).toBe('page');
+  });
+
+  it('runs the new-bank wizard from the tree and opens the new bank', async () => {
+    const vault = vaultWith();
+    await openDashboard(vault);
+    fireEvent.click(screen.getByTestId('new-bank'));
+    const wizard = screen.getByRole('dialog', { name: 'New bank' });
+    fireEvent.change(within(wizard).getByTestId('name-input'), { target: { value: 'Physics' } });
+    for (let i = 0; i < 3; i++)
+      fireEvent.click(within(wizard).getByRole('button', { name: 'Next' }));
+    fireEvent.click(within(wizard).getByRole('button', { name: 'Create bank' }));
+    fireEvent.click(await screen.findByTestId('new-bank-open', undefined, WAIT));
+    await waitFor(
+      () =>
+        expect(
+          screen.getByRole('treeitem', { name: /Physics/ }).getAttribute('aria-selected'),
+        ).toBe('true'),
+      WAIT,
+    );
+  });
+});
+
 describe('Dashboard: commands and navigation', () => {
   it('opens the palette with Ctrl+K and runs a real action', async () => {
     await openDashboard(vaultWith());
@@ -557,23 +597,29 @@ describe('Dashboard: commands and navigation', () => {
     await waitFor(() => expect(document.activeElement).toBe(searchBox()), WAIT);
   });
 
-  it('switches to the duplicate, trash and storage views', async () => {
+  it('switches to the duplicate, trash and storage views under More', async () => {
     await openDashboard(vaultWith());
+    fireEvent.click(screen.getByTestId('nav-more'));
+    expect(screen.getByTestId('nav-more').getAttribute('aria-current')).toBe('page');
     fireEvent.click(screen.getByTestId('view-duplicates'));
     expect(await screen.findByTestId('duplicates-view', undefined, WAIT)).toBeTruthy();
+    fireEvent.click(screen.getByTestId('back-to-more'));
     fireEvent.click(screen.getByTestId('view-trash'));
     expect(await screen.findByTestId('trash-view', undefined, WAIT)).toBeTruthy();
+    fireEvent.click(screen.getByTestId('back-to-more'));
     fireEvent.click(screen.getByTestId('view-storage'));
     expect(await screen.findByTestId('storage-panel', undefined, WAIT)).toBeTruthy();
     expect((await screen.findByTestId('storage-total-rows', undefined, WAIT)).textContent).toMatch(
       /^\d/,
     );
-    fireEvent.click(screen.getByTestId('view-library'));
+    fireEvent.click(screen.getByTestId('nav-banks'));
     await waitFor(() => expect(rows()).toHaveLength(3), WAIT);
+    expect(screen.getByTestId('nav-banks').getAttribute('aria-current')).toBe('page');
   });
 
   it('has a chat view that only explains the opt-in while AI is off, from the nav and from a link', async () => {
     await openDashboard(vaultWith());
+    fireEvent.click(screen.getByTestId('nav-more'));
     fireEvent.click(screen.getByTestId('view-chat'));
     expect(await screen.findByText('AI features are off', undefined, WAIT)).toBeTruthy();
     expect(screen.queryByTestId('chat-question')).toBeNull();
@@ -583,7 +629,7 @@ describe('Dashboard: commands and navigation', () => {
     // The side panel's "Chat" button opens the dashboard on this view, scoped to the bank.
     await openDashboard(vaultWith(), '?view=chat&bank=bank-bio');
     expect(await screen.findByText('AI features are off', undefined, WAIT)).toBeTruthy();
-    expect(screen.getByTestId('view-chat').getAttribute('aria-current')).toBe('page');
+    expect(screen.getByTestId('nav-more').getAttribute('aria-current')).toBe('page');
   });
 
   it('applies the density and contrast choices to the page', async () => {

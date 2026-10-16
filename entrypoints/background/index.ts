@@ -6,7 +6,9 @@ import {
   acceptFiling,
   dismissFiling,
   filingAfterCapture,
+  isGameModeOn,
   repo,
+  runGameBackfill,
   undoFiling,
   withDb,
 } from '@storage';
@@ -27,6 +29,14 @@ import { createSiteAccess } from './siteAccess';
 import { registerSync } from './sync';
 
 const report = (err: unknown) => console.error('[StudyVault]', err);
+/**
+ * Derive the game ledger from existing history (ADR-022). Resumable and idempotent: when it is done
+ * this costs one read, so every install, update and browser start may ask.
+ */
+const backfillGame = () =>
+  runGameBackfill().then((r) => {
+    if (r.status === 'failed') report(new Error(`game backfill: ${r.error ?? 'failed'}`));
+  }, report);
 
 // MV3 service worker: this body runs on every worker start and registers every listener
 // synchronously. Nothing here may hold state that must outlive the worker.
@@ -56,6 +66,7 @@ export default defineBackground(() => {
       extensionBaseUrl: browser.runtime.getURL('/'),
       openSidePanel: browserOpenSidePanel,
       session: browserSessionArea(),
+      isGameModeOn,
     }),
   );
 
@@ -75,6 +86,7 @@ export default defineBackground(() => {
     // An update may raise the schema. Upgrade now, here, with the pre-update copy, rather than
     // whenever a page or the sync run first touches the database.
     if (details.reason === 'update') withDb(async () => {}).catch(report);
+    backfillGame();
     installContextMenu(browserMenuPort()).catch(report);
     site.sync().catch(report);
     // The welcome tour opens once, on the first install: never for an update, a browser update or
@@ -89,6 +101,7 @@ export default defineBackground(() => {
   });
   browser.runtime.onStartup.addListener(() => {
     site.sync().catch(report);
+    backfillGame();
   });
   // Chrome's grants are the truth and can change outside our UI (chrome://extensions, enterprise
   // policy): reconcile the registration in both directions.

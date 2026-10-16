@@ -98,9 +98,7 @@ export const TID = {
   clozeIndex: 'rv-cloze-index',
   clozeHint: 'rv-cloze-hint',
   deckSelect: 'rv-deck-select',
-  saveCards: 'rv-save-cards',
   bulk: 'rv-bulk',
-  bulkCreate: 'rv-bulk-create',
   browser: 'rv-browser',
   browserFilter: 'rv-browser-filter',
   browserSearch: 'rv-browser-search',
@@ -219,7 +217,7 @@ export async function openReview(
   return page;
 }
 
-export type ReviewTab = 'Study' | 'Create cards' | 'Cards' | 'Analytics' | 'Settings';
+export type ReviewTab = 'Study' | 'Exam' | 'Create' | 'Cards' | 'Stats' | 'Settings';
 
 export async function gotoTab(page: Page, tab: ReviewTab): Promise<void> {
   await page.getByRole('tab', { name: tab, exact: true }).click();
@@ -582,40 +580,132 @@ export type CardSpec =
       explanation?: string;
     };
 
-const TEMPLATE_TAB: Record<CardSpec['t'], string> = {
-  basic: 'Question and answer',
-  cloze: 'Fill in the blank',
-  definition: 'Term and definition',
-  compare: 'Compare',
-  mcq: 'Multiple choice',
+/** The card-type picture cards of the "Card type" step (label, then hint, in the radio's name). */
+const TYPE_RADIO: Record<CardSpec['t'], RegExp> = {
+  basic: /^Q and A/,
+  cloze: /^Fill blank/,
+  definition: /^Term/,
+  compare: /^Compare/,
+  mcq: /^Multiple choice/,
 };
 
-/** Fill the (single, visible) card editor for `spec`; does not save. */
+/**
+ * Choose a picture-card radio (or checkbox) the way a person does: a click on the card, its
+ * <label>. The input itself is visually hidden under the card's art, so it cannot take a click.
+ */
+export async function pick(input: Locator): Promise<void> {
+  await input.locator('xpath=..').click();
+  await expect(input).toBeChecked();
+}
+
+/** The "Create cards" wizard of the author view (one decision per step). */
+export const createWizard = (page: Page): Locator =>
+  page.getByRole('region', { name: 'Create cards', exact: true });
+
+/** The title of the wizard step on screen ("Start from", "Card type", "Write the card", ...). */
+export const wizardStep = (page: Page): Locator =>
+  createWizard(page).getByRole('heading', { level: 2 });
+
+/** The "Card created!" / "N cards created!" screen shown after a save. */
+const createdHeading = (page: Page): Locator =>
+  page.getByRole('heading', { name: /^(Card created!|\d+ cards created!)$/ });
+
+/** Press Back or Next and wait until the wizard shows another step (or `to`). */
+async function wizardMove(page: Page, button: 'Back' | 'Next', to?: string): Promise<void> {
+  const step = wizardStep(page);
+  const from = ((await step.textContent()) ?? '').trim();
+  await createWizard(page).getByRole('button', { name: button, exact: true }).click();
+  if (to !== undefined) await expect(step).toHaveText(to);
+  else await expect(step).not.toHaveText(from);
+}
+
+export const wizardNext = (page: Page, to?: string) => wizardMove(page, 'Next', to);
+
+/** Where the author view's cards start from, per page: a highlight id, or null for a blank card. */
+const START = new WeakMap<Page, string | null>();
+
+/**
+ * Bring the Create wizard to its "Card type" step for the page's start (see START). From the
+ * "Card created!" screen it starts over; `fresh` first goes back to "Start from" so the source is
+ * chosen again (a different highlight, or a blank card instead of one).
+ */
+async function toCardType(page: Page, fresh: boolean): Promise<void> {
+  const start = START.get(page) ?? null;
+  let chosen = false;
+  for (let i = 0; i < 12; i++) {
+    if (await createdHeading(page).isVisible()) {
+      await page.getByRole('button', { name: 'Start over', exact: true }).click();
+      await expect(wizardStep(page)).toHaveText('Start from');
+      continue;
+    }
+    await expect(wizardStep(page)).toBeVisible();
+    const step = ((await wizardStep(page).textContent()) ?? '').trim();
+    if (step === 'Start from') {
+      await pick(
+        createWizard(page).getByRole('radio', {
+          name: start === null ? /^Blank card/ : /^A highlight/,
+        }),
+      );
+      chosen = true;
+      await wizardNext(page);
+    } else if (step === 'Pick a highlight' && (chosen || !fresh)) {
+      const row = page.getByTestId(`rv-pick-${start}`);
+      await row.click();
+      await expect(row.getByRole('radio')).toBeChecked();
+      await wizardNext(page, 'Card type');
+    } else if (step === 'Card type' && (chosen || !fresh)) {
+      return;
+    } else {
+      await wizardMove(page, 'Back');
+    }
+  }
+  throw new Error(
+    `the Create wizard never reached "Card type" (on ${await wizardStep(page).textContent()})`,
+  );
+}
+
+/** Open "More fields" of the editor (explanation, example, tags) when it is closed. */
+async function openMoreFields(editor: Locator): Promise<void> {
+  const more = editor.locator('details', {
+    has: editor.page().locator('summary', { hasText: 'More fields' }),
+  });
+  if (!(await more.evaluate((d) => (d as HTMLDetailsElement).open))) {
+    await more.locator('summary').click();
+  }
+}
+
+/**
+ * Pick the card type for `spec` and fill the "Write the card" step; does not save. Works from any
+ * step of the Create wizard (or the "Card created!" screen) for the source the page started with.
+ */
 export async function fillEditor(page: Page, spec: CardSpec): Promise<Locator> {
+  await toCardType(page, false);
+  await pick(createWizard(page).getByRole('radio', { name: TYPE_RADIO[spec.t] }));
+  await wizardNext(page, 'Write the card');
   const editor = page.getByTestId(TID.editor);
   await expect(editor).toBeVisible();
-  await editor.getByRole('tab', { name: TEMPLATE_TAB[spec.t], exact: true }).click();
   switch (spec.t) {
     case 'basic':
       await editor.getByRole('textbox', { name: 'Question', exact: true }).fill(spec.question);
       await editor.getByRole('textbox', { name: 'Answer', exact: true }).fill(spec.answer);
       if (spec.explanation) {
+        await openMoreFields(editor);
         await editor
           .getByRole('textbox', { name: 'Explanation (optional)', exact: true })
           .fill(spec.explanation);
       }
       if (spec.tags) {
-        await editor
-          .getByRole('textbox', { name: 'Tags (comma separated, optional)' })
-          .fill(spec.tags);
+        await openMoreFields(editor);
+        await editor.getByRole('textbox', { name: 'Tags (optional)', exact: true }).fill(spec.tags);
       }
       break;
     case 'cloze': {
       await editor.getByTestId(TID.clozeText).fill(spec.markup);
-      const box = editor.getByRole('checkbox', { name: /One card per deletion number/ });
+      const box = editor.getByRole('checkbox', { name: 'One card per blank', exact: true });
       if (spec.perDeletion === false) await box.uncheck();
       else await box.check();
       if (spec.explanation) {
+        await openMoreFields(editor);
         await editor
           .getByRole('textbox', { name: 'Explanation (optional)', exact: true })
           .fill(spec.explanation);
@@ -626,6 +716,7 @@ export async function fillEditor(page: Page, spec: CardSpec): Promise<Locator> {
       await editor.getByRole('textbox', { name: 'Term', exact: true }).fill(spec.term);
       await editor.getByRole('textbox', { name: 'Definition', exact: true }).fill(spec.definition);
       if (spec.example) {
+        await openMoreFields(editor);
         await editor
           .getByRole('textbox', { name: 'Example (optional)', exact: true })
           .fill(spec.example);
@@ -657,8 +748,9 @@ export async function fillEditor(page: Page, spec: CardSpec): Promise<Locator> {
         .getByRole('radio', { name: `Option ${spec.correct + 1} is correct`, exact: true })
         .check();
       if (spec.explanation) {
+        await openMoreFields(editor);
         await editor
-          .getByRole('textbox', { name: 'Why the answer is right (optional)', exact: true })
+          .getByRole('textbox', { name: 'Explanation (optional)', exact: true })
           .fill(spec.explanation);
       }
       break;
@@ -718,34 +810,42 @@ export async function cardCount(page: Page): Promise<number> {
   return liveCards(await readStudyDb(page)).length;
 }
 
-/** Fill and save the visible card editor; waits until the new cards are in the database. */
+/**
+ * Fill the card, go on to "Pick a deck" (the automatic deck), check the count it promises, and
+ * create; waits until the new cards are in the database and the "created" screen is shown.
+ */
 export async function saveEditor(page: Page, spec: CardSpec, expectedNew: number): Promise<void> {
   const before = await cardCount(page);
   await fillEditor(page, spec);
-  await expect(page.getByTestId(TID.saveCards)).not.toHaveAttribute('aria-disabled', 'true');
-  await page.getByTestId(TID.saveCards).click();
+  await wizardNext(page, 'Pick a deck');
+  const wizard = createWizard(page);
+  await expect(wizard).toContainText(`${expectedNew} card${expectedNew === 1 ? '' : 's'} ready`);
+  await wizard
+    .getByRole('button', {
+      name: expectedNew === 1 ? 'Create card' : `Create ${expectedNew} cards`,
+      exact: true,
+    })
+    .click();
   await expect
     .poll(() => cardCount(page), { message: 'cards were stored' })
     .toBe(before + expectedNew);
-  // The editor clears itself a moment AFTER the cards are stored; typing into it before that would
-  // be wiped. Its preview going back to the empty prompt is the signal that it is ready again.
-  await expect(page.getByTestId(TID.preview)).toContainText(
-    'Fill in the fields above to see the card.',
+  await expect(createdHeading(page)).toHaveText(
+    expectedNew === 1 ? 'Card created!' : `${expectedNew} cards created!`,
   );
 }
 
-/** Author tab, a highlight from the picker, then the editor. */
+/** Create tab, "A highlight", that highlight from the picker: the wizard is on "Card type". */
 export async function openHighlightInAuthor(page: Page, highlightId: string): Promise<void> {
-  await gotoTab(page, 'Create cards');
-  await page.getByTestId(`rv-pick-${highlightId}`).getByRole('button').click();
-  await expect(page.getByTestId(TID.editor)).toBeVisible();
+  await gotoTab(page, 'Create');
+  START.set(page, highlightId);
+  await toCardType(page, true);
 }
 
-/** Author tab, "Typed card": a free-standing card with no source. */
+/** Create tab, "Blank card" (a free-standing card with no source): the wizard is on "Card type". */
 export async function openTypedCard(page: Page): Promise<void> {
-  await gotoTab(page, 'Create cards');
-  await page.getByRole('tab', { name: 'Typed card', exact: true }).click();
-  await expect(page.getByTestId(TID.manual)).toBeVisible();
+  await gotoTab(page, 'Create');
+  START.set(page, null);
+  await toCardType(page, true);
 }
 
 /**
@@ -878,8 +978,13 @@ export const questionText = async (page: Page): Promise<string> =>
 export const cardRow = (page: Page, text: string | RegExp): Locator =>
   page.locator('[data-testid^="rv-card-"]', { hasText: text });
 
+/** The card browser's filter chips are toggle buttons; the chosen one is pressed. */
 export async function setBrowserFilter(page: Page, label: string): Promise<void> {
-  await page.getByTestId(TID.browserFilter).selectOption({ label });
+  const chip = page
+    .getByTestId(TID.browserFilter)
+    .getByRole('button', { name: label, exact: true });
+  await chip.click();
+  await expect(chip).toHaveAttribute('aria-pressed', 'true');
 }
 
 export interface DeckSettingsPatch {
@@ -893,24 +998,32 @@ export interface DeckSettingsPatch {
   fuzz?: boolean;
 }
 
-/** Open the deck's rules in the Settings view and return its form. */
+/** Open the deck's rules in the Settings view, with its "Advanced" numbers shown; return its form. */
 export async function openDeckForm(page: Page, deckName: string): Promise<Locator> {
   await gotoTab(page, 'Settings');
   const details = page.locator('details', {
     has: page.locator('.rv-details__name', { hasText: deckName }),
   });
   const form = details.getByRole('form', { name: `Settings of deck ${deckName}` });
-  if (!(await form.isVisible())) await details.locator('summary').click();
+  if (!(await form.isVisible())) await details.locator('summary').first().click();
   await expect(form).toBeVisible();
+  // The raw numbers sit under "Advanced" (closed while the deck follows a preset pace).
+  const advanced = form.locator('details', {
+    has: page.locator('summary', { hasText: 'Advanced' }),
+  });
+  if (!(await advanced.evaluate((d) => (d as HTMLDetailsElement).open))) {
+    await advanced.locator('summary').click();
+  }
+  await expect(form.getByLabel('Learning steps', { exact: true })).toBeVisible();
   return form;
 }
 
 export async function fillDeckForm(form: Locator, patch: DeckSettingsPatch): Promise<void> {
   const fields: Array<[keyof DeckSettingsPatch, string]> = [
-    ['targetRetentionPct', 'Target retention (%)'],
-    ['newPerDay', 'New cards per day'],
+    ['targetRetentionPct', 'Target retention'],
+    ['newPerDay', 'New per day'],
     ['reviewsPerDay', 'Reviews per day'],
-    ['maxIntervalDays', 'Maximum interval (days)'],
+    ['maxIntervalDays', 'Max interval'],
     ['learningSteps', 'Learning steps'],
     ['relearnSteps', 'Relearning steps'],
     ['leechThreshold', 'Leech threshold'],
@@ -1074,9 +1187,7 @@ export async function setStudyDayInUi(
   await form.getByTestId(TID.timeZone).fill(next.timeZone);
   await form.getByTestId(TID.rollover).selectOption(String(next.rolloverHour));
   await form.getByTestId(TID.studyDaySave).click();
-  await expect(
-    form.getByText(/^Saved\. Open review windows pick the new settings up/),
-  ).toBeVisible();
+  await expect(form.getByText('Saved.', { exact: true })).toBeVisible();
 }
 
 /** The study settings exactly as stored under chrome.storage.local. */

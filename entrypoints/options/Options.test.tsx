@@ -2,6 +2,7 @@ import 'fake-indexeddb/auto';
 import { webcrypto } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  act,
   cleanup,
   configure,
   fireEvent,
@@ -34,12 +35,14 @@ import {
 } from '@storage';
 import { freshDatabase } from '@storage/test-vault';
 import { LOCAL_PREF_KEYS } from '@ui';
+import { SETTINGS_SECTIONS } from '@ui/shell/paths';
 import { SyncApiProvider, type SyncApi, type SyncStatusView } from '@ui/sync';
 import { COMMANDS, makeChromeFakes, rpc, store } from '@ui/testing/fakes';
+import { OPTION_SECTIONS } from './model';
 import { Options } from './Options';
 
 // The page's own writes (delete all data) go through the in-memory fake, which records them; what
-// the review, AI, backup and storage sections read is real code over fake-indexeddb.
+// the review, AI, backup, game and storage sections read is real code over fake-indexeddb.
 vi.mock('@storage', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   const { store: fake } = await import('@ui/testing/fakes');
@@ -51,9 +54,9 @@ vi.mock('@runtime', async (importOriginal) => {
   return { ...actual, callBackground: fake.callBackground, callTab: fake.callTab } as never;
 });
 
-// The page mounts the review, AI, sync, backup and storage sections as well, which makes every
-// role query in jsdom a second or so; a loaded CI shard must not turn that into a failure.
-// `defaultHidden` skips the per-element visibility walk (jsdom has no layout to consult anyway).
+// Every role query in jsdom takes a while on a loaded CI shard; that must not turn into a failure.
+// `defaultHidden` skips the per-element visibility walk (jsdom has no layout to consult anyway), and
+// lets queries reach the detail behind (i) and closed disclosures, which are in the page.
 vi.setConfig({ testTimeout: 90_000 });
 configure({ asyncUtilTimeout: 45_000, defaultHidden: true });
 
@@ -113,7 +116,17 @@ const syncApi = {
   listQuarantine: async () => [],
 } as unknown as SyncApi;
 
-async function open(settings: Partial<Settings> = {}, api: SyncApi = syncApi) {
+/** Where the address points before the page mounts: a section id, or null for the home. */
+const goTo = (section: string | null) =>
+  window.history.replaceState(null, '', section ? `#${section}` : window.location.pathname);
+
+/** Open the settings page on one view (each section is its own view: `options.html#<id>`). */
+async function open(
+  settings: Partial<Settings> = {},
+  section: string | null = 'site-access',
+  api: SyncApi = syncApi,
+) {
+  goTo(section);
   await browser.storage.local.set({
     settings: { ...defaultSettings(), denyList: SHORT_DENY, ...settings },
   });
@@ -122,16 +135,18 @@ async function open(settings: Partial<Settings> = {}, api: SyncApi = syncApi) {
       <Options />
     </SyncApiProvider>,
   );
-  // The sections that read the database mount one task after the settings-only ones. Tests that
-  // arm a one-shot failure must not have it consumed by that mount.
-  await screen.findByTestId('storage-section');
+  // The views and the section list render once the settings are read (the loading state has
+  // a heading too, but no section list).
+  await screen.findByRole('navigation', { name: 'Settings sections' });
   return view;
 }
 
-/** "Enable on all sites" is a two-step flow: the question, then Chrome's own prompt. */
-async function enableAll() {
-  await userEvent.click(await screen.findByRole('button', { name: 'Enable on all sites' }));
-  await userEvent.click(await screen.findByRole('button', { name: "Continue to Chrome's prompt" }));
+/** Move to another view the way a link does. */
+async function navigate(section: string | null) {
+  await act(async () => {
+    window.location.hash = section ? `#${section}` : '';
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+  });
 }
 
 /**
@@ -139,6 +154,16 @@ async function enableAll() {
  * importer keeps a second, private announcer that is empty until an import runs.
  */
 const spoken = () => document.querySelector('.sv-toasts__polite')?.textContent ?? '';
+
+/** The text a disclosure (details/summary) holds, found by its summary. */
+const disclosure = (summary: string | RegExp) =>
+  screen.getByText(summary, { selector: 'summary' }).closest('details') as HTMLElement;
+
+/** The (i) detail of a control: the popover text that describes its button. */
+const infoText = (label: string) => {
+  const button = screen.getByRole('button', { name: label });
+  return document.getElementById(button.getAttribute('aria-describedby')!)?.textContent ?? '';
+};
 
 beforeEach(async () => {
   await freshDatabase(); // also resets fakeBrowser
@@ -154,49 +179,63 @@ beforeEach(async () => {
     permissions: ['storage', 'sidePanel', 'contextMenus', 'activeTab', 'scripting'],
   } as never);
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  goTo(null);
+});
 
 describe('content', () => {
   it('shows the privacy statement, real permissions and the manifest version', async () => {
-    await open();
+    await open({}, 'privacy');
     expect(await screen.findByText(/Everything stays on this device/)).toBeTruthy();
-    expect(screen.getByText(/version 0.1.0/)).toBeTruthy();
-    const perms = screen.getByText('Permissions this extension holds').parentElement!;
+    const perms = disclosure('Permissions this extension holds');
     for (const p of ['storage', 'sidePanel', 'contextMenus', 'activeTab', 'scripting']) {
       expect(within(perms).getByText(p)).toBeTruthy();
     }
-    expect(screen.getByRole('heading', { name: 'Site access' })).toBeTruthy();
-    expect(screen.getByText('This tab')).toBeTruthy();
-    expect(screen.getByText('This site')).toBeTruthy();
-    expect(screen.getAllByText('All sites').length).toBeGreaterThan(0);
+    expect(screen.getByText('5 held, more only when you ask.')).toBeTruthy();
+
+    await navigate('about');
+    expect(await screen.findByText(/version 0.1.0/)).toBeTruthy();
+    expect(screen.getByText('StudyVault AI')).toBeTruthy();
+  });
+
+  it('site access shows the three levels as tiles, with the detail behind (i)', async () => {
+    await open();
+    expect(screen.getByRole('heading', { level: 1, name: 'Site access' })).toBeTruthy();
+    const levels = screen.getByRole('list', { name: 'Where StudyVault runs' });
+    for (const name of ['This tab', 'Your sites', 'All sites']) {
+      expect(within(levels).getByText(name)).toBeTruthy();
+    }
+    expect(infoText('About where it runs')).toMatch(/This tab: .* One site: .* All sites: /);
   });
 
   it('discloses everything that is stored, including the page context and soft delete', async () => {
-    await open();
-    const stored = (await screen.findByText('What is stored on this device')).parentElement!;
-    const text = stored.textContent ?? '';
+    await open({}, 'privacy');
+    const text = disclosure('What is stored on this device').textContent ?? '';
     expect(text).toMatch(/up to 64\s+characters of the page text just before it and just after it/);
     expect(text).toMatch(/nearest heading/);
-    expect(text).toMatch(/hash and the length of the whole\s+page text/);
+    expect(text).toMatch(/hash and the\s+length of the whole page text/);
     expect(text).toMatch(/where it sits in the\s+page structure/);
     expect(text).toMatch(/without a user name or password/);
     expect(text).toMatch(/page title/);
     expect(text).toMatch(/Deleted highlights stay in the trash on this device/);
     // The finish-wave data (U-20): rules, syllabi, links, exam history, reminder, folder, fallbacks.
     expect(text).toMatch(/auto-filing rules, syllabi and the links you draw between\s+items/);
-    expect(text).toMatch(/an exam in progress\s+and your exam history/);
+    expect(text).toMatch(/an exam\s+in progress and your exam history/);
     expect(text).toMatch(/daily study reminder setting/);
     expect(text).toMatch(/reference to the backup folder you chose/);
     expect(text).toMatch(/each AI provider you set \(the main one and any fallbacks\)/);
     expect(text).toMatch(/your API keys kept in the extension's storage/);
-    const seen = (await screen.findByText('What a website can see')).parentElement!;
-    expect(seen.textContent).toMatch(/colour and kind/);
-    expect(seen.textContent).toMatch(/sv-hl-amber-formula/);
+    // The game layer (ADR-022) keeps a ledger too.
+    expect(text).toMatch(/XP each review, save, new card and finished\s+session earned/);
+    const seen = disclosure('What a website can see').textContent ?? '';
+    expect(seen).toMatch(/colour and kind/);
+    expect(seen).toMatch(/sv-hl-amber-formula/);
   });
 
   it('has one toast status region; the only other live region is the importer’s, empty at rest', async () => {
-    await open();
-    await screen.findByText(/Everything stays on this device/);
+    await open({}, 'backup');
+    await screen.findByTestId('backup-import-announce');
     const regions = screen.getAllByRole('status');
     expect(document.querySelectorAll('.sv-toasts__polite')).toHaveLength(1);
     const others = regions.filter((r) => !r.classList.contains('sv-toasts__polite'));
@@ -204,6 +243,27 @@ describe('content', () => {
     expect(others[0]!.textContent).toBe('');
   });
 });
+
+// =============================================================================================
+// Site access
+// =============================================================================================
+
+/** "Choose sites" opens the wizard; returns it. */
+async function openWizard() {
+  await userEvent.click(await screen.findByRole('button', { name: 'Choose sites' }));
+  return screen.findByRole('dialog', { name: 'Site access' });
+}
+const next = (wizard: HTMLElement) =>
+  userEvent.click(within(wizard).getByRole('button', { name: 'Next' }));
+
+/** Wizard: All sites -> the deny list -> the last step, where "Ask Chrome" is. */
+async function toAllSitesQuestion() {
+  const wizard = await openWizard();
+  await userEvent.click(within(wizard).getByRole('radio', { name: /^All sites/ }));
+  await next(wizard);
+  await next(wizard);
+  return wizard;
+}
 
 describe('site access', () => {
   it('enables all sites: shows the effective deny list first, then asks Chrome, stores both patterns, syncs', async () => {
@@ -214,22 +274,24 @@ describe('site access', () => {
       p.origins?.forEach((o) => granted.add(o));
       return true;
     });
-    // A short list: every role query in jsdom walks all rows, and the dialog's job is the same.
+    // A short list: every role query in jsdom walks all rows, and the step's job is the same.
     const stayOff = ['paypal.com', 'accounts.google.com', 'mail.google.com'];
     await open({ denyList: stayOff });
-    await userEvent.click(await screen.findByRole('button', { name: 'Enable on all sites' }));
+    const wizard = await openWizard();
+    await userEvent.click(within(wizard).getByRole('radio', { name: /^All sites/ }));
+    await next(wizard);
 
-    // Nothing is requested by the first click; the question shows what stays off.
-    const dialog = await screen.findByRole('dialog', { name: 'Turn StudyVault on for all sites?' });
+    // Nothing is requested yet; the step shows what stays off.
     expect(chrome.permissions.request).not.toHaveBeenCalled();
-    expect(within(dialog).getByText(DENY_LIST_SCOPE_NOTE)).toBeTruthy();
-    const list = within(dialog).getByRole('region', { name: 'Sites on your deny list' });
+    expect(within(wizard).getByRole('heading', { name: 'Stay off on' })).toBeTruthy();
+    expect(within(wizard).getByText(DENY_LIST_SCOPE_NOTE)).toBeTruthy();
+    const list = within(wizard).getByRole('region', { name: 'Sites on your deny list' });
     for (const host of stayOff) expect(within(list).getByText(host)).toBeTruthy();
-    expect(within(dialog).getByText(/these 3 sites/)).toBeTruthy();
+    expect(within(wizard).getByText(/these 3 sites/)).toBeTruthy();
 
-    await userEvent.click(
-      within(dialog).getByRole('button', { name: "Continue to Chrome's prompt" }),
-    );
+    await next(wizard);
+    expect(within(wizard).getByText('Except 3 on your deny list.')).toBeTruthy();
+    await userEvent.click(within(wizard).getByRole('button', { name: 'Ask Chrome' }));
 
     expect(chrome.permissions.request).toHaveBeenCalledWith({ origins: ALL });
     expect(rpcCallsAtRequest).toBe(0);
@@ -237,42 +299,57 @@ describe('site access', () => {
       expect((await getSettings()).persistentOrigins).toEqual(ALL);
     });
     expect(rpc.called('site.sync')).toHaveLength(1);
-    expect(await screen.findByRole('button', { name: 'Revoke all-sites access' })).toBeTruthy();
-    // Chrome's grant is read again after the change: the old button goes away with that answer.
-    await waitFor(() =>
-      expect(screen.queryByRole('button', { name: 'Enable on all sites' })).toBeNull(),
-    );
-    expect(screen.getByText('On')).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Revoke all sites' })).toBeTruthy();
+    // Chrome's grant is read again after the change: the badge follows that answer.
+    await waitFor(() => expect(screen.getByText('On')).toBeTruthy());
+    expect(screen.getByText('All set!')).toBeTruthy();
+    expect(screen.queryByRole('dialog')).toBeNull();
     expect(spoken()).toContain('StudyVault is now on for all sites.');
-    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'All sites' }));
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Where it runs' }));
   });
 
   it('says so when the deny list is empty, before asking', async () => {
     await open({ denyList: [] });
-    await userEvent.click(await screen.findByRole('button', { name: 'Enable on all sites' }));
-    expect(await screen.findByText(/Your deny list is empty/)).toBeTruthy();
+    const wizard = await openWizard();
+    await userEvent.click(within(wizard).getByRole('radio', { name: /^All sites/ }));
+    await next(wizard);
+    expect(await within(wizard).findByText(/Your deny list is empty/)).toBeTruthy();
   });
 
-  it('cancelling the question asks Chrome for nothing and returns focus to the button', async () => {
+  it('asks for a choice first, and moves focus to the choices', async () => {
     await open();
-    const enable = await screen.findByRole('button', { name: 'Enable on all sites' });
-    await userEvent.click(enable);
-    await screen.findByRole('dialog');
+    const wizard = await openWizard();
+    await next(wizard);
+    expect(within(wizard).getByRole('alert').textContent).toContain('Pick one to go on.');
+    expect(document.activeElement).toBe(within(wizard).getByRole('radio', { name: /^One site/ }));
+    expect(within(wizard).getByRole('heading', { name: 'Where to run' })).toBeTruthy();
+  });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  it('closing asks Chrome for nothing and returns focus to the button; with a choice made it asks first', async () => {
+    await open();
+    const choose = await screen.findByRole('button', { name: 'Choose sites' });
+    let wizard = await openWizard();
+    await userEvent.click(within(wizard).getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(choose);
 
+    wizard = await openWizard();
+    await userEvent.click(within(wizard).getByRole('radio', { name: /^All sites/ }));
+    await userEvent.keyboard('{Escape}');
+    expect(within(wizard).getByRole('heading', { name: 'Discard changes?' })).toBeTruthy();
+    await userEvent.click(within(wizard).getByRole('button', { name: 'Discard' }));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(chrome.permissions.request).not.toHaveBeenCalled();
-    expect(document.activeElement).toBe(enable);
+    expect(document.activeElement).toBe(choose);
   });
 
-  it('calls permissions.request synchronously inside the confirming click (user gesture)', async () => {
+  it('calls permissions.request synchronously inside the final click (user gesture)', async () => {
     chrome.permissions.request.mockReturnValue(new Promise(() => undefined));
     await open();
-    await userEvent.click(await screen.findByRole('button', { name: 'Enable on all sites' }));
-    const confirm = await screen.findByRole('button', { name: "Continue to Chrome's prompt" });
+    const wizard = await toAllSitesQuestion();
+    const ask = within(wizard).getByRole('button', { name: 'Ask Chrome' });
 
-    fireEvent.click(confirm);
+    fireEvent.click(ask);
 
     expect(chrome.permissions.request).toHaveBeenCalledWith({ origins: ALL });
   });
@@ -280,9 +357,12 @@ describe('site access', () => {
   it('declined: explains next to the control and changes nothing', async () => {
     chrome.permissions.request.mockResolvedValue(false);
     await open();
-    await enableAll();
+    const wizard = await toAllSitesQuestion();
+    await userEvent.click(within(wizard).getByRole('button', { name: 'Ask Chrome' }));
 
-    const card = (await screen.findByRole('heading', { name: 'All sites' })).parentElement!;
+    const card = (await screen.findByRole('heading', { name: 'Where it runs' })).closest(
+      'section',
+    )!;
     expect(await within(card).findByText(/Chrome did not grant access to all sites/)).toBeTruthy();
     expect((await getSettings()).persistentOrigins).toEqual([]);
     expect(rpc.called('site.sync')).toHaveLength(0);
@@ -293,27 +373,84 @@ describe('site access', () => {
       new Error('Permissions request must be made from a user gesture'),
     );
     await open();
-    await enableAll();
+    const wizard = await toAllSitesQuestion();
+    await userEvent.click(within(wizard).getByRole('button', { name: 'Ask Chrome' }));
 
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('user gesture');
-    expect(alert.closest('.opt-card')?.querySelector('h3')?.textContent).toBe('All sites');
+    expect(alert.closest('section')?.querySelector('h2')?.textContent).toBe('Where it runs');
 
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
-    expect(await screen.findByRole('button', { name: 'Revoke all-sites access' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Revoke all sites' })).toBeTruthy();
+  });
+
+  it('turns on one typed site: refuses a denied one, normalises the address, asks Chrome for exactly that origin', async () => {
+    rpc.background['site.sync'] = () => ({ registeredMatches: ['https://example.org/*'] });
+    await open();
+    const wizard = await openWizard();
+    await userEvent.click(within(wizard).getByRole('radio', { name: /^One site/ }));
+    await next(wizard);
+    const field = within(wizard).getByLabelText('Site address');
+    await userEvent.type(field, 'paypal.com');
+    await next(wizard);
+    expect(within(wizard).getByRole('alert').textContent).toMatch(/on your deny list/);
+    expect(document.activeElement).toBe(field);
+    expect(field.getAttribute('aria-invalid')).toBe('true');
+
+    await userEvent.clear(field);
+    await userEvent.type(field, 'HTTPS://Example.org/some/page');
+    await next(wizard);
+    const sites = within(wizard).getByRole('list', { name: 'Sites to turn on' });
+    expect(within(sites).getByText('example.org')).toBeTruthy();
+    await userEvent.click(within(wizard).getByRole('button', { name: 'Ask Chrome' }));
+
+    expect(chrome.permissions.request).toHaveBeenCalledWith({ origins: ['https://example.org/*'] });
+    await waitFor(async () =>
+      expect((await getSettings()).persistentOrigins).toEqual(['https://example.org/*']),
+    );
+    expect(rpc.called('site.sync')).toHaveLength(1);
+    await waitFor(() => expect(spoken()).toContain('StudyVault is now on for example.org.'));
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Your sites' }));
+  });
+
+  it('turns on some sites: adds several, drops one, and needs at least one', async () => {
+    await open();
+    const wizard = await openWizard();
+    await userEvent.click(within(wizard).getByRole('radio', { name: /^Some sites/ }));
+    await next(wizard);
+    await next(wizard);
+    expect(within(wizard).getByRole('alert').textContent).toContain('Add at least one site.');
+
+    const field = within(wizard).getByLabelText('Site address');
+    for (const site of ['a.example', 'b.example']) {
+      await userEvent.type(field, site);
+      await userEvent.click(within(wizard).getByRole('button', { name: 'Add' }));
+    }
+    await userEvent.click(within(wizard).getByRole('button', { name: 'Remove a.example' }));
+    await next(wizard);
+    const sites = within(wizard).getByRole('list', { name: 'Sites to turn on' });
+    expect(
+      within(sites)
+        .getAllByRole('listitem')
+        .map((li) => li.textContent),
+    ).toEqual(['b.example']);
+    await userEvent.click(within(wizard).getByRole('button', { name: 'Ask Chrome' }));
+    expect(chrome.permissions.request).toHaveBeenCalledWith({ origins: ['https://b.example/*'] });
   });
 
   it('revokes all-sites access and keeps individually enabled sites', async () => {
     ALL.forEach((o) => granted.add(o));
     await open({ persistentOrigins: [...ALL, 'https://example.com/*'] });
-    await userEvent.click(await screen.findByRole('button', { name: 'Revoke all-sites access' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Revoke all sites' }));
 
     expect(chrome.permissions.remove).toHaveBeenCalledWith({ origins: ALL });
     await waitFor(async () => {
       expect((await getSettings()).persistentOrigins).toEqual(['https://example.com/*']);
     });
     expect(rpc.called('site.sync')).toHaveLength(1);
-    expect(await screen.findByRole('button', { name: 'Enable on all sites' })).toBeTruthy();
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: 'Revoke all sites' })).toBeNull(),
+    );
     expect(spoken()).toContain('All-sites access revoked.');
   });
 
@@ -336,14 +473,12 @@ describe('site access', () => {
     expect(rpc.called('site.sync')).toHaveLength(1);
     expect(spoken()).toContain('Revoked access for example.com.');
     // The row and its button are gone: focus moved to the list's heading, not <body>.
-    expect(document.activeElement).toBe(
-      screen.getByRole('heading', { name: 'Sites enabled one by one' }),
-    );
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Your sites' }));
   });
 
-  it('shows a helpful empty state when no site is enabled', async () => {
+  it('shows a friendly empty state when no site is enabled', async () => {
     await open();
-    expect(await screen.findByText(/None yet\./)).toBeTruthy();
+    expect(await screen.findByText('No sites yet')).toBeTruthy();
   });
 });
 
@@ -397,6 +532,7 @@ describe('site access: other access', () => {
     );
     await open(
       { persistentOrigins: ['https://example.com/*'] },
+      'site-access',
       syncWith('https://sync.example.org/v1', 'https://login.example.org'),
     );
 
@@ -509,7 +645,7 @@ describe('site access: other access', () => {
         throw new Error('StudyVault did not answer in time.');
       },
     } as unknown as SyncApi;
-    await open({}, unreachable);
+    await open({}, 'site-access', unreachable);
     const item = (
       await (
         await card()
@@ -521,38 +657,38 @@ describe('site access: other access', () => {
   });
 });
 
-// The starter list has ~80 rows and every role query in jsdom walks them: give a loaded CI/dev box room.
+// The starter list has ~80 chips and every role query in jsdom walks them: give a loaded box room.
 describe('deny list', { timeout: 30_000 }, () => {
-  it('shows defaults, adds a normalised host and syncs', async () => {
+  it('keeps the starter sites one click away, adds a normalised host among yours and syncs', async () => {
     await open(withStarterList);
-    const first = DEFAULT_DENY_HOSTS[0]!;
-    const row = (await screen.findByText(first)).closest('li')!;
-    expect(within(row).getByText('Default')).toBeTruthy();
+    const starter = await screen.findByRole('list', { name: 'Starter sites' });
+    expect(within(starter).getByText(DEFAULT_DENY_HOSTS[0]!)).toBeTruthy();
+    expect(screen.queryByRole('list', { name: 'Sites you added' })).toBeNull();
 
     await userEvent.type(screen.getByLabelText('Add a site'), 'HTTPS://Bank.Example.com/login');
-    await userEvent.click(screen.getByRole('button', { name: 'Add to deny list' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Add site' }));
 
     await waitFor(async () => {
       expect((await getSettings()).denyList).toContain('bank.example.com');
     });
     expect(rpc.called('site.sync')).toHaveLength(1);
-    const added = (await screen.findByText('bank.example.com')).closest('li')!;
-    expect(within(added).queryByText('Default')).toBeNull();
+    const mine = await screen.findByRole('list', { name: 'Sites you added' });
+    expect(within(mine).getByText('bank.example.com')).toBeTruthy();
     expect((screen.getByLabelText('Add a site') as HTMLInputElement).value).toBe('');
     expect(spoken()).toContain('Added bank.example.com to the deny list.');
   });
 
   it('states what the starter list covers instead of claiming banks and mail are covered', async () => {
     await open(withStarterList);
-    await screen.findByText('Deny list');
-    expect(screen.getByText(DENY_LIST_SCOPE_NOTE)).toBeTruthy();
+    await screen.findByRole('heading', { name: 'Deny list' });
+    expect(infoText('About deny list')).toContain(DENY_LIST_SCOPE_NOTE);
     expect(screen.queryByText(/listed by default/)).toBeNull();
   });
 
   it('rejects invalid and duplicate input without changing anything', async () => {
     await open(withStarterList);
     const input = await screen.findByLabelText('Add a site');
-    const add = screen.getByRole('button', { name: 'Add to deny list' });
+    const add = screen.getByRole('button', { name: 'Add site' });
 
     await userEvent.type(input, 'not a host');
     await userEvent.click(add);
@@ -573,10 +709,10 @@ describe('deny list', { timeout: 30_000 }, () => {
     const missing = DEFAULT_DENY_HOSTS.length - 1;
     expect(
       await screen.findByText(
-        new RegExp(`${missing} of the ${DEFAULT_DENY_HOSTS.length} starter sites`),
+        new RegExp(`${missing} of the ${DEFAULT_DENY_HOSTS.length} starter sites are missing`),
       ),
     ).toBeTruthy();
-    expect(screen.getByText(/the sites you added yourself stay/)).toBeTruthy();
+    expect(screen.getByText(/Your own sites stay/)).toBeTruthy();
 
     await userEvent.click(screen.getByRole('button', { name: 'Restore default sites' }));
 
@@ -615,72 +751,94 @@ describe('deny list', { timeout: 30_000 }, () => {
     await userEvent.click(button);
     expect(rpc.called('site.sync')).toHaveLength(0);
   });
+
+  it('the all-sites step can add one more site to the deny list without leaving the wizard', async () => {
+    await open();
+    const wizard = await openWizard();
+    await userEvent.click(within(wizard).getByRole('radio', { name: /^All sites/ }));
+    await next(wizard);
+    await userEvent.type(within(wizard).getByLabelText('Also keep off'), 'my-bank.example');
+    await userEvent.click(within(wizard).getByRole('button', { name: 'Add site' }));
+    await waitFor(async () =>
+      expect((await getSettings()).denyList).toEqual(['paypal.com', 'my-bank.example']),
+    );
+    expect(await within(wizard).findByText(/these 2 sites/)).toBeTruthy();
+  });
 });
+
+// =============================================================================================
+// Appearance and capture
+// =============================================================================================
 
 describe('appearance and capture', () => {
   it('applies the theme immediately and persists it', async () => {
-    await open();
+    await open({}, 'appearance');
     await userEvent.click(await screen.findByRole('radio', { name: /^Dark/ }));
     await waitFor(async () => expect((await getSettings()).theme).toBe('dark'));
     // The attribute follows the stored value through an effect: wait for it, do not assume it.
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe('dark'));
 
-    await userEvent.click(screen.getByRole('radio', { name: /^Match my system/ }));
+    await userEvent.click(screen.getByRole('radio', { name: /^System/ }));
     await waitFor(() => expect(document.documentElement.dataset.theme).toBeUndefined());
     expect((await getSettings()).theme).toBe('system');
   });
 
   it('persists the default kind and a palette colour with a live preview', async () => {
-    await open();
-    await userEvent.selectOptions(
-      await screen.findByLabelText('Default highlight kind'),
-      'formula',
-    );
+    await open({}, 'appearance');
+    await userEvent.click(await screen.findByRole('radio', { name: 'Formula' }));
     await waitFor(async () => expect((await getSettings()).defaultKind).toBe('formula'));
 
-    const select = screen.getByLabelText(/Exception/);
-    await userEvent.selectOptions(select, 'teal');
+    const exception = screen.getByRole('group', { name: /Exception/ });
+    await userEvent.click(within(exception).getByRole('radio', { name: 'Teal' }));
     await waitFor(async () => expect((await getSettings()).palette.exception).toBe('teal'));
-    const sample = within(select.closest('li')!).getByText('Sample text');
+    const sample = within(exception.closest('li')!).getByText('Sample text');
     expect(sample.style.background).toContain('rgba(45, 212, 191');
+    expect(
+      (within(exception).getByRole('radio', { name: 'Teal' }) as HTMLInputElement).checked,
+    ).toBe(true);
   });
 
   it('toggles the floating toolbar', async () => {
-    await open();
-    const box = await screen.findByRole('checkbox', { name: /Show the floating toolbar/ });
+    await open({}, 'capture');
+    const box = await screen.findByRole('checkbox', { name: 'Floating toolbar' });
     expect((box as HTMLInputElement).checked).toBe(true);
     await userEvent.click(box);
     await waitFor(async () => expect((await getSettings()).toolbarEnabled).toBe(false));
   });
 
-  it('toggles painting, explaining that page scripts can read what is painted', async () => {
-    await open();
-    const box = await screen.findByRole('checkbox', { name: 'Show highlights on pages' });
+  it('toggles painting, saying near the switch that sites can read what is painted', async () => {
+    await open({}, 'appearance');
+    const box = await screen.findByRole('checkbox', { name: 'Show on pages' });
     expect((box as HTMLInputElement).checked).toBe(true);
     const hint = document.getElementById(box.getAttribute('aria-describedby')!)!;
-    expect(hint.textContent).toMatch(/scripts that a site itself runs can read/);
-    expect(hint.textContent).toMatch(/deny list/);
+    expect(hint.textContent).toMatch(/Sites can see which passages are painted/);
+    const detail = infoText('About show on pages');
+    expect(detail).toMatch(/scripts that a site itself runs can read/);
+    expect(detail).toMatch(/deny list/);
 
     await userEvent.click(box);
     await waitFor(async () => expect((await getSettings()).paintHighlights).toBe(false));
     // The style choices explain why they are off instead of silently doing nothing.
     const normal = screen.getByRole('radio', { name: /^Normal/ });
     expect(normal.matches(':disabled')).toBe(true);
-    expect(screen.getByText(/no effect while highlights are not shown/)).toBeTruthy();
+    expect(screen.getByText(/No effect while highlights are not shown/)).toBeTruthy();
   });
 
   it('offers automatic, normal and strong highlight style and persists the choice', async () => {
-    await open();
+    await open({}, 'appearance');
     const auto = await screen.findByRole('radio', { name: /^Automatic/ });
     expect((auto as HTMLInputElement).checked).toBe(true);
     expect(screen.getByRole('radio', { name: /^Normal/ })).toBeTruthy();
+    // One group name for the style cards (not a fieldset legend plus the cards' own legend).
+    expect(screen.getByRole('radiogroup', { name: 'Highlight style' })).toBeTruthy();
+    expect(screen.queryByRole('group', { name: 'Highlight style' })).toBeNull();
 
     await userEvent.click(screen.getByRole('radio', { name: /^Strong/ }));
     await waitFor(async () => expect((await getSettings()).highlightStyle).toBe('strong'));
   });
 
-  it('draws a legend from KIND_DECORATION: every kind, its name and its underline', async () => {
-    await open();
+  it('draws each kind from KIND_DECORATION: its name, its underline and its colour swatches', async () => {
+    await open({}, 'appearance');
     const legend = await screen.findByRole('list', { name: 'Underline for each highlight kind' });
     const rows = within(legend).getAllByRole('listitem');
     expect(rows).toHaveLength(HIGHLIGHT_KINDS.length);
@@ -689,6 +847,7 @@ describe('appearance and capture', () => {
       const deco = KIND_DECORATION[kind];
       expect(within(row).getByText(KIND_LABELS[kind].label, { exact: false })).toBeTruthy();
       expect(within(row).getByText(deco.label)).toBeTruthy();
+      expect(within(row).getAllByRole('radio')).toHaveLength(7);
       const sample = within(row).getByText('Sample text');
       expect(sample.style.textDecorationStyle).toBe(deco.style);
       expect(sample.style.textDecorationThickness).toBe(`${deco.thickness}px`);
@@ -704,27 +863,27 @@ describe('appearance and capture', () => {
   });
 
   it('allows private-window capture only after warning where it is stored', async () => {
-    await open();
-    const box = await screen.findByRole('checkbox', { name: 'Save from private windows' });
+    await open({}, 'capture');
+    const box = await screen.findByRole('checkbox', { name: 'Private windows' });
     expect((box as HTMLInputElement).checked).toBe(false);
     const hint = document.getElementById(box.getAttribute('aria-describedby')!)!;
-    expect(hint.textContent).toMatch(/stored in your normal Chrome profile/);
+    expect(hint.textContent).toMatch(/Saves stay in your normal profile/);
+    expect(infoText('About private windows')).toMatch(/stored in your normal Chrome profile/);
 
     await userEvent.click(box);
     await waitFor(async () => expect((await getSettings()).allowIncognitoCapture).toBe(true));
   });
 
-  it('has a "Use filing rules" switch that writes the setting, and opens the rules manager', async () => {
-    await open();
-    const box = await screen.findByRole('checkbox', { name: 'Use filing rules' });
+  it('has a "Filing rules" switch that writes the setting, and opens the rules manager', async () => {
+    await open({}, 'capture');
+    const box = await screen.findByRole('checkbox', { name: 'Filing rules' });
     expect((box as HTMLInputElement).checked).toBe(true);
-    const hint = document.getElementById(box.getAttribute('aria-describedby')!)!;
-    expect(hint.textContent).toMatch(/never overridden/);
+    expect(infoText('About filing rules')).toMatch(/never overridden/);
     await userEvent.click(box);
     await waitFor(async () => expect((await getSettings()).useFilingRules).toBe(false));
 
     const create = vi.spyOn(browser.tabs, 'create').mockResolvedValue({} as never);
-    await userEvent.click(screen.getByRole('button', { name: 'Manage filing rules' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Manage rules' }));
     await waitFor(() => expect(create).toHaveBeenCalledOnce());
     expect(create.mock.calls[0]![0]).toMatchObject({
       url: expect.stringMatching(/\/dashboard\.html\?view=rules$/),
@@ -732,48 +891,72 @@ describe('appearance and capture', () => {
   });
 
   it('keeps a failed write visible next to its control with Retry, then succeeds', async () => {
-    await open();
+    await open({}, 'appearance');
     const radio = await screen.findByRole('radio', { name: /^Light/ });
     vi.spyOn(browser.storage.local, 'set').mockRejectedValueOnce(new Error('Quota exceeded'));
     await userEvent.click(radio);
 
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('Quota exceeded');
-    // In the Appearance section that owns the control, not at the top of the page.
+    // In the card that owns the control, not at the top of the page.
     expect(alert.closest('section')?.contains(radio)).toBe(true);
     await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await waitFor(async () => expect((await getSettings()).theme).toBe('light'));
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
   });
+
+  it('density and the PDF reader switch persist', async () => {
+    await open({}, 'appearance');
+    await userEvent.click(await screen.findByRole('radio', { name: /^Compact/ }));
+    await waitFor(async () => expect((await getSettings()).density).toBe('compact'));
+
+    await navigate('capture');
+    const reader = await screen.findByRole('checkbox', { name: 'PDF reader' });
+    expect((reader as HTMLInputElement).checked).toBe(true);
+    expect(reader.getAttribute('aria-describedby')).toBeTruthy();
+    await userEvent.click(reader);
+    await waitFor(async () => expect((await getSettings()).features.pdfReader).toBe(false));
+    // Other flags are left alone by the write.
+    expect((await getSettings()).features).toMatchObject({ review: true, ai: false, sync: false });
+  });
 });
 
+// =============================================================================================
+// Keyboard shortcuts
+// =============================================================================================
+
 describe('keyboard shortcuts', () => {
-  it('lists the real bindings from Chrome, shows "Not set", and the in-page keys', async () => {
-    await open();
-    const section = (await screen.findByRole('heading', { name: 'Keyboard shortcuts' }))
-      .parentElement!;
-    const commands = await within(section).findByRole('list', { name: 'Browser shortcuts' });
+  const section = () => document.getElementById('shortcuts')!;
+
+  it('lists the real bindings from Chrome as key chips, shows "Not set", and the in-page keys', async () => {
+    await open({}, 'shortcuts');
+    const commands = await within(section()).findByRole('list', { name: 'Browser shortcuts' });
     const rows = within(commands).getAllByRole('listitem');
     expect(rows).toHaveLength(COMMANDS.length);
     for (const c of COMMANDS) {
       const row = within(commands).getByText(c.description).closest('li')!;
       expect(row.textContent).toContain(c.shortcut || 'Not set');
     }
-    const inPage = within(section).getByRole('list', { name: 'In-page shortcuts' });
+    // Each key is its own chip; the whole combination is read once.
+    const save = within(commands).getByText('Open the StudyVault side panel').closest('li')!;
+    expect([...save.querySelectorAll('kbd')].map((k) => k.textContent)).toEqual([
+      'Alt',
+      'Shift',
+      'S',
+    ]);
+    const inPage = within(section()).getByRole('list', { name: 'In-page shortcuts' });
     expect(within(inPage).getByText('Alt+Shift+]')).toBeTruthy();
     expect(within(inPage).getByText('Alt+Shift+[')).toBeTruthy();
   });
 
   it('lists the search command, unset because Chrome allows only four suggested keys, and says so', async () => {
-    await open();
-    const section = (await screen.findByRole('heading', { name: 'Keyboard shortcuts' }))
-      .parentElement!;
-    const commands = await within(section).findByRole('list', { name: 'Browser shortcuts' });
+    await open({}, 'shortcuts');
+    const commands = await within(section()).findByRole('list', { name: 'Browser shortcuts' });
     const row = within(commands)
       .getByText('Search your highlights: open the side panel on the search box')
       .closest('li')!;
     expect(row.textContent).toContain('Not set');
-    expect(within(section).getByTestId('shortcuts-unset-note').textContent).toMatch(
+    expect(within(section()).getByTestId('shortcuts-unset-note').textContent).toMatch(
       /only four keys/,
     );
   });
@@ -782,13 +965,13 @@ describe('keyboard shortcuts', () => {
     chrome.commands.getAll.mockResolvedValue(
       COMMANDS.map((c) => ({ ...c, shortcut: c.shortcut || 'Alt+Shift+9' })),
     );
-    await open();
+    await open({}, 'shortcuts');
     await screen.findByRole('list', { name: 'Browser shortcuts' });
     expect(screen.queryByTestId('shortcuts-unset-note')).toBeNull();
   });
 
   it('reflects what the user changed in Chrome when the page regains focus', async () => {
-    await open();
+    await open({}, 'shortcuts');
     expect(await screen.findByText('Alt+Shift+H')).toBeTruthy();
     chrome.commands.getAll.mockResolvedValue(
       COMMANDS.map((c) => (c.name === 'quick-save' ? { ...c, shortcut: '' } : c)),
@@ -801,17 +984,15 @@ describe('keyboard shortcuts', () => {
 
   it("opens Chrome's shortcut page in a new tab", async () => {
     const create = vi.spyOn(browser.tabs, 'create');
-    await open();
-    await userEvent.click(
-      await screen.findByRole('button', { name: 'Change shortcuts in Chrome' }),
-    );
+    await open({}, 'shortcuts');
+    await userEvent.click(await screen.findByRole('button', { name: 'Change in Chrome' }));
     expect(create).toHaveBeenCalledWith({ url: 'chrome://extensions/shortcuts' });
   });
 
   it('reports a failure to open the page, and a failure to read the commands, with Retry', async () => {
     vi.spyOn(browser.tabs, 'create').mockRejectedValueOnce(new Error('Tabs API unavailable'));
     chrome.commands.getAll.mockRejectedValueOnce(new Error('commands unavailable'));
-    await open();
+    await open({}, 'shortcuts');
 
     expect(await screen.findByText('commands unavailable')).toBeTruthy();
     await userEvent.click(
@@ -821,47 +1002,82 @@ describe('keyboard shortcuts', () => {
     );
     expect(await screen.findByText('Alt+Shift+S')).toBeTruthy();
 
-    await userEvent.click(screen.getByRole('button', { name: 'Change shortcuts in Chrome' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Change in Chrome' }));
     expect(await screen.findByText('Tabs API unavailable')).toBeTruthy();
   });
 });
 
+// =============================================================================================
+// Delete all data: what goes -> type the word -> done
+// =============================================================================================
+
+/** "Delete all data" opens the guarded flow on its first step. */
+async function openDeleteFlow() {
+  await userEvent.click(await screen.findByRole('button', { name: 'Delete all data' }));
+  return screen.findByRole('dialog', { name: 'Delete all StudyVault data' });
+}
+/** Through both guards: Next, the word, "Delete everything". */
+async function confirmDelete() {
+  const flow = await openDeleteFlow();
+  await userEvent.click(within(flow).getByRole('button', { name: 'Next' }));
+  await userEvent.type(within(flow).getByLabelText(/^Type “delete”$/), 'delete');
+  await userEvent.click(within(flow).getByRole('button', { name: 'Delete everything' }));
+  return flow;
+}
+
 describe('delete all data', () => {
-  const openDialog = async () => {
-    await userEvent.click(
-      await screen.findByRole('button', { name: /Delete all StudyVault data/ }),
-    );
-    return screen.findByRole('dialog', { name: 'Delete all StudyVault data?' });
-  };
+  it('says what is deleted, starts on the step title, and closes without deleting', async () => {
+    await open({}, 'data');
+    const flow = await openDeleteFlow();
+    expect(flow.textContent).toMatch(/including the ones in the trash/);
+    expect(flow.textContent).toMatch(/cannot be undone/);
+    expect(within(flow).getByRole('list', { name: 'What is deleted' })).toBeTruthy();
+    expect(document.activeElement).toBe(within(flow).getByRole('heading', { name: 'What goes' }));
 
-  it('says what is deleted, is accessible, and defaults to Cancel', async () => {
-    await open();
-    const dialog = await openDialog();
-    expect(dialog.textContent).toMatch(/including the ones in the trash/);
-    expect(dialog.textContent).toMatch(/cannot be undone/);
-    expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: 'Cancel' }));
-
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    await userEvent.click(within(flow).getByRole('button', { name: 'Close' }));
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(store.calls.some((c) => c.fn === 'wipeAllData')).toBe(false);
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Delete all data' }));
   });
 
-  it('wipes the data, then syncs the worker, then reports and moves focus', async () => {
-    await open({ persistentOrigins: ['https://example.com/*'], theme: 'dark' });
-    const dialog = await openDialog();
+  it('needs the typed word: anything else deletes nothing and says what to type', async () => {
+    await open({}, 'data');
+    const flow = await openDeleteFlow();
+    await userEvent.click(within(flow).getByRole('button', { name: 'Next' }));
+    const field = within(flow).getByLabelText(/^Type “delete”$/);
+    await userEvent.type(field, 'remove');
+    await userEvent.click(within(flow).getByRole('button', { name: 'Delete everything' }));
 
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete everything' }));
+    expect(within(flow).getByRole('alert').textContent).toContain('Type delete to go on.');
+    expect(document.activeElement).toBe(field);
+    expect(field.getAttribute('aria-invalid')).toBe('true');
+    expect(store.calls.some((c) => c.fn === 'wipeAllData')).toBe(false);
+
+    // Back keeps the flow; Escape closes it.
+    await userEvent.click(within(flow).getByRole('button', { name: 'Back' }));
+    expect(within(flow).getByRole('heading', { name: 'What goes' })).toBeTruthy();
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('wipes the data, then syncs the worker, then reports on the done step and moves focus', async () => {
+    await open({ persistentOrigins: ['https://example.com/*'], theme: 'dark' }, 'data');
+    const flow = await confirmDelete();
 
     await waitFor(() => expect(store.calls.some((c) => c.fn === 'wipeAllData')).toBe(true));
     await waitFor(() => expect(rpc.called('site.sync')).toHaveLength(1));
     expect(
-      await screen.findByText(/All StudyVault data was deleted from this device/),
+      await within(flow).findByText(/All StudyVault data was deleted from this device/),
     ).toBeTruthy();
     expect(spoken()).toContain('All StudyVault data was deleted.');
-    expect(document.activeElement).toBe(
-      screen.getByRole('heading', { name: 'Delete all StudyVault data' }),
-    );
+    expect(document.activeElement).toBe(within(flow).getByRole('heading', { name: 'Fresh start' }));
+
+    await userEvent.click(within(flow).getByRole('button', { name: 'Done' }));
     expect(screen.queryByRole('dialog')).toBeNull();
+    // Focus goes back to the opener (never <body>).
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Delete all data' }));
+    // The report stays in the card once the flow is closed.
+    expect(screen.getByText(/All StudyVault data was deleted from this device/)).toBeTruthy();
   });
 
   it('a storage_unavailable refusal shows its message and no blind Retry', async () => {
@@ -869,10 +1085,8 @@ describe('delete all data', () => {
       'storage_unavailable',
       'Another StudyVault window is using the data. Close it and try again.',
     );
-    await open();
-    await userEvent.click(
-      within(await openDialog()).getByRole('button', { name: 'Delete everything' }),
-    );
+    await open({}, 'data');
+    await confirmDelete();
 
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('Another StudyVault window is using the data');
@@ -880,14 +1094,15 @@ describe('delete all data', () => {
   });
 
   it('lists everything it removes, and what it does not', async () => {
-    await open();
-    const text = (await openDialog()).textContent ?? '';
+    await open({}, 'data');
+    const text = (await openDeleteFlow()).textContent ?? '';
     for (const part of [
       /highlight with its note, including the ones in the trash/,
       /banks,\s+folders and tags/,
       /auto-filing rules, your syllabi with their coverage thresholds, and the links/,
       /kept PDF copies/,
       /flashcards and review history, a review session or exam in progress, and your exam\s+history/,
+      /your XP, streak and badges, your daily goal and the Game mode setting/,
       /AI drafts, your provider settings and your API key, with any fallback providers/,
       /sync settings, the sign-in[\s\S]*before its last update/,
       /theme, colours, deny list, study reminder/,
@@ -906,17 +1121,20 @@ describe('delete all data', () => {
   });
 
   it('with sync on, says the server copy stays and how to remove it first', async () => {
-    await open({ features: { ...defaultSettings().features, sync: true } });
-    const dialog = await openDialog();
-    expect(dialog.textContent).toMatch(/the copy on your sync server/);
-    expect(dialog.textContent).toMatch(/Delete my data from the server/);
-    await userEvent.click(within(dialog).getByRole('button', { name: 'Delete everything' }));
+    await open({ features: { ...defaultSettings().features, sync: true } }, 'data');
+    const flow = await openDeleteFlow();
+    expect(flow.textContent).toMatch(/the copy on your sync server/);
+    expect(flow.textContent).toMatch(/Delete my data from the server/);
+    await userEvent.click(within(flow).getByRole('button', { name: 'Next' }));
+    expect(flow.textContent).toMatch(/Delete my data from the\s+server/);
+    await userEvent.type(within(flow).getByLabelText(/^Type “delete”$/), 'DELETE');
+    await userEvent.click(within(flow).getByRole('button', { name: 'Delete everything' }));
     expect(await screen.findByText(/The copy on your sync server was not touched/)).toBeTruthy();
   });
 
   it('says what Chrome keeps afterwards: exported files and the server copy stay, its own data page is clean', async () => {
-    await open();
-    const text = (await openDialog()).textContent ?? '';
+    await open({}, 'data');
+    const text = (await openDeleteFlow()).textContent ?? '';
     expect(text).toMatch(/the optional sign-in and timer permissions \(identity, alarms\)/);
     expect(text).toMatch(/display\s+preferences StudyVault pages keep in this browser/);
     expect(text).toMatch(/does not remove files you exported or backed\s+up/);
@@ -928,14 +1146,19 @@ describe('delete all data', () => {
     expect(text).toMatch(/empty apart\s+from one marker that holds no study data/);
   });
 
+  it('"Back up first" closes the flow and opens the backup section', async () => {
+    await open({}, 'data');
+    const flow = await openDeleteFlow();
+    await userEvent.click(within(flow).getByRole('button', { name: 'Back up first' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Backup' })).toBeTruthy();
+    expect(store.calls.some((c) => c.fn === 'wipeAllData')).toBe(false);
+  });
+
   describe('what lives outside the database (U-16)', () => {
     const done = () => screen.findByText(/All StudyVault data was deleted from this device/);
     const hold = (...permissions: string[]) =>
       chrome.permissions.getAll.mockResolvedValue({ origins: [], permissions });
-    const wipe = async () =>
-      userEvent.click(
-        within(await openDialog()).getByRole('button', { name: 'Delete everything' }),
-      );
 
     beforeEach(() => window.localStorage.clear());
 
@@ -944,8 +1167,8 @@ describe('delete all data', () => {
       window.localStorage.setItem('sv.from-an-older-build', 'x');
       window.localStorage.setItem('someone.elses.key', 'keep');
       hold('storage', 'sidePanel', 'identity', 'alarms');
-      await open();
-      await wipe();
+      await open({}, 'data');
+      await confirmDelete();
 
       const message = await done();
       expect(chrome.permissions.remove).toHaveBeenCalledTimes(1);
@@ -959,8 +1182,8 @@ describe('delete all data', () => {
 
     it('asks Chrome for nothing when the optional permissions were never granted', async () => {
       hold('storage');
-      await open();
-      await wipe();
+      await open({}, 'data');
+      await confirmDelete();
       await done();
       expect(chrome.permissions.remove).not.toHaveBeenCalled();
     });
@@ -971,8 +1194,8 @@ describe('delete all data', () => {
       chrome.permissions.remove.mockRejectedValueOnce(
         new Error('You cannot remove required permissions.'),
       );
-      await open();
-      await wipe();
+      await open({}, 'data');
+      await confirmDelete();
 
       const message = (await done()).textContent ?? '';
       expect(message).toMatch(
@@ -988,8 +1211,8 @@ describe('delete all data', () => {
       vi.spyOn(Storage.prototype, 'removeItem').mockImplementation(() => {
         throw new Error('The operation is insecure.');
       });
-      await open();
-      await wipe();
+      await open({}, 'data');
+      await confirmDelete();
       expect((await done()).textContent).toMatch(
         /display preferences StudyVault keeps in this browser .* could not be cleared/,
       );
@@ -1004,8 +1227,8 @@ describe('delete all data', () => {
           'All StudyVault data is being deleted. Try again in a moment.',
         ),
       );
-      await open();
-      await wipe();
+      await open({}, 'data');
+      await confirmDelete();
       await userEvent.click(await screen.findByRole('button', { name: 'Check again' }));
       await done();
       expect(window.localStorage.getItem(LOCAL_PREF_KEYS.dashboardCollapsed)).toBeNull();
@@ -1017,14 +1240,13 @@ describe('delete all data', () => {
 
   it('shows the real error and repeats every step on Retry', async () => {
     store.failNext.wipeAllData = new Error('Database is locked by another window');
-    await open();
-    await userEvent.click(
-      within(await openDialog()).getByRole('button', { name: 'Delete everything' }),
-    );
+    await open({}, 'data');
+    await confirmDelete();
 
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('Database is locked by another window');
     expect(rpc.called('site.sync')).toHaveLength(0); // nothing after the failed step ran
+    expect(screen.getByRole('heading', { name: 'Not finished' })).toBeTruthy();
 
     await userEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(rpc.called('site.sync')).toHaveLength(1));
@@ -1033,13 +1255,6 @@ describe('delete all data', () => {
 });
 
 describe('delete all data: waiting for another window', () => {
-  const openDialog = async () => {
-    await userEvent.click(
-      await screen.findByRole('button', { name: /Delete all StudyVault data/ }),
-    );
-    return screen.findByRole('dialog', { name: 'Delete all StudyVault data?' });
-  };
-
   /** A `wipeAllData` the test drives: states in, finish or fail from outside, stop honoured. */
   async function controlledWipe() {
     const storage = await import('@storage');
@@ -1067,21 +1282,16 @@ describe('delete all data: waiting for another window', () => {
     return wipe;
   }
 
-  const confirm = async () =>
-    userEvent.click(within(await openDialog()).getByRole('button', { name: 'Delete everything' }));
-
   it('blocked: names what to do, says it needs no second click, and finishes by itself', async () => {
     const wipe = await controlledWipe();
-    await open();
-    await confirm();
+    await open({}, 'data');
+    await confirmDelete();
     expect(await screen.findByText('Deleting…')).toBeTruthy();
 
-    wipe.state('blocked');
+    act(() => wipe.state('blocked'));
     expect(await screen.findByText('Waiting for another StudyVault window')).toBeTruthy();
     expect(
-      screen.getByText(
-        "Close every other StudyVault tab, dashboard and side panel. Your data is deleted the moment they are closed; you don't need to click again.",
-      ),
+      screen.getByText('Close other StudyVault tabs and side panels. It then finishes by itself.'),
     ).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Stop waiting' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Check again' })).toBeTruthy();
@@ -1091,22 +1301,44 @@ describe('delete all data: waiting for another window', () => {
     expect(rpc.called('site.sync')).toHaveLength(0);
 
     // The other window closes: the same call finishes, the worker is told, the page reports it.
-    wipe.state('cleaning');
+    act(() => wipe.state('cleaning'));
     expect(await screen.findByText(/Removing the pre-update copy/)).toBeTruthy();
-    wipe.finish();
+    act(() => wipe.finish());
     expect(
       await screen.findByText(/All StudyVault data was deleted from this device/),
     ).toBeTruthy();
     expect(rpc.called('site.sync')).toHaveLength(1);
     expect(screen.queryByText('Waiting for another StudyVault window')).toBeNull();
     expect(wipe.calls).toBe(1);
+
+    // The opener was drawn again while it waited (busy, then not): the card's title takes focus.
+    await userEvent.click(screen.getByRole('button', { name: 'Done' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Start over' }));
+  });
+
+  it('closing the flow while it waits keeps the status in the card', async () => {
+    const wipe = await controlledWipe();
+    await open({}, 'data');
+    const flow = await confirmDelete();
+    act(() => wipe.state('blocked'));
+    await within(flow).findByText('Waiting for another StudyVault window');
+    // The dialog's own Close comes first; the (i) popover's Close is hidden (jsdom still lists it).
+    await userEvent.click(within(flow).getAllByRole('button', { name: 'Close' })[0]!);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByText('Waiting for another StudyVault window')).toBeTruthy();
+    act(() => wipe.finish());
+    expect(
+      await screen.findByText(/All StudyVault data was deleted from this device/),
+    ).toBeTruthy();
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Start over' }));
   });
 
   it('Stop waiting is a warning, not a failure, and does not claim the deletion was cancelled', async () => {
     const wipe = await controlledWipe();
-    await open();
-    await confirm();
-    wipe.state('blocked');
+    await open({}, 'data');
+    await confirmDelete();
+    act(() => wipe.state('blocked'));
     await userEvent.click(await screen.findByRole('button', { name: 'Stop waiting' }));
 
     expect(await screen.findByText('Deleting is not finished')).toBeTruthy();
@@ -1121,17 +1353,15 @@ describe('delete all data: waiting for another window', () => {
     expect(rpc.called('site.sync')).toHaveLength(0);
     // Not offered again while it is pending.
     expect(
-      screen
-        .getByRole('button', { name: /Delete all StudyVault data/ })
-        .getAttribute('aria-disabled'),
+      screen.getByRole('button', { name: 'Delete all data' }).getAttribute('aria-disabled'),
     ).toBe('true');
   });
 
   it('Check again, once the deletion is over, reads the data and finishes the report without deleting again', async () => {
     const wipe = await controlledWipe();
-    await open();
-    await confirm();
-    wipe.state('blocked');
+    await open({}, 'data');
+    await confirmDelete();
+    act(() => wipe.state('blocked'));
     await userEvent.click(await screen.findByRole('button', { name: 'Stop waiting' }));
     await screen.findByText('Deleting is not finished');
 
@@ -1147,9 +1377,9 @@ describe('delete all data: waiting for another window', () => {
 
   it('Check again says so when data is still there, instead of reporting success', async () => {
     const wipe = await controlledWipe();
-    await open();
-    await confirm();
-    wipe.state('blocked');
+    await open({}, 'data');
+    await confirmDelete();
+    act(() => wipe.state('blocked'));
     await userEvent.click(await screen.findByRole('button', { name: 'Stop waiting' }));
     await screen.findByText('Deleting is not finished');
 
@@ -1166,8 +1396,8 @@ describe('delete all data: waiting for another window', () => {
     vi.spyOn(storage, 'wipeAllData').mockRejectedValue(
       new storage.WipePendingError('All StudyVault data is being deleted. Try again in a moment.'),
     );
-    await open();
-    await confirm();
+    await open({}, 'data');
+    await confirmDelete();
     expect(await screen.findByText('Deleting is not finished')).toBeTruthy();
     expect(screen.queryByRole('alert')).toBeNull();
     expect(screen.getByRole('button', { name: 'Check again' })).toBeTruthy();
@@ -1175,10 +1405,10 @@ describe('delete all data: waiting for another window', () => {
 
   it('a real failure while blocked is still an error with Retry', async () => {
     const wipe = await controlledWipe();
-    await open();
-    await confirm();
-    wipe.state('blocked');
-    wipe.fail(new Error('Disk is read-only'));
+    await open({}, 'data');
+    await confirmDelete();
+    act(() => wipe.state('blocked'));
+    act(() => wipe.fail(new Error('Disk is read-only')));
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('Disk is read-only');
     expect(within(alert).getByRole('button', { name: 'Retry' })).toBeTruthy();
@@ -1200,45 +1430,54 @@ describe('safety', () => {
 });
 
 // =============================================================================================
-// Navigation, sections and flags
+// Home, navigation and views
 // =============================================================================================
 
-const SECTION_IDS = [
-  'site-access',
-  'appearance',
-  'capture',
-  'review',
-  'ai',
-  'sync',
-  'backup',
-  'storage',
-  'shortcuts',
-  'privacy',
-  'data',
-];
-
-describe('section navigation', () => {
-  afterEach(() => window.history.replaceState(null, '', window.location.pathname));
-
-  it('is a named navigation landmark whose links match the sections, in page order', async () => {
-    await open();
-    const nav = await screen.findByRole('navigation', { name: 'Settings sections' });
-    const links = within(nav).getAllByRole('link');
-    expect(links.map((a) => a.getAttribute('href'))).toEqual(SECTION_IDS.map((id) => `#${id}`));
-    // Every link has a target on the page, and each target holds its section's heading.
-    for (const id of SECTION_IDS) {
-      const target = document.getElementById(id);
-      expect(target, `#${id}`).not.toBeNull();
-      // A section may still be reading its own data; its heading arrives with it.
-      expect((await within(target!).findAllByRole('heading', { level: 2 })).length).toBeGreaterThan(
-        0,
-      );
+describe('settings home and section views', () => {
+  it('the home greets with the two pages people come for and one tile per section, with real status', async () => {
+    await open({ theme: 'dark', features: { ...defaultSettings().features, ai: true } }, null);
+    expect(screen.getByRole('heading', { level: 1, name: 'Settings' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Open dashboard' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Open review' })).toBeTruthy();
+    const main = document.querySelector('main')!;
+    for (const s of OPTION_SECTIONS) {
+      expect(main.querySelector(`a.opt-tile[href="#${s.id}"]`), s.id).not.toBeNull();
     }
-    expect(screen.getByRole('heading', { level: 1 })).toBeTruthy();
+    expect(within(main).getByRole('link', { name: 'Appearance, Dark theme' })).toBeTruthy();
+    expect(within(main).getByRole('link', { name: 'AI, On' })).toBeTruthy();
+    expect(within(main).getByRole('link', { name: 'Sync, Off' })).toBeTruthy();
+    // No section is mounted on the home.
+    for (const s of OPTION_SECTIONS) expect(document.getElementById(s.id)).toBeNull();
+  });
+
+  it('is a named navigation landmark: Home, then every section, the deep-link contract included', async () => {
+    await open({}, null);
+    const nav = await screen.findByRole('navigation', { name: 'Settings sections' });
+    const hrefs = within(nav)
+      .getAllByRole('link')
+      .map((a) => a.getAttribute('href'));
+    expect(hrefs).toEqual(['#', ...OPTION_SECTIONS.map((s) => `#${s.id}`)]);
+    // The ids other pages link to (`settingsPath`) all still open a section.
+    for (const { id } of SETTINGS_SECTIONS) expect(hrefs).toContain(`#${id}`);
+  });
+
+  it('each section is its own view, titled by the page heading, and moving there focuses the title', async () => {
+    await open({}, null);
+    for (const id of ['capture', 'game', 'reminders', 'about']) {
+      await navigate(id);
+      const label = OPTION_SECTIONS.find((s) => s.id === id)!.label;
+      const title = await screen.findByRole('heading', { level: 1, name: label });
+      expect(document.getElementById(id)).not.toBeNull();
+      expect(document.activeElement).toBe(title);
+      expect(document.title).toBe(`${label} · StudyVault AI settings`);
+    }
+    expect(document.getElementById('capture')).toBeNull();
+    await navigate(null);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Settings' })).toBeTruthy();
   });
 
   it('has one tab stop; arrows, Home and End move focus and the tab stop follows', async () => {
-    await open();
+    await open({}, null);
     const nav = await screen.findByRole('navigation', { name: 'Settings sections' });
     const links = within(nav).getAllByRole('link');
     const stops = () => links.filter((a) => a.getAttribute('tabindex') === '0');
@@ -1259,63 +1498,53 @@ describe('section navigation', () => {
     expect(stops()).toEqual([links[0]]);
   });
 
-  it('marks the section the address names and scrolls to it once the sections exist', async () => {
-    const scroll = vi.fn();
-    Element.prototype.scrollIntoView = scroll;
-    window.history.replaceState(null, '', '#storage');
-    await open();
+  it('marks the section the address names, and starts the tab stop there', async () => {
+    await open({}, 'storage');
     const nav = await screen.findByRole('navigation', { name: 'Settings sections' });
     const current = within(nav)
       .getAllByRole('link')
-      .filter((a) => a.getAttribute('aria-current') === 'location');
+      .filter((a) => a.getAttribute('aria-current') === 'page');
     expect(current.map((a) => a.getAttribute('href'))).toEqual(['#storage']);
-    await waitFor(() => expect(scroll).toHaveBeenCalled());
-    expect((scroll.mock.contexts[0] as HTMLElement).id).toBe('storage');
-    // The tab stop starts on the current section, not on the first link.
     expect(current[0]!.getAttribute('tabindex')).toBe('0');
+    expect(screen.getByRole('heading', { level: 1, name: 'Storage' })).toBeTruthy();
+    // Opening the page on a section does not move focus by itself.
+    expect(document.activeElement).toBe(document.body);
   });
 
-  it('ignores a hash that is not a section', async () => {
-    const scroll = vi.fn();
-    Element.prototype.scrollIntoView = scroll;
-    window.history.replaceState(null, '', '#javascript:alert(1)');
-    await open();
-    await screen.findByRole('navigation', { name: 'Settings sections' });
-    expect(scroll).not.toHaveBeenCalled();
+  it('a hash that is not a section opens the home', async () => {
+    await open({}, 'javascript:alert(1)');
+    expect(screen.getByRole('heading', { level: 1, name: 'Settings' })).toBeTruthy();
+    const nav = screen.getByRole('navigation', { name: 'Settings sections' });
+    expect(
+      within(nav)
+        .getAllByRole('link')
+        .filter((a) => a.getAttribute('aria-current') === 'page')
+        .map((a) => a.getAttribute('href')),
+    ).toEqual(['#']);
   });
 });
 
-describe('optional features explain themselves first and run nothing until enabled', () => {
-  it('AI: explanation and an unticked box; no provider form, no request, no permission prompt', async () => {
+describe('optional features run nothing until enabled', () => {
+  // What these sections say is tested with them (packages/ui/src/ai, sync); here: the view mounts
+  // them and opening it sends nothing and asks Chrome for nothing.
+  it('AI: the view shows the switch off, and opening it makes no request and no permission prompt', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
-    await open();
-    const section = (await screen.findByRole('heading', { name: /AI assistance/ })).closest(
-      'section',
-    )!;
-    expect(section.textContent).toMatch(/While this is off, StudyVault sends nothing anywhere/);
-    expect(section.textContent).toMatch(/only the highlights you selected/);
-    const box = within(section).getByRole('checkbox', { name: 'Turn on AI features' });
+    await open({}, 'ai');
+    const box = await within(document.getElementById('ai')!).findByRole('checkbox', {
+      name: 'Turn on AI features',
+    });
     expect((box as HTMLInputElement).checked).toBe(false);
-    expect(within(section).queryByLabelText('Provider address')).toBeNull();
-    expect(within(section).queryByLabelText('API key')).toBeNull();
-
-    // Turning it on shows the setup but still sends nothing: a request needs Test or Send.
-    await userEvent.click(box);
-    expect(await within(section).findByLabelText('Provider address')).toBeTruthy();
-    expect((await getSettings()).features.ai).toBe(true);
+    expect(screen.getByRole('heading', { level: 1, name: 'AI' })).toBeTruthy();
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(chrome.permissions.request).not.toHaveBeenCalled();
   });
 
-  it('sync: explanation and sign-in only after the server is named; nothing is asked of Chrome', async () => {
-    await open();
-    const section = (await screen.findByTestId('sync-section')) as HTMLElement;
-    const text = (await within(section).findByTestId('sync-explanation')).textContent ?? '';
-    expect(text).toMatch(/off by default/);
-    expect(text).toMatch(/There is no StudyVault server/);
-    const turnOn = within(section).getByRole('button', { name: /Turn on sync/ });
-    expect(turnOn.getAttribute('aria-disabled')).toBe('true'); // needs the acknowledgement first
-    expect(within(section).queryByRole('button', { name: /Sign in/ })).toBeNull();
+  it('sync: the view shows the sync section, and opening it asks Chrome for nothing', async () => {
+    await open({}, 'sync');
+    expect(
+      await within(document.getElementById('sync')!).findByTestId('sync-section'),
+    ).toBeTruthy();
+    expect(screen.getByRole('heading', { level: 1, name: 'Sync' })).toBeTruthy();
     expect(chrome.permissions.request).not.toHaveBeenCalled();
     expect((await getSettings()).features.sync).toBe(false);
   });
@@ -1323,28 +1552,31 @@ describe('optional features explain themselves first and run nothing until enabl
 
 describe('review section', () => {
   it('is on by default with the study day settings; off hides them and the quick action', async () => {
-    await open();
-    expect(await screen.findByRole('heading', { name: 'Review and study day' })).toBeTruthy();
-    const openReview = screen.getByRole('button', { name: 'Open review' });
+    await open({}, null);
+    const openReview = await screen.findByRole('button', { name: 'Open review' });
     expect(openReview.getAttribute('aria-disabled')).toBeNull();
 
-    const toggle = screen.getByRole('checkbox', { name: 'Show review in StudyVault' });
+    await navigate('review');
+    expect(await screen.findByTestId('rv-settings-section')).toBeTruthy();
+    const toggle = screen.getByRole('checkbox', { name: 'Show review' });
     expect((toggle as HTMLInputElement).checked).toBe(true);
     await userEvent.click(toggle);
 
     await waitFor(async () => expect((await getSettings()).features.review).toBe(false));
-    expect(screen.queryByRole('heading', { name: 'Review and study day' })).toBeNull();
-    expect(screen.getByText(/Review is off/)).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Open review' }).getAttribute('aria-disabled')).toBe(
-      'true',
-    );
+    expect(screen.queryByTestId('rv-settings-section')).toBeNull();
+    expect(screen.getByText('Review is off')).toBeTruthy();
     expect(spoken()).toBe(''); // a switch is not an announcement; nothing leaks into the region
+
+    await navigate(null);
+    expect(
+      (await screen.findByRole('button', { name: 'Open review' })).getAttribute('aria-disabled'),
+    ).toBe('true');
   });
 
   it('Open review and Open dashboard open their pages in tabs', async () => {
     const create = vi.spyOn(browser.tabs, 'create').mockResolvedValue({} as never);
     vi.spyOn(browser.tabs, 'query').mockResolvedValue([] as never);
-    await open();
+    await open({}, null);
     await userEvent.click(await screen.findByRole('button', { name: 'Open review' }));
     await userEvent.click(screen.getByRole('button', { name: 'Open dashboard' }));
     await waitFor(() => expect(create).toHaveBeenCalledTimes(2));
@@ -1354,28 +1586,12 @@ describe('review section', () => {
   });
 });
 
-describe('capture and appearance additions', () => {
-  it('density and the PDF reader switch persist', async () => {
-    await open();
-    await userEvent.click(await screen.findByRole('radio', { name: /^Compact/ }));
-    await waitFor(async () => expect((await getSettings()).density).toBe('compact'));
-
-    const reader = screen.getByRole('checkbox', { name: 'Use the StudyVault PDF reader' });
-    expect((reader as HTMLInputElement).checked).toBe(true);
-    expect(reader.getAttribute('aria-describedby')).toBeTruthy();
-    await userEvent.click(reader);
-    await waitFor(async () => expect((await getSettings()).features.pdfReader).toBe(false));
-    // Other flags are left alone by the write.
-    expect((await getSettings()).features).toMatchObject({ review: true, ai: false, sync: false });
-  });
-});
-
 describe('welcome tour', () => {
-  it('opens the tour page, and offers to resume one that was left part-way', async () => {
+  it('opens the tour page from About, and offers to resume one that was left part-way', async () => {
     const create = vi.spyOn(browser.tabs, 'create').mockResolvedValue({} as never);
     vi.spyOn(browser.tabs, 'query').mockResolvedValue([] as never);
-    await open();
-    await userEvent.click(await screen.findByRole('button', { name: 'Show the welcome tour' }));
+    await open({}, 'about');
+    await userEvent.click(await screen.findByRole('button', { name: 'Welcome tour' }));
     await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
     expect((create.mock.calls[0]![0] as { url: string }).url).toMatch(/\/onboarding\.html$/);
 
@@ -1389,7 +1605,82 @@ describe('welcome tour', () => {
         updatedAt: '2026-10-11T10:00:00.000Z',
       },
     });
-    expect(await screen.findByRole('button', { name: 'Resume the welcome tour' })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: 'Resume tour' })).toBeTruthy();
+  });
+});
+
+// =============================================================================================
+// Game (ADR-022)
+// =============================================================================================
+
+describe('game section', () => {
+  const ring = () => screen.findByRole('img', { name: /^Daily goal: \d+ of \d+ XP/ });
+
+  it('shows today, the streak and the level from the ledger, with the goal as picture cards', async () => {
+    await open({}, 'game');
+    expect((await ring()).getAttribute('aria-label')).toMatch(/^Daily goal: 0 of 30 XP/);
+    expect(screen.getByText('day streak')).toBeTruthy();
+    const freezes = screen.getByRole('img', { name: '0 of 2 streak freezes' });
+    expect(freezes.textContent).toBe('0/2'); // written, so held vs empty is never colour alone
+    expect(screen.getByRole('progressbar', { name: 'Level 1 progress' })).toBeTruthy();
+    expect((screen.getByRole('radio', { name: /^Regular/ }) as HTMLInputElement).checked).toBe(
+      true,
+    );
+    const earn = screen.getByRole('list', { name: 'How you earn XP' });
+    expect(earn.textContent).toMatch(/Review \+1.*Save \+2.*New card \+3.*Session \+5/);
+  });
+
+  it('choosing a goal writes it, the ring follows the ledger, and it is said once', async () => {
+    await open({}, 'game');
+    await ring();
+    await userEvent.click(screen.getByRole('radio', { name: /^Serious/ }));
+    await waitFor(async () =>
+      expect((await ring()).getAttribute('aria-label')).toMatch(/of 50 XP/),
+    );
+    expect((screen.getByRole('radio', { name: /^Serious/ }) as HTMLInputElement).checked).toBe(
+      true,
+    );
+    await waitFor(() => expect(spoken()).toContain('Daily goal: 50 XP.'));
+  });
+
+  it('a goal that cannot be saved goes back and says why, with Retry', async () => {
+    const storage = await import('@storage');
+    vi.spyOn(storage, 'setDailyGoal').mockRejectedValueOnce(new Error('The disk is full.'));
+    await open({}, 'game');
+    await ring();
+    await userEvent.click(screen.getByRole('radio', { name: /^Intense/ }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('The disk is full.');
+    expect((screen.getByRole('radio', { name: /^Regular/ }) as HTMLInputElement).checked).toBe(
+      true,
+    );
+    await userEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    await waitFor(async () =>
+      expect((await ring()).getAttribute('aria-label')).toMatch(/of 100 XP/),
+    );
+  });
+
+  it('Game mode off hides XP, the ring, streak and level, keeps plain counts, and the tile says Off', async () => {
+    await open({}, 'game');
+    await ring();
+    const mode = screen.getByRole('checkbox', { name: 'Game mode' });
+    expect((mode as HTMLInputElement).checked).toBe(true);
+    await userEvent.click(mode);
+
+    await waitFor(() => expect(screen.queryByRole('img', { name: /^Daily goal:/ })).toBeNull());
+    expect(screen.queryByText('day streak')).toBeNull();
+    expect(screen.queryByRole('progressbar', { name: /^Level/ })).toBeNull();
+    // The goal cards and the "Earn XP" chips are XP too.
+    expect(screen.queryByRole('radio', { name: /^Regular/ })).toBeNull();
+    expect(screen.queryByRole('list', { name: 'How you earn XP' })).toBeNull();
+    const today = screen.getByRole('list', { name: 'Today so far' });
+    expect(today.textContent).toMatch(/0\s*reviewed/);
+    expect((screen.getByRole('checkbox', { name: 'Game mode' }) as HTMLInputElement).checked).toBe(
+      false,
+    );
+
+    await navigate(null);
+    expect(await screen.findByRole('link', { name: 'Game, Off' })).toBeTruthy();
   });
 });
 
@@ -1424,7 +1715,7 @@ describe('storage section', () => {
       })),
       { deckId: deck.id },
     );
-    await open();
+    await open({}, 'storage');
     const section = (await screen.findByTestId('storage-section')) as HTMLElement;
     const table = await within(section).findByTestId('storage-table');
     const rows = within(table)
@@ -1444,7 +1735,7 @@ describe('storage section', () => {
   it('lists stored PDF copies with sizes, removes one, then all, and keeps focus somewhere real', async () => {
     await seedPdf(ID_A, 'Cardiac physiology', 2048);
     await seedPdf(ID_B, 'Renal handbook', 4096);
-    await open();
+    await open({}, 'storage');
     const section = (await screen.findByTestId('storage-section')) as HTMLElement;
     const list = await within(section).findByTestId('cached-pdfs');
     expect(within(list).getAllByRole('listitem')).toHaveLength(2);
@@ -1462,7 +1753,7 @@ describe('storage section', () => {
       expect(within(section).getByTestId('storage-pdf-bytes').textContent).toBe('4.0 KB'),
     );
     expect(spoken()).toContain('Removed 1 stored copy of Cardiac physiology.');
-    expect(document.activeElement?.tagName).toBe('H3');
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Stored PDF copies' }));
 
     // The PDF record itself (highlights hang off it) is still there.
     expect((await listDocuments()).map((d) => d.document.title).sort()).toEqual([
@@ -1488,24 +1779,23 @@ describe('privacy and your data', () => {
       permissions: ['storage', 'sidePanel', 'contextMenus', 'activeTab', 'scripting'],
       optional_permissions: ['identity', 'alarms'],
     } as never);
-    await open();
-    const privacy = (await screen.findByText('Permissions this extension holds')).closest(
-      'section',
-    )!;
-    expect(within(privacy).getByText('identity')).toBeTruthy();
-    expect(within(privacy).getByText('alarms')).toBeTruthy();
-    expect(privacy.textContent).toMatch(/Asked for later, only from a button/);
-    expect(privacy.textContent).toMatch(/Access to websites is not among them/);
+    await open({}, 'privacy');
+    const perms = disclosure('Permissions this extension holds');
+    expect(within(perms).getByText('identity')).toBeTruthy();
+    expect(within(perms).getByText('alarms')).toBeTruthy();
+    expect(perms.textContent).toMatch(/Asked for later, only from a button/);
+    expect(perms.textContent).toMatch(/Access to websites is not among them/);
   });
 
   it('delete-all lives under Your data, not inside Privacy', async () => {
-    await open();
-    await screen.findByText(/Everything stays on this device/);
+    await open({}, 'data');
     const data = document.getElementById('data')!;
-    expect(within(data).getByRole('button', { name: /^Delete all StudyVault data/ })).toBeTruthy();
+    expect(within(data).getByRole('button', { name: 'Delete all data' })).toBeTruthy();
+    await navigate('privacy');
+    await screen.findByText(/Everything stays on this device/);
     expect(
       within(document.getElementById('privacy')!).queryByRole('button', {
-        name: /^Delete all StudyVault data/,
+        name: /Delete all/,
       }),
     ).toBeNull();
   });

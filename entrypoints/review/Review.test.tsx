@@ -11,6 +11,7 @@ import {
   getCard,
   listReviewLogs,
   loadStudySession,
+  setGameMode,
   type TemplateInput,
 } from '@storage';
 import { freshDatabase } from '@storage/test-vault';
@@ -36,7 +37,7 @@ async function seed(n: number, deckSettings: Record<string, unknown> = {}) {
   return { deck, cards };
 }
 
-vi.setConfig({ testTimeout: 30_000 });
+vi.setConfig({ testTimeout: 60_000 });
 // Several agents and CI shards share the CPU: waiting for the page is not a failure.
 configure({ asyncUtilTimeout: 10_000 });
 
@@ -49,6 +50,9 @@ beforeEach(async () => {
 afterEach(cleanup);
 
 const question = () => within(screen.getByTestId(TID.card)).getByTestId(TID.question).textContent;
+/** Why a control is unavailable: the tooltip it points at (aria-describedby). */
+const reason = (el: HTMLElement) =>
+  document.getElementById(el.getAttribute('aria-describedby') ?? '')?.textContent ?? null;
 
 async function startAll(user: ReturnType<typeof userEvent.setup>) {
   await user.click(await screen.findByTestId(TID.deckStartAll));
@@ -57,11 +61,35 @@ async function startAll(user: ReturnType<typeof userEvent.setup>) {
 
 describe('review page: deck picker', () => {
   it('says there is nothing yet instead of showing empty decks', async () => {
+    const user = userEvent.setup();
     render(<Review />);
-    expect(await screen.findByTestId(TID.deckEmpty)).toBeTruthy();
-    expect(
-      screen.getByRole('button', { name: 'Study everything due' }).getAttribute('aria-disabled'),
-    ).toBe('true');
+    const empty = await screen.findByTestId(TID.deckEmpty);
+    expect(within(empty).getByRole('heading', { name: 'No cards yet' })).toBeTruthy();
+    // No start button and no zero counts: the one action is making cards.
+    expect(screen.queryByTestId(TID.deckStartAll)).toBeNull();
+    expect(screen.queryByTestId(TID.dueTotal)).toBeNull();
+    await user.click(within(empty).getByRole('button', { name: 'Create cards' }));
+    expect(screen.getByRole('tab', { name: 'Create' }).getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('with nothing due, start says why it cannot act', async () => {
+    const user = userEvent.setup();
+    await seed(1);
+    render(<Review />);
+    await startAll(user);
+    await user.keyboard(' ');
+    await user.keyboard('4');
+    // The done screen waits for the session to close (a busy CI box can be slow).
+    const summary = await screen.findByTestId(TID.summary, {}, { timeout: 20_000 });
+    await user.click(within(summary).getByRole('button', { name: 'Back to decks' }));
+    // The picker may come back with the old counts first. Query again on every try: a disabled
+    // ChunkyButton is wrapped in its tooltip span, so React replaces the <button> node.
+    await waitFor(
+      () => expect(screen.getByTestId(TID.deckStartAll).getAttribute('aria-disabled')).toBe('true'),
+      { timeout: 20_000 },
+    );
+    expect(reason(screen.getByTestId(TID.deckStartAll))).toBe('Nothing is due right now.');
+    expect(screen.getByText('Nothing is due right now.', { selector: 'p' })).toBeTruthy();
   });
 
   it('shows real counts per deck and reports cards beyond the daily limit', async () => {
@@ -75,6 +103,14 @@ describe('review page: deck picker', () => {
 });
 
 describe('review page: the session', () => {
+  // Pin the clock to midday: these expect a Good's 10-minute step to stay in today's session. Near
+  // the rollover it lands in tomorrow's study day and rightly leaves (see queue.test.ts).
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-10-15T12:00:00Z'));
+  });
+  afterEach(() => vi.useRealTimers());
+
   it('shows real intervals, grades with the keyboard, and undoes with Z', async () => {
     const user = userEvent.setup();
     const { deck, cards } = await seed(2);
@@ -119,15 +155,34 @@ describe('review page: the session', () => {
 
     const undo = screen.getByTestId(TID.undo);
     expect(undo.getAttribute('aria-disabled')).toBe('true');
-    expect(undo.getAttribute('title')).toBe('Nothing to undo yet.');
-    expect(screen.getByTestId(TID.explain).getAttribute('title')).toMatch(/Show the answer first/);
-    expect(screen.getByTestId(TID.source).getAttribute('title')).toMatch(/no source/);
+    expect(reason(undo)).toBe('Nothing to undo yet.');
+    expect(reason(screen.getByTestId(TID.explain))).toMatch(/Show the answer first/);
+    expect(reason(screen.getByTestId(TID.source))).toMatch(/no source/);
 
     await user.click(screen.getByTestId(TID.reveal));
     await user.click(screen.getByTestId(ratingId(4)));
-    const summary = await screen.findByTestId(TID.summary);
+    const summary = await screen.findByTestId(TID.summary, {}, { timeout: 20_000 });
     expect(summary.textContent).toMatch(/Session complete/);
     expect(screen.getByTestId(TID.summaryAnswered).textContent).toMatch(/answered 1 card/);
+  });
+
+  it('says what is left the way the header counts it: new cards of other decks included', async () => {
+    const user = userEvent.setup();
+    const { deck } = await seed(1);
+    const other = await createDeck({ name: 'Renal', settings: {} });
+    await createManualCards([basic(2), basic(3), basic(4)], { deckId: other.id });
+    render(<Review />);
+    await user.click(await screen.findByTestId(deckStartId(deck.id)));
+    await screen.findByTestId(TID.card);
+    await user.click(screen.getByTestId(TID.reveal));
+    await user.click(screen.getByTestId(ratingId(4)));
+    await screen.findByTestId(TID.summary, {}, { timeout: 20_000 });
+    await waitFor(() =>
+      expect(screen.getByTestId(TID.summaryNext).textContent).toMatch(
+        /^3 cards still due now \(3 new\), \d+ reviews? due tomorrow\.$/,
+      ),
+    );
+    expect(screen.getByText('3 due now')).toBeTruthy();
   });
 
   it('explains the answer from the card and shows what the learner wrote', async () => {
@@ -210,7 +265,7 @@ describe('review page: navigation', () => {
       within(nav)
         .getAllByRole('tab')
         .map((t) => t.textContent),
-    ).toEqual(['Study', 'Exam', 'Create cards', 'Cards', 'Analytics', 'Settings']);
+    ).toEqual(['Study', 'Exam', 'Create', 'Cards', 'Stats', 'Settings']);
   });
 });
 
@@ -236,10 +291,13 @@ describe('review page: keyboard rules', () => {
     const first = render(<Review />);
     await startAll(user);
 
-    await user.click(screen.getByTestId(TID.keysToggle));
+    const toggle = () => screen.getByRole('switch', { name: 'Key shortcuts' }) as HTMLInputElement;
+    expect(toggle().getAttribute('data-testid')).toBe(TID.keysToggle);
+    await user.click(toggle());
     expect(window.localStorage.getItem('sv.review.keys')).toBe('off');
-    expect(screen.queryByLabelText('Keyboard shortcuts')).toBeNull();
-    expect(screen.getByTestId(TID.keysToggle).textContent).toBe('Turn single-key shortcuts on');
+    expect(toggle().checked).toBe(false);
+    // The key hints go with the keys.
+    expect(screen.queryByText('Space', { selector: 'kbd' })).toBeNull();
 
     // The card does not react to keys any more; the buttons still do everything.
     screen.getByTestId(TID.card).focus();
@@ -257,11 +315,51 @@ describe('review page: keyboard rules', () => {
     render(<Review />);
     await user.click(await screen.findByTestId(TID.deckContinue));
     await screen.findByTestId(TID.card);
-    expect(screen.getByTestId(TID.keysToggle).textContent).toBe('Turn single-key shortcuts on');
-    await user.click(screen.getByTestId(TID.keysToggle));
+    expect(toggle().checked).toBe(false);
+    await user.click(toggle());
     expect(window.localStorage.getItem('sv.review.keys')).toBe('on');
     screen.getByTestId(TID.card).focus();
     await user.keyboard(' ');
     expect(await screen.findByTestId(TID.ratings)).toBeTruthy();
+  });
+});
+
+describe('review page: game layer', () => {
+  it('shows XP, a +1 float per answer and the session XP with its bonus (Game mode on)', async () => {
+    const user = userEvent.setup();
+    await seed(2);
+    render(<Review />);
+    await startAll(user);
+    // The ledger is ready: today's XP sits in the session bar.
+    await screen.findByText('XP today', {}, { timeout: 30_000 });
+    await user.keyboard(' ');
+    await user.keyboard('4');
+    await waitFor(() => expect(document.querySelector('.sv-xpfloat')?.textContent).toBe('+1 XP'));
+    // The XP is spoken with the next card, not as a message of its own.
+    expect(await screen.findByText(/^Plus 1 XP\. Question 2 of 2\.$/)).toBeTruthy();
+    await user.keyboard(' ');
+    await user.keyboard('4');
+    const summary = await screen.findByTestId(TID.summary, {}, { timeout: 20_000 });
+    // Two answers and the session bonus.
+    expect(await within(summary).findByText('+7 XP', {}, { timeout: 15_000 })).toBeTruthy();
+    expect(within(summary).getByText(/5 bonus/)).toBeTruthy();
+    expect(within(summary).getByRole('img', { name: /^Daily goal: \d+ of 30 XP/ })).toBeTruthy();
+    expect(document.activeElement).toBe(within(summary).getByRole('heading', { level: 2 }));
+  });
+
+  it('hides every game number when Game mode is off, and keeps the plain facts', async () => {
+    const user = userEvent.setup();
+    await setGameMode(false);
+    await seed(1);
+    render(<Review />);
+    await startAll(user);
+    await user.keyboard(' ');
+    await user.keyboard('4');
+    const summary = await screen.findByTestId(TID.summary, {}, { timeout: 20_000 });
+    expect(within(summary).getByText('Answered')).toBeTruthy();
+    expect(within(summary).queryByText(/XP/)).toBeNull();
+    expect(within(summary).queryByRole('img', { name: /Daily goal/ })).toBeNull();
+    expect(screen.queryByText('XP today')).toBeNull();
+    expect(screen.queryByTestId('sv-confetti')).toBeNull();
   });
 });

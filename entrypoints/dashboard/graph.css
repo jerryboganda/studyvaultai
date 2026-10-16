@@ -1,30 +1,65 @@
 /*
- * Knowledge graph view (GraphView.tsx). Loaded with the view, not with the dashboard.
- * Nothing here animates: the layout is computed once and drawn, so reduced motion needs no override.
- * Colour is never the only cue: link types differ by dash pattern, weight and text; item kinds by
- * shape and letter.
+ * Knowledge graph view (GraphView.tsx) in the Sunny Vault style. Loaded with the view, not with the
+ * dashboard. Nothing here animates: the layout is computed once and drawn, so reduced motion needs
+ * no override. Colour is never the only cue: link types differ by dash pattern, weight and name;
+ * item kinds by shape and letter; the centre by a star and a thicker ring.
  */
 .dash-graph {
   max-width: none;
 }
-.dash-graph__bar {
-  align-items: flex-end;
-}
-.dash-graph__depth {
+
+/* Toolbar */
+.graph-around {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--sv-space-3);
+  align-items: center;
+  gap: var(--sv-space-2);
+}
+.graph-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sv-space-2) var(--sv-space-3);
+}
+.graph-bar__group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sv-space-2);
+}
+.graph-stats {
+  /* Inline flow, so the words and commas sit right against their chips. */
   margin: 0;
-  padding: 0;
-  border: 0;
+  font-weight: 700;
+  line-height: 2.1;
+}
+.graph-h-icon {
+  width: 20px;
+  height: 20px;
+  color: var(--sv-ink-2);
 }
 
+/* Diagram card */
+.graph-diagram__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sv-space-2);
+}
+.graph-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
 .dash-graph__scroll {
   overflow: auto;
   max-height: 70vh;
-  border: 1px solid var(--sv-border-strong);
-  border-radius: var(--sv-radius-sm);
-  background: var(--sv-bg);
+  border: 2px solid var(--sv-line-strong);
+  border-radius: var(--sv-radius-md);
+  background:
+    radial-gradient(circle, var(--sv-border) 1.2px, transparent 1.4px) 0 0 / 22px 22px,
+    var(--sv-surface-2);
 }
 .dash-graph__svg {
   display: block;
@@ -33,42 +68,48 @@
 
 /* Links */
 .dash-graph__edge {
-  stroke: var(--sv-text-muted);
+  stroke: var(--sv-ink-2);
   stroke-linecap: round;
 }
 .dash-graph__edge--supports {
-  stroke: var(--sv-success);
+  stroke: var(--sv-success-ink);
 }
 .dash-graph__edge--contradicts {
-  stroke: var(--sv-danger);
+  stroke: var(--sv-danger-ink);
 }
 .dash-graph__edge--cause {
-  stroke: var(--sv-accent);
+  stroke: var(--sv-primary-soft-ink);
 }
 .dash-graph__edge--example {
-  stroke: var(--sv-text);
+  stroke: var(--sv-ink);
+}
+.dash-graph__edge--prerequisite {
+  stroke: var(--sv-violet-ink);
 }
 .dash-graph__arrow path {
-  fill: var(--sv-text-muted);
+  fill: var(--sv-ink-2);
 }
 .dash-graph__arrow--supports path {
-  fill: var(--sv-success);
+  fill: var(--sv-success-ink);
 }
 .dash-graph__arrow--contradicts path {
-  fill: var(--sv-danger);
+  fill: var(--sv-danger-ink);
 }
 .dash-graph__arrow--cause path {
-  fill: var(--sv-accent);
+  fill: var(--sv-primary-soft-ink);
 }
 .dash-graph__arrow--example path {
-  fill: var(--sv-text);
+  fill: var(--sv-ink);
+}
+.dash-graph__arrow--prerequisite path {
+  fill: var(--sv-violet-ink);
 }
 .dash-graph__edgelabel {
-  fill: var(--sv-text);
-  font: 600 11px var(--sv-font);
+  fill: var(--sv-ink);
+  font: 800 12px var(--sv-font);
   paint-order: stroke;
-  stroke: var(--sv-bg);
-  stroke-width: 4px;
+  stroke: var(--sv-surface-2);
+  stroke-width: 5px;
 }
 
 /* Items */
@@ -77,14 +118,20 @@
   cursor: pointer;
 }
 .dash-graph__shape {
-  fill: var(--sv-surface-raised);
-  stroke: var(--sv-border-strong);
-  stroke-width: 2;
+  fill: var(--sv-primary-soft);
+  stroke: var(--sv-line-strong);
+  stroke-width: 2.5;
+}
+.dash-graph__node[data-kind='note'] .dash-graph__shape {
+  fill: var(--sv-violet-soft);
+}
+.dash-graph__node[data-kind='knowledgePoint'] .dash-graph__shape {
+  fill: var(--sv-sun-soft);
 }
 .dash-graph__node[data-centre='true'] .dash-graph__shape {
   fill: var(--sv-surface);
-  stroke: var(--sv-accent);
-  stroke-width: 4;
+  stroke: var(--sv-primary);
+  stroke-width: 5;
 }
 .dash-graph__node:focus-visible .dash-graph__shape,
 .dash-graph__node:hover .dash-graph__shape {
@@ -92,40 +139,64 @@
   stroke-width: 5;
 }
 .dash-graph__glyph {
-  fill: var(--sv-text);
-  font: 700 14px var(--sv-font);
+  fill: var(--sv-ink);
+  font: 900 14px var(--sv-font);
   pointer-events: none;
 }
 .dash-graph__label {
-  fill: var(--sv-text);
-  font: 12px var(--sv-font);
+  fill: var(--sv-ink);
+  font: 700 12px var(--sv-font);
   paint-order: stroke;
-  stroke: var(--sv-bg);
-  stroke-width: 4px;
+  stroke: var(--sv-surface-2);
+  stroke-width: 5px;
   pointer-events: none;
 }
 .dash-graph__node:focus-visible .dash-graph__label {
-  font-weight: 700;
+  font-weight: 900;
   text-decoration: underline;
 }
 
-/* Legend, table, overview */
-.dash-graph__legend {
+/* Legend chips */
+.graph-legend {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--sv-space-2) var(--sv-space-4);
+  gap: var(--sv-space-2);
   margin: 0;
   padding: 0;
   list-style: none;
 }
-.dash-graph__legend li {
-  display: flex;
+.graph-legend__item {
+  display: inline-flex;
   align-items: center;
-  gap: var(--sv-space-2);
+  gap: 6px;
+  min-height: 30px;
+  padding: 2px 12px 2px 8px;
+  border-radius: var(--sv-radius-pill);
+  background: var(--sv-sunk);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
 }
-.dash-graph__legend .dash-graph__edge {
+.graph-legend__item .dash-graph__edge {
   fill: none;
 }
+.graph-legend__shape {
+  fill: var(--sv-primary-soft);
+  stroke: var(--sv-line-strong);
+  stroke-width: 2;
+}
+.graph-legend__shape--note {
+  fill: var(--sv-violet-soft);
+}
+.graph-legend__shape--kp {
+  fill: var(--sv-sun-soft);
+}
+.graph-legend__shape--centre {
+  fill: var(--sv-surface);
+  stroke: var(--sv-primary);
+  stroke-width: 3.5;
+}
+
+/* Connections table */
 .dash-graph__tablewrap {
   overflow-x: auto;
 }
@@ -136,33 +207,93 @@
 .dash-graph__table th,
 .dash-graph__table td {
   padding: var(--sv-space-2);
-  border-bottom: 1px solid var(--sv-border);
+  border-bottom: 2px solid var(--sv-border);
   text-align: start;
   vertical-align: top;
 }
 .dash-graph__table thead th {
-  color: var(--sv-text-muted);
-  font-size: var(--sv-text-sm);
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 .dash-graph__table tbody th {
-  font-weight: 400;
+  font-weight: 700;
+}
+.dash-graph__table tbody tr:last-child > * {
+  border-bottom: 0;
+}
+.graph-dist {
+  display: inline-grid;
+  place-items: center;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0 6px;
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-sunk);
+  font-size: var(--sv-text-sm);
+  font-weight: 900;
 }
 .dash-graph__links {
   margin: 0;
   padding-inline-start: var(--sv-space-4);
 }
-.dash-graph__list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sv-space-2);
+
+/* Overview cards */
+.graph-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr));
+  gap: var(--sv-space-3);
   margin: 0;
   padding: 0;
   list-style: none;
+}
+.graph-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--sv-space-2) var(--sv-space-3);
+  min-width: 0;
+  padding: var(--sv-space-3);
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface-2);
+}
+.graph-item > .sv-chunky {
+  margin-inline-start: auto;
+}
+.graph-item__rank {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-violet-soft);
+  color: var(--sv-violet-ink);
+  font-weight: 900;
+}
+.graph-item__body {
+  display: flex;
+  flex: 1 1 12rem;
+  flex-direction: column;
+  gap: var(--sv-space-2);
+  min-width: 0;
+}
+.graph-item__text {
+  font-weight: 700;
+}
+.graph-item__keys {
+  margin: 0;
+  padding-inline-start: var(--sv-space-4);
+  font-size: var(--sv-text-sm);
 }
 
 @media (forced-colors: active) {
   .dash-graph__scroll {
     border-color: CanvasText;
+    background: Canvas;
   }
   .dash-graph__edge {
     stroke: CanvasText;
@@ -170,12 +301,13 @@
   .dash-graph__arrow path {
     fill: CanvasText;
   }
-  .dash-graph__shape {
+  .dash-graph__shape,
+  .graph-legend__shape {
     fill: Canvas;
     stroke: CanvasText;
   }
   .dash-graph__node[data-centre='true'] .dash-graph__shape {
-    stroke-width: 5;
+    stroke-width: 6;
   }
   .dash-graph__node:focus-visible .dash-graph__shape,
   .dash-graph__node:hover .dash-graph__shape {
@@ -189,7 +321,9 @@
     stroke: Canvas;
   }
   .dash-graph__table th,
-  .dash-graph__table td {
-    border-color: CanvasText;
+  .dash-graph__table td,
+  .graph-item,
+  .graph-legend__item {
+    border: 1px solid CanvasText;
   }
 }

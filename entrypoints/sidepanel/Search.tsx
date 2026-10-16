@@ -1,13 +1,23 @@
 import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
-import { MAX_QUERY_LENGTH, QUERY_SYNTAX, type SearchResult, type Snippet } from '@search';
-import type { ColorId, HighlightKind } from '@shared';
 import {
-  Badge,
+  Code,
+  House,
+  Layers,
+  ListFilter,
+  LocateFixed,
+  NotebookPen,
+  Search,
+  TriangleAlert,
+  X,
+} from 'lucide-react';
+import { MAX_QUERY_LENGTH, QUERY_SYNTAX, type SearchResult, type Snippet } from '@search';
+import { KIND_LABELS, type ColorId, type HighlightKind, type ResolveStatus } from '@shared';
+import {
   Button,
-  EmptyState,
+  BuddyEmptyState,
   InlineNotice,
   KindChip,
-  ResolveBadge,
+  describeResolveState,
   errorMessage,
   truncate,
   useAction,
@@ -22,7 +32,8 @@ import {
   type FacetKey,
   type SearchHostHandle,
 } from '@ui/panel';
-import type { CardActions } from './HighlightCard';
+import { StatusBadge, type CardActions } from './HighlightCard';
+import { IconAction } from './IconAction';
 import { REVEAL_NOT_FOUND, scopeLabel, type BankScope } from './model';
 import {
   FIELD_LABELS,
@@ -41,6 +52,13 @@ const FACETS: Array<{ key: Exclude<FacetKey, 'folder'>; label: string }> = [
   { key: 'status', label: 'Status' },
 ];
 const FACET_VALUES_SHOWN = 6;
+
+/** Words for index values (kind and status ids); the chip still toggles the raw value. */
+function facetLabel(key: FacetKey, value: string): string {
+  if (key === 'kind' && value in KIND_LABELS) return KIND_LABELS[value as HighlightKind].label;
+  if (key === 'status') return describeResolveState(value as ResolveStatus).label;
+  return value;
+}
 
 function useDebounced<T>(value: T, ms: number): T {
   const [settled, setSettled] = useState(value);
@@ -68,6 +86,8 @@ export interface SearchTabProps {
   focusRequested?: boolean;
   /** The box took focus: the request is done. */
   onFocused?(): void;
+  /** Shown under the empty box (the newest saves). */
+  recent?: ReactNode;
 }
 
 export function SearchTab({
@@ -83,6 +103,7 @@ export function SearchTab({
   reviewOn,
   focusRequested = false,
   onFocused,
+  recent,
 }: SearchTabProps) {
   const uid = useId();
   const input = useRef<HTMLInputElement>(null);
@@ -118,84 +139,130 @@ export function SearchTab({
 
   const result = outcome && 'result' in outcome ? outcome.result : null;
   const rows = useMemo(() => (result ? rowsFromHits(result.hits) : []), [result]);
+  const canNarrow = Boolean(result?.facets && rows.length > 0);
 
   return (
     <div className="sv-stack" data-testid="search-tab">
       <h2 className="sv-sr">Search</h2>
-      <div className="sv-stack sv-stack--tight" role="search">
-        <label className="sv-label" htmlFor={`${uid}-q`}>
+      <div className="sp-search" role="search">
+        <label className="sv-sr" htmlFor={`${uid}-q`}>
           Search highlights and notes
         </label>
+        <Search className="sp-search__icon" aria-hidden="true" strokeWidth={2.4} />
         <input
           ref={input}
           id={`${uid}-q`}
           type="search"
-          className="sv-control"
+          className="sp-search__input"
           data-testid="search-input"
           autoComplete="off"
           spellCheck={false}
           maxLength={MAX_QUERY_LENGTH}
-          placeholder={'"cell membrane", tag:neuro, kind:formula'}
+          placeholder="Search your vault"
           dir="auto"
           value={text}
           aria-describedby={`${uid}-status`}
           onChange={(e) => onText(e.target.value)}
         />
-        <div className="sv-row">
-          <Button
-            aria-expanded={help}
-            aria-controls={`${uid}-help`}
-            data-testid="search-help-toggle"
-            onClick={() => setHelp((v) => !v)}
+        {text !== '' ? (
+          <span className="sp-search__clear">
+            <IconAction icon={X} label="Clear search" tipSide="left" onClick={() => onText('')} />
+          </span>
+        ) : null}
+      </div>
+
+      <div className="sp-chips">
+        <button
+          type="button"
+          className="sp-pill"
+          aria-expanded={help}
+          aria-controls={`${uid}-help`}
+          data-testid="search-help-toggle"
+          onClick={() => setHelp((v) => !v)}
+        >
+          <Code aria-hidden="true" strokeWidth={2.4} />
+          Search syntax
+        </button>
+        {canNarrow ? (
+          <button
+            type="button"
+            className="sp-pill"
+            aria-expanded={facets}
+            aria-controls={`${uid}-facets`}
+            data-testid="search-facets-toggle"
+            onClick={() => setFacets((v) => !v)}
           >
-            Search syntax
-          </Button>
-          {text !== '' ? (
-            <Button variant="ghost" onClick={() => onText('')}>
-              Clear search
-            </Button>
-          ) : null}
-        </div>
+            <ListFilter aria-hidden="true" strokeWidth={2.4} />
+            Narrow results
+          </button>
+        ) : null}
+        {scope ? (
+          <span className="sp-pill sp-pill--on" data-testid="search-scope">
+            <span dir="auto" className="sv-wrap">
+              Only in {scopeLabel(scope)}
+            </span>
+            <button
+              type="button"
+              className="sp-scope__x"
+              aria-label="Search everywhere"
+              onClick={onClearScope}
+            >
+              <X aria-hidden="true" strokeWidth={2.6} />
+            </button>
+          </span>
+        ) : null}
       </div>
 
       {help ? (
-        <div
-          id={`${uid}-help`}
-          className="sp-help sv-stack sv-stack--tight"
-          data-testid="search-help"
-        >
-          <p className="sv-small sv-muted">
-            Every word must match; typos and word beginnings still match. Use adds an example to the
-            search box.
-          </p>
-          <ul className="sv-stack sv-stack--tight">
+        <div id={`${uid}-help`} className="sp-help" data-testid="search-help">
+          <p className="sv-small sv-muted">Every word must match; small typos still match.</p>
+          <ul className="sp-help__list">
             {QUERY_SYNTAX.map((row) => (
-              <li key={row.example} className="sv-stack sv-stack--tight">
-                <div className="sv-row">
-                  <code className="sv-kbd sv-wrap">{row.example}</code>
-                  <Button
-                    variant="ghost"
-                    aria-label={`Use ${row.example}`}
-                    onClick={() => onText(appendTokens(text, [row.example]))}
-                  >
-                    Use
-                  </Button>
-                </div>
+              <li key={row.example} className="sp-help__row">
+                <code className="sv-kbd sv-wrap">{row.example}</code>
                 <span className="sv-small sv-muted">{row.meaning}</span>
+                <Button
+                  variant="ghost"
+                  aria-label={`Use ${row.example}`}
+                  onClick={() => onText(appendTokens(text, [row.example]))}
+                >
+                  Use
+                </Button>
               </li>
             ))}
           </ul>
         </div>
       ) : null}
 
-      {scope ? (
-        <div className="sv-row" data-testid="search-scope">
-          <Badge>
-            <span dir="auto">Only in {scopeLabel(scope)}</span>
-          </Badge>
-          <Button variant="ghost" onClick={onClearScope}>
-            Search everywhere
-          </Button>
+      {canNarrow && facets && result?.facets ? (
+        <div
+          id={`${uid}-facets`}
+          role="group"
+          aria-label="Narrow the results"
+          className="sp-facets"
+        >
+          {FACETS.map(({ key, label }) => {
+            const values = result.facets![key].slice(0, FACET_VALUES_SHOWN);
+            if (values.length === 0) return null;
+            return (
+              <div key={key} className="sp-facets__row">
+                <span className="sp-facets__label">{label}</span>
+                {values.map((f) => (
+                  <button
+                    key={f.value}
+                    type="button"
+                    className="sp-chip"
+                    aria-pressed={hasFacetToken(text, key, f.value)}
+                    data-testid={`facet-${key}`}
+                    onClick={() => onText(toggleFacetToken(text, key, f.value))}
+                  >
+                    <span dir="auto">{facetLabel(key, f.value)}</span>
+                    <span className="sp-chip__n"> {f.count}</span>
+                  </button>
+                ))}
+              </div>
+            );
+          })}
         </div>
       ) : null}
 
@@ -226,12 +293,7 @@ export function SearchTab({
         </div>
       ) : null}
 
-      <p
-        id={`${uid}-status`}
-        className="sv-small sv-muted"
-        role="status"
-        data-testid="search-status"
-      >
+      <p id={`${uid}-status`} className="sp-hint" role="status" data-testid="search-status">
         {statusLine({ query, result, outcome, usable: index?.usable ?? true, shown: rows.length })}
       </p>
 
@@ -244,7 +306,10 @@ export function SearchTab({
       {result && result.warnings.length > 0 ? (
         <ul className="sv-small sp-warnings" data-testid="search-warnings">
           {result.warnings.map((w, i) => (
-            <li key={`${w.code}-${i}`}>{w.message}</li>
+            <li key={`${w.code}-${i}`}>
+              <TriangleAlert aria-hidden="true" strokeWidth={2.4} />
+              {w.message}
+            </li>
           ))}
         </ul>
       ) : null}
@@ -262,79 +327,38 @@ export function SearchTab({
         </p>
       ) : null}
 
-      {result?.facets && rows.length > 0 ? (
-        <div className="sv-stack sv-stack--tight">
-          <div>
-            <Button
-              aria-expanded={facets}
-              aria-controls={`${uid}-facets`}
-              data-testid="search-facets-toggle"
-              onClick={() => setFacets((v) => !v)}
-            >
-              Narrow results
-            </Button>
-          </div>
-          {facets ? (
-            <div
-              id={`${uid}-facets`}
-              role="group"
-              aria-label="Narrow the results"
-              className="sv-stack sv-stack--tight"
-            >
-              {FACETS.map(({ key, label }) => {
-                const values = result.facets![key].slice(0, FACET_VALUES_SHOWN);
-                if (values.length === 0) return null;
-                return (
-                  <div key={key} className="sv-row">
-                    <span className="sv-label">{label}</span>
-                    {values.map((f) => (
-                      <button
-                        key={f.value}
-                        type="button"
-                        className="sp-chip"
-                        aria-pressed={hasFacetToken(text, key, f.value)}
-                        data-testid={`facet-${key}`}
-                        onClick={() => onText(toggleFacetToken(text, key, f.value))}
-                      >
-                        <span dir="auto">{f.value}</span>
-                        <span className="sv-muted"> {f.count}</span>
-                      </button>
-                    ))}
-                  </div>
-                );
-              })}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-
-      {query === '' && index?.usable !== false ? (
-        <EmptyState title="Search your vault">
-          <p>
-            Find highlights and notes by word, tag, bank, kind or site. It works offline and never
-            sends anything anywhere.
-          </p>
-        </EmptyState>
-      ) : null}
+      {/* An empty box shows the newest saves (UX_DESIGN 7.2); the mascot only when there are none. */}
+      {query === '' && index?.usable !== false
+        ? (recent ?? (
+            <BuddyEmptyState
+              pose="think"
+              title="Search your vault"
+              text="Words, tags, banks or sites."
+              mascotSize={88}
+            />
+          ))
+        : null}
 
       {result && rows.length === 0 && result.total === 0 ? (
-        <EmptyState title="No results">
-          <p>
-            {scope
-              ? `Nothing in ${scopeLabel(scope)} matches. `
-              : 'Nothing you have saved matches. '}
-            Try fewer or shorter words; word beginnings and small typos already match.
-          </p>
+        <div className="sp-noresult">
+          <BuddyEmptyState
+            pose="sleep"
+            title="No results"
+            text={
+              scope ? `Nothing in ${scopeLabel(scope)} matches.` : 'Try fewer or shorter words.'
+            }
+            mascotSize={88}
+          />
           {scope ? (
             <Button onClick={onClearScope} data-testid="search-everywhere">
               Search everywhere
             </Button>
           ) : null}
-        </EmptyState>
+        </div>
       ) : null}
 
       {rows.length > 0 ? (
-        <ul className="sp-results" aria-label="Search results" data-testid="search-results">
+        <ul className="sp-list" aria-label="Search results" data-testid="search-results">
           {rows.map((row) => (
             <li key={row.key}>
               <SearchCard
@@ -371,7 +395,7 @@ function statusLine(s: {
   usable: boolean;
   shown: number;
 }): ReactNode {
-  if (s.query === '') return 'Type to search. Press Search syntax for what you can ask for.';
+  if (s.query === '') return '';
   if (!s.usable) return 'Search will answer as soon as the index is ready.';
   if (!s.result) return s.outcome && 'error' in s.outcome ? '' : 'Searching…';
   const { total, took, hits } = s.result;
@@ -449,76 +473,88 @@ function SearchCard({
       : hitReveal({ live, onActivePage, resolveStatus: row.resolveStatus });
   const quoteText = row.quote.segments.map((s) => s.text).join('');
   const attention = row.resolveStatus === 'ambiguous' || row.resolveStatus === 'orphaned';
+  const meta = [row.title || row.host, row.banks.join(', ')].filter((x) => x !== '').join(' · ');
 
   return (
     <article
-      className="sp-card"
+      className={`hl-card sp-sw--${row.kind ? paletteFor(row.kind) : 'none'}`}
       data-testid="search-result"
       data-highlight-id={id ?? undefined}
       aria-label={`${row.kind ? 'Highlight' : 'Note'}: ${truncate(quoteText, 60)}`}
     >
-      <div className="sv-row">
+      <div className="hl-card__top">
         {row.kind ? (
           <KindChip kind={row.kind} color={paletteFor(row.kind)} />
         ) : (
-          <Badge glyph="✎">Note</Badge>
+          <span className="hl-chip">
+            <NotebookPen aria-hidden="true" strokeWidth={2.4} />
+            Note
+          </span>
         )}
-        {attention && row.resolveStatus ? <ResolveBadge status={row.resolveStatus} /> : null}
-        {row.docType === 'note' && row.kind ? <Badge glyph="✎">Matched a note</Badge> : null}
-        {row.priority ? <span className="sv-small sv-muted">P{row.priority}</span> : null}
+        {attention && row.resolveStatus ? <StatusBadge status={row.resolveStatus} /> : null}
+        {row.docType === 'note' && row.kind ? (
+          <span className="hl-chip">
+            <NotebookPen aria-hidden="true" strokeWidth={2.4} />
+            Matched a note
+          </span>
+        ) : null}
+        {row.priority ? <span className="hl-chip">P{row.priority}</span> : null}
       </div>
-      <p className="sp-quote sv-wrap" dir="auto">
+      <p className="hl-card__quote sv-wrap" dir="auto">
         <Snip snippet={row.quote} />
       </p>
       {row.match ? (
-        <p className="sv-small sv-wrap" dir="auto">
-          <span className="sv-muted">In {FIELD_LABELS[row.match.field]}: </span>
+        <p className="hl-card__meta sv-wrap" dir="auto">
+          <span>In {FIELD_LABELS[row.match.field]}: </span>
           <Snip snippet={row.match.snippet} />
         </p>
       ) : null}
-      <p className="sv-small sv-muted sv-wrap" dir="auto">
-        {[row.title || row.host, row.banks.join(', ')].filter((x) => x !== '').join(' · ')}
-      </p>
-      {row.tags.length > 0 ? (
-        <div className="sv-row">
-          {row.tags.map((t) => (
-            <Badge key={t}>
-              <span dir="auto">{t}</span>
-            </Badge>
-          ))}
-        </div>
+      {meta !== '' ? (
+        <p className="hl-card__meta sv-wrap" dir="auto">
+          {meta}
+        </p>
       ) : null}
-      <div className="sv-row">
-        <Button
-          busy={act.busy}
-          data-testid="hit-reveal"
-          {...(reveal.enabled ? {} : { disabledReason: reveal.reason })}
-          onClick={() => void act.run('reveal')}
-        >
-          Show on page
-        </Button>
-        <Button
-          busy={act.busy}
-          data-testid="hit-dashboard"
-          {...(id === null ? { disabledReason: orphanNote } : {})}
-          onClick={() => void act.run('dashboard')}
-        >
-          Open in dashboard
-        </Button>
-        <Button
+      {row.tags.length > 0 ? (
+        <ul className="hl-chips" aria-label="Tags">
+          {row.tags.map((t) => (
+            <li key={t} className="hl-tag" dir="auto">
+              <span aria-hidden="true">#</span>
+              <span>{t}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <div className="hl-card__actions">
+        <IconAction
+          icon={Layers}
+          label="Make flashcard"
           busy={act.busy}
           data-testid="hit-flashcard"
-          {...(id === null
-            ? { disabledReason: orphanNote }
-            : reviewOn
-              ? {}
-              : {
-                  disabledReason: 'Review is turned off in Settings, so flashcards cannot be made.',
-                })}
+          disabledReason={
+            id === null
+              ? orphanNote
+              : reviewOn
+                ? undefined
+                : 'Review is turned off in Settings, so flashcards cannot be made.'
+          }
           onClick={() => void act.run('flashcard')}
-        >
-          Make flashcard
-        </Button>
+        />
+        <IconAction
+          icon={LocateFixed}
+          label="Show on page"
+          busy={act.busy}
+          data-testid="hit-reveal"
+          disabledReason={reveal.enabled ? undefined : reveal.reason}
+          onClick={() => void act.run('reveal')}
+        />
+        <IconAction
+          icon={House}
+          label="Open in dashboard"
+          busy={act.busy}
+          data-testid="hit-dashboard"
+          disabledReason={id === null ? orphanNote : undefined}
+          onClick={() => void act.run('dashboard')}
+        />
       </div>
       {revealNote ? (
         <InlineNotice tone={revealNote.ok ? 'success' : 'warning'}>{revealNote.text}</InlineNotice>

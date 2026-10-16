@@ -1,17 +1,30 @@
 import { useId, useState } from 'react';
+import { Eye, KeyRound, Lock, LockOpen, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { Button } from '../Button';
+import { BarMeter } from '../design/BarMeter';
+import { InfoTip } from '../design/InfoTip';
 import { InlineNotice } from '../Notice';
 import { useAction } from '../hooks';
+import { Chip, Choices, Disclosure } from '../backup/kit';
 import { useSyncApi } from './api';
 import { MIN_PASSPHRASE_CHARS, assessPassphrase } from './passphrase';
 import type { SyncStatusView } from './protocol';
 
+const BAR_TONES = ['sun', 'sun', 'primary', 'success', 'success'] as const;
+
 function Strength({ value }: { value: string }) {
   const s = assessPassphrase(value);
   return (
-    <div className="sv-stack sv-stack--tight" data-testid="e2ee-strength">
-      <meter min={0} max={4} value={s.score} aria-label="Passphrase strength estimate" />
-      <p>
+    <div className="sd-stack" data-testid="e2ee-strength">
+      <BarMeter
+        value={value === '' ? 0 : s.score}
+        max={4}
+        size="sm"
+        tone={BAR_TONES[s.score] ?? 'primary'}
+        label="Passphrase strength estimate"
+        valueText={value === '' ? 'Not entered yet' : s.label}
+      />
+      <p className="sd-line">
         <strong>{value === '' ? 'Not entered yet' : s.label}</strong>
         {value !== '' && s.score > 0 ? ` (an estimate: about ${s.bits} bits)` : ''}
       </p>
@@ -75,10 +88,10 @@ export const AI_AFTER_DECRYPTION_NOTE =
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
 /**
- * How synced content is protected: the choice that gates the first upload, end-to-end encryption,
- * its lock, and changing the passphrase. The passphrase is sent only to the service worker of this
- * extension, which derives the key; the key is kept in memory-only session storage for a limited
- * time (it is not written to disk) and the passphrase is never stored.
+ * How synced content is protected: the choice that gates the first upload (picture cards), end-to-end
+ * encryption, its lock, and changing the passphrase. The passphrase is sent only to the service
+ * worker of this extension, which derives the key; the key is kept in memory-only session storage for
+ * a limited time (it is not written to disk) and the passphrase is never stored.
  */
 export function EncryptionCard({
   status,
@@ -99,6 +112,7 @@ export function EncryptionCard({
   const [nextAgain, setNextAgain] = useState('');
   const [rotateAck, setRotateAck] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [way, setWay] = useState<'passphrase' | 'plain'>('passphrase');
 
   const strength = assessPassphrase(pass);
   const nextStrength = assessPassphrase(next);
@@ -106,7 +120,7 @@ export function EncryptionCard({
   const plain = status.encryptionChoice === 'plaintext' && status.e2ee.mode === 'none';
   const setAsideNote = (n: number) =>
     n > 0
-      ? ` ${plural(n, 'stored item')} on the server could not be proven to come from your devices, so ${n === 1 ? 'it was' : 'they were'} not carried over. ${n === 1 ? 'It is' : 'They are'} listed under “Refused changes”.`
+      ? ` ${plural(n, 'stored item')} on the server could not be proven to come from your devices, so ${n === 1 ? 'it was' : 'they were'} not carried over. ${n === 1 ? 'It is' : 'They are'} listed under “Not exchanged”.`
       : '';
 
   const setup = useAction(async () => {
@@ -185,14 +199,96 @@ export function EncryptionCard({
     status.e2ee.lockInSeconds === null
       ? null
       : Math.max(1, Math.round(status.e2ee.lockInSeconds / 60));
+  const mode = status.e2ee.mode;
+
+  const setupForm = (
+    <div className="sd-stack">
+      <PassphraseField
+        label="New passphrase"
+        value={pass}
+        onChange={setPass}
+        testId="e2ee-passphrase"
+        autoComplete="new-password"
+      />
+      <Strength value={pass} />
+      <PassphraseField
+        label="Repeat the passphrase"
+        value={again}
+        onChange={setAgain}
+        testId="e2ee-confirm"
+        autoComplete="new-password"
+      />
+      <label className="sv-check">
+        <input
+          type="checkbox"
+          checked={lostAck}
+          data-testid="e2ee-lost-ack"
+          onChange={(e) => setLostAck(e.target.checked)}
+        />
+        <span>I understand that if I lose this passphrase my synced data cannot be recovered.</span>
+      </label>
+      <p className="sd-line">
+        It re-sends this device’s data under the new key.{' '}
+        <InfoTip label="Before you turn it on">
+          It replaces what the server stores. Let your other devices sync first, so nothing they
+          have not uploaded yet is overwritten.
+        </InfoTip>
+      </p>
+      <div className="sd-row">
+        <Button
+          variant="primary"
+          busy={setup.busy}
+          disabledReason={setupReason}
+          data-testid="e2ee-setup"
+          onClick={() => void setup.run()}
+        >
+          Turn on encryption
+        </Button>
+      </div>
+      {setup.error ? (
+        <InlineNotice tone="error" title="Could not set up encryption">
+          {setup.error}
+        </InlineNotice>
+      ) : null}
+    </div>
+  );
 
   return (
-    <section
-      className="sv-stack sv-stack--tight"
-      aria-labelledby={headingId}
-      data-testid="e2ee-section"
-    >
-      <h3 id={headingId}>End-to-end encryption</h3>
+    <section className="sd-card" aria-labelledby={headingId} data-testid="e2ee-section">
+      <div className="sd-row">
+        <span
+          className={`sd-tile sd-tile--sm sv-art--${mode === 'none' ? 'warning' : 'success'}`}
+          aria-hidden="true"
+        >
+          {mode === 'unlocked' ? (
+            <LockOpen strokeWidth={2.4} />
+          ) : mode === 'locked' ? (
+            <Lock strokeWidth={2.4} />
+          ) : (
+            <ShieldAlert strokeWidth={2.4} />
+          )}
+        </span>
+        <h3 id={headingId} className="sd-card__title sd-grow">
+          End-to-end encryption
+        </h3>
+        {mode === 'unlocked' ? (
+          <Chip icon={LockOpen} tone="success">
+            On, unlocked
+          </Chip>
+        ) : mode === 'locked' ? (
+          <Chip icon={Lock} tone="warning">
+            On, locked
+          </Chip>
+        ) : plain ? (
+          <Chip icon={Eye} tone="warning">
+            Off: plain upload
+          </Chip>
+        ) : (
+          <Chip icon={ShieldAlert} tone="warning">
+            Not set up
+          </Chip>
+        )}
+      </div>
 
       {status.e2ee.warning ? (
         <InlineNotice tone="error" title="Uploads are paused: the encryption key looks wrong" live>
@@ -204,43 +300,53 @@ export function EncryptionCard({
         </InlineNotice>
       ) : null}
 
-      {undecided ? (
-        <InlineNotice
-          tone="warning"
-          title="Nothing has been uploaded yet: choose how it is protected"
-        >
-          <span data-testid="e2ee-choice-note">
-            StudyVault does not send anything until you choose. Either set a passphrase below, so
-            your content is encrypted on this device before it leaves, or upload without end-to-end
-            encryption. {PLAIN_UPLOAD_CONSEQUENCE}
-          </span>
-        </InlineNotice>
-      ) : null}
-
-      <p data-testid="e2ee-mode">
-        {status.e2ee.mode === 'none'
-          ? plain
-            ? `Not set up. You chose to upload without end-to-end encryption. ${PLAIN_UPLOAD_CONSEQUENCE}`
-            : 'Not set up, and nothing has been uploaded. Without a passphrase, whoever runs the sync server could read what you upload. The connection is encrypted (TLS), but that is not end-to-end encryption.'
-          : status.e2ee.mode === 'locked'
-            ? 'Set up, and locked on this device. Locked means the key is not held here right now: syncing is paused, and nothing is uploaded unencrypted, until you enter the passphrase.'
-            : minutes !== null
-              ? `On, and unlocked on this device for about ${minutes} minute(s). Then the key is dropped, background syncing pauses and the status says locked until you enter the passphrase again. The key is held only in memory, and is also dropped when the browser or the extension restarts.`
-              : 'On, and unlocked on this device.'}
+      <p className="sd-line" data-testid="e2ee-mode">
+        {mode === 'none' ? (
+          plain ? (
+            <>
+              Not set up. You chose to upload without end-to-end encryption.{' '}
+              <InfoTip label="What plain upload means">{PLAIN_UPLOAD_CONSEQUENCE}</InfoTip>
+            </>
+          ) : (
+            <>
+              Not set up, and nothing has been uploaded.{' '}
+              <InfoTip label="Why a passphrase">
+                Without a passphrase, whoever runs the sync server could read what you upload. The
+                connection is encrypted (TLS), but that is not end-to-end encryption.
+              </InfoTip>
+            </>
+          )
+        ) : mode === 'locked' ? (
+          <>
+            Locked on this device: syncing is paused until you enter the passphrase.{' '}
+            <InfoTip label="What locked means">
+              Locked means the key is not held here right now, so nothing is uploaded unencrypted.
+            </InfoTip>
+          </>
+        ) : minutes !== null ? (
+          <>
+            Unlocked on this device for about {plural(minutes, 'minute')}, then locked again.{' '}
+            <InfoTip label="About the lock">
+              The key is held only in memory. When it is dropped, background syncing pauses and the
+              status says locked; it is also dropped when the browser or the extension restarts.
+            </InfoTip>
+          </>
+        ) : (
+          'On, and unlocked on this device.'
+        )}
       </p>
 
-      <InlineNotice tone="warning" title="A lost passphrase means lost synced data">
-        The passphrase never leaves this device. StudyVault and the server operator cannot reset it
-        or recover your synced data without it. Your data on this device is not affected.
-      </InlineNotice>
-      <p className="sv-muted sv-small">
-        With encryption on, the server cannot read your content. It can still see which kinds of
-        items you have, their ids, whether each was created, changed or deleted, when, and how big
-        it is.
-      </p>
-      <p className="sv-muted sv-small" data-testid="e2ee-ai-note">
-        {AI_AFTER_DECRYPTION_NOTE}
-      </p>
+      <div className="sd-row" hidden={mode === 'locked'}>
+        <Chip icon={KeyRound} tone="warning">
+          No reset if lost
+        </Chip>
+        <InfoTip label="About the passphrase and the server">
+          The passphrase never leaves this device; nobody can reset it. Your data on this device is
+          not affected. With encryption on, the server cannot read your content, but still sees
+          which kinds of items you have, their ids, when they change and how big they are.{' '}
+          <span data-testid="e2ee-ai-note">{AI_AFTER_DECRYPTION_NOTE}</span>
+        </InfoTip>
+      </div>
 
       {(status.e2ee.setAside ?? 0) > 0 ? (
         <InlineNotice tone="warning" title="Some stored items could not be verified">
@@ -251,59 +357,45 @@ export function EncryptionCard({
         </InlineNotice>
       ) : null}
 
-      {status.e2ee.mode === 'none' ? (
-        <div className="sv-stack sv-stack--tight">
-          <PassphraseField
-            label="New passphrase"
-            value={pass}
-            onChange={setPass}
-            testId="e2ee-passphrase"
-            autoComplete="new-password"
-          />
-          <Strength value={pass} />
-          <PassphraseField
-            label="Repeat the passphrase"
-            value={again}
-            onChange={setAgain}
-            testId="e2ee-confirm"
-            autoComplete="new-password"
-          />
-          <label className="sv-check">
-            <input
-              type="checkbox"
-              checked={lostAck}
-              data-testid="e2ee-lost-ack"
-              onChange={(e) => setLostAck(e.target.checked)}
-            />
-            <span>
-              I understand that if I lose this passphrase my synced data cannot be recovered.
-            </span>
-          </label>
-          <p className="sv-muted sv-small">
-            Turning encryption on re-sends what this device holds under the new key and replaces
-            what the server stores. Let your other devices sync first, so nothing they have not
-            uploaded yet is overwritten.
+      {mode === 'none' && undecided ? (
+        <div className="sd-stack">
+          <p className="sd-line" data-testid="e2ee-choice-note">
+            Pick one to start syncing.{' '}
+            <InfoTip label="What no passphrase means">
+              StudyVault does not send anything until you choose. {PLAIN_UPLOAD_CONSEQUENCE}
+            </InfoTip>
           </p>
-          <div className="sv-row">
-            <Button
-              variant="primary"
-              busy={setup.busy}
-              disabledReason={setupReason}
-              data-testid="e2ee-setup"
-              onClick={() => void setup.run()}
-            >
-              Turn on encryption
-            </Button>
-          </div>
-          {setup.error ? (
-            <InlineNotice tone="error" title="Could not set up encryption">
-              {setup.error}
-            </InlineNotice>
-          ) : null}
-
-          {undecided ? (
-            <div className="sv-stack sv-stack--tight" data-testid="e2ee-plain-choice">
-              <h4>Or upload without end-to-end encryption</h4>
+          <Choices<'passphrase' | 'plain'>
+            name={`${headingId}-way`}
+            label="How your synced data is protected"
+            columns={2}
+            value={way}
+            onChange={setWay}
+            testId="e2ee-choice"
+            options={[
+              {
+                value: 'passphrase',
+                label: 'Passphrase',
+                hint: 'Server cannot read',
+                icon: ShieldCheck,
+                tone: 'success',
+                testId: 'e2ee-choice-passphrase',
+              },
+              {
+                value: 'plain',
+                label: 'No passphrase',
+                hint: 'Server can read',
+                icon: Eye,
+                tone: 'warning',
+                testId: 'e2ee-choice-plain',
+              },
+            ]}
+          />
+          {way === 'passphrase' ? (
+            setupForm
+          ) : (
+            <div className="sd-stack" data-testid="e2ee-plain-choice">
+              <p className="sd-line">{PLAIN_UPLOAD_CONSEQUENCE}</p>
               <label className="sv-check">
                 <input
                   type="checkbox"
@@ -316,7 +408,7 @@ export function EncryptionCard({
                   uploaded.
                 </span>
               </label>
-              <div className="sv-row">
+              <div className="sd-row">
                 <Button
                   busy={uploadPlain.busy}
                   disabledReason={plainReason}
@@ -332,10 +424,12 @@ export function EncryptionCard({
                 </InlineNotice>
               ) : null}
             </div>
-          ) : null}
+          )}
         </div>
-      ) : status.e2ee.mode === 'locked' ? (
-        <div className="sv-stack sv-stack--tight">
+      ) : mode === 'none' ? (
+        setupForm
+      ) : mode === 'locked' ? (
+        <div className="sd-stack">
           <PassphraseField
             label="Sync passphrase"
             value={unlockPass}
@@ -343,7 +437,7 @@ export function EncryptionCard({
             testId="e2ee-unlock-passphrase"
             autoComplete="current-password"
           />
-          <div className="sv-row">
+          <div className="sd-row">
             <Button
               variant="primary"
               busy={unlock.busy}
@@ -367,14 +461,13 @@ export function EncryptionCard({
           ) : null}
         </div>
       ) : (
-        <div className="sv-stack sv-stack--tight">
-          <div className="sv-row">
+        <div className="sd-stack">
+          <div className="sd-row">
             <Button busy={lock.busy} data-testid="e2ee-lock" onClick={() => void lock.run()}>
-              Lock now
+              <Lock aria-hidden="true" className="sv-sync-btnicon" /> Lock now
             </Button>
           </div>
-          <details className="sv-stack sv-stack--tight">
-            <summary>Change the passphrase</summary>
+          <Disclosure summary="Change the passphrase" icon={KeyRound}>
             <PassphraseField
               label="Current passphrase"
               value={current}
@@ -409,7 +502,7 @@ export function EncryptionCard({
                 passphrase cannot be recovered.
               </span>
             </label>
-            <div className="sv-row">
+            <div className="sd-row">
               <Button
                 variant="primary"
                 busy={rotate.busy}
@@ -425,11 +518,11 @@ export function EncryptionCard({
                 {rotate.error}
               </InlineNotice>
             ) : null}
-          </details>
+          </Disclosure>
         </div>
       )}
       {message ? (
-        <p role="status" data-testid="e2ee-message">
+        <p role="status" className="sd-line" data-testid="e2ee-message">
           {message}
         </p>
       ) : null}

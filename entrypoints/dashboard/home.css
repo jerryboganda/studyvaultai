@@ -1,0 +1,981 @@
+/*
+ * Dashboard Home, bank cards, the new-bank wizard and the badges sheet (UX_DESIGN 5, 7.3, 10, 11).
+ * Tokens only; the art tones (.sv-art--*) and widgets come from the shared component CSS.
+ */
+
+/* Shared bits ---------------------------------------------------------------------------------- */
+.home-card {
+  min-width: 0;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-lg);
+  background: var(--sv-surface);
+  box-shadow: 0 3px 0 var(--sv-border);
+}
+.home-card--pad {
+  padding: var(--sv-space-4) 18px;
+}
+.home-h {
+  margin: 0;
+  font-size: var(--sv-text-lg);
+  font-weight: 800;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+}
+.home-head {
+  flex-wrap: nowrap;
+  gap: var(--sv-space-2);
+  margin-bottom: var(--sv-space-3);
+}
+.home-count {
+  padding: 1px 9px;
+  border-radius: var(--sv-radius-pill);
+  background: var(--sv-sunk);
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+}
+.home-muted {
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-sm);
+  font-weight: 700;
+}
+.home-error {
+  margin: 0;
+  color: var(--sv-danger-ink);
+  font-size: var(--sv-text-sm);
+  font-weight: 800;
+}
+
+/* Layout: main column (hero, banks, More) and a side column (goal, today, calendar, badges). ---- */
+.dash[data-view='home'] .dash-center {
+  padding: 20px 24px 32px;
+}
+.home {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr);
+  /* The hero row is only as tall as the hero; the side column's height goes to the second row. */
+  grid-template-rows: auto 1fr;
+  grid-template-areas:
+    'hero side'
+    'rest side';
+  align-items: start;
+  gap: 18px;
+  max-width: 1440px;
+}
+.home__side,
+.home__rest {
+  display: grid;
+  gap: 18px;
+  min-width: 0;
+}
+.home__side {
+  grid-area: side;
+}
+.home__rest {
+  grid-area: rest;
+}
+@media (max-width: 1199px) {
+  .home {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto;
+    grid-template-areas: 'hero' 'side' 'rest';
+  }
+}
+/* Two balanced columns of cards under the hero (a grid row would leave a gap under a short card). */
+@media (min-width: 700px) and (max-width: 1199px) {
+  .home__side {
+    display: block;
+    column-count: 2;
+    column-gap: 18px;
+  }
+  .home__side > * {
+    margin-bottom: 18px;
+    break-inside: avoid;
+  }
+}
+
+/* Hero ----------------------------------------------------------------------------------------- */
+.home__hero {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  grid-area: hero;
+  align-items: center;
+  gap: 18px;
+  overflow: hidden;
+  padding: 14px 24px 14px 12px;
+  border-radius: var(--sv-radius-xl);
+  background: var(--sv-primary);
+  box-shadow: 0 5px 0 var(--sv-primary-edge);
+  color: var(--sv-on-primary);
+}
+/* Sunburst behind the mascot (darker rays only deepen the blue under the white text). */
+.home__hero::before {
+  position: absolute;
+  top: 50%;
+  left: 78px;
+  width: 380px;
+  height: 380px;
+  border-radius: 50%;
+  background: repeating-conic-gradient(var(--sv-primary-edge) 0 8deg, transparent 8deg 22deg);
+  mask-image: radial-gradient(circle, #000 28%, transparent 62%);
+  translate: -50% -50%;
+  content: '';
+  pointer-events: none;
+}
+.home__heroArt {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 132px;
+  height: 132px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--sv-sun);
+  box-shadow: inset 0 -6px 0 var(--sv-sun-edge);
+}
+.home__heroText {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  flex: 1 1 14rem;
+  gap: 6px;
+  min-width: 0;
+}
+.home__heroText h1 {
+  margin: 0;
+  font-size: var(--sv-text-xl);
+  font-weight: 900;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+}
+.home__heroText p {
+  margin: 0;
+  font-size: var(--sv-text-md);
+  font-weight: 800;
+}
+.home__mix {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.home__mix li {
+  padding: 3px 10px;
+  border-radius: var(--sv-radius-pill);
+  background: var(--sv-primary-edge);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+}
+.home__heroCta {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  text-decoration: none;
+}
+@media (prefers-contrast: more) {
+  .home__hero::before {
+    display: none;
+  }
+}
+:root:is([data-contrast='high'], [data-contrast='more']) .home__hero::before {
+  display: none;
+}
+
+/* Daily goal picker and Today -------------------------------------------------------------- */
+.home-goal {
+  display: grid;
+  gap: var(--sv-space-3);
+}
+.home-goal__head {
+  flex-wrap: nowrap;
+  gap: var(--sv-space-2);
+}
+.home-today__game {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 18px;
+}
+.home-today__xp {
+  font-size: 2.125rem;
+  font-weight: 900;
+  line-height: 1;
+}
+.home-today__of {
+  margin-top: 3px;
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+}
+.home-today__col {
+  display: grid;
+  flex: 1 1 9rem;
+  gap: 14px;
+  min-width: 0;
+}
+.home-today__streak {
+  justify-content: space-between;
+  gap: var(--sv-space-2);
+}
+.home-today__streak .sv-stat__icon {
+  width: 28px;
+  height: 28px;
+}
+.home-today__streak .sv-stat__value {
+  font-size: var(--sv-text-xl);
+}
+.home-today__lvl {
+  display: grid;
+  gap: 6px;
+}
+.home-today__lvl .sv-row {
+  justify-content: space-between;
+}
+.home-today__plain {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--sv-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.home-today__plain li {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-sm);
+  font-weight: 800;
+  text-align: center;
+}
+.home-today__plain strong {
+  color: var(--sv-ink);
+  font-size: var(--sv-text-xl);
+  font-weight: 900;
+  line-height: 1.1;
+}
+.home-today__art {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 4px;
+  border-radius: 14px;
+}
+.home-today__art svg {
+  width: 22px;
+  height: 22px;
+}
+.home-today__progress {
+  display: flex;
+  align-items: center;
+  gap: var(--sv-space-2);
+}
+.home-today__progress .sv-meter {
+  flex: 1;
+}
+.home-quiet {
+  display: flex;
+  align-items: center;
+  gap: var(--sv-space-3);
+}
+.home-quiet__text {
+  display: grid;
+  flex: 1;
+  gap: var(--sv-space-2);
+  justify-items: start;
+  font-weight: 800;
+}
+.home-quiet__text > * {
+  max-width: 100%;
+}
+.home-quiet__text .home-today__progress {
+  justify-self: stretch;
+}
+
+.freezes {
+  display: inline-flex;
+  gap: 2px;
+}
+.freezes svg {
+  width: 24px;
+  height: 24px;
+}
+.freezes__on {
+  color: var(--sv-ice);
+}
+/* An unused freeze is drawn dashed and faint: shape, not only colour, tells them apart. */
+.freezes__off {
+  color: var(--sv-line-strong);
+  stroke-dasharray: 2 3;
+  opacity: 0.6;
+}
+
+/* Badges strip ------------------------------------------------------------------------------- */
+.home-badges {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--sv-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.home-badges li {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+  text-align: center;
+}
+.home-next {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 2px solid var(--sv-border);
+  font-size: var(--sv-text-sm);
+}
+.home-badges + .home-next {
+  margin-top: 14px;
+}
+.home-next:first-of-type {
+  margin-top: 0;
+}
+.home-next__text {
+  display: grid;
+  flex: 1;
+  gap: 4px;
+  min-width: 0;
+}
+.home-next__bar {
+  flex-wrap: nowrap;
+  gap: var(--sv-space-2);
+}
+.home-next__bar .sv-meter {
+  flex: 1;
+}
+.badge-medal {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  flex: none;
+  border: 3px solid currentColor;
+  border-radius: 50%;
+  box-shadow: 0 4px 0 rgb(0 0 0 / 0.12);
+}
+.badge-medal svg {
+  width: 26px;
+  height: 26px;
+}
+.badge-medal--sm {
+  width: 42px;
+  height: 42px;
+}
+.badge-medal--sm svg {
+  width: 20px;
+  height: 20px;
+}
+.badge-medal__lock {
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--sv-surface);
+  border-radius: 50%;
+  background: var(--sv-ink-2);
+  color: var(--sv-surface);
+}
+.badge-medal__lock svg {
+  width: 11px;
+  height: 11px;
+}
+
+/* Banks -------------------------------------------------------------------------------------- */
+.home-bankgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.home-bankgrid > li {
+  display: flex;
+  min-width: 0;
+}
+.bankcard {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 12px;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  margin-bottom: 3px;
+  padding: 14px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-lg);
+  background: var(--sv-surface);
+  box-shadow: 0 3px 0 var(--sv-border);
+  color: var(--sv-ink);
+  font: inherit;
+  text-align: start;
+}
+button.bankcard {
+  cursor: pointer;
+  transition:
+    transform var(--sv-motion) var(--sv-ease-spring),
+    box-shadow var(--sv-motion),
+    border-color 120ms;
+}
+button.bankcard:hover {
+  border-color: var(--sv-primary);
+}
+button.bankcard:active {
+  transform: translateY(3px);
+  box-shadow: 0 0 0 var(--sv-border);
+}
+.bankcard__top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.bankcard__tile {
+  display: grid;
+  place-items: center;
+  flex: none;
+  border-radius: 30%;
+  background: var(--sv-sunk);
+  color: var(--sv-ink);
+  font-weight: 900;
+  line-height: 1;
+}
+.bankcard__text {
+  display: grid;
+  min-width: 0;
+}
+.bankcard__name,
+.bankcard__meta {
+  overflow-wrap: anywhere;
+}
+.bankcard__name {
+  /* Two lines at most, so a long name never makes one card taller than its row (full name: title). */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  font-size: var(--sv-text-md);
+  font-weight: 800;
+}
+.bankcard__meta {
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-sm);
+  font-weight: 700;
+}
+.bankcard__progress {
+  display: flex;
+  align-items: center;
+  gap: var(--sv-space-2);
+  min-height: 26px;
+}
+.bankcard__bar {
+  flex: 1;
+}
+.bankcard__pct,
+.bankcard__na {
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+}
+.bankcard__na {
+  flex: 1;
+}
+.bankcard__due,
+.bankcard__done {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 2px 9px;
+  border-radius: var(--sv-radius-pill);
+  font-size: var(--sv-text-xs);
+  font-weight: 900;
+}
+.bankcard__due {
+  background: var(--sv-sun-soft);
+  color: var(--sv-sun-soft-ink);
+}
+.bankcard__done {
+  background: var(--sv-success-soft);
+  color: var(--sv-success-ink);
+}
+.bankcard__due svg,
+.bankcard__done svg {
+  width: 14px;
+  height: 14px;
+}
+.home-addbank {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sv-space-2);
+  width: 100%;
+  min-height: 112px;
+  margin-bottom: 3px;
+  border: 2px dashed var(--sv-line-strong);
+  border-radius: var(--sv-radius-lg);
+  background: transparent;
+  color: var(--sv-primary-soft-ink);
+  font: inherit;
+  font-size: 0.9375rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+.home-addbank:hover {
+  border-color: var(--sv-primary);
+  background: var(--sv-primary-soft);
+}
+.home-addbank svg {
+  width: 20px;
+  height: 20px;
+}
+.home-skeleton {
+  display: block;
+  width: 100%;
+  min-height: 112px;
+  border-radius: var(--sv-radius-lg);
+  background: var(--sv-sunk);
+}
+
+/* More --------------------------------------------------------------------------------------- */
+.dash-moregrid {
+  grid-template-columns: repeat(auto-fill, minmax(min(96px, 100%), 1fr));
+}
+.sv-moretile {
+  text-decoration: none;
+}
+.dash-more {
+  display: grid;
+  gap: var(--sv-space-4);
+  max-width: 64rem;
+}
+.dash-h1 {
+  margin: 0;
+  font-size: var(--sv-text-xl);
+  font-weight: 900;
+  letter-spacing: -0.01em;
+}
+.dash-back {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 6px;
+  min-height: 32px;
+  margin-bottom: var(--sv-space-2);
+  padding: 2px 12px 2px 8px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-pill);
+  background: var(--sv-surface);
+  color: var(--sv-primary-soft-ink);
+  font: inherit;
+  font-size: var(--sv-text-sm);
+  font-weight: 800;
+  cursor: pointer;
+}
+.dash-back:hover {
+  border-color: var(--sv-primary);
+}
+.dash-back svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* New-bank wizard ---------------------------------------------------------------------------- */
+.nb__emojis {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: var(--sv-space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 4px 4px 0 0;
+  border: 0;
+}
+.nb__emoji {
+  position: relative;
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  min-height: 44px;
+  margin-bottom: 3px;
+  border: 2px solid var(--sv-border);
+  border-radius: 14px;
+  background: var(--sv-surface);
+  box-shadow: 0 3px 0 var(--sv-border);
+  font-size: 1.625rem;
+  cursor: pointer;
+}
+.nb__emoji:has(input:checked) {
+  border-color: var(--sv-primary);
+  background: var(--sv-primary-soft);
+  box-shadow: 0 3px 0 var(--sv-primary-edge);
+}
+/* The check is the non-colour cue of the chosen icon. */
+.nb__emoji:has(input:checked)::after {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--sv-primary);
+  color: var(--sv-on-primary);
+  font-size: 0.75rem;
+  font-weight: 900;
+  content: '\2713';
+}
+.nb__emoji:has(input:focus-visible) {
+  outline: var(--sv-focus-width, 3px) solid var(--sv-focus);
+  outline-offset: 2px;
+}
+@media (max-width: 420px) {
+  .nb__emojis {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+.nb__dot {
+  display: block;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  box-shadow: inset 0 -4px 0 rgb(0 0 0 / 0.15);
+}
+/* The name step keeps its error right under the field (the body's spare height sat between them). */
+.nb .sv-wiz__body:has(> .sv-textfield) {
+  min-height: 0;
+}
+.nb .sv-choice__art {
+  width: 56px;
+  height: 56px;
+}
+.nb__note {
+  margin: 0;
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-sm);
+  text-align: center;
+}
+.nb__done {
+  align-items: center;
+  text-align: center;
+}
+.nb__done .bankcard {
+  text-align: start;
+}
+.nb__doneNav {
+  justify-content: center;
+  align-self: stretch;
+}
+
+/* Badges sheet ------------------------------------------------------------------------------- */
+.badges-sheet {
+  display: none;
+  box-sizing: border-box;
+  width: min(460px, calc(100vw - 24px));
+  max-height: calc(100dvh - 24px);
+  margin: max(12px, 6vh) auto auto;
+  padding: 18px 20px 16px;
+  overflow: auto;
+  border: 2px solid var(--sv-border);
+  border-radius: 24px;
+  background: var(--sv-surface);
+  box-shadow:
+    0 6px 0 var(--sv-border),
+    var(--sv-shadow);
+  color: var(--sv-ink);
+  font-family: var(--sv-font);
+  font-weight: 600;
+}
+.badges-sheet[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.badges-sheet::backdrop {
+  background: var(--sv-scrim);
+}
+.badges-sheet__head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.badges-sheet__lvl {
+  display: grid;
+  flex: 1;
+  gap: 6px;
+  min-width: 0;
+}
+.badges-sheet__title {
+  flex-wrap: nowrap;
+  gap: 4px;
+}
+.badges-sheet__title h2 {
+  margin: 0;
+  font-size: var(--sv-text-xl);
+  font-weight: 900;
+}
+.badges-sheet__togo {
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-sm);
+  font-weight: 800;
+}
+.level-emblem {
+  flex: none;
+}
+.level-emblem__num {
+  fill: #3a2a00;
+  font-family: var(--sv-font);
+  font-size: 26px;
+  font-weight: 900;
+}
+.badges-sheet__stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.badges-sheet__stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 10px 6px;
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+  text-align: center;
+}
+.badges-sheet__stat .sv-stat {
+  flex-direction: column;
+  white-space: normal;
+}
+.badges-sheet__freeze {
+  flex-wrap: nowrap;
+  gap: 0;
+  color: var(--sv-ink-2);
+}
+.level-road {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.level-road::before {
+  position: absolute;
+  top: 15px;
+  right: 12%;
+  left: 12%;
+  height: 4px;
+  border-radius: var(--sv-radius-pill);
+  background: var(--sv-sunk);
+  content: '';
+}
+.level-road li {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.level-road__dot {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 3px solid var(--sv-line-strong);
+  border-radius: 50%;
+  background: var(--sv-surface);
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-sm);
+  font-weight: 900;
+}
+.level-road .is-now .level-road__dot {
+  border-color: var(--sv-sun-line);
+  background: var(--sv-sun);
+  color: var(--sv-on-sun);
+}
+.level-road__xp {
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+}
+.badges-sheet__h {
+  gap: var(--sv-space-2);
+}
+.badges-sheet__h h3 {
+  margin: 0;
+  font-size: var(--sv-text-lg);
+  font-weight: 800;
+}
+.badges-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.badges-grid__btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  height: 100%;
+  padding: 8px 2px;
+  border: 2px solid transparent;
+  border-radius: var(--sv-radius-md);
+  background: transparent;
+  color: var(--sv-ink);
+  font: inherit;
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+  text-align: center;
+  cursor: pointer;
+}
+.badges-grid__btn:hover {
+  background: var(--sv-surface-2);
+}
+.badges-grid__btn[aria-pressed='true'] {
+  border-color: var(--sv-primary);
+  background: var(--sv-primary-soft);
+  color: var(--sv-primary-soft-ink);
+}
+.badges-grid__btn.is-locked .badges-grid__name {
+  color: var(--sv-ink-2);
+}
+.badges-grid__btn.is-locked[aria-pressed='true'] .badges-grid__name {
+  color: var(--sv-primary-soft-ink);
+}
+.badges-sheet__detail {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+}
+.badges-sheet__detailText {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+}
+.badges-sheet__prog {
+  flex-wrap: nowrap;
+  gap: var(--sv-space-2);
+  margin-top: 4px;
+}
+.badges-sheet__prog .sv-meter {
+  flex: 1;
+}
+
+@media (forced-colors: active) {
+  .home-card,
+  .bankcard,
+  .home-addbank,
+  .badges-sheet,
+  .nb__emoji {
+    border-color: CanvasText;
+  }
+  .nb__emoji:has(input:checked),
+  .badges-grid__btn[aria-pressed='true'] {
+    outline: 3px solid Highlight;
+  }
+  .home__hero {
+    border: 2px solid CanvasText;
+  }
+}
+.home-card > .home-h:first-child {
+  margin-bottom: var(--sv-space-3);
+}
+.badges-sheet__title h2:focus {
+  outline: none; /* focused by script when the sheet opens, so the title is read first */
+}
+/* The More page: bigger tiles, at most six a row. */
+.dash-more .dash-moregrid {
+  grid-template-columns: repeat(auto-fill, minmax(min(132px, 100%), 1fr));
+  max-width: 54rem;
+  gap: 12px;
+}
+.dash-more .sv-moretile {
+  gap: 8px;
+  padding: 18px 6px 14px;
+  font-size: var(--sv-text-sm);
+}
+.dash-more .sv-moretile__icon {
+  width: 52px;
+  height: 52px;
+}
+.dash-more .sv-moretile__icon svg {
+  width: 26px;
+  height: 26px;
+}
+
+/* Phone widths: a smaller hero (these follow the base rules above, so they win). */
+@media (max-width: 560px) {
+  .home__hero {
+    gap: 12px;
+    padding: 14px;
+  }
+  .home__heroArt {
+    width: 84px;
+    height: 84px;
+  }
+  .home__heroArt .sv-buddy {
+    width: 72px;
+    height: 72px;
+  }
+  .home__hero::before {
+    left: 56px;
+    width: 260px;
+    height: 260px;
+  }
+  .home__heroText {
+    flex-basis: 10rem; /* beside the mascot down to about 340px */
+  }
+  .home__heroCta {
+    flex: 1 1 100%;
+  }
+}
+@media (max-width: 340px) {
+  .home__heroArt {
+    display: none;
+  }
+}
+/* "See all" and other header buttons stay on one line. */
+.home-head .sv-chunky {
+  flex: none;
+  white-space: nowrap;
+}
+/* 320px: tighter card padding, so the 12-week calendar fits without scrolling. */
+@media (max-width: 400px) {
+  .home-card--pad {
+    padding: 14px 12px;
+  }
+}

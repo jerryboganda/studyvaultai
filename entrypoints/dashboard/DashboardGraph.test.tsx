@@ -54,7 +54,8 @@ async function open(search: string) {
   window.history.replaceState({}, '', `/dashboard.html${search}`);
   render(<Dashboard />);
   await screen.findByTestId('dashboard');
-  await screen.findByTestId('preview');
+  // The preview belongs to the list view; the graph view stands on its own.
+  if (!search.includes('view=graph')) await screen.findByTestId('preview');
 }
 
 const toggle = () => screen.getByTestId('links-toggle');
@@ -84,7 +85,7 @@ describe('Dashboard: links and the graph', () => {
 
     const view = await screen.findByTestId('graph-view');
     expect(within(view).getByRole('heading', { name: 'Knowledge graph', level: 2 })).toBeTruthy();
-    expect(screen.getByTestId('view-graph').getAttribute('aria-current')).toBe('page');
+    expect(screen.getByTestId('nav-more').getAttribute('aria-current')).toBe('page');
     await waitFor(() => expect(screen.getAllByTestId('graph-node')).toHaveLength(2));
     expect(screen.getByTestId('graph-summary').textContent).toBe('2 items and 1 link.');
     const nodeOf = (id: string) =>
@@ -119,6 +120,7 @@ describe('Dashboard: links and the graph', () => {
     await waitFor(() => expect(screen.queryByTestId('graph-view')).toBeNull());
     expect(screen.getByTestId('view-library').getAttribute('aria-current')).toBe('page');
 
+    await userEvent.click(screen.getByTestId('nav-more'));
     await userEvent.click(screen.getByTestId('view-graph'));
     await screen.findByTestId('graph-view');
     await waitFor(() => expect(screen.getAllByTestId('graph-node')).toHaveLength(2));

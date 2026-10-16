@@ -1,4 +1,4 @@
-import { chromium, expect, type BrowserContext, type Page } from '@playwright/test';
+import { chromium, expect, type BrowserContext, type Locator, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -659,6 +659,36 @@ export async function selectAndSave(
     'the real mouse gesture selected the intended text',
   ).toContain(norm(mustContain).toLowerCase());
   return saveSelection(page);
+}
+
+/** Pick `option` in the overlay radio group `group` ("Kind" or "Priority") of a dialog. */
+export const pickIn = (dialog: Locator, group: 'Kind' | 'Priority', option: string) =>
+  dialog.getByRole('radiogroup', { name: group }).getByRole('radio', { name: option, exact: true });
+
+/** Open the side panel's Recent list (every page, newest first): a page under the More tab. */
+export async function openRecent(panel: Page): Promise<void> {
+  await panel.getByRole('tab', { name: 'More', exact: true }).click();
+  await panel.getByRole('button', { name: 'Recent' }).click();
+  await expect(panel.getByRole('heading', { name: 'Recent', exact: true })).toBeVisible();
+}
+
+/**
+ * Create a bank through the side panel's "New bank" wizard (name, then the default icon and colour),
+ * close its "Bank ready!" screen and wait for the confirmation.
+ */
+export async function createBankInPanel(panel: Page, name: string): Promise<void> {
+  await panel.getByRole('tab', { name: 'Banks', exact: true }).click();
+  await panel.getByRole('button', { name: 'New bank', exact: true }).click();
+  const wizard = panel.getByRole('dialog', { name: 'New bank' });
+  await wizard.getByLabel('Bank name').fill(name);
+  for (let step = 0; step < 3; step++) {
+    await wizard.getByRole('button', { name: 'Next', exact: true }).click();
+  }
+  await wizard.getByRole('button', { name: 'Create bank', exact: true }).click();
+  await expect(panel.getByText(`Bank "${name}" created.`)).toBeVisible();
+  const done = panel.getByTestId('new-bank-done');
+  await done.getByRole('button', { name: 'Done', exact: true }).click();
+  await expect(done).toHaveCount(0);
 }
 
 /** HTML of <body>: page markup must be byte-identical with and without StudyVault. */

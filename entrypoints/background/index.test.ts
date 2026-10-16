@@ -8,6 +8,7 @@ import { PENDING_FOCUS_KEY } from '@shared';
 import { getTrustedSettings, updateSettings } from '@runtime';
 import {
   deletePreMigrationSnapshot,
+  getGameState,
   getPreMigrationInfo,
   readPreMigrationSnapshot,
   resetDbForTests,
@@ -161,10 +162,35 @@ describe('background wiring', () => {
     // Nothing else touches the database: no page, no message, no sync run.
     await fakeBrowser.runtime.onInstalled.trigger({ reason: 'update', previousVersion: '0.0.1' });
 
-    await vi.waitFor(async () =>
-      expect(await getPreMigrationInfo()).toMatchObject({ status: 'kept', fromVersion: 1 }),
+    // The upgrade, its copy and the game backfill share the worker: allow for a loaded runner.
+    await vi.waitFor(
+      async () =>
+        expect(await getPreMigrationInfo()).toMatchObject({ status: 'kept', fromVersion: 1 }),
+      { timeout: 10_000 },
     );
     expect((await readPreMigrationSnapshot())?.info.toVersion).toBeGreaterThan(1);
+  });
+
+  it('derives the game ledger on install, on update and on browser startup', async () => {
+    installFakes();
+    vi.spyOn(browser.tabs, 'create').mockResolvedValue({} as never);
+    background.main();
+    const boundary = { timeZone: 'UTC', rolloverHour: 4 };
+    const triggers = {
+      install: () => fakeBrowser.runtime.onInstalled.trigger({ reason: 'install' }),
+      update: () =>
+        fakeBrowser.runtime.onInstalled.trigger({ reason: 'update', previousVersion: '0.0.1' }),
+      startup: () => fakeBrowser.runtime.onStartup.trigger(),
+    };
+    for (const [name, trigger] of Object.entries(triggers)) {
+      await resetDbForTests();
+      expect((await getGameState({ boundary })).ready, name).toBe(false);
+      await trigger();
+      await vi.waitFor(
+        async () => expect((await getGameState({ boundary })).ready, name).toBe(true),
+        { timeout: 10_000 },
+      );
+    }
   });
 
   it('re-syncs on browser startup and when a permission is removed', async () => {

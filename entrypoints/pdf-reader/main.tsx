@@ -1,3 +1,5 @@
+// Nunito, bundled as extension files (font-src 'self'); the in-page overlay never loads it.
+import '@fontsource-variable/nunito';
 import '@ui/tokens.css';
 import '@ui/components.css';
 import './reader.css';

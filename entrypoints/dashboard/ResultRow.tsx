@@ -1,7 +1,8 @@
-import { DEFAULT_PALETTE, type ColorId } from '@shared';
+import { Check, FileText, Flag, NotebookPen } from 'lucide-react';
+import { COLOR_SWATCH, DEFAULT_PALETTE, type ColorId } from '@shared';
 import type { Segment, SearchField } from '@search';
-import { Badge, KindChip, ResolveBadge } from '@ui';
-import { formatDate } from './format';
+import { Badge, KindChip, describeResolveState } from '@ui';
+import { STATUS_SHORT, formatDate } from './format';
 import type { ResultRow } from './results';
 
 /** Matched words are real <mark> elements built from text segments: stored text is never markup. */
@@ -40,20 +41,48 @@ export function ResultRowView({ row }: { row: ResultRow }) {
   const lead = quoteIsEmpty && row.matchNote ? row.matchNote.segments : row.segments;
 
   return (
-    <div className="rrow" data-testid="result-row" data-highlight-id={row.highlightId ?? undefined}>
+    <div
+      className="rrow"
+      data-testid="result-row"
+      data-highlight-id={row.highlightId ?? undefined}
+      // The highlight's own colour as the card strip (user data; the kind chip names it).
+      style={color ? { borderInlineStartColor: COLOR_SWATCH[color].solid } : undefined}
+    >
       <span className="rrow__check" aria-hidden="true" data-check="">
-        ✓
+        <Check strokeWidth={3.5} />
       </span>
       <div className="rrow__main">
         <div className="rrow__top">
           {row.kind && color ? <KindChip kind={row.kind} color={color} /> : <Badge>Note</Badge>}
-          {row.priority ? <span className="sv-small">P{row.priority}</span> : null}
-          {attention && row.resolveStatus ? <ResolveBadge status={row.resolveStatus} /> : null}
+          {row.priority ? (
+            <span className="rrow__chip">
+              <Flag aria-hidden="true" strokeWidth={2.5} />
+              <span className="sv-vh">Priority </span>
+              {row.priority}
+            </span>
+          ) : null}
+          {attention && row.resolveStatus ? (
+            <Badge
+              tone={describeResolveState(row.resolveStatus).tone}
+              glyph={describeResolveState(row.resolveStatus).glyph}
+            >
+              {STATUS_SHORT[row.resolveStatus]}
+            </Badge>
+          ) : null}
           {row.docType === 'note' && row.kind ? <Badge glyph="✎">Matched a note</Badge> : null}
           {row.hasNote && row.docType !== 'note' ? (
-            <span className="sv-small sv-muted">Has note</span>
+            <span className="rrow__chip">
+              <NotebookPen aria-hidden="true" strokeWidth={2.5} />
+              <span className="sv-vh">Has note</span>
+            </span>
           ) : null}
-          {row.pageNumber ? <span className="sv-small sv-muted">p. {row.pageNumber}</span> : null}
+          {row.pageNumber ? (
+            <span className="rrow__chip">
+              <FileText aria-hidden="true" strokeWidth={2.5} />
+              <span className="sv-vh">Page </span>
+              {row.pageNumber}
+            </span>
+          ) : null}
         </div>
         <p className="rrow__quote" dir="auto">
           <Segments segments={lead} />
@@ -64,7 +93,7 @@ export function ResultRowView({ row }: { row: ResultRow }) {
             <Segments segments={row.matchNote.segments} />
           </p>
         ) : null}
-        <p className="rrow__meta sv-small sv-muted" dir="auto">
+        <p className="rrow__meta" dir="auto">
           {[row.title || row.host, row.banks.join(', '), formatDate(row.updatedAt)]
             .filter((x) => x !== '')
             .join(' · ')}

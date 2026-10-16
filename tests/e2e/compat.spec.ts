@@ -773,7 +773,7 @@ test.describe('hostile page CSS (matrix 7)', () => {
       };
     });
 
-    expect(report.count).toBe(10);
+    expect(report.count, '7 kinds, Save, Note, the bank chip and More options').toBe(11);
     expect(
       report.display.every((d) => d !== 'none'),
       'page `button{display:none!important}` must not apply',
@@ -993,7 +993,7 @@ test.describe('browser page zoom (matrix 7)', () => {
           return { l: r.left, t: r.top, r: r.right, b: r.bottom };
         }),
       );
-      expect(boxes).toHaveLength(10);
+      expect(boxes, '7 kinds, Save, Note, the bank chip and More options').toHaveLength(11);
       for (const b of boxes) {
         expect(b.l).toBeGreaterThanOrEqual(0);
         expect(b.r).toBeLessThanOrEqual(view.w);
@@ -1176,7 +1176,10 @@ test.describe('non-interference', () => {
     });
     await page.getByRole('button', { name: 'More options' }).click();
     const details = page.getByRole('dialog', { name: 'Save with details' });
-    await details.getByRole('combobox', { name: 'Type' }).selectOption({ label: 'ƒ Formula' });
+    await details
+      .getByRole('radiogroup', { name: 'Kind' })
+      .getByRole('radio', { name: 'Formula' })
+      .click();
     await details.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(page.getByText('Saved to Inbox')).toBeVisible();
     await page.getByRole('button', { name: 'Undo' }).click();

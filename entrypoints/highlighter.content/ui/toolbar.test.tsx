@@ -35,7 +35,7 @@ afterEach(() => {
 });
 
 describe('toolbar rendering', () => {
-  it('is a labelled toolbar with Save, one button per kind, Note and More', () => {
+  it('is a labelled toolbar: one dot per kind, then Save, Note, the bank chip and More', () => {
     const { ui, q } = mountUi();
     show(ui);
     const toolbar = q.getByRole('toolbar', { name: /StudyVault/ });
@@ -45,8 +45,15 @@ describe('toolbar rendering', () => {
       expect(q.getByRole('button', { name: `Save as ${KIND_LABELS[kind].label}` })).toBeTruthy();
     }
     expect(q.getByRole('button', { name: NOTE })).toBeTruthy();
+    expect(q.getByRole('button', { name: /^Bank/ })).toBeTruthy();
     expect(q.getByRole('button', { name: 'More options' })).toBeTruthy();
-    expect(q.getAllByRole('button')).toHaveLength(HIGHLIGHT_KINDS.length + 3);
+    expect(q.getAllByRole('button').map((b) => b.getAttribute('aria-label'))).toEqual([
+      ...HIGHLIGHT_KINDS.map((kind) => `Save as ${KIND_LABELS[kind].label}`),
+      'Save selection',
+      NOTE,
+      expect.stringMatching(/^Bank/),
+      'More options',
+    ]);
   });
 
   it('does not advertise a key: the Focus toolbar shortcut is remappable', () => {
@@ -69,17 +76,14 @@ describe('toolbar rendering', () => {
     settings.palette = { ...DEFAULT_PALETTE, essential: 'green', question: 'purple' };
     const { ui, q } = mountUi({ settings });
     show(ui);
-    const probe = document.createElement('i');
-    const solid = (color: keyof typeof COLOR_SWATCH): string => {
-      probe.style.background = COLOR_SWATCH[color].solid;
-      return probe.style.background;
-    };
+    // The dot's rim (and the tint behind its glyph) is the palette colour, handed over as --dot.
+    const solid = (color: keyof typeof COLOR_SWATCH): string => COLOR_SWATCH[color].solid;
     const swatchOf = (kind: string): string =>
       (
         q
           .getByRole('button', { name: `Save as ${KIND_LABELS[kind as 'essential'].label}` })
           .querySelector('.sv-swatch') as HTMLElement
-      ).style.background;
+      ).style.getPropertyValue('--dot');
     expect(swatchOf('essential')).toBe(solid('green'));
     expect(swatchOf('question')).toBe(solid('purple'));
     expect(swatchOf('formula')).toBe(solid('blue'));
@@ -123,7 +127,7 @@ describe('page selection protection', () => {
     const { ui, q } = mountUi();
     show(ui);
     await userEvent.setup().click(q.getByRole('button', { name: 'More options' }));
-    const select = q.getByRole('combobox', { name: 'Type' });
+    const select = await q.findByRole('combobox', { name: 'Bank' });
     for (const type of ['pointerDown', 'mouseDown'] as const) {
       const event = createEvent[type](select);
       fireEvent(select, event);
@@ -536,24 +540,29 @@ describe('keyboard', () => {
       q.getAllByRole('button').filter((b) => b.getAttribute('tabindex') === '0').length;
     expect(stops()).toBe(1);
 
+    // The tab stop starts on Save (the one-click default), which sits after the kind dots.
     focusToolbar(ui);
     const user = userEvent.setup();
-    const first = q.getByRole('button', { name: 'Save selection' });
-    expect(shadow.activeElement).toBe(first);
+    const save = q.getByRole('button', { name: 'Save selection' });
+    const first = q.getByRole('button', { name: 'Save as Essential fact' });
+    const more = q.getByRole('button', { name: 'More options' });
+    expect(shadow.activeElement).toBe(save);
 
     await user.keyboard('{ArrowRight}');
-    expect(shadow.activeElement).toBe(q.getByRole('button', { name: 'Save as Essential fact' }));
+    expect(shadow.activeElement).toBe(q.getByRole('button', { name: NOTE }));
     expect(stops()).toBe(1);
     expect(shadow.activeElement?.getAttribute('tabindex')).toBe('0');
 
     await user.keyboard('{End}');
-    expect(shadow.activeElement).toBe(q.getByRole('button', { name: 'More options' }));
+    expect(shadow.activeElement).toBe(more);
     await user.keyboard('{ArrowRight}');
     expect(shadow.activeElement).toBe(first);
     await user.keyboard('{ArrowLeft}');
-    expect(shadow.activeElement).toBe(q.getByRole('button', { name: 'More options' }));
+    expect(shadow.activeElement).toBe(more);
     await user.keyboard('{Home}');
     expect(shadow.activeElement).toBe(first);
+    await user.keyboard('{ArrowLeft}{ArrowLeft}');
+    expect(shadow.activeElement).toBe(q.getByRole('button', { name: /^Bank/ }));
   });
 
   it('Enter and Space activate the focused button', async () => {
@@ -801,10 +810,10 @@ describe('selection changes and settings', () => {
     show(ui);
     const user = userEvent.setup();
     await user.click(q.getByRole('button', { name: 'More options' }));
-    fireEvent.change(q.getByRole('combobox', { name: 'Priority' }), { target: { value: '5' } });
+    await user.click(q.getByRole('radio', { name: '5 (highest)' }));
 
     show(ui, { ...SELECTION, rect: rect(100, 150, 120, 20) }); // scrolled: same text
-    expect((q.getByRole('combobox', { name: 'Priority' }) as HTMLSelectElement).value).toBe('5');
+    expect(q.getByRole('radio', { name: '5 (highest)' }).getAttribute('aria-checked')).toBe('true');
 
     show(ui, { text: 'something else', rect: rect(100, 150, 120, 20) });
     expect(q.queryByRole('dialog')).toBeNull();
@@ -823,12 +832,10 @@ describe('selection changes and settings', () => {
     expect(root.getAttribute('data-density')).toBe('compact');
     // The host is visible to page scripts: it carries the marker and nothing the user chose.
     expect(hostEl.getAttributeNames()).toEqual(['data-studyvault']);
-    const probe = document.createElement('i');
-    probe.style.background = COLOR_SWATCH.red.solid;
     const swatch = q
       .getByRole('button', { name: 'Save as Formula' })
       .querySelector('.sv-swatch') as HTMLElement;
-    expect(swatch.style.background).toBe(probe.style.background);
+    expect(swatch.style.getPropertyValue('--dot')).toBe(COLOR_SWATCH.red.solid);
   });
 
   it('destroy removes the tree and every document listener', () => {
@@ -898,12 +905,49 @@ describe('caption row: the full name of the hovered or focused button', () => {
     expect(caption(container).textContent).toBe('Save selection');
   });
 
+  it('sits over the button it names, kept within the bar', () => {
+    const { ui, container, q } = mountUi();
+    show(ui);
+    const bar = q.getByRole('toolbar');
+    const cap = caption(container);
+    // jsdom has no layout: give the bar, the caption and each button a box.
+    const box = (el: HTMLElement, left: number, width: number): void => {
+      Object.defineProperty(el, 'offsetLeft', { configurable: true, value: left });
+      Object.defineProperty(el, 'offsetWidth', { configurable: true, value: width });
+    };
+    box(bar, 0, 600);
+    box(cap, 0, 120);
+    q.getAllByRole('button').forEach((b, i) => box(b, 40 + i * 40, 32));
+    // Formula (index 1): middle at 96, so the caption starts at 96 - 60.
+    act(() => q.getByRole('button', { name: 'Save as Formula' }).focus());
+    expect(cap.style.marginLeft).toBe('36px');
+    // Essential fact (middle 56) would start left of the bar: clamped to its edge.
+    act(() => q.getByRole('button', { name: 'Save as Essential fact' }).focus());
+    expect(cap.style.marginLeft).toBe('0px');
+    // More (index 10, middle 456) would start at 396: never past the bar's right edge (480 - 120).
+    box(bar, 0, 480);
+    act(() => q.getByRole('button', { name: 'More options' }).focus());
+    expect(cap.style.marginLeft).toBe('360px');
+  });
+
   it('follows the arrow keys', async () => {
     const { ui, container } = mountUi();
     show(ui);
     focusToolbar(ui);
-    await userEvent.setup().keyboard('{ArrowRight}');
-    expect(caption(container).textContent).toBe('Save as Essential fact');
+    await userEvent.setup().keyboard('{ArrowLeft}');
+    expect(caption(container).textContent).toBe('Save as Question');
+  });
+
+  it('gives its row to an open popup, and is laid out again when the popup closes', async () => {
+    const { ui, container, q } = mountUi();
+    show(ui);
+    const unit = container.querySelector('.sv-unit') as HTMLElement;
+    expect(unit.hasAttribute('data-popup')).toBe(false);
+    const user = userEvent.setup();
+    await user.click(q.getByRole('button', { name: 'More options' }));
+    expect(unit.getAttribute('data-popup')).toBe('panel');
+    await user.click(q.getByRole('button', { name: 'More options' }));
+    expect(unit.hasAttribute('data-popup')).toBe(false);
   });
 
   it('is plain text, whatever the name', () => {

@@ -1,0 +1,1564 @@
+/*
+ * Sunny Vault components (design/*.tsx). Plain CSS on tokens.css, loaded on every extension page
+ * through components.css (@import). No <style> tags, no style="" markup (geometry that depends on
+ * data is set through the CSSOM by React). Class names avoid every legacy name in
+ * components.css (.sv-btn, .sv-card, .sv-empty, .sv-tab...), so both sets live side by side.
+ */
+
+/* ---------- Base ---------- */
+.sv-ui {
+  font-family: var(--sv-font);
+  font-size: var(--sv-text-md);
+  font-weight: 600;
+  line-height: var(--sv-leading);
+  color: var(--sv-ink);
+  background: var(--sv-canvas);
+  -webkit-font-smoothing: antialiased;
+}
+:where(.sv-ui) *,
+:where(.sv-ui) *::before,
+:where(.sv-ui) *::after {
+  box-sizing: border-box;
+}
+/*
+ * Focus (UX_DESIGN 2.7): ring plus a 2px halo in the gap, so one of the two keeps 3:1 against any
+ * background (the light ring alone is 1.26:1 on the blue hero). 3D elements keep their edge
+ * behind the halo. A picture card shows the ring for its visually hidden radio. Keep compound
+ * selectors out of the :is() lists: :is() takes its most specific argument's weight.
+ */
+.sv-ui :focus-visible,
+:is(
+  .sv-chunky,
+  .sv-ibtn,
+  .sv-infotip__btn,
+  .sv-infotip__close,
+  .sv-tabbar__tab,
+  .sv-tabbar__panel,
+  .sv-moretile,
+  .sv-heat__cell,
+  .sv-heat__tableWrap
+):focus-visible,
+.sv-textfield input:focus-visible,
+.sv-choice:has(> input:focus-visible) {
+  outline: var(--sv-focus-width) solid var(--sv-focus);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--sv-focus-halo);
+}
+:is(.sv-chunky, .sv-tabbar__tab, .sv-moretile):focus-visible,
+.sv-choice:has(> input:focus-visible) {
+  box-shadow:
+    0 0 0 2px var(--sv-focus-halo),
+    0 var(--press) 0 var(--lip);
+}
+.sv-vh {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ---------- Chunky 3D button ---------- */
+.sv-chunky {
+  --bg: var(--sv-surface);
+  --ink: var(--sv-ink);
+  --line: var(--sv-border);
+  --lip: var(--sv-edge);
+  --press: var(--sv-press);
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  box-sizing: border-box;
+  min-height: var(--sv-control-h);
+  margin: 0 0 var(--press);
+  padding: 8px 18px;
+  border: 2px solid var(--line);
+  border-radius: var(--sv-radius-md);
+  background: var(--bg);
+  color: var(--ink);
+  box-shadow: 0 var(--press) 0 var(--lip);
+  font-family: var(--sv-font);
+  font-size: 0.9375rem;
+  font-weight: 800;
+  line-height: 1.15;
+  text-align: center;
+  cursor: pointer;
+  transition:
+    transform var(--sv-motion) var(--sv-ease-spring),
+    box-shadow var(--sv-motion) var(--sv-ease-spring),
+    filter var(--sv-motion);
+  -webkit-tap-highlight-color: transparent;
+}
+.sv-chunky:hover {
+  filter: brightness(1.06);
+}
+.sv-chunky:active:not([aria-disabled='true']) {
+  transform: translateY(var(--press));
+  box-shadow: 0 0 0 var(--lip);
+}
+.sv-chunky__icon {
+  width: 20px;
+  height: 20px;
+  flex: none;
+}
+.sv-chunky--primary {
+  --bg: var(--sv-primary);
+  --line: var(--sv-primary);
+  --lip: var(--sv-primary-edge);
+  --ink: var(--sv-on-primary);
+}
+.sv-chunky--sun {
+  --bg: var(--sv-sun);
+  --line: var(--sv-sun);
+  --lip: var(--sv-sun-edge);
+  --ink: var(--sv-on-sun);
+}
+.sv-chunky--danger {
+  --bg: var(--sv-danger-fill);
+  --line: var(--sv-danger-fill);
+  --lip: var(--sv-danger-edge);
+  --ink: var(--sv-on-primary);
+}
+.sv-chunky--ghost {
+  --bg: transparent;
+  --line: transparent;
+  --lip: transparent;
+  --ink: var(--sv-primary-soft-ink);
+}
+.sv-chunky--ghost:hover {
+  --bg: var(--sv-primary-soft);
+  filter: none;
+}
+.sv-chunky--sm {
+  --press: 3px;
+  min-height: 36px;
+  padding: 5px 12px;
+  border-radius: 12px;
+  font-size: var(--sv-text-sm);
+}
+.sv-chunky--sm .sv-chunky__icon {
+  width: 17px;
+  height: 17px;
+}
+.sv-chunky--lg {
+  --press: 5px;
+  min-height: calc(var(--sv-control-h) + 12px);
+  padding: 12px 24px;
+  border-radius: 18px;
+  font-size: 1.0625rem;
+}
+.sv-chunky--block {
+  width: 100%;
+}
+.sv-chunky[aria-disabled='true'] {
+  --bg: var(--sv-sunk);
+  --line: var(--sv-sunk);
+  --lip: var(--sv-border);
+  --ink: var(--sv-ink-2);
+  cursor: not-allowed;
+  filter: none;
+}
+
+/* ---------- Icon button + tooltip ---------- */
+.sv-ibtn {
+  display: inline-grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 2px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--sv-ink-2);
+  cursor: pointer;
+  transition: background var(--sv-motion);
+}
+.sv-ibtn svg {
+  width: 20px;
+  height: 20px;
+}
+.sv-ibtn:hover {
+  background: var(--sv-sunk);
+  color: var(--sv-ink);
+}
+.sv-ibtn[aria-pressed='true'] {
+  background: var(--sv-primary-soft);
+  color: var(--sv-primary-soft-ink);
+}
+.sv-ibtn--sm {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+}
+.sv-ibtn--sm svg {
+  width: 17px;
+  height: 17px;
+}
+
+.sv-tipwrap {
+  position: relative;
+  display: inline-flex;
+}
+.sv-tipwrap--block {
+  display: flex;
+  width: 100%;
+}
+.sv-tip {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  z-index: var(--sv-z-tip);
+  width: max-content;
+  max-width: 220px;
+  padding: 5px 9px;
+  border-radius: 8px;
+  background: var(--sv-ink);
+  color: var(--sv-surface);
+  font-family: var(--sv-font);
+  font-size: var(--sv-text-xs);
+  font-weight: 700;
+  line-height: 1.3;
+  text-align: center;
+  /* display, not visibility: a hidden tip near an edge must not widen the page at 200% zoom. */
+  display: none;
+  transform: translate(-50%, 0);
+}
+/* Bridges the gap so the pointer can travel onto the tip without it closing (1.4.13). */
+.sv-tip::before {
+  position: absolute;
+  right: 0;
+  bottom: 100%;
+  left: 0;
+  height: 8px;
+  content: '';
+}
+.sv-tip--top {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+.sv-tip--top::before {
+  top: 100%;
+  bottom: auto;
+}
+.sv-tip--left,
+.sv-tip--right {
+  top: 50%;
+  left: auto;
+  right: calc(100% + 6px);
+  transform: translateY(-50%);
+}
+.sv-tip--right {
+  right: auto;
+  left: calc(100% + 6px);
+}
+.sv-tip--left::before,
+.sv-tip--right::before {
+  top: 0;
+  bottom: 0;
+  left: 100%;
+  width: 8px;
+  height: auto;
+}
+.sv-tip--right::before {
+  right: 100%;
+  left: auto;
+}
+.sv-tipwrap:is(:hover, :focus-within) > .sv-tip {
+  display: block;
+}
+.sv-tipwrap[data-tip-off] > .sv-tip {
+  display: none !important;
+}
+
+/* ---------- Soft art tiles (icons on tinted squares) ---------- */
+.sv-art--primary {
+  background: var(--sv-primary-soft);
+  color: var(--sv-primary-soft-ink);
+}
+.sv-art--sun {
+  background: var(--sv-sun-soft);
+  color: var(--sv-sun-soft-ink);
+}
+.sv-art--success {
+  background: var(--sv-success-soft);
+  color: var(--sv-success-ink);
+}
+.sv-art--danger {
+  background: var(--sv-danger-soft);
+  color: var(--sv-danger-ink);
+}
+.sv-art--warning {
+  background: var(--sv-warning-soft);
+  color: var(--sv-warning-ink);
+}
+.sv-art--violet {
+  background: var(--sv-violet-soft);
+  color: var(--sv-violet-ink);
+}
+.sv-art--neutral {
+  background: var(--sv-sunk);
+  color: var(--sv-ink-2);
+}
+
+/* ---------- Progress ring ---------- */
+.sv-ring {
+  position: relative;
+  flex: none;
+}
+.sv-ring svg {
+  display: block;
+}
+.sv-ring__track {
+  fill: none;
+  stroke: var(--sv-sunk);
+}
+.sv-ring__value,
+.sv-ring__edge {
+  fill: none;
+  stroke-linecap: round;
+  transition: stroke-dasharray var(--sv-motion-slow) cubic-bezier(0.3, 0.7, 0.4, 1);
+}
+.sv-ring--sun .sv-ring__value {
+  stroke: var(--sv-sun);
+}
+.sv-ring__edge {
+  stroke: var(--sv-sun-line);
+}
+.sv-ring--primary .sv-ring__value {
+  stroke: var(--sv-bar-primary);
+}
+.sv-ring--success .sv-ring__value {
+  stroke: var(--sv-bar-success);
+}
+/* Goal met: a check badge as well as the full ring (colour is never the only cue). */
+.sv-ring__done {
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  z-index: var(--sv-z-raised);
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--sv-surface);
+  border-radius: 50%;
+  background: var(--sv-success-fill);
+  color: var(--sv-on-primary);
+}
+.sv-ring__done svg {
+  width: 12px;
+  height: 12px;
+}
+.sv-ring__center {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  font-weight: 900;
+  line-height: 1;
+  text-align: center;
+}
+
+/* ---------- Bar meter ---------- */
+.sv-meter {
+  --fill: var(--sv-bar-primary);
+  position: relative;
+  height: 12px;
+  overflow: hidden;
+  border-radius: var(--sv-radius-pill);
+  background: var(--sv-sunk);
+}
+.sv-meter--sm {
+  height: 8px;
+}
+.sv-meter--lg {
+  height: 18px;
+}
+.sv-meter--sun {
+  --fill: var(--sv-sun);
+}
+.sv-meter--success {
+  --fill: var(--sv-bar-success);
+}
+.sv-meter--violet {
+  --fill: var(--sv-bar-violet);
+}
+.sv-meter__fill {
+  position: relative;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--fill);
+  transition: width var(--sv-motion-slow) cubic-bezier(0.3, 0.7, 0.4, 1);
+}
+/* A sliver stays visible for tiny values; an empty bar stays empty. */
+.sv-meter:not([data-empty]) .sv-meter__fill {
+  min-width: 8px;
+}
+/* Yellow alone is ~1.3:1 on the track; the outline carries the 3:1 boundary. */
+.sv-meter--sun .sv-meter__fill {
+  box-shadow: inset 0 0 0 2px var(--sv-sun-line);
+}
+.sv-meter--md .sv-meter__fill::after,
+.sv-meter--lg .sv-meter__fill::after {
+  position: absolute;
+  top: 3px;
+  right: 8px;
+  left: 8px;
+  height: 3px;
+  border-radius: var(--sv-radius-pill);
+  background: rgb(255 255 255 / 0.45);
+  content: '';
+}
+.sv-meter--md .sv-meter__fill::after {
+  top: 2.5px;
+  height: 2.5px;
+}
+
+/* ---------- Stat chip ---------- */
+.sv-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--sv-font);
+  white-space: nowrap;
+}
+.sv-stat__icon {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  color: var(--sv-ink-2);
+}
+.sv-stat__value {
+  font-size: 1.0625rem;
+  font-weight: 900;
+}
+.sv-stat__label {
+  color: var(--sv-ink-2);
+  font-size: 0.8125rem;
+  font-weight: 800;
+}
+.sv-stat--flame .sv-stat__icon {
+  color: var(--sv-flame);
+  fill: var(--sv-sun);
+}
+.sv-stat--flame .sv-stat__value {
+  color: var(--sv-flame-ink);
+}
+.sv-stat--ice .sv-stat__icon {
+  color: var(--sv-ice);
+}
+.sv-stat--sun .sv-stat__icon {
+  color: var(--sv-sun-edge);
+  fill: var(--sv-sun);
+}
+.sv-stat--sun .sv-stat__value {
+  color: var(--sv-sun-soft-ink);
+}
+.sv-stat--primary .sv-stat__icon,
+.sv-stat--primary .sv-stat__value {
+  color: var(--sv-primary-soft-ink);
+}
+
+/* ---------- Vault buddy ---------- */
+.sv-buddy {
+  flex: none;
+  /* Shrinks with its container at 200% zoom instead of forcing it wider. */
+  max-width: 100%;
+  height: auto;
+  overflow: visible;
+  color: var(--sv-ink-2);
+}
+.sv-buddy .f-navy {
+  fill: var(--sv-buddy-navy);
+}
+.sv-buddy .f-body {
+  fill: var(--sv-buddy-body);
+}
+.sv-buddy .f-door {
+  fill: var(--sv-buddy-door);
+}
+.sv-buddy .f-sun {
+  fill: var(--sv-buddy-hinge);
+}
+.sv-buddy .f-ink {
+  fill: var(--sv-buddy-ink);
+}
+.sv-buddy .f-cheek {
+  fill: var(--sv-buddy-cheek);
+}
+.sv-buddy .f-white {
+  fill: #ffffff;
+}
+.sv-buddy .s-navy {
+  stroke: var(--sv-buddy-navy);
+}
+.sv-buddy .s-body {
+  stroke: var(--sv-buddy-body);
+}
+.sv-buddy .s-sun {
+  stroke: var(--sv-buddy-hinge);
+}
+.sv-buddy .s-ink {
+  stroke: var(--sv-buddy-ink);
+}
+.sv-buddy .s-shine {
+  stroke: var(--sv-buddy-shine);
+}
+.sv-buddy__shadow {
+  opacity: 0.14;
+}
+.sv-buddy__blush {
+  opacity: 0.85;
+}
+/* Every loop stops within 5 s (WCAG 2.2.2). */
+.sv-buddy--wave .sv-buddy__wave {
+  transform-origin: 99px 66px;
+  animation: sv-buddy-wave 1.4s ease-in-out 2;
+}
+.sv-buddy--cheer .sv-buddy__body {
+  transform-origin: 60px 110px;
+  animation: sv-buddy-hop 0.7s ease-out 3;
+}
+.sv-buddy--cheer .sv-buddy__sparks {
+  animation: sv-buddy-twinkle 1.2s ease-in-out 3;
+}
+.sv-buddy--sleep .sv-buddy__zzz {
+  animation: sv-buddy-float 2.4s ease-in-out 2;
+}
+.sv-buddy--think .sv-buddy__dots circle {
+  animation: sv-buddy-blink 1.4s ease-in-out 3;
+}
+.sv-buddy--think .sv-buddy__dots circle:nth-child(2) {
+  animation-delay: 0.3s;
+}
+@keyframes sv-buddy-wave {
+  0%,
+  100% {
+    rotate: 0deg;
+  }
+  25% {
+    rotate: 16deg;
+  }
+  50% {
+    rotate: -6deg;
+  }
+  75% {
+    rotate: 12deg;
+  }
+}
+@keyframes sv-buddy-hop {
+  0%,
+  100% {
+    translate: 0 0;
+    scale: 1 1;
+  }
+  20% {
+    scale: 1.06 0.92;
+  }
+  50% {
+    translate: 0 -10px;
+    scale: 0.96 1.05;
+  }
+}
+@keyframes sv-buddy-twinkle {
+  50% {
+    opacity: 0.4;
+  }
+}
+@keyframes sv-buddy-float {
+  0%,
+  100% {
+    translate: 0 0;
+    opacity: 1;
+  }
+  50% {
+    translate: 3px -5px;
+    opacity: 0.6;
+  }
+}
+@keyframes sv-buddy-blink {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* ---------- Streak heatmap ---------- */
+.sv-heat {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr); /* the scroller, not the page, takes a wide calendar */
+  gap: 8px;
+  font-family: var(--sv-font);
+}
+.sv-heat__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.sv-heat__sum {
+  color: var(--sv-ink-2);
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+.sv-heat__sum strong {
+  color: var(--sv-ink);
+  font-weight: 900;
+}
+.sv-heat__body {
+  position: relative;
+}
+.sv-heat__scroll {
+  margin: -6px;
+  padding: 6px;
+  overflow-x: auto;
+}
+.sv-heat__grid {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  min-width: min-content; /* below the smallest cells the scroller scrolls, the page does not */
+}
+.sv-heat__row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.sv-heat__day {
+  width: 18px;
+  flex: none;
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+}
+.sv-heat__cell {
+  position: relative;
+  flex: 1 1 0;
+  min-width: 14px;
+  max-width: 26px;
+  aspect-ratio: 1;
+  border-radius: 28%;
+}
+.sv-heat__cell.is-blank {
+  background: transparent;
+}
+.sv-heat--0 {
+  background: var(--sv-heat-0);
+}
+.sv-heat--1 {
+  background: var(--sv-heat-1);
+}
+.sv-heat--2 {
+  background: var(--sv-heat-2);
+}
+.sv-heat--3 {
+  background: var(--sv-heat-3);
+}
+.sv-heat--4 {
+  background: var(--sv-heat-4);
+}
+/* Goal met: a dot as well as the darker shade (colour is never the only cue). */
+.sv-heat__cell.is-met::after {
+  position: absolute;
+  inset: 34%;
+  border-radius: 50%;
+  background: var(--sv-surface);
+  content: '';
+}
+.sv-heat__cell.is-today {
+  box-shadow:
+    0 0 0 2px var(--sv-surface),
+    0 0 0 4px var(--sv-flame-ink);
+}
+/* A day a freeze saved: a snowflake (>= 3:1 on the empty-day shade). */
+.sv-heat__ice {
+  width: 12px;
+  height: 12px;
+  margin-left: 2px;
+  color: var(--sv-ice);
+  vertical-align: -1px;
+}
+.sv-heat__cell .sv-heat__ice {
+  position: absolute;
+  inset: 15%;
+  width: 70%;
+  height: 70%;
+  margin: 0;
+}
+.sv-heat__tip {
+  position: absolute;
+  z-index: var(--sv-z-tip);
+  padding: 5px 9px;
+  border-radius: 8px;
+  background: var(--sv-ink);
+  color: var(--sv-surface);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+  white-space: nowrap;
+  transform: translate(-20px, calc(-100% - 8px));
+}
+.sv-heat__tip.is-end {
+  transform: translate(calc(-100% + 20px), calc(-100% - 8px));
+}
+.sv-heat__tip::after {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  left: 0;
+  height: 10px;
+  content: '';
+}
+.sv-heat__legend {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+}
+.sv-heat__key {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+}
+.sv-heat__tableWrap {
+  max-height: 200px;
+  overflow: auto;
+  border-radius: 10px;
+}
+.sv-heat__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--sv-text-xs);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+.sv-heat__table caption {
+  padding-bottom: 6px;
+  color: var(--sv-ink-2);
+  font-weight: 700;
+  text-align: left;
+}
+.sv-heat__table :is(th, td) {
+  padding: 3px 4px;
+  border-bottom: 1px solid var(--sv-border);
+}
+.sv-heat__table abbr {
+  text-decoration: none;
+}
+
+/* ---------- Stepper (wizard progress bar + "2/4") ---------- */
+.sv-stepper {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.sv-stepper .sv-meter {
+  flex: 1;
+}
+.sv-stepper__count {
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-sm);
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Wizard (page or dialog) ---------- */
+.sv-wiz {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 16px 22px 18px;
+  border: 2px solid var(--sv-border);
+  border-radius: 24px;
+  background: var(--sv-surface);
+  box-shadow:
+    0 6px 0 var(--sv-border),
+    var(--sv-shadow);
+  color: var(--sv-ink);
+  font-family: var(--sv-font);
+  font-weight: 600;
+  line-height: var(--sv-leading);
+}
+.sv-wiz--dialog {
+  /* Top-aligned: the dialog does not jump when a step or an error changes its height. */
+  width: min(520px, calc(100vw - 24px));
+  max-width: none;
+  /* Fits under its own top margin, so a short window scrolls the dialog, not the page. */
+  max-height: calc(100dvh - max(12px, 8vh) - 12px);
+  margin: max(12px, 8vh) auto auto;
+  overflow: auto;
+}
+.sv-wiz--dialog::backdrop {
+  background: var(--sv-scrim);
+}
+.sv-wiz__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 40px;
+  margin: -4px -10px -6px 0;
+}
+.sv-wiz__eyebrow {
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.sv-wiz__title {
+  margin: 0;
+  font-size: var(--sv-text-xl);
+  font-weight: 900;
+  line-height: 1.15;
+  letter-spacing: -0.01em;
+}
+.sv-wiz__title:focus {
+  outline: none; /* focused by script on each step so screen readers hear the new title */
+}
+.sv-wiz__body {
+  display: grid;
+  align-content: start;
+  gap: 14px;
+}
+.sv-wiz--dialog .sv-wiz__body {
+  min-height: 150px;
+}
+.sv-wiz__error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -4px 0 0;
+  color: var(--sv-danger-ink);
+  font-size: var(--sv-text-sm);
+  font-weight: 800;
+}
+.sv-wiz__error svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.sv-wiz__nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding-top: 14px;
+  border-top: 2px solid var(--sv-border);
+}
+.sv-wiz__spacer {
+  flex: 1;
+}
+.sv-wiz__confirm {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding-top: 4px;
+  text-align: center;
+}
+.sv-wiz__confirm .sv-wiz__nav {
+  justify-content: center;
+  align-self: stretch;
+}
+.sv-wiz__line {
+  margin: 0;
+  color: var(--sv-ink-2);
+}
+
+/* Text field for wizard steps */
+.sv-textfield {
+  display: grid;
+  gap: 6px;
+}
+.sv-textfield label {
+  font-size: var(--sv-text-sm);
+  font-weight: 800;
+}
+.sv-textfield input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  padding: 10px 14px;
+  border: 2px solid var(--sv-line-strong);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface-2);
+  color: var(--sv-ink);
+  font: 700 var(--sv-text-md) var(--sv-font);
+}
+.sv-textfield input::placeholder {
+  color: var(--sv-ink-2);
+  font-weight: 600;
+  opacity: 1;
+}
+.sv-textfield input:focus {
+  border-color: var(--sv-primary);
+}
+.sv-textfield input[aria-invalid='true'] {
+  border-color: var(--sv-danger-ink);
+}
+
+/* ---------- Picture choice cards (native radios in a fieldset) ---------- */
+.sv-choiceset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  container-type: inline-size;
+}
+.sv-choices {
+  --cols: 3;
+  display: grid;
+  grid-template-columns: repeat(
+    auto-fit,
+    minmax(max(min(128px, 100%), calc((100% - (var(--cols) - 1) * 12px) / var(--cols))), 1fr)
+  );
+  gap: 12px;
+}
+.sv-choices--1 {
+  --cols: 1;
+}
+.sv-choices--2 {
+  --cols: 2;
+}
+.sv-choices--4 {
+  --cols: 4;
+}
+.sv-choice {
+  --press: 4px;
+  --lip: var(--sv-border);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin-bottom: var(--press);
+  padding: 18px 12px 14px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-lg);
+  background: var(--sv-surface);
+  box-shadow: 0 var(--press) 0 var(--lip);
+  color: var(--sv-ink);
+  font-family: var(--sv-font);
+  text-align: center;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    transform var(--sv-motion) var(--sv-ease-spring),
+    box-shadow var(--sv-motion),
+    border-color var(--sv-motion);
+}
+.sv-choice:hover {
+  border-color: var(--sv-primary);
+}
+.sv-choice:active {
+  transform: translateY(3px);
+  box-shadow: 0 1px 0 var(--lip);
+}
+.sv-choice:has(> input:checked) {
+  --lip: var(--sv-primary-edge);
+  border-color: var(--sv-primary);
+  background: var(--sv-primary-soft);
+}
+/* Keep the art tile visible on the blue card (a primary-soft tile would vanish). */
+.sv-choice:has(> input:checked) .sv-choice__art {
+  background: var(--sv-surface);
+}
+.sv-choice__check {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 2px solid var(--sv-line-strong);
+  border-radius: 50%;
+  background: var(--sv-surface);
+  color: transparent;
+}
+.sv-choice__check svg {
+  width: 14px;
+  height: 14px;
+}
+.sv-choice:has(> input:checked) .sv-choice__check {
+  border-color: var(--sv-primary);
+  background: var(--sv-primary);
+  color: var(--sv-on-primary);
+}
+.sv-choice__art {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: var(--sv-art);
+  height: var(--sv-art);
+  margin-bottom: 6px;
+  border-radius: 22px;
+}
+.sv-choice__art svg {
+  width: 38px;
+  height: 38px;
+}
+.sv-choice__text {
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+  min-width: 0;
+  max-width: 100%;
+}
+.sv-choice__label {
+  font-size: var(--sv-text-md);
+  font-weight: 800;
+  line-height: 1.2;
+}
+.sv-choice__hint {
+  color: var(--sv-ink-2);
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+/* One column at <= 340px (side panel, 200% zoom): the card turns into a row. */
+@container (max-width: 340px) {
+  .sv-choices {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+  .sv-choice {
+    flex-direction: row;
+    gap: 12px;
+    padding: 10px 44px 10px 10px;
+    text-align: left;
+  }
+  .sv-choice__art {
+    width: 48px;
+    height: 48px;
+    margin: 0;
+    border-radius: 16px;
+  }
+  .sv-choice__art svg {
+    width: 26px;
+    height: 26px;
+  }
+  .sv-choice__text {
+    justify-items: start;
+    overflow-wrap: anywhere; /* a long word wraps rather than leaving the card */
+  }
+  .sv-choice__check {
+    top: calc(50% - 12px);
+  }
+}
+/* 200% zoom in a nested card: the decorative art steps aside so the words keep their room. */
+@container (max-width: 200px) {
+  .sv-choice__art {
+    display: none;
+  }
+  .sv-choice {
+    padding: 10px 40px 10px 12px;
+  }
+}
+
+/* ---------- Info popover ---------- */
+.sv-infotip {
+  position: relative;
+  display: inline-flex;
+  vertical-align: middle;
+}
+.sv-infotip__btn {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--sv-ink-2);
+  cursor: pointer;
+}
+.sv-infotip__btn:hover,
+.sv-infotip__btn[aria-expanded='true'] {
+  background: var(--sv-primary-soft);
+  color: var(--sv-primary-soft-ink);
+}
+.sv-infotip__btn svg {
+  width: 18px;
+  height: 18px;
+}
+.sv-infotip__pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  z-index: var(--sv-z-popover);
+  display: block;
+  width: min(232px, calc(100vw - 24px));
+  padding: 12px 34px 12px 12px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface);
+  box-shadow: var(--sv-shadow);
+  color: var(--sv-ink);
+  font-family: var(--sv-font);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  line-height: 1.45;
+  letter-spacing: 0;
+  text-align: left;
+  text-transform: none;
+  transform: translateX(-50%);
+}
+.sv-infotip__pop[hidden] {
+  display: none;
+}
+.sv-infotip__pop::before {
+  position: absolute;
+  right: 0;
+  bottom: 100%;
+  left: 0;
+  height: 8px;
+  content: '';
+}
+.sv-infotip__pop--top {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+.sv-infotip__pop--top::before {
+  top: 100%;
+  bottom: auto;
+}
+.sv-infotip__pop--start {
+  left: -8px;
+  transform: none;
+}
+.sv-infotip__pop--end {
+  right: -8px;
+  left: auto;
+  transform: none;
+}
+.sv-infotip__close {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--sv-ink-2);
+  cursor: pointer;
+}
+.sv-infotip__close:hover {
+  background: var(--sv-sunk);
+}
+.sv-infotip__close svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* ---------- Empty state ---------- */
+.sv-emptystate {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 24px 16px;
+  font-family: var(--sv-font);
+  text-align: center;
+}
+.sv-emptystate__title {
+  margin: 4px 0 0;
+  font-size: var(--sv-text-lg);
+  font-weight: 900;
+  line-height: 1.2;
+}
+.sv-emptystate__text {
+  margin: 0 0 8px;
+  color: var(--sv-ink-2);
+  font-size: 0.9375rem;
+}
+
+/* ---------- Confetti (one finite burst; never rendered under reduced motion) ---------- */
+.sv-confetti {
+  position: absolute;
+  inset: 0;
+  z-index: var(--sv-z-celebrate);
+  overflow: hidden;
+  pointer-events: none;
+  container-type: size;
+}
+.sv-confetti__bit {
+  --dx: 30px;
+  position: absolute;
+  top: -20px;
+  width: 10px;
+  height: 14px;
+  border-radius: 3px;
+  animation-name: sv-confetti-fall;
+  animation-timing-function: cubic-bezier(0.25, 0.6, 0.5, 1);
+  animation-iteration-count: 1;
+  animation-fill-mode: both;
+}
+.sv-confetti__bit--s1 {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.sv-confetti__bit--s2 {
+  width: 6px;
+  height: 18px;
+}
+.sv-confetti__bit--c0 {
+  background: var(--sv-sun);
+}
+.sv-confetti__bit--c1 {
+  --dx: -36px;
+  background: var(--sv-primary);
+}
+.sv-confetti__bit--c2 {
+  --dx: 18px;
+  background: var(--sv-flame);
+}
+.sv-confetti__bit--c3 {
+  --dx: -48px;
+  background: var(--sv-violet-fill);
+}
+.sv-confetti__bit--c4 {
+  --dx: 8px;
+  background: var(--sv-success-fill);
+}
+@keyframes sv-confetti-fall {
+  0% {
+    transform: translate(0, 0) rotate(0deg);
+    opacity: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(var(--dx), calc(100cqh + 40px)) rotate(620deg);
+    opacity: 0;
+  }
+}
+
+/* ---------- XP float ---------- */
+/* A point under the chip's centre: it never covers the chip, so contrast tools can read it. */
+.sv-xpfloat-anchor {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+.sv-xpfloat {
+  position: absolute;
+  top: 0;
+  left: 0;
+  padding: 2px 9px;
+  border-radius: var(--sv-radius-pill);
+  background: var(--sv-sun);
+  box-shadow: inset 0 0 0 2px var(--sv-sun-line);
+  color: var(--sv-on-sun);
+  font-family: var(--sv-font);
+  font-size: var(--sv-text-sm);
+  font-weight: 900;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  animation: sv-xp-float 1.2s ease-out forwards;
+}
+@keyframes sv-xp-float {
+  0% {
+    opacity: 0;
+    translate: 0 18px;
+    scale: 0.7;
+  }
+  25% {
+    opacity: 1;
+    scale: 1.1;
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    translate: 0 -6px;
+    scale: 1;
+  }
+}
+
+/* ---------- Icon tab bar ---------- */
+.sv-tabbar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  container-type: inline-size; /* on the root, so the queries below can resize the tab grid */
+  font-family: var(--sv-font);
+}
+.sv-tabbar__list {
+  display: grid;
+  /* One row in a 320px panel; reflows to more rows at 200% zoom instead of squeezing icons. */
+  grid-template-columns: repeat(auto-fit, minmax(min(48px, 100%), 1fr));
+  gap: 4px;
+  padding: 8px;
+  border-bottom: 2px solid var(--sv-border);
+  background: var(--sv-surface);
+}
+.sv-tabbar__tab {
+  --press: 3px;
+  --lip: transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  margin-bottom: 3px;
+  padding: 7px 2px 5px;
+  border: 2px solid transparent;
+  border-radius: 14px;
+  background: transparent;
+  box-shadow: 0 var(--press) 0 var(--lip);
+  color: var(--sv-ink-2);
+  font-family: var(--sv-font);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+  cursor: pointer;
+}
+.sv-tabbar__tab:hover {
+  background: var(--sv-sunk);
+}
+.sv-tabbar__tab[aria-selected='true'] {
+  --lip: var(--sv-primary-edge);
+  border-color: var(--sv-primary);
+  background: var(--sv-primary-soft);
+  color: var(--sv-primary-soft-ink);
+}
+.sv-tabbar__icon {
+  position: relative;
+  display: grid;
+}
+.sv-tabbar__icon svg {
+  width: 22px;
+  height: 22px;
+}
+.sv-tabbar__count {
+  position: absolute;
+  top: -7px;
+  right: -14px;
+  display: grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border: 2px solid var(--sv-surface);
+  border-radius: var(--sv-radius-pill);
+  background: var(--sv-sun);
+  color: var(--sv-on-sun);
+  font-size: var(--sv-text-xs);
+  font-weight: 900;
+  line-height: 1;
+}
+.sv-tabbar__label {
+  max-width: 100%;
+  line-height: 1.15;
+  text-align: center;
+  overflow-wrap: break-word; /* "This page" wraps rather than losing letters */
+}
+/* Narrower than a real 320px panel: no side padding, so labels keep whole words. */
+@container (max-width: 300px) {
+  .sv-tabbar__tab {
+    padding-inline: 0;
+  }
+}
+/* <= 260px (200% zoom): icons only; the label stays in the accessible name (UX_DESIGN 6.7). */
+@container (max-width: 260px) {
+  .sv-tabbar__list {
+    grid-template-columns: repeat(auto-fit, minmax(min(36px, 100%), 1fr));
+  }
+  .sv-tabbar__label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .sv-tabbar__tab {
+    padding-block: 9px;
+  }
+}
+.sv-tabbar__panel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.sv-tabbar__panel:focus-visible {
+  outline-offset: -4px;
+  box-shadow: none;
+}
+
+/* ---------- More grid ---------- */
+.sv-moregrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(84px, 100%), 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+/* columns={n} is a maximum: tiles still drop to fewer columns when narrow (200% zoom). */
+.sv-moregrid--2,
+.sv-moregrid--3,
+.sv-moregrid--4 {
+  grid-template-columns: repeat(
+    auto-fit,
+    minmax(max(min(84px, 100%), calc((100% - (var(--cols) - 1) * 8px) / var(--cols))), 1fr)
+  );
+}
+.sv-moregrid--2 {
+  --cols: 2;
+}
+.sv-moregrid--3 {
+  --cols: 3;
+}
+.sv-moregrid--4 {
+  --cols: 4;
+}
+.sv-moretile {
+  --press: 3px;
+  --lip: var(--sv-border);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  margin-bottom: var(--press);
+  padding: 12px 4px 9px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface);
+  box-shadow: 0 var(--press) 0 var(--lip);
+  color: var(--sv-ink);
+  font-family: var(--sv-font);
+  font-size: 0.8125rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition:
+    transform var(--sv-motion) var(--sv-ease-spring),
+    box-shadow var(--sv-motion),
+    border-color var(--sv-motion);
+}
+.sv-moretile:hover {
+  border-color: var(--sv-primary);
+}
+.sv-moretile:active {
+  transform: translateY(var(--press));
+  box-shadow: 0 0 0 var(--lip);
+}
+.sv-moretile__icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 13px;
+}
+.sv-moretile__icon svg {
+  width: 22px;
+  height: 22px;
+}
+/* Wraps rather than truncating: no label text is lost at 200% zoom. */
+.sv-moretile__label {
+  max-width: 100%;
+  line-height: 1.2;
+  text-align: center;
+  overflow-wrap: break-word;
+}
+.sv-moretile__status {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  padding: 0 6px;
+  border-radius: var(--sv-radius-pill);
+  background: var(--sv-sunk);
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+  line-height: 1.5;
+}
+
+/* ---------- More contrast: heatmap cells get a real outline (UX_DESIGN 2.3) ---------- */
+@media (prefers-contrast: more) {
+  .sv-heat__cell:not(.is-blank, .is-today),
+  .sv-heat__key {
+    box-shadow: inset 0 0 0 1px var(--sv-line-strong);
+  }
+}
+:is([data-contrast='more'], [data-contrast='high'])
+  :is(.sv-heat__cell:not(.is-blank, .is-today), .sv-heat__key) {
+  box-shadow: inset 0 0 0 1px var(--sv-line-strong);
+}
+
+/* ---------- Reduced motion, forced colours ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .sv-buddy * {
+    animation: none !important;
+  }
+  /* No movement of any kind: no press travel, and the XP fades in place. */
+  :is(.sv-chunky, .sv-choice, .sv-moretile):active {
+    transform: none !important;
+  }
+  .sv-xpfloat {
+    animation: sv-xp-fade 1.4s ease-out forwards;
+  }
+  .sv-confetti {
+    display: none;
+  }
+}
+@keyframes sv-xp-fade {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  20%,
+  70% {
+    opacity: 1;
+  }
+}
+@media (forced-colors: active) {
+  :focus-visible,
+  .sv-choice:has(> input:focus-visible) {
+    outline-color: Highlight !important;
+  }
+  .sv-chunky,
+  .sv-choice,
+  .sv-moretile,
+  .sv-tabbar__tab,
+  .sv-wiz {
+    border-color: ButtonText;
+  }
+  .sv-choice:has(> input:checked),
+  .sv-tabbar__tab[aria-selected='true'] {
+    outline: 3px solid Highlight;
+  }
+  .sv-chunky[aria-disabled='true'] {
+    border-color: GrayText;
+    color: GrayText;
+  }
+  /* Data marks keep their own colours (forced colours would erase fills). */
+  .sv-meter,
+  .sv-ring,
+  .sv-heat__grid,
+  .sv-heat__legend,
+  .sv-buddy {
+    forced-color-adjust: none;
+  }
+}

@@ -109,9 +109,9 @@ describe('syllabus coverage', () => {
     render(<SyllabusCoverage settings={settings} />);
     const overall = await screen.findByTestId(TID.syllabusOverall);
     // Cardiology (60 %) is covered; Renal (20 %) has a highlight and no card: thin; Planned: none.
-    await waitFor(() => expect(overall.textContent).toMatch(/60%\s*of the syllabus is covered/));
-    expect(overall.textContent).toMatch(/80%\s*has at least some material/);
-    expect(overall.textContent).toMatch(/1\s*of 3 topics point at no bank or tag yet/);
+    await waitFor(() => expect(overall.textContent).toMatch(/60%\s*Covered/));
+    expect(overall.textContent).toMatch(/80%\s*Started/);
+    expect(overall.textContent).toMatch(/1\s*of 3 topics unmapped/);
 
     const table = within(screen.getByTestId(TID.syllabusTable));
     // Share, highlights (the trashed one is not counted), cards, due, retention, last studied, state.
@@ -129,7 +129,7 @@ describe('syllabus coverage', () => {
     expect(renal[6]).toMatch(/Thin/);
 
     const planned = table.getAllByRole('row').find((r) => r.textContent?.startsWith('Planned'))!;
-    expect(planned.textContent).toMatch(/map a bank or tag to this topic/);
+    expect(planned.textContent).toMatch(/Not mapped/);
     expect(cells(planned)[6]).toMatch(/None/);
     // An unmapped topic offers to map it, never a dead "show".
     expect(
@@ -137,18 +137,24 @@ describe('syllabus coverage', () => {
     ).toBeTruthy();
   });
 
-  it('draws a chart that is also a table, with a text summary', async () => {
+  it('draws one named ring per top-level topic, summed up in words; the table has the numbers', async () => {
     await seed();
     render(<SyllabusCoverage settings={settings} />);
     const chart = await screen.findByTestId(TID.syllabusChart);
-    const picture = within(chart).getByRole('img');
-    expect(picture.textContent).toMatch(
-      /3 top-level topics: 1 covered, 1 thin, 1 with no material/,
+    await waitFor(() =>
+      expect(chart.getAttribute('aria-label')).toMatch(
+        /3 top-level topics: 1 covered, 1 thin, 1 with no material/,
+      ),
     );
-    const rows = within(chart).getAllByRole('row');
-    // header + one bar per top-level topic, each with its number
-    expect(rows).toHaveLength(4);
-    expect(rows[1]!.textContent).toMatch(/^1\. Cardiology/);
+    const rings = within(chart).getAllByRole('img');
+    expect(rings.map((r) => r.getAttribute('aria-label'))).toEqual([
+      'Cardiology covered: 100 of 100 %, done',
+      'Renal covered: 0 of 100 %',
+      'Planned covered: 0 of 100 %',
+    ]);
+    // Every ring also says its state in words, not by colour alone.
+    expect(within(chart).getAllByRole('listitem')[1]!.textContent).toMatch(/Renal\s*Thin/);
+    expect(screen.getByTestId(TID.syllabusTable)).toBeTruthy();
   });
 
   it('sorts by a column and says which way', async () => {
@@ -160,7 +166,7 @@ describe('syllabus coverage', () => {
     const names = () =>
       within(screen.getByTestId(TID.syllabusTable))
         .getAllByRole('rowheader')
-        .map((h) => h.textContent?.replace(/\s*\(map a bank.*$/, '').trim());
+        .map((h) => h.textContent?.replace(/\s*Not mapped$/, '').trim());
     expect(names()).toEqual(['Cardiology', 'Renal', 'Planned']);
 
     const header = screen.getByRole('columnheader', { name: 'Highlights' });
@@ -179,7 +185,7 @@ describe('syllabus coverage', () => {
     await seed();
     render(<SyllabusCoverage settings={settings} />);
     const overall = await screen.findByTestId(TID.syllabusOverall);
-    await waitFor(() => expect(overall.textContent).toMatch(/60%\s*of the syllabus is covered/));
+    await waitFor(() => expect(overall.textContent).toMatch(/60%\s*Covered/));
 
     const highlights = screen.getByTestId(TID.syllabusMinHighlights) as HTMLInputElement;
     const cards = screen.getByTestId(TID.syllabusMinCards) as HTMLInputElement;
@@ -203,7 +209,7 @@ describe('syllabus coverage', () => {
     await user.clear(cards);
     await user.type(cards, '0');
     await user.tab();
-    await waitFor(() => expect(overall.textContent).toMatch(/80%\s*of the syllabus is covered/));
+    await waitFor(() => expect(overall.textContent).toMatch(/80%\s*Covered/));
     await waitFor(async () =>
       expect(await loadCoverageThresholds()).toEqual({ minHighlights: 1, minCards: 0 }),
     );
@@ -213,7 +219,7 @@ describe('syllabus coverage', () => {
     expect(within(rowOf('Renal')).getByText(/Covered/)).toBeTruthy();
 
     await user.click(screen.getByTestId(TID.syllabusReset));
-    await waitFor(() => expect(overall.textContent).toMatch(/60%\s*of the syllabus is covered/));
+    await waitFor(() => expect(overall.textContent).toMatch(/60%\s*Covered/));
     expect(highlights.value).toBe('3');
     expect(await loadCoverageThresholds()).toEqual({ minHighlights: 3, minCards: 1 });
   });
@@ -263,7 +269,7 @@ describe('syllabus coverage', () => {
     render(<SyllabusCoverage settings={settings} />);
     const select = await screen.findByTestId(TID.syllabusSelect);
     await userEvent.setup().selectOptions(select, 'Nested');
-    await screen.findByText('Systems');
+    await screen.findAllByText('Systems');
     const systems = rowOf('Systems');
     // Heart is covered (half the weight), Kidney is thin: "Systems" is thin, 50 % covered.
     expect(systems.textContent).toMatch(/Thin/);
@@ -285,7 +291,7 @@ describe('an exam on a topic', () => {
     // The column is there, and the button names the topic it is for.
     expect(screen.getByRole('columnheader', { name: 'Exam' })).toBeTruthy();
     const ask = screen.getByTestId(syllabusExamId(cardiology!.id));
-    expect(ask.textContent).toBe('Exam on this topic');
+    expect(ask.textContent?.trim()).toBe('Exam');
     expect(ask.getAttribute('aria-label')).toBe('Exam on this topic: Cardiology');
     expect(ask.getAttribute('aria-disabled')).toBeNull();
     ask.focus();

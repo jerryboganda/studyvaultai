@@ -1,12 +1,18 @@
 import { useEffect, useState, type KeyboardEvent } from 'react';
 import { useUi } from './context';
+import { Icon, type IconName } from './icons';
 import { dismissToast, useStore, type Toast } from './store';
 
 const UNDO_MS = 6000;
 const ERROR_MS = 10000;
 const NOTICE_MS = 4000;
-/** Tone is never colour alone. */
-const TONE_ICON = { info: 'i', success: '✓', error: '!' } as const;
+/** Tone is never colour alone: each has its own icon. */
+const TONE_ICON: Record<Toast['tone'], IconName> = {
+  info: 'info',
+  success: 'check',
+  error: 'alert',
+};
+const ACTION_ICON: Record<string, IconName> = { Undo: 'undo', Retry: 'retry', File: 'check' };
 
 function ToastCard({ toast }: { toast: Toast }) {
   const ui = useUi();
@@ -34,6 +40,7 @@ function ToastCard({ toast }: { toast: Toast }) {
     close();
   };
 
+  const actionIcon = toast.action ? ACTION_ICON[toast.action.label] : undefined;
   return (
     <div
       className={`sv-toast sv-toast-${toast.tone}`}
@@ -47,48 +54,60 @@ function ToastCard({ toast }: { toast: Toast }) {
       onKeyDown={onKeyDown}
     >
       <span className="sv-toast-icon" aria-hidden="true">
-        {TONE_ICON[toast.tone]}
+        <Icon name={TONE_ICON[toast.tone]} size={20} />
       </span>
       <span className="sv-toast-body">
         <span className="sv-toast-text">{toast.text}</span>
         {toast.action ? (
+          // How a keyboard user reaches the action: spoken with the toast, not shown (one line).
           // The key is the user's (Chrome > Extensions > Keyboard shortcuts), so it is not named.
-          <span className="sv-toast-hint">{`${toast.action.label}: use the Focus toolbar shortcut`}</span>
+          <span className="sv-sr">{`${toast.action.label}: use the Focus toolbar shortcut`}</span>
         ) : null}
       </span>
-      {toast.action ? (
+      {/* One group, so on a narrow screen the buttons wrap together under the text (the dismiss
+          button never strands on a row of its own). */}
+      <span className="sv-toast-actions">
+        {toast.xp ? (
+          <span className="sv-xp">
+            <Icon name="zap" size={14} fill />
+            {`+${toast.xp} XP`}
+          </span>
+        ) : null}
+        {toast.action ? (
+          <button
+            type="button"
+            className="sv-btn sv-chip-btn"
+            data-sv-toast-action={toast.id}
+            onClick={() => {
+              toast.action?.run();
+              close();
+            }}
+          >
+            {actionIcon ? <Icon name={actionIcon} size={16} /> : null}
+            {toast.action.label}
+          </button>
+        ) : null}
+        {toast.secondary ? (
+          <button
+            type="button"
+            className="sv-btn sv-chip-btn sv-chip-quiet"
+            onClick={() => {
+              toast.secondary?.run();
+              close();
+            }}
+          >
+            {toast.secondary.label}
+          </button>
+        ) : null}
         <button
           type="button"
-          className="sv-btn sv-btn-link"
-          data-sv-toast-action={toast.id}
-          onClick={() => {
-            toast.action?.run();
-            close();
-          }}
+          className="sv-btn sv-icon-btn"
+          aria-label="Dismiss notification"
+          onClick={close}
         >
-          {toast.action.label}
+          <Icon name="x" />
         </button>
-      ) : null}
-      {toast.secondary ? (
-        <button
-          type="button"
-          className="sv-btn sv-btn-link"
-          onClick={() => {
-            toast.secondary?.run();
-            close();
-          }}
-        >
-          {toast.secondary.label}
-        </button>
-      ) : null}
-      <button
-        type="button"
-        className="sv-btn sv-icon-btn"
-        aria-label="Dismiss notification"
-        onClick={close}
-      >
-        <span aria-hidden="true">×</span>
-      </button>
+      </span>
     </div>
   );
 }

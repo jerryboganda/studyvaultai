@@ -27,10 +27,13 @@ import {
   linksSection,
   linksToggle,
   nodeOf,
+  openLibrary,
   openLinks,
   putRelations,
   relationRows,
   seedGraph,
+  showLibrary,
+  showMoreView,
 } from './helpers.graph';
 
 /**
@@ -47,7 +50,7 @@ test.describe('links and the knowledge graph', () => {
   }) => {
     const { ctrl, id } = await seedGraph(env);
     const noteId = (await readTable<{ id: string }>(ctrl, 'notes'))[0]!.id;
-    const page = await openDashboard(env);
+    const page = await openLibrary(env);
     await env.context.setOffline(true);
     try {
       // ---- the section is closed, says how many, and starts empty -----------------------------
@@ -119,12 +122,17 @@ test.describe('links and the knowledge graph', () => {
       // ---- the graph around it ----------------------------------------------------------------
       await linksSection(page).getByTestId('link-graph').click();
       await expect(graphView(page).getByRole('heading', { name: 'Knowledge graph' })).toBeVisible();
-      await expect(page.getByTestId('view-graph')).toHaveAttribute('aria-current', 'page');
+      // The graph is a More view: the rail marks More as the current page.
+      await expect(page.getByTestId('nav-more')).toHaveAttribute('aria-current', 'page');
       await expect(graphNodes(page)).toHaveCount(2);
       await expect(page.getByTestId('graph-summary')).toHaveText('2 items and 1 link.');
       await expect(nodeOf(page, id.b)).toHaveAttribute('data-centre', 'true');
 
-      await graphView(page).getByTestId('graph-depth-2').check();
+      // The depth radios are visually hidden inside a segmented control: press its label.
+      await graphView(page)
+        .locator('label', { has: page.getByTestId('graph-depth-2') })
+        .click();
+      await expect(graphView(page).getByTestId('graph-depth-2')).toBeChecked();
       await expect(graphNodes(page)).toHaveCount(4);
       await expect(page.getByTestId('graph-summary')).toHaveText('4 items and 3 links.');
       await expect(connectionRows(page)).toHaveCount(4);
@@ -178,7 +186,7 @@ test.describe('links and the knowledge graph', () => {
   test('changing the type, the note and removing are undoable', async ({ env }) => {
     const { ctrl, id } = await seedGraph(env);
     await putRelations(ctrl, [{ from: id.a, to: id.b, type: 'related' }]);
-    const page = await openDashboard(env);
+    const page = await openLibrary(env);
     await openPreview(page, id.a);
     await openLinks(page);
     const link = linkTo(page, TEXT.b);
@@ -221,12 +229,12 @@ test.describe('links and the knowledge graph', () => {
       { from: id.a, to: id.b, type: 'supports' },
       { from: id.b, to: id.c, type: 'cause' },
     ]);
-    const page = await openDashboard(env);
+    const page = await openLibrary(env);
     await openPreview(page, id.a);
     await expect(linksToggle(page)).toHaveText('Show links (1)');
 
     // A second window moves clopidogrel to the trash.
-    const other = await openDashboard(env);
+    const other = await openLibrary(env);
     await openPreview(other, id.b);
     await expect(linksToggle(other)).toHaveText('Show links (2)');
     await other.getByTestId('preview-trash').click();
@@ -235,24 +243,24 @@ test.describe('links and the knowledge graph', () => {
     // The first window follows without a reload: the link is hidden, not deleted.
     await expect(linksToggle(page)).toHaveText('Show links (0)');
     expect((await relationRows(ctrl)).filter((r) => r.deletedAt === null)).toHaveLength(2);
-    await page.getByTestId('view-graph').click();
+    await showMoreView(page, 'graph');
     await expect(graphNodes(page)).toHaveCount(1);
     await expect(page.getByText('This item has no links yet')).toBeVisible();
 
     // Restoring it from the Trash brings both links back.
-    await other.getByTestId('view-trash').click();
+    await showMoreView(other, 'trash');
     await other.getByTestId('trash-list').getByRole('checkbox').first().check();
     await other.getByTestId('trash-restore').click();
     await expect(other.getByTestId('trash-outcome')).toContainText('Restored');
     await expect(graphNodes(page)).toHaveCount(2);
-    await page.getByTestId('view-library').click();
+    await showLibrary(page);
     await expect(linksToggle(page)).toHaveText('Show links (1)');
 
     // Purging it removes the links for good, in the same step.
-    await other.getByTestId('view-library').click();
+    await showLibrary(other);
     await openPreview(other, id.b);
     await other.getByTestId('preview-trash').click();
-    await other.getByTestId('view-trash').click();
+    await showMoreView(other, 'trash');
     await other.getByTestId('trash-list').getByRole('checkbox').first().check();
     await other.getByTestId('trash-purge').click();
     await dialogOf(other, /^Permanently delete/)
@@ -261,7 +269,7 @@ test.describe('links and the knowledge graph', () => {
     await expect(other.getByTestId('trash-outcome')).toContainText('Permanently deleted');
     await expect.poll(() => relationRows(ctrl)).toEqual([]);
     await expect(linksToggle(page)).toHaveText('Show links (0)');
-    await page.getByTestId('view-graph').click();
+    await showMoreView(page, 'graph');
     await expect(page.getByText('This item has no links yet')).toBeVisible();
     await page.getByTestId('graph-overview').click();
     await expect(page.getByText('No links yet', { exact: true })).toBeVisible();
@@ -277,8 +285,8 @@ test.describe('links and the knowledge graph', () => {
       { from: id.a, to: id.b, type: 'supports' },
       { from: id.a, to: id.c, type: 'contradicts' },
     ]);
-    const page = await openDashboard(env);
-    await page.getByTestId('view-graph').click();
+    const page = await openLibrary(env);
+    await showMoreView(page, 'graph');
     await expect(page.getByTestId('graph-summary')).toHaveText(
       /^2 links between 3 items, in 1 group/,
     );
@@ -308,7 +316,7 @@ test.describe('links and the knowledge graph', () => {
     expect(await relationRows(ctrl)).toEqual([]);
 
     const page = await openDashboard(env, {}, { settle: false });
-    await page.getByTestId('view-graph').click();
+    await showMoreView(page, 'graph');
     await expect(page.getByText('No links yet', { exact: true })).toBeVisible();
     expect(pageErrors(page)).toEqual([]);
   });

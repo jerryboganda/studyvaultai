@@ -10,9 +10,10 @@ import {
   setAiProfileApiKey,
   updateAiSettings,
   type AiProfile,
-  type AiProviderId,
 } from '@storage';
+import { Route } from 'lucide-react';
 import { Button } from '../Button';
+import { InfoTip } from '../design/InfoTip';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { useAction, useAsync, useDataEpoch } from '../hooks';
 import { InlineNotice } from '../Notice';
@@ -32,7 +33,7 @@ import {
 /** A fallback provider as the text the person is typing (blank = unset). */
 interface Form {
   label: string;
-  provider: AiProviderId;
+  provider: AiProfile['provider'];
   baseUrl: string;
   model: string;
   priceIn: string;
@@ -85,6 +86,9 @@ function fromForm(
       model: f.model.trim(),
       jsonMode: f.jsonMode,
       maxTokensParam: f.maxTokensParam,
+      vendor: 'custom',
+      reasoningEffort: '',
+      authScheme: 'bearer',
       pricing: anyPrice ? { inputUsdPerMTok: priceIn, outputUsdPerMTok: priceOut } : null,
       fallback: f.fallback,
     },
@@ -254,11 +258,9 @@ function ProviderCard({
             className="sv-control ai-narrow"
             data-testid="ai-profile-provider"
             value={form.provider}
-            onChange={(e) => edit({ provider: e.target.value as AiProviderId })}
+            onChange={(e) => edit({ provider: e.target.value as AiProfile['provider'] })}
           >
-            <option value="openai_compatible">
-              OpenAI-compatible (OpenAI, Ollama, LM Studio, …)
-            </option>
+            <option value="openai_compatible">OpenAI-compatible</option>
             <option value="anthropic">Anthropic</option>
           </select>
         )}
@@ -267,8 +269,8 @@ function ProviderCard({
         label="Provider address"
         hint={
           form.provider === 'anthropic'
-            ? 'Leave empty for https://api.anthropic.com.'
-            : 'For example https://api.openai.com/v1. Plain http:// works only for http://localhost and http://127.0.0.1.'
+            ? 'Empty means https://api.anthropic.com.'
+            : 'Plain http:// only for localhost.'
         }
       >
         {(id, hintId) => (
@@ -308,7 +310,7 @@ function ProviderCard({
         )}
       </Field>
       <div className="sv-row sv-wrap">
-        <Field label="Input price, $ per million tokens (optional)">
+        <Field label="Input $ / M tokens">
           {(id) => (
             <input
               id={id}
@@ -319,7 +321,7 @@ function ProviderCard({
             />
           )}
         </Field>
-        <Field label="Output price, $ per million tokens (optional)">
+        <Field label="Output $ / M tokens">
           {(id) => (
             <input
               id={id}
@@ -575,6 +577,9 @@ export function AiRoutingSection() {
             model: '',
             jsonMode: true,
             maxTokensParam: 'max_tokens',
+            vendor: 'custom',
+            reasoningEffort: '',
+            authScheme: 'bearer',
             pricing: null,
             fallback: true,
           },
@@ -597,33 +602,29 @@ export function AiRoutingSection() {
         {saved.error}
       </InlineNotice>
     ) : (
-      <p className="sv-muted">Reading the provider list…</p>
+      <p className="sd-line">Reading the provider list…</p>
     );
   }
   const { fallbacks, routes } = saved.data;
   const full = fallbacks.length >= AI_MAX_FALLBACKS;
 
   return (
-    <section
-      className="sv-stack sv-stack--tight"
-      aria-labelledby={`${uid}-h`}
-      data-testid="ai-routing"
-    >
-      <h3 id={`${uid}-h`}>More providers and routing (optional)</h3>
-      <p>
-        The provider above is the primary one. Add providers to fall back on when it is not
-        answering, or to start some tasks with another model (a cheaper one for summaries, a
-        stronger one for explanations).
-      </p>
-      <p className="sv-muted sv-small">
-        A fallback is tried only after a network error, a server error or no answer in time, and
-        then it receives exactly the text you were shown. A rejected key, no quota, a rate limit or
-        a refusal stops the request: it is never passed on. Before each request the confirmation
-        lists every address that may receive it, and Chrome asks you to allow each one.
+    <section className="ai-block" aria-labelledby={`${uid}-h`} data-testid="ai-routing">
+      <h4 className="ai-block__title" id={`${uid}-h`}>
+        <Route aria-hidden="true" strokeWidth={2.4} />
+        More providers
+        <InfoTip label="About fallbacks" align="start">
+          A fallback is tried only after a network error, a server error or no answer in time, with
+          exactly the text you were shown. A rejected key, no quota, a rate limit or a refusal stops
+          the request. Every confirmation lists each address that may receive it.
+        </InfoTip>
+      </h4>
+      <p className="sd-line">
+        Fall back when the primary one is not answering, or start some tasks with another model.
       </p>
 
       {fallbacks.length === 0 ? (
-        <p className="sv-muted" data-testid="ai-fallbacks-empty">
+        <p className="sd-line" data-testid="ai-fallbacks-empty">
           No other providers yet.
         </p>
       ) : (
@@ -660,12 +661,9 @@ export function AiRoutingSection() {
       ) : null}
 
       {fallbacks.length > 0 ? (
-        <fieldset className="sv-stack sv-stack--tight" data-testid="ai-routes">
-          <legend>Which provider each task starts with</legend>
-          <p className="sv-muted sv-small">
-            The others follow in the order above, when they are allowed to be a fallback. A change
-            here is saved at once.
-          </p>
+        <fieldset className="ai-routes" data-testid="ai-routes">
+          <legend className="sv-label">Which provider each task starts with</legend>
+          <p className="sd-line">The others follow in the order above. Saved at once.</p>
           {AI_ACTION_KINDS.map((kind) => (
             <Field key={kind} label={AI_KIND_INFO[kind].label}>
               {(id) => (

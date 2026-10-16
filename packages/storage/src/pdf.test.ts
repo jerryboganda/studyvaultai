@@ -700,6 +700,8 @@ describe('storage usage and wiping', () => {
         'documents',
         'filingRules',
         'folders',
+        'gameEvents',
+        'gameFacts',
         'highlightBanks',
         'highlightTags',
         'highlights',

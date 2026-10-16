@@ -1,11 +1,21 @@
 import { useState } from 'react';
+import {
+  ArchiveRestore,
+  CalendarClock,
+  Download,
+  HardDrive,
+  ShieldCheck,
+  Trash2,
+} from 'lucide-react';
 import { Button } from '../Button';
 import { ConfirmDialog } from '../ConfirmDialog';
+import { InfoTip } from '../design/InfoTip';
 import { useAsync } from '../hooks';
 import { InlineNotice } from '../Notice';
 import type { BackupDeps } from './deps';
 import { explainBackupError } from './explain';
 import { formatBytes, formatWhen, tableLabel } from './format';
+import { Chip, Fact, Facts } from './kit';
 
 /**
  * The automatic copy StudyVault takes of your data right before it upgrades its database. Shown
@@ -60,40 +70,52 @@ export function SafetyCopy({
   }
 
   return (
-    <div className="sv-stack" data-testid="backup-safety-copy">
-      <h3>Copy made before the last update</h3>
+    <div className="sd-card sd-card--warn" data-testid="backup-safety-copy">
+      <div className="sd-row">
+        <span className="sd-tile sd-tile--sm sv-art--violet" aria-hidden="true">
+          <ShieldCheck strokeWidth={2.4} />
+        </span>
+        <h3 className="sd-card__title sd-grow">Copy from before the update</h3>
+        <Chip>
+          version {data.fromVersion} to {data.toVersion}
+        </Chip>
+      </div>
       {data.status === 'kept' ? (
         <>
-          <p>
-            Before upgrading its database (version {data.fromVersion} to {data.toVersion}),
-            StudyVault saved a copy of your data on this device so an update can never cost you
-            work. It is kept until you delete it.
+          <p className="sd-line">
+            Kept on this device until you delete it.{' '}
+            <InfoTip label="About this copy">
+              StudyVault saved it right before upgrading its database, so an update can never cost
+              you work.
+            </InfoTip>
           </p>
-          <dl className="bk-facts">
-            <div>
-              <dt>Made</dt>
-              <dd>{formatWhen(data.createdAt)}</dd>
-            </div>
-            <div>
-              <dt>Size</dt>
-              <dd>{formatBytes(data.byteLength)}</dd>
-            </div>
-            <div>
-              <dt>Contents</dt>
-              <dd>
-                {Object.entries(data.tables)
-                  .map(([name, n]) => `${n} ${tableLabel(name).toLowerCase()}`)
-                  .join(', ')}
-              </dd>
-            </div>
+          <Facts>
+            <Fact icon={CalendarClock} label="Made">
+              {formatWhen(data.createdAt)}
+            </Fact>
+            <Fact icon={HardDrive} label="Size">
+              {formatBytes(data.byteLength)}
+            </Fact>
+            <Fact icon={ArchiveRestore} label="Contents" wide>
+              {Object.entries(data.tables)
+                .map(([name, n]) => `${n} ${tableLabel(name).toLowerCase()}`)
+                .join(', ')}
+            </Fact>
             {data.sha256 ? (
-              <div>
-                <dt>SHA-256</dt>
-                <dd className="bk-mono sv-wrap">{data.sha256}</dd>
-              </div>
+              <Fact icon={ShieldCheck} label="SHA-256" mono wide>
+                {data.sha256}
+              </Fact>
             ) : null}
-          </dl>
-          <div className="sv-row">
+          </Facts>
+          <div className="sd-row">
+            <Button
+              variant="primary"
+              busy={busy}
+              data-testid="backup-safety-restore"
+              onClick={() => void withBytes(onRestore)}
+            >
+              Review and restore…
+            </Button>
             <Button
               busy={busy}
               data-testid="backup-safety-download"
@@ -103,14 +125,7 @@ export function SafetyCopy({
                 )
               }
             >
-              Save as a file
-            </Button>
-            <Button
-              busy={busy}
-              data-testid="backup-safety-restore"
-              onClick={() => void withBytes(onRestore)}
-            >
-              Review and restore…
+              <Download aria-hidden="true" className="bk-btnicon" /> Save as a file
             </Button>
             <Button
               variant="danger"
@@ -118,7 +133,7 @@ export function SafetyCopy({
               data-testid="backup-safety-delete"
               onClick={() => setAsking(true)}
             >
-              Delete this copy…
+              <Trash2 aria-hidden="true" className="bk-btnicon" /> Delete this copy…
             </Button>
           </div>
         </>

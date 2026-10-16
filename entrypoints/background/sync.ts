@@ -1393,6 +1393,24 @@ export function createSyncService(deps: SyncServiceDeps) {
       await schedule();
       await service.runSync('startup');
     },
+    /**
+     * After an extension update: operations the previous build quarantined (for example a table it
+     * did not know, such as `gameFacts`) may apply now. The previous build kept only the newest
+     * `maxQuarantined` of them and moved its cursor past the rest, so the next run also re-pulls the
+     * whole log once (applying is idempotent). A locked key waits: the unlock retries them, and no
+     * run pulls before it.
+     */
+    async onUpdated(): Promise<void> {
+      if (!(await isOn())) return;
+      const config = await loadConfig();
+      if (!config) return;
+      const rt = await getRuntime(config);
+      await rt.engine.markNeedsResync();
+      if (config.e2ee && !(await ensureKey(config))) return;
+      const report = await rt.engine.retryQuarantined();
+      if (report.applied > 0) await deps.notifyDataChanged();
+      await publishStatus();
+    },
   };
 
   return service;
@@ -1657,9 +1675,12 @@ export function registerSync(extensionBaseUrl: string): SyncService {
   browser.runtime.onStartup.addListener(() => {
     service.onStartup().catch(report);
   });
-  // Alarms do not survive an extension update or reload: put the schedule back.
-  browser.runtime.onInstalled.addListener(() => {
-    service.onStartup().catch(report);
+  // Alarms do not survive an extension update or reload: put the schedule back. After an update,
+  // first retry what the previous build quarantined, so the run that follows sends nothing stale.
+  browser.runtime.onInstalled.addListener((details) => {
+    (details.reason === 'update' ? service.onUpdated().catch(report) : Promise.resolve())
+      .then(() => service.onStartup())
+      .catch(report);
   });
 
   return service;

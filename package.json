@@ -11,6 +11,7 @@
   },
   "scripts": {
     "dev": "wxt",
+    "gallery": "vite --config gallery/vite.config.ts",
     "build": "wxt build",
     "zip": "wxt zip",
     "postinstall": "wxt prepare",
@@ -29,10 +30,12 @@
     "repro:compare": "node scripts/repro-compare.mjs"
   },
   "dependencies": {
+    "@fontsource-variable/nunito": "5.3.0",
     "dexie": "4.4.6",
     "dexie-react-hooks": "4.4.0",
     "dompurify": "3.4.16",
     "fflate": "0.8.3",
+    "lucide-react": "1.48.0",
     "marked": "18.1.0",
     "minisearch": "7.2.0",
     "pdfjs-dist": "6.4.299",

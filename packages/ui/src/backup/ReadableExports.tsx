@@ -1,5 +1,16 @@
 import { useState } from 'react';
 import {
+  Braces,
+  Eye,
+  FileDown,
+  FileText,
+  Layers,
+  Library,
+  ListChecks,
+  Sheet,
+  SlidersHorizontal,
+} from 'lucide-react';
+import {
   HIGHLIGHT_CSV_COLUMNS,
   buildHighlightViews,
   exportAnki,
@@ -11,12 +22,14 @@ import {
   type AnkiExport,
 } from '@backup';
 import { Button } from '../Button';
+import { InfoTip } from '../design/InfoTip';
 import { useAsync } from '../hooks';
 import { InlineNotice } from '../Notice';
 import { plural } from '../text';
 import type { BackupDeps, DownloadFile } from './deps';
 import { explainBackupError } from './explain';
 import { fileStamp } from './format';
+import { Chip, Choices, Disclosure, type ChoiceOption } from './kit';
 import { BACKUP_TITLE } from './scope';
 
 type Format = 'markdown' | 'csv' | 'anki' | 'json';
@@ -30,6 +43,14 @@ interface Prepared {
   anki: AnkiExport | null;
   notes: string[];
 }
+
+/** The format picture cards. */
+const FORMATS: Record<Format, Omit<ChoiceOption<Format>, 'value'>> = {
+  markdown: { label: 'Markdown', hint: 'Notes apps', icon: FileText, tone: 'primary' },
+  csv: { label: 'CSV', hint: 'Spreadsheets', icon: Sheet, tone: 'success' },
+  anki: { label: 'Anki', hint: 'Flashcards', icon: Layers, tone: 'violet' },
+  json: { label: 'JSON', hint: 'Scripts', icon: Braces, tone: 'neutral' },
+};
 
 const FORMAT_HELP: Record<Format, string> = {
   markdown:
@@ -164,211 +185,215 @@ export function ReadableExports({ deps }: { deps: BackupDeps }) {
     }
   }
 
+  const check = (
+    id: string,
+    checked: boolean,
+    set: (v: boolean) => void,
+    testId: string,
+    text: string,
+  ) => (
+    <div className="sv-check">
+      <input
+        id={id}
+        type="checkbox"
+        checked={checked}
+        data-testid={testId}
+        onChange={(e) => {
+          set(e.target.checked);
+          invalidate();
+        }}
+      />
+      <label htmlFor={id}>{text}</label>
+    </div>
+  );
+  const radio = <T extends string>(
+    name: string,
+    id: T,
+    value: T,
+    set: (v: T) => void,
+    testId: string,
+    text: string,
+  ) => (
+    <div className="sv-check" key={id}>
+      <input
+        id={`${name}-${id}`}
+        type="radio"
+        name={name}
+        checked={value === id}
+        data-testid={testId}
+        onChange={() => {
+          set(id);
+          invalidate();
+        }}
+      />
+      <label htmlFor={`${name}-${id}`}>{text}</label>
+    </div>
+  );
+
   return (
-    <div className="sv-stack" data-testid="backup-readable">
-      <h3>Export to Markdown, CSV, Anki or JSON</h3>
-      <p>
-        Readable copies for other tools. They are for reading and sharing, not for restoring: to
-        move your study data use “{BACKUP_TITLE}”.
+    <div className="sd-card" data-testid="backup-readable">
+      <div className="sd-row">
+        <span className="sd-tile sd-tile--sm sv-art--sun" aria-hidden="true">
+          <FileDown strokeWidth={2.4} />
+        </span>
+        <h3 className="sd-card__title">Readable copy</h3>
+        <InfoTip label="About readable copies" align="start">
+          For reading and sharing. To move your data to another computer, use “{BACKUP_TITLE}”.
+        </InfoTip>
+      </div>
+
+      <h4 className="bk-subhead" id="bk-format-h">
+        Format
+      </h4>
+      <Choices
+        name="bk-format"
+        labelledBy="bk-format-h"
+        columns={4}
+        value={format}
+        onChange={(f) => {
+          setFormat(f);
+          invalidate();
+        }}
+        options={(['markdown', 'csv', 'anki', 'json'] as const).map((f) => ({
+          value: f,
+          ...FORMATS[f],
+          testId: `readable-format-${f}`,
+          ...(f === format ? { describedBy: 'bk-format-help' } : {}),
+        }))}
+      />
+      <p id="bk-format-help" className="sd-line" data-testid="readable-format-help">
+        {FORMAT_HELP[format]}
       </p>
 
-      <fieldset className="bk-fieldset">
-        <legend className="sv-label">What to export</legend>
-        <div className="sv-check">
-          <input
-            id="bk-scope-all"
-            type="radio"
-            name="bk-scope"
-            checked={scope === 'all'}
-            data-testid="readable-scope-all"
-            onChange={() => {
-              setScope('all');
-              invalidate();
-            }}
-          />
-          <label htmlFor="bk-scope-all">All banks</label>
-        </div>
-        <div className="sv-check">
-          <input
-            id="bk-scope-banks"
-            type="radio"
-            name="bk-scope"
-            checked={scope === 'banks'}
-            data-testid="readable-scope-banks"
-            onChange={() => {
-              setScope('banks');
-              invalidate();
-            }}
-          />
-          <label htmlFor="bk-scope-banks">Selected banks</label>
-        </div>
-        {scope === 'banks' ? (
-          <div className="bk-indent bk-choices" data-testid="readable-banks">
-            {banks.loading ? <p className="sv-muted">Loading banks…</p> : null}
-            {banks.error ? <p className="bk-error">{banks.error}</p> : null}
-            {banks.data?.map((b) => (
-              <div className="sv-check" key={b.id}>
-                <input
-                  id={`bk-bank-${b.id}`}
-                  type="checkbox"
-                  checked={picked.has(b.id)}
-                  data-testid={`readable-bank-${b.id}`}
-                  onChange={() => toggle(b.id)}
-                />
-                <label htmlFor={`bk-bank-${b.id}`}>
-                  {b.name} <span className="sv-muted">({plural(b.count, 'highlight')})</span>
-                </label>
-              </div>
-            ))}
-          </div>
-        ) : null}
-      </fieldset>
-
-      <fieldset className="bk-fieldset">
-        <legend className="sv-label">Format</legend>
-        {(['markdown', 'csv', 'anki', 'json'] as const).map((f) => (
-          <div className="sv-check" key={f}>
-            <input
-              id={`bk-format-${f}`}
-              type="radio"
-              name="bk-format"
-              checked={format === f}
-              data-testid={`readable-format-${f}`}
-              aria-describedby={`bk-format-${f}-hint`}
-              onChange={() => {
-                setFormat(f);
-                invalidate();
-              }}
-            />
-            <div>
-              <label htmlFor={`bk-format-${f}`}>
-                {f === 'markdown'
-                  ? 'Markdown'
-                  : f === 'csv'
-                    ? 'CSV (spreadsheet)'
-                    : f === 'anki'
-                      ? 'Anki import file'
-                      : 'JSON (for scripts)'}
-              </label>
-              <p id={`bk-format-${f}-hint`} className="sv-small sv-muted">
-                {FORMAT_HELP[f]}
-              </p>
-            </div>
-          </div>
-        ))}
-      </fieldset>
-
-      {format === 'markdown' ? (
-        <fieldset className="bk-fieldset" data-testid="readable-markdown-options">
-          <legend className="sv-label">Markdown layout</legend>
-          {(
-            [
-              ['per-bank', 'One file per bank (folders become headings)'],
-              ['per-folder', 'One file per folder, in folders named after your banks'],
-              ['single', 'One combined file'],
-            ] as const
-          ).map(([id, text]) => (
-            <div className="sv-check" key={id}>
+      <h4 className="bk-subhead" id="bk-scope-h">
+        What to export
+      </h4>
+      <Choices
+        name="bk-scope"
+        labelledBy="bk-scope-h"
+        columns={2}
+        value={scope}
+        onChange={(v) => {
+          setScope(v);
+          invalidate();
+        }}
+        options={[
+          {
+            value: 'all',
+            label: 'All banks',
+            hint: 'Whole library',
+            icon: Library,
+            testId: 'readable-scope-all',
+          },
+          {
+            value: 'banks',
+            label: 'Some banks',
+            hint: 'You pick',
+            icon: ListChecks,
+            testId: 'readable-scope-banks',
+          },
+        ]}
+      />
+      {scope === 'banks' ? (
+        <div className="bk-choices" data-testid="readable-banks">
+          {banks.loading ? <p className="sd-line">Loading banks…</p> : null}
+          {banks.error ? <p className="bk-error">{banks.error}</p> : null}
+          {banks.data?.map((b) => (
+            <div className="sv-check" key={b.id}>
               <input
-                id={`bk-layout-${id}`}
-                type="radio"
-                name="bk-layout"
-                checked={layout === id}
-                data-testid={`readable-layout-${id}`}
-                onChange={() => {
-                  setLayout(id);
-                  invalidate();
-                }}
+                id={`bk-bank-${b.id}`}
+                type="checkbox"
+                checked={picked.has(b.id)}
+                data-testid={`readable-bank-${b.id}`}
+                onChange={() => toggle(b.id)}
               />
-              <label htmlFor={`bk-layout-${id}`}>{text}</label>
+              <label htmlFor={`bk-bank-${b.id}`}>
+                {b.name} <span className="sv-muted">({plural(b.count, 'highlight')})</span>
+              </label>
             </div>
           ))}
-          <div className="sv-check">
-            <input
-              id="bk-obsidian"
-              type="checkbox"
-              checked={obsidian}
-              data-testid="readable-obsidian"
-              onChange={(e) => {
-                setObsidian(e.target.checked);
-                invalidate();
-              }}
-            />
-            <label htmlFor="bk-obsidian">
-              Obsidian style: wiki links between files, block ids and an index note
-            </label>
-          </div>
-          <div className="sv-check">
-            <input
-              id="bk-notes"
-              type="checkbox"
-              checked={includeNotes}
-              data-testid="readable-notes"
-              onChange={(e) => {
-                setIncludeNotes(e.target.checked);
-                invalidate();
-              }}
-            />
-            <label htmlFor="bk-notes">Include my notes under each highlight</label>
-          </div>
-        </fieldset>
-      ) : null}
-
-      {format === 'csv' ? (
-        <div className="sv-check">
-          <input
-            id="bk-bom"
-            type="checkbox"
-            checked={bom}
-            data-testid="readable-bom"
-            onChange={(e) => {
-              setBom(e.target.checked);
-              invalidate();
-            }}
-          />
-          <label htmlFor="bk-bom">Excel-friendly (adds a UTF-8 byte order mark)</label>
         </div>
       ) : null}
 
-      {format === 'anki' ? (
-        <fieldset className="bk-fieldset" data-testid="readable-anki-options">
-          <legend className="sv-label">Where the source citation goes</legend>
-          <div className="sv-check">
-            <input
-              id="bk-placement-back"
-              type="radio"
-              name="bk-placement"
-              checked={placement === 'back'}
-              data-testid="readable-placement-back"
-              onChange={() => {
-                setPlacement('back');
-                invalidate();
-              }}
-            />
-            <label htmlFor="bk-placement-back">
-              Appended to the back of the card (works with Anki’s built-in note types)
-            </label>
-          </div>
-          <div className="sv-check">
-            <input
-              id="bk-placement-field"
-              type="radio"
-              name="bk-placement"
-              checked={placement === 'field'}
-              data-testid="readable-placement-field"
-              onChange={() => {
-                setPlacement('field');
-                invalidate();
-              }}
-            />
-            <label htmlFor="bk-placement-field">
-              In a separate Source field (you create the note types first)
-            </label>
-          </div>
-        </fieldset>
+      {format !== 'json' ? (
+        <Disclosure summary="Options" icon={SlidersHorizontal} testId="readable-options">
+          {format === 'markdown' ? (
+            <fieldset className="bk-fieldset" data-testid="readable-markdown-options">
+              <legend className="sv-label">Markdown layout</legend>
+              {radio(
+                'bk-layout',
+                'per-bank',
+                layout,
+                setLayout,
+                'readable-layout-per-bank',
+                'One file per bank (folders become headings)',
+              )}
+              {radio(
+                'bk-layout',
+                'per-folder',
+                layout,
+                setLayout,
+                'readable-layout-per-folder',
+                'One file per folder, in folders named after your banks',
+              )}
+              {radio(
+                'bk-layout',
+                'single',
+                layout,
+                setLayout,
+                'readable-layout-single',
+                'One combined file',
+              )}
+              {check(
+                'bk-obsidian',
+                obsidian,
+                setObsidian,
+                'readable-obsidian',
+                'Obsidian style: wiki links, block ids and an index note',
+              )}
+              {check(
+                'bk-notes',
+                includeNotes,
+                setIncludeNotes,
+                'readable-notes',
+                'Include my notes under each highlight',
+              )}
+            </fieldset>
+          ) : null}
+          {format === 'csv'
+            ? check(
+                'bk-bom',
+                bom,
+                setBom,
+                'readable-bom',
+                'Excel-friendly (adds a UTF-8 byte order mark)',
+              )
+            : null}
+          {format === 'anki' ? (
+            <fieldset className="bk-fieldset" data-testid="readable-anki-options">
+              <legend className="sv-label">Where the source citation goes</legend>
+              {radio(
+                'bk-placement',
+                'back',
+                placement,
+                setPlacement,
+                'readable-placement-back',
+                'On the back of the card (Anki’s built-in note types)',
+              )}
+              {radio(
+                'bk-placement',
+                'field',
+                placement,
+                setPlacement,
+                'readable-placement-field',
+                'In a separate Source field (you create the note types first)',
+              )}
+            </fieldset>
+          ) : null}
+        </Disclosure>
       ) : null}
 
-      <div className="sv-row">
+      <div className="sd-row">
         <Button
           variant="primary"
           busy={busy}
@@ -378,8 +403,8 @@ export function ReadableExports({ deps }: { deps: BackupDeps }) {
         >
           Preview export
         </Button>
+        {noBanks ? <span className="sd-line">Choose at least one bank.</span> : null}
       </div>
-      {noBanks ? <p className="sv-small sv-muted">Choose at least one bank.</p> : null}
 
       {error ? (
         <InlineNotice tone="error" title={error.title}>
@@ -388,21 +413,25 @@ export function ReadableExports({ deps }: { deps: BackupDeps }) {
       ) : null}
 
       {prepared ? (
-        <div className="sv-stack" data-testid="readable-result">
+        <div className="sd-stack bk-result" data-testid="readable-result">
           {prepared.highlights === 0 && !prepared.anki ? (
             <InlineNotice tone="info" title="There is nothing to export for this selection">
               No saved highlights match. Deleted items are never included.
             </InlineNotice>
           ) : (
             <>
-              <p data-testid="readable-summary">
-                {format === 'anki'
-                  ? `${plural(prepared.anki?.noteCount ?? 0, 'flashcard note')} will be exported.`
-                  : `${plural(prepared.highlights, 'highlight')} in ${plural(
-                      prepared.fileNames.length,
-                      'file',
-                    )}.`}
-              </p>
+              <div className="sd-row">
+                <Chip icon={Eye} tone="info">
+                  <span data-testid="readable-summary">
+                    {format === 'anki'
+                      ? `${plural(prepared.anki?.noteCount ?? 0, 'flashcard note')} will be exported.`
+                      : `${plural(prepared.highlights, 'highlight')} in ${plural(
+                          prepared.fileNames.length,
+                          'file',
+                        )}.`}
+                  </span>
+                </Chip>
+              </div>
               {prepared.fileNames.length > 1 ? (
                 <ul className="bk-files" data-testid="readable-files">
                   {prepared.fileNames.slice(0, 12).map((n) => (
@@ -418,33 +447,40 @@ export function ReadableExports({ deps }: { deps: BackupDeps }) {
             </>
           )}
           {prepared.notes.map((n) => (
-            <p key={n} className="sv-small sv-muted">
+            <p key={n} className="sd-line">
               {n}
             </p>
           ))}
 
           {prepared.anki ? (
-            <div className="sv-stack sv-stack--tight" data-testid="readable-anki-mapping">
+            <div className="sd-stack" data-testid="readable-anki-mapping">
               <h4 className="bk-subhead">Field mapping (checked before you download)</h4>
-              <table className="bk-table">
-                <caption className="sv-sr">How file columns map to Anki fields</caption>
-                <thead>
-                  <tr>
-                    <th scope="col">Column</th>
-                    <th scope="col">Name</th>
-                    <th scope="col">Becomes in Anki</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {prepared.anki.columns.map((c) => (
-                    <tr key={c.index}>
-                      <td>{c.index}</td>
-                      <td>{c.name}</td>
-                      <td>{c.maps}</td>
+              <div
+                className="bk-tablewrap"
+                tabIndex={0}
+                role="region"
+                aria-label="Anki field mapping"
+              >
+                <table className="bk-table">
+                  <caption className="sv-sr">How file columns map to Anki fields</caption>
+                  <thead>
+                    <tr>
+                      <th scope="col">Column</th>
+                      <th scope="col">Name</th>
+                      <th scope="col">Becomes in Anki</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {prepared.anki.columns.map((c) => (
+                      <tr key={c.index}>
+                        <td>{c.index}</td>
+                        <td>{c.name}</td>
+                        <td>{c.maps}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
               {prepared.anki.noteTypes.length > 0 ? (
                 <ul className="bk-files">
                   {prepared.anki.noteTypes.map((t) => (
@@ -460,7 +496,7 @@ export function ReadableExports({ deps }: { deps: BackupDeps }) {
                 </InlineNotice>
               )}
               {prepared.anki.skipped.length > 0 ? (
-                <p className="sv-small">
+                <p className="sd-line">
                   {plural(prepared.anki.skipped.length, 'card')} left out:{' '}
                   {[...new Set(prepared.anki.skipped.map((s) => s.reason))].join('; ')}.
                 </p>
@@ -473,7 +509,7 @@ export function ReadableExports({ deps }: { deps: BackupDeps }) {
             </div>
           ) : null}
 
-          <div className="sv-row">
+          <div className="sd-row">
             <Button
               variant="primary"
               data-testid="readable-download"

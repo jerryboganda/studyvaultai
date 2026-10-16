@@ -67,42 +67,62 @@ const readBlob = (blob: Blob): Promise<string> =>
     r.readAsText(blob);
   });
 
-/** Setup form: choose the options and press start. */
+type User = ReturnType<typeof userEvent.setup>;
+const step = (title: string) => screen.findByRole('heading', { name: title });
+const next = (user: User) => user.click(screen.getByRole('button', { name: 'Next' }));
+
+/** The setup wizard: scope, how many, time limit, a last look, then start. */
 async function startExam(
-  user: ReturnType<typeof userEvent.setup>,
+  user: User,
   opts: { minutes?: string; shuffle?: boolean; questions?: string } = {},
 ) {
   await screen.findByTestId(TID.examSetup);
-  await waitFor(() => expect(screen.getByTestId(TID.examStart)).toBeTruthy());
+  await step('What to ask');
+  await next(user);
+  await step('How many?');
   if (opts.questions !== undefined) {
+    await user.click(screen.getByRole('radio', { name: /^Custom/ }));
     const n = screen.getByTestId(TID.examQuestions);
     await user.clear(n);
     await user.type(n, opts.questions);
   }
   if (opts.shuffle !== true) await user.click(screen.getByTestId(TID.examShuffle));
+  await next(user);
+  await step('Time limit');
   if (opts.minutes !== undefined) {
-    await user.click(screen.getByTestId(TID.examTimed));
+    await user.click(screen.getByRole('radio', { name: /^Custom/ }));
     const m = screen.getByTestId(TID.examMinutes);
     await user.clear(m);
     await user.type(m, opts.minutes);
   }
-  await user.click(screen.getByTestId(TID.examStart));
+  await next(user);
+  await step('Looks good?');
+  await user.click(screen.getByRole('button', { name: 'Start exam' }));
   await screen.findByTestId(TID.examRun);
 }
 
 describe('exam: setup', () => {
-  it('says what can be asked, caps the count by availability, and explains a disabled start', async () => {
+  it('says what can be asked, caps the count by availability, and stops a bad step with a reason', async () => {
     const user = userEvent.setup();
     await seed();
     render(<Review />);
     await screen.findByTestId(TID.examSetup);
+    await step('What to ask');
 
-    const scope = screen.getByTestId(TID.examScope) as HTMLSelectElement;
     // Only scopes that have cards are offered: no bank holds one of these typed cards.
-    expect([...scope.options].map((o) => o.textContent)).toEqual(['All cards (3 cards)']);
-    expect((screen.getByTestId(TID.examQuestions) as HTMLInputElement).value).toBe('3');
+    const scope = within(screen.getByTestId(TID.examScope));
+    expect(scope.getAllByRole('radio')).toHaveLength(1);
+    expect(scope.getByRole('radio', { name: /All cards/ })).toHaveProperty('checked', true);
+    expect(screen.getByTestId(TID.examScope).textContent).toContain('3 cards');
+    await next(user);
 
+    // Three cards: no preset below that, so "All" is picked; a typed number is the other way.
+    await step('How many?');
+    expect(screen.getAllByRole('radio')).toHaveLength(2);
+    expect(screen.getByRole('radio', { name: /^All/ })).toHaveProperty('checked', true);
+    await user.click(screen.getByRole('radio', { name: /^Custom/ }));
     const n = screen.getByTestId(TID.examQuestions);
+    expect((n as HTMLInputElement).value).toBe('3');
     await user.clear(n);
     await user.type(n, '50');
     expect(
@@ -110,29 +130,45 @@ describe('exam: setup', () => {
         'Only 3 cards can be asked in this scope, so the exam has 3 questions.',
       ),
     ).toBeTruthy();
-    expect(screen.getByTestId(TID.examStart).getAttribute('aria-disabled')).toBeNull();
 
     await user.clear(n);
     await user.type(n, '0');
-    const start = screen.getByTestId(TID.examStart);
-    expect(start.getAttribute('aria-disabled')).toBe('true');
-    expect(start.getAttribute('title')).toMatch(/whole number of questions from 1 to 200/);
+    await next(user);
+    expect((await screen.findByRole('alert')).textContent).toMatch(
+      /whole number of questions from 1 to 200/,
+    );
+    // Still on this step, with focus on the field to fix.
+    expect(screen.getByRole('heading', { name: 'How many?' })).toBeTruthy();
+    expect(document.activeElement).toBe(n);
 
     await user.clear(n);
     await user.type(n, '3');
-    await user.click(screen.getByTestId(TID.examTimed));
+    await next(user);
+    await step('Time limit');
+    expect(screen.getByRole('radio', { name: /^No limit/ })).toHaveProperty('checked', true);
+    expect(
+      screen.getByRole('radio', { name: /^1 min each/ }).closest('label')?.textContent,
+    ).toMatch(/3 min/);
+    await user.click(screen.getByRole('radio', { name: /^Custom/ }));
     const m = screen.getByTestId(TID.examMinutes);
     await user.clear(m);
     await user.type(m, '0');
-    expect(screen.getByTestId(TID.examStart).getAttribute('title')).toMatch(
-      /minutes from 1 to 480/,
-    );
+    await next(user);
+    expect((await screen.findByRole('alert')).textContent).toMatch(/minutes from 1 to 480/);
+
+    // Back keeps every answer.
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+    await step('How many?');
+    expect((screen.getByTestId(TID.examQuestions) as HTMLInputElement).value).toBe('3');
   });
 
-  it('with no cards at all it says so instead of offering an exam', async () => {
+  it('with no cards at all it says so instead of offering an exam, and points to Create', async () => {
+    const user = userEvent.setup();
     render(<Review />);
-    expect(await screen.findByText('No cards to ask yet')).toBeTruthy();
-    expect(screen.queryByTestId(TID.examStart)).toBeNull();
+    expect(await screen.findByText('No cards yet')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Next' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Create cards' }));
+    expect(screen.getByRole('tab', { name: 'Create' }).getAttribute('aria-selected')).toBe('true');
   });
 });
 
@@ -196,10 +232,13 @@ describe('exam: a whole run', () => {
     expect(within(marking).queryByText('The SA node fires fastest.')).toBeNull();
     const showResults = screen.getByTestId(TID.examShowResults);
     expect(showResults.getAttribute('aria-disabled')).toBe('true');
-    expect(showResults.getAttribute('title')).toMatch(/2 questions still need a mark/);
+    // The reason is the tooltip the button points at.
+    expect(
+      document.getElementById(showResults.getAttribute('aria-describedby') ?? '')?.textContent,
+    ).toMatch(/2 questions still need a mark/);
     await user.click(screen.getByRole('radio', { name: 'I knew it (question 1)' }));
     await user.click(screen.getByTestId(TID.examMarkRest));
-    expect(screen.getByRole('radio', { name: 'I did not know it (question 3)' })).toHaveProperty(
+    expect(screen.getByRole('radio', { name: "Didn't know it (question 3)" })).toHaveProperty(
       'checked',
       true,
     );
@@ -226,7 +265,7 @@ describe('exam: a whole run', () => {
     expect(md).toContain('### 3. Question 3?');
 
     // Count as review: one rating per answered card, undone by unticking.
-    const tick = screen.getByRole('checkbox', { name: 'Count this exam as review' });
+    const tick = screen.getByRole('switch', { name: 'Count as review' });
     await user.click(tick);
     await waitFor(async () => expect(await listReviewLogs()).toHaveLength(3));
     await waitFor(() =>
@@ -274,10 +313,9 @@ describe('exam: a whole run', () => {
     dialog = await screen.findByRole('dialog', { hidden: true });
     await user.click(within(dialog).getByRole('button', { name: 'Leave exam' }));
     const setup = await screen.findByTestId(TID.examSetup);
-    expect(setup.textContent).toContain('An exam is in progress');
-    expect(screen.getByTestId(TID.examStart).getAttribute('title')).toMatch(
-      /Finish or discard the exam in progress first/,
-    );
+    expect(setup.textContent).toContain('Exam in progress');
+    // One decision at a time: continue or discard; no second exam can be set up meanwhile.
+    expect(screen.queryByRole('button', { name: 'Next' })).toBeNull();
 
     await user.click(screen.getByTestId(TID.examContinue));
     await screen.findByTestId(TID.examRun);
@@ -289,7 +327,7 @@ describe('exam: a whole run', () => {
     dialog = await screen.findByRole('dialog', { hidden: true });
     await user.click(within(dialog).getByRole('button', { name: 'Discard exam' }));
     await waitFor(async () => expect(await getDb().meta.get('examSession')).toBeUndefined());
-    expect(await screen.findByTestId(TID.examStart)).toBeTruthy();
+    expect(await step('What to ask')).toBeTruthy();
     expect(screen.queryByTestId(TID.examContinue)).toBeNull();
   });
 });
@@ -328,8 +366,11 @@ describe('exam: reload and the clock', () => {
     await screen.findByTestId(TID.examMarking);
     expect(screen.getByText(/The time limit ran out while this page was closed/)).toBeTruthy();
     expect(screen.getByText(/Time is up\. Your answers are saved\./)).toBeTruthy();
-    const row = await getDb().meta.get('examSession');
-    expect((row?.value as ExamSession).endReason).toBe('timeup');
+    // What opening the page did to the exam is written back (after the first render).
+    await waitFor(async () => {
+      const row = await getDb().meta.get('examSession');
+      expect((row?.value as ExamSession).endReason).toBe('timeup');
+    });
   });
 
   it('an exam kept for more than 24 hours is gone, and the page says so', async () => {

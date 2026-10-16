@@ -8,7 +8,8 @@ import {
   type PdfDocument,
   type ViewPosition,
 } from '@pdf';
-import { Button, ConfirmDialog, InlineNotice, plural, useLatest } from '@ui';
+import { Ban, FileText, Globe, type LucideIcon } from 'lucide-react';
+import { Button, ConfirmDialog, InlineNotice, VaultBuddy, plural, useLatest } from '@ui';
 import type { ViewerHandle } from './Viewer';
 
 /**
@@ -202,6 +203,12 @@ function ExternalLinkDialog({
 
 const SHOWN_ADDRESS = 90;
 
+const LINK_ART: Record<PageLink['target']['kind'], { icon: LucideIcon; tone: string }> = {
+  page: { icon: FileText, tone: 'primary' },
+  external: { icon: Globe, tone: 'violet' },
+  refused: { icon: Ban, tone: 'danger' },
+};
+
 /** The "Links on this page" list: the accessible primary way through a page with many links. */
 export function LinkList({
   links,
@@ -222,15 +229,19 @@ export function LinkList({
   }
   if (links.links.length === 0) {
     return (
-      <p className="sv-muted" data-testid="pdf-links-empty">
-        Page {pageNumber} has no links.
-      </p>
+      <div className="sv-emptystate">
+        <VaultBuddy pose="sleep" size={96} />
+        <h3 className="sv-emptystate__title">No links here</h3>
+        <p className="sv-emptystate__text" data-testid="pdf-links-empty">
+          Page {pageNumber} has no links.
+        </p>
+      </div>
     );
   }
   return (
     <>
       <p className="sv-label">Links on this page</p>
-      <ul className="sv-outline" aria-label="Links on this page" data-testid="pdf-links-list">
+      <ul className="sv-linklist" aria-label="Links on this page" data-testid="pdf-links-list">
         {links.links.map((link, i) => {
           const t = link.target;
           const detail =
@@ -241,16 +252,29 @@ export function LinkList({
               : t.kind === 'refused'
                 ? 'will not be opened'
                 : null;
+          const { icon: Icon, tone } = LINK_ART[t.kind];
           return (
             <li key={i}>
-              <Button
-                variant="ghost"
+              <button
+                type="button"
+                className="sv-linkrow"
                 title={t.kind === 'external' ? t.url : undefined}
                 onClick={() => onFollow(link)}
               >
-                <span>{link.label}</span>
-                {detail ? <span className="sv-muted sv-small"> · {detail}</span> : null}
-              </Button>
+                <span className={`sv-tile sv-art--${tone}`} aria-hidden="true">
+                  <Icon strokeWidth={2.4} />
+                </span>
+                <span className="sv-linkrow__text">
+                  <span className="sv-linkrow__label">{link.label}</span>
+                  {detail ? (
+                    <span className="sv-linkrow__detail" dir="auto">
+                      {/* One line for the ear and for the e2e text: "label · detail". */}
+                      <span className="sv-sr"> · </span>
+                      {detail}
+                    </span>
+                  ) : null}
+                </span>
+              </button>
             </li>
           );
         })}

@@ -262,6 +262,10 @@ describe('the Links list of the navigation pane', () => {
     expect(items[0]!.textContent).toBe('Link to page 12');
     expect(items[1]!.textContent).toContain('External link to example.org');
     expect(items[1]!.textContent).toContain('https://example.org/some/long/path');
+    // Two lines for the eye, one sentence for the ear: "name · address".
+    expect(items[1]!.textContent).toBe(
+      'External link to example.org · https://example.org/some/long/path',
+    );
     expect(items[2]!.textContent).toContain('will not be opened');
     await userEvent.click(items[1]!);
     expect(onFollow).toHaveBeenCalledWith(data.links[1]);
@@ -307,7 +311,6 @@ describe('the toolbar: Back, and the page box', () => {
       onFind: vi.fn(),
       onToggleCompanion: vi.fn(),
       onToggleSidePane: vi.fn(),
-      onOpenAnother: vi.fn(),
       ...over,
     };
     render(<Toolbar {...p} />);

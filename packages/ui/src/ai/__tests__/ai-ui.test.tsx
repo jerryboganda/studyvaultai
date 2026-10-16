@@ -41,6 +41,19 @@ import { AiSettingsSection } from '../AiSettingsSection';
 import { HighlightAiActions } from '../HighlightAiActions';
 import type { AiEnv } from '../runtime';
 
+// Holds back the saved key's read (the AI config loads after the settings), like a slow device.
+const keyInfo = vi.hoisted(() => ({ gate: Promise.resolve() as Promise<unknown> }));
+vi.mock('@storage', async (importOriginal) => {
+  const real = await importOriginal<{ getAiKeyInfo(): Promise<unknown> }>();
+  return {
+    ...real,
+    getAiKeyInfo: async () => {
+      await keyInfo.gate;
+      return real.getAiKeyInfo();
+    },
+  };
+});
+
 vi.setConfig({ testTimeout: 30_000 });
 // CI runners are slow and share CPUs: waiting for async UI gets generous headroom.
 configureTestingLibrary({ asyncUtilTimeout: 8_000 });
@@ -107,6 +120,7 @@ const outboundOf = (calls: MockProvider['calls']) =>
   (calls[0]?.messages ?? []).map((m) => `[${m.role}]\n${m.content}`).join('\n\n');
 
 beforeEach(async () => {
+  keyInfo.gate = Promise.resolve();
   await freshDatabase();
   chrome = makeChromeFakes();
   Object.assign(browser, chrome);
@@ -149,13 +163,148 @@ describe('AI settings', () => {
     );
     const toggle = await screen.findByTestId('ai-enable');
     expect((toggle as HTMLInputElement).checked).toBe(false);
-    expect(screen.getByText(/sends nothing anywhere/i)).toBeTruthy();
-    expect(screen.getByText(/only the highlights you/i)).toBeTruthy();
+    expect(screen.getAllByText(/sends nothing anywhere/i).length).toBeGreaterThan(0);
+    // the whole explanation is one click away ("What is sent")
+    expect(screen.getByTestId('ai-what-is-sent').textContent).toMatch(
+      /only the highlights you selected/i,
+    );
+    expect(screen.queryByTestId('ai-setup')).toBeNull();
     expect(screen.queryByTestId('ai-base-url')).toBeNull();
     expect(screen.queryByTestId('ai-test')).toBeNull();
   });
 
-  it('configures a provider, masks the key, validates the address, and removes the key in one click', async () => {
+  it('"Set up AI" turns AI on and puts focus on the first wizard step', async () => {
+    const user = userEvent.setup();
+    render(
+      <AiEnvProvider env={envFor(null)}>
+        <AiSettingsSection />
+      </AiEnvProvider>,
+    );
+    await user.click(await screen.findByTestId('ai-setup-start'));
+    const title = await screen.findByRole('heading', { name: 'Pick a provider' });
+    await waitFor(() => expect(document.activeElement).toBe(title));
+    expect(((await screen.findByTestId('ai-enable')) as HTMLInputElement).checked).toBe(true);
+  });
+
+  // Many steps of typing: generous on a shared CI runner.
+  it(
+    'sets up a provider in a wizard: picture cards, address and model, the key, a limit, then Save',
+    { timeout: 90_000 },
+    async () => {
+      const user = userEvent.setup();
+      await turnAi(true);
+      render(
+        <AiEnvProvider env={envFor(null)}>
+          <AiSettingsSection />
+        </AiEnvProvider>,
+      );
+      const next = () => user.click(screen.getByTestId('ai-setup-next'));
+      const alert = () => screen.getByRole('alert').textContent;
+
+      // 1. Provider: nothing is picked for a fresh setup, and Next says so.
+      const custom = (await screen.findByTestId('ai-preset-custom')) as HTMLInputElement;
+      expect(custom.checked).toBe(false);
+      await next();
+      expect(alert()).toMatch(/Pick a provider/);
+      await user.click(custom);
+      await next();
+
+      // 2. Address and model: an address the extension could not reach is explained and blocks Next.
+      const url = screen.getByTestId('ai-base-url');
+      await user.type(url, 'http://example.com/v1');
+      expect(screen.getByTestId('ai-endpoint-status').textContent).toMatch(/localhost/);
+      await user.type(screen.getByTestId('ai-model'), 'test-model');
+      await next();
+      expect(alert()).toMatch(/localhost/);
+      expect(document.activeElement).toBe(url);
+      await user.clear(url);
+      await user.type(url, ENDPOINT);
+      expect(screen.getByTestId('ai-endpoint-status').textContent).toContain(ORIGIN);
+      await next();
+
+      // 3. The key: an honest storage note, required for a remote address.
+      expect(document.body.textContent).toMatch(/without extra encryption/i);
+      await next();
+      expect(alert()).toMatch(/Paste the API key/);
+      await user.type(screen.getByTestId('ai-key-input'), KEY);
+      await next();
+
+      // 4. A daily limit as picture cards (30 is the default), 5. a last look, then Save.
+      expect((screen.getByTestId('ai-limit-30') as HTMLInputElement).checked).toBe(true);
+      await user.click(screen.getByTestId('ai-limit-100'));
+      await next();
+      expect(screen.getByTestId('ai-setup-summary').textContent).toContain(ORIGIN);
+      expect(await getAiKeyInfo()).toMatchObject({ present: false }); // nothing written yet
+      await user.click(screen.getByTestId('ai-setup-save'));
+
+      const status = await screen.findByTestId('ai-status');
+      expect(status.textContent).toMatch(/unverified/);
+      const s = await getAiSettings();
+      expect(s).toMatchObject({ baseUrl: ENDPOINT, model: 'test-model' });
+      expect(s.limits.maxRequestsPerDay).toBe(100);
+      expect(await getAiApiKey(ORIGIN)).toBe(KEY);
+      // the key is never shown in full, nor left in a field
+      const mask = await screen.findByTestId('ai-key-mask');
+      expect(mask.textContent).toBe(`••••••••${KEY.slice(-4)}`);
+      expect(document.body.textContent).not.toContain(KEY);
+      expect(
+        Array.from(document.querySelectorAll('input')).every((i) => !i.value.includes(KEY)),
+      ).toBe(true);
+
+      // removed in one click (under Advanced)
+      await user.click(screen.getByText('Advanced'));
+      await user.click(screen.getByTestId('ai-key-remove'));
+      await waitFor(async () => expect((await getAiKeyInfo()).present).toBe(false));
+      await waitFor(() => expect(screen.queryByTestId('ai-key-mask')).toBeNull());
+    },
+  );
+
+  it(
+    '"Save and test" asks Chrome first, saves, then sends only the fixed test message',
+    { timeout: 90_000 },
+    async () => {
+      const user = userEvent.setup();
+      await turnAi(true);
+      const mock = provider([{ text: 'OK', usage: { inputTokens: 9, outputTokens: 1 } }]);
+      render(
+        <AiEnvProvider env={envFor(mock)}>
+          <AiSettingsSection />
+        </AiEnvProvider>,
+      );
+      const next = () => user.click(screen.getByTestId('ai-setup-next'));
+      await user.click(await screen.findByTestId('ai-preset-openai'));
+      await next();
+      // the preset filled the address; only the model is typed
+      expect((screen.getByTestId('ai-base-url') as HTMLInputElement).value).toBe(
+        'https://api.openai.com/v1',
+      );
+      await user.clear(screen.getByTestId('ai-base-url'));
+      await user.type(screen.getByTestId('ai-base-url'), ENDPOINT);
+      await user.type(screen.getByTestId('ai-model'), 'test-model');
+      await next();
+      await user.type(screen.getByTestId('ai-key-input'), KEY);
+      await next();
+      await next();
+      await user.click(screen.getByTestId('ai-save-test'));
+      const result = await screen.findByTestId('ai-test-result');
+      expect(result.textContent).toContain('"OK"');
+      expect(chrome.permissions.request).toHaveBeenCalledWith({
+        origins: ['https://api.example.test/*'],
+      });
+      expect(mock.calls[0]!.messages).toEqual([
+        { role: 'user', content: 'Reply with the single word: OK' },
+      ]);
+      expect((await getAiSettings()).model).toBe('test-model');
+      expect(await getAiApiKey(ORIGIN)).toBe(KEY);
+      // already saved: the last button just closes the wizard
+      expect(screen.getByTestId('ai-setup-save').textContent).toBe('Done');
+      await user.click(screen.getByTestId('ai-setup-save'));
+      expect(await screen.findByTestId('ai-status')).toBeTruthy();
+      expect(document.body.textContent).not.toContain(KEY);
+    },
+  );
+
+  it('asks for a key for Anthropic even at an address on this computer (as the runtime does)', async () => {
     const user = userEvent.setup();
     await turnAi(true);
     render(
@@ -163,26 +312,88 @@ describe('AI settings', () => {
         <AiSettingsSection />
       </AiEnvProvider>,
     );
-    const url = await screen.findByTestId('ai-base-url');
+    const next = () => user.click(screen.getByTestId('ai-setup-next'));
+    await user.click(await screen.findByTestId('ai-preset-anthropic'));
+    await next();
+    await user.type(screen.getByTestId('ai-base-url'), 'http://127.0.0.1:8787');
+    await user.type(screen.getByTestId('ai-model'), 'claude-test');
+    await next();
+    expect(await screen.findByRole('heading', { name: 'API key' })).toBeTruthy();
+  });
 
-    // An address the extension could not reach is explained, and cannot be saved.
-    await user.type(url, 'http://example.com/v1');
-    expect(screen.getByTestId('ai-endpoint-status').textContent).toMatch(/localhost/);
-    await user.type(screen.getByTestId('ai-model'), 'test-model');
-    await user.click(screen.getByTestId('ai-save-settings'));
-    expect(await screen.findByText('Check these settings')).toBeTruthy();
+  it('opens the wizard again to edit the setup, with the saved answers, and can cancel', async () => {
+    const user = userEvent.setup();
+    await turnAi(true);
+    await configure();
+    render(
+      <AiEnvProvider env={envFor(null)}>
+        <AiSettingsSection />
+      </AiEnvProvider>,
+    );
+    await user.click(await screen.findByTestId('ai-edit-setup'));
+    expect(((await screen.findByTestId('ai-preset-custom')) as HTMLInputElement).checked).toBe(
+      true,
+    );
+    await user.click(screen.getByTestId('ai-setup-next'));
+    expect((screen.getByTestId('ai-base-url') as HTMLInputElement).value).toBe(ENDPOINT);
+    await user.click(screen.getByTestId('ai-setup-next'));
+    // a key is saved for this address: the step says so and does not ask again
+    expect(screen.getByTestId('ai-key-mask').textContent).toBe(`••••••••${KEY.slice(-4)}`);
+    await user.click(screen.getByTestId('ai-setup-cancel'));
+    const status = await screen.findByTestId('ai-status');
+    expect(screen.queryByTestId('ai-setup')).toBeNull();
+    // The button that was clicked is gone: focus lands on the status card's title, not <body>.
+    await waitFor(() => expect(document.activeElement).toBe(within(status).getByRole('heading')));
+  });
 
-    await user.clear(url);
-    await user.type(url, ENDPOINT);
-    expect(screen.getByTestId('ai-endpoint-status').textContent).toContain(ORIGIN);
-    await user.click(screen.getByTestId('ai-save-settings'));
-    await waitFor(async () => {
-      expect((await import('@storage').then((m) => m.getAiSettings())).model).toBe('test-model');
-    });
+  it('waits for the saved key before checking the key step: Next says why, then moves on', async () => {
+    const user = userEvent.setup();
+    await turnAi(true);
+    await configure();
+    let release!: () => void;
+    keyInfo.gate = new Promise<void>((r) => (release = r));
+    render(
+      <AiEnvProvider env={envFor(null)}>
+        <AiSettingsSection />
+      </AiEnvProvider>,
+    );
+    await user.click(await screen.findByTestId('ai-edit-setup'));
+    await user.click(screen.getByTestId('ai-setup-next'));
+    await user.click(screen.getByTestId('ai-setup-next'));
+    expect(screen.getByRole('heading', { name: 'API key' })).toBeTruthy();
+    // Not known yet: Next is disabled with the reason, and a press neither fails nor moves focus.
+    const next = screen.getByTestId('ai-setup-next');
+    expect(next.getAttribute('aria-disabled')).toBe('true');
+    expect(document.getElementById(next.getAttribute('aria-describedby')!)?.textContent).toBe(
+      'Checking for a saved key…',
+    );
+    await user.click(next);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByRole('heading', { name: 'API key' })).toBeTruthy();
+    expect(screen.getByTestId('ai-key-input').getAttribute('aria-invalid')).toBeNull();
 
-    // Honest storage warning, and the key is never shown in full.
+    release();
+    expect((await screen.findByTestId('ai-key-mask')).textContent).toBe(`••••••••${KEY.slice(-4)}`);
+    await waitFor(() =>
+      expect(screen.getByTestId('ai-setup-next').getAttribute('aria-disabled')).toBeNull(),
+    );
+    await user.click(screen.getByTestId('ai-setup-next'));
+    expect(await screen.findByRole('heading', { name: 'Daily limit' })).toBeTruthy();
+  });
+
+  it('replaces the key under Advanced, masked, and never shows it in full', async () => {
+    const user = userEvent.setup();
+    await turnAi(true);
+    await configure(false);
+    render(
+      <AiEnvProvider env={envFor(null)}>
+        <AiSettingsSection />
+      </AiEnvProvider>,
+    );
+    expect((await screen.findByTestId('ai-key-status')).textContent).toMatch(/No key saved/);
+    await user.click(screen.getByText('Advanced'));
     expect(screen.getByText(/without extra encryption/i)).toBeTruthy();
-    await user.type(await screen.findByTestId('ai-key-input'), KEY);
+    await user.type(screen.getByTestId('ai-key-input'), KEY);
     await waitFor(() =>
       expect(screen.getByTestId('ai-key-save').getAttribute('aria-disabled')).toBeNull(),
     );
@@ -190,14 +401,7 @@ describe('AI settings', () => {
     const mask = await screen.findByTestId('ai-key-mask');
     expect(mask.textContent).toBe(`••••••••${KEY.slice(-4)}`);
     expect(document.body.textContent).not.toContain(KEY);
-    expect(
-      Array.from(document.querySelectorAll('input')).every((i) => !i.value.includes(KEY)),
-    ).toBe(true);
     expect(await getAiApiKey(ORIGIN)).toBe(KEY);
-
-    await user.click(screen.getByTestId('ai-key-remove'));
-    await waitFor(async () => expect((await getAiKeyInfo()).present).toBe(false));
-    await waitFor(() => expect(screen.queryByTestId('ai-key-mask')).toBeNull());
   });
 
   it('asks Chrome for the one address from the click, then shows the real test result', async () => {
@@ -238,7 +442,8 @@ describe('AI settings', () => {
       </AiEnvProvider>,
     );
     const test = await screen.findByTestId('ai-test');
-    await user.type(screen.getByTestId('ai-model'), '-2');
+    await user.click(screen.getByText('Advanced'));
+    await user.type(screen.getByTestId('ai-max-requests'), '0');
     expect(test.getAttribute('aria-disabled')).toBe('true');
     expect(test.getAttribute('title')).toMatch(/Save your changes first/);
     await user.click(screen.getByTestId('ai-save-settings'));
@@ -252,11 +457,13 @@ describe('AI settings', () => {
   it('keeps limits and pricing consistent: a cost limit needs prices, and saved values come back', async () => {
     const user = userEvent.setup();
     await turnAi(true);
+    await setAiSettings({ ...defaultAiSettings(), baseUrl: ENDPOINT, model: 'test-model' });
     render(
       <AiEnvProvider env={envFor(null)}>
         <AiSettingsSection />
       </AiEnvProvider>,
     );
+    await user.click(await screen.findByText('Advanced'));
     const cost = await screen.findByTestId('ai-max-cost');
     await user.type(cost, '2.5');
     await user.click(screen.getByTestId('ai-save-settings'));
@@ -312,7 +519,9 @@ describe('AI settings', () => {
     held.release();
     await waitFor(() => expect(toggle.getAttribute('aria-busy')).toBeNull());
     expect(toggle.checked).toBe(true);
-    expect(await screen.findByTestId('ai-base-url')).toBeTruthy();
+    // the same switch stays put (and keeps focus) while the setup wizard appears
+    expect(screen.getByTestId('ai-enable')).toBe(toggle);
+    expect(await screen.findByTestId('ai-setup')).toBeTruthy();
   });
 
   it('a failed write rolls the switch back and says so in an alert', async () => {
@@ -334,7 +543,7 @@ describe('AI settings', () => {
     expect(alert.textContent).toMatch(/storage is full/);
     await waitFor(() => expect(toggle.checked).toBe(false));
     expect(toggle.getAttribute('aria-busy')).toBeNull();
-    expect(screen.queryByTestId('ai-base-url')).toBeNull();
+    expect(screen.queryByTestId('ai-setup')).toBeNull();
   });
 
   it('turning the flag off hides the provider controls again', async () => {
@@ -345,9 +554,9 @@ describe('AI settings', () => {
         <AiSettingsSection />
       </AiEnvProvider>,
     );
-    await screen.findByTestId('ai-base-url');
+    await screen.findByTestId('ai-setup');
     await user.click(screen.getByTestId('ai-enable'));
-    await waitFor(() => expect(screen.queryByTestId('ai-base-url')).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId('ai-setup')).toBeNull());
   });
 });
 
@@ -390,6 +599,8 @@ describe('AI actions', () => {
 
     await openAction(user, 'summary');
     const dialog = await screen.findByTestId('ai-consent-dialog');
+    // Focus starts on the dialog's title (not on the first (i) inside it).
+    expect(document.activeElement).toBe(within(dialog).getByRole('heading', { level: 2 }));
     const outbound = await within(dialog).findByTestId('ai-outbound');
     // Where it goes, in plain words.
     expect(within(dialog).getByTestId('ai-endpoint-line').textContent).toContain(
@@ -417,7 +628,8 @@ describe('AI actions', () => {
     expect(mock.calls).toHaveLength(0); // nothing sent while reviewing
     const reviewed = outbound.textContent;
     await user.click(send);
-    await screen.findByTestId('ai-result-card');
+    // In the dialog (the drafts list under the actions may show it too, once it refreshes).
+    await within(dialog).findByTestId('ai-result-card');
     expect(mock.calls).toHaveLength(1);
     expect(outboundOf(mock.calls)).toBe(reviewed);
     expect(chrome.permissions.request).toHaveBeenCalledWith({

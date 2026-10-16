@@ -1,18 +1,43 @@
 import { useEffect, useRef, useState } from 'react';
+import {
+  Check,
+  CircleCheck,
+  CircleX,
+  Feather,
+  Flame,
+  Hourglass,
+  Layers,
+  Lightbulb,
+  LocateFixed,
+  Pause,
+  Pencil,
+  RotateCcw,
+  Sunrise,
+  Undo2,
+  X,
+  Zap,
+  type LucideIcon,
+} from 'lucide-react';
 import { RATINGS, RATING_LABELS, type Card, type Rating } from '@study';
 import { getCardSourceContext, type CardSourceContext } from '@storage';
 import {
-  Badge,
+  BarMeter,
   Button,
+  ChunkyButton,
+  IconButton,
+  InfoTip,
   InlineNotice,
-  Kbd,
   LOCAL_PREF_KEYS,
+  StatChip,
+  VaultBuddy,
   errorMessage,
   truncate,
   useAction,
   useAsync,
   useLatest,
+  useXpFloat,
 } from '@ui';
+import { XP, type GameView } from '@ui/game';
 import {
   CardFace,
   TID,
@@ -30,19 +55,20 @@ import { ExplainPanel } from './ExplainPanel';
 import { openSource, type JumpResult } from './jump';
 
 const TYPE_LABEL = {
-  basic: 'Question and answer',
-  cloze: 'Fill in the blank',
+  basic: 'Q&A',
+  cloze: 'Fill in',
   definition: 'Definition',
   compare: 'Compare',
   mcq: 'Multiple choice',
 } as const;
 
-const STATE_LABEL = {
-  new: 'New',
-  learning: 'Learning',
-  review: 'Review',
-  relearning: 'Relearning',
-} as const;
+/** One icon per rating (UX_DESIGN section 4); the label is always shown next to it. */
+export const RATING_ICON: Record<Rating, LucideIcon> = {
+  1: RotateCcw,
+  2: Hourglass,
+  3: Check,
+  4: Feather,
+};
 
 /** Per-viewer convenience (localStorage): whether the single-key shortcuts act (WCAG 2.1.4). */
 const KEYS_PREF = LOCAL_PREF_KEYS.reviewKeys;
@@ -54,21 +80,16 @@ function readKeysPref(): boolean {
   }
 }
 
-const RATING_HINT: Record<Rating, string> = {
-  1: 'Forgot it',
-  2: 'Hard to recall',
-  3: 'Recalled',
-  4: 'Easy',
-};
-
 export function Session({
   state,
   controller,
+  game,
   timeZone,
   onLeave,
 }: {
   state: SessionState;
   controller: ReviewSessionController;
+  game: GameView;
   timeZone: string;
   onLeave(): void;
 }) {
@@ -105,6 +126,21 @@ export function Session({
   const article = useRef<HTMLElement>(null);
   const waitUntil = state.waitUntil;
   const [nowMs, setNowMs] = useState(() => Date.now());
+
+  // Game mode on and the ledger ready: today's XP, the streak and a "+1 XP" float per new answer.
+  const g = game.data;
+  const play = g?.ready && g.mode ? g : null;
+  const float = useXpFloat();
+  const award = float.award;
+  const fresh = state.lastAnswer?.fresh ? state.lastAnswer.logId : null;
+  const showFloat = play !== null;
+  // Only an answer given on this screen floats (not one that was there when it opened).
+  const floated = useRef(fresh);
+  useEffect(() => {
+    if (!fresh || fresh === floated.current) return;
+    floated.current = fresh;
+    if (showFloat) award(XP.review);
+  }, [fresh, showFloat, award]);
 
   // Waiting for a learning step: show the next card by itself when its time comes.
   useEffect(() => {
@@ -152,7 +188,7 @@ export function Session({
       if (
         (e.key === ' ' || e.key === 'Enter') &&
         e.target instanceof Element &&
-        e.target.closest('button, a[href], summary, [role="button"]')
+        e.target.closest('button, a[href], summary, [role="button"], input')
       ) {
         return;
       }
@@ -213,36 +249,55 @@ export function Session({
   }, [cardId]);
 
   const total = state.answered + state.remaining;
+  // The XP of the answer just given is spoken with the next card, never as a message of its own.
+  const xpNote = play && state.lastAnswer?.fresh ? `Plus ${XP.review} XP. ` : '';
   const announcement =
     phase === 'question'
-      ? `Question ${state.answered + 1} of ${total}.`
+      ? `${xpNote}Question ${state.answered + 1} of ${total}.`
       : phase === 'answer'
         ? 'Answer shown. Press 1 for Again, 2 for Hard, 3 for Good or 4 for Easy.'
         : '';
   const percent = total === 0 ? 0 : Math.round((state.answered / total) * 100);
+  const mcq = current?.card.cardType === 'mcq';
+  // Question-and-answer faces turn over; cloze and multiple choice change in place.
+  const flips = current !== null && !mcq && current.card.cardType !== 'cloze';
 
   return (
     <main className="rv-session" data-testid={TID.session} aria-label="Review session">
-      <header className="rv-session__head">
-        <div className="rv-session__progress">
-          <progress
-            data-testid={TID.progress}
-            value={state.answered}
-            max={Math.max(1, total)}
-            aria-label="Session progress"
-          />
-          <span className="sv-small" data-testid={TID.progressText}>
+      <header className="rv-top">
+        <IconButton
+          icon={X}
+          label="Leave session"
+          tipSide="right"
+          data-testid={TID.leave}
+          onClick={onLeave}
+        />
+        <div className="rv-pill" data-testid={TID.progress}>
+          <span className="rv-pill__count" aria-hidden="true">
+            {state.answered}/{total}
+          </span>
+          <BarMeter value={state.answered} max={Math.max(1, total)} label="Session progress" />
+          <span className="sv-vh" data-testid={TID.progressText}>
             {state.answered} answered, {state.remaining} left ({percent}%)
           </span>
         </div>
-        <Button
-          variant="ghost"
-          data-testid={TID.leave}
-          onClick={onLeave}
-          title="Your place is saved. Continue later from the deck list."
-        >
-          Leave session
-        </Button>
+        <div className="rv-top__stats">
+          {play ? (
+            <>
+              <span className="rv-top__xp">
+                <StatChip icon={Zap} tone="sun" value={play.today.xp} label="XP today" />
+                {float.node}
+              </span>
+              <StatChip
+                icon={Flame}
+                tone="flame"
+                value={play.streak.current}
+                label="day streak"
+                hideLabel
+              />
+            </>
+          ) : null}
+        </div>
       </header>
 
       {state.notice ? (
@@ -275,21 +330,24 @@ export function Session({
       ) : null}
 
       {phase === 'waiting' && state.waitUntil ? (
-        <section className="rv-card rv-waiting" data-testid={TID.waiting}>
-          <h2>Nothing is due this minute</h2>
-          <p>
-            The next learning step comes back {untilLabel(state.waitUntil, nowMs)} (
-            {formatWhen(state.waitUntil, timeZone)}). This page shows it automatically.
+        <section className="rv-wait" data-testid={TID.waiting} aria-labelledby="rv-wait-h">
+          <VaultBuddy pose="sleep" size={132} />
+          <h2 id="rv-wait-h" className="rv-wait__title">
+            Next card soon
+          </h2>
+          <p className="rv-wait__line">
+            Back {untilLabel(state.waitUntil, nowMs)} ({formatWhen(state.waitUntil, timeZone)}). It
+            shows by itself.
           </p>
-          <div className="sv-row">
-            <Button
+          <div className="rv-wait__actions">
+            <ChunkyButton
               variant="primary"
               data-testid={TID.waitNow}
               onClick={() => void controller.tick({ early: true })}
             >
               Show it now
-            </Button>
-            <Button onClick={onLeave}>Leave and come back later</Button>
+            </ChunkyButton>
+            <ChunkyButton onClick={onLeave}>Leave for now</ChunkyButton>
           </div>
         </section>
       ) : null}
@@ -302,156 +360,225 @@ export function Session({
           <article
             ref={article}
             tabIndex={-1}
-            className="rv-card"
+            className="rv-stage"
             data-testid={TID.card}
             aria-label="Card"
           >
-            <div className="sv-row rv-card__meta">
-              <Badge>{current.deck.name}</Badge>
-              <Badge>{TYPE_LABEL[current.card.cardType]}</Badge>
-              <Badge tone={current.card.fsrs.state === 'new' ? 'info' : 'neutral'}>
-                {STATE_LABEL[current.card.fsrs.state]}
-              </Badge>
-              {current.card.createdBy === 'ai' ? <Badge tone="warning">AI-made</Badge> : null}
-              {current.card.needsHumanVerification ? (
-                <span data-testid={TID.unverified}>
-                  <Badge tone="warning">Needs your check</Badge>
+            <div className="rv-card">
+              <div className="rv-card__meta">
+                <span className="rv-chip rv-chip--deck">
+                  <Layers aria-hidden="true" strokeWidth={2.5} />
+                  {current.deck.name}
                 </span>
-              ) : null}
-            </div>
-            {current.card.needsHumanVerification ? (
-              <div className="rv-unverified">
-                <p className="sv-small">
-                  The answer key and wording of this card have not been checked by you. It may be
-                  wrong; compare it with the source before you rely on it.
-                </p>
-                <Button
-                  data-testid={TID.verify}
-                  busy={state.busy}
-                  onClick={() => void controller.verify()}
-                >
-                  I checked this card
-                </Button>
-              </div>
-            ) : null}
-
-            {editing ? (
-              <CardEditForm
-                key={current.card.id}
-                card={current.card}
-                busy={state.busy}
-                error={state.error}
-                onCancel={() => setEditing(false)}
-                onSave={async (patch) => {
-                  const ok = await controller.edit(patch);
-                  if (ok) setEditing(false);
-                  return ok;
-                }}
-              />
-            ) : (
-              <CardFace
-                card={current.card}
-                reveal={phase === 'answer'}
-                revealedBlanks={current.revealedBlanks}
-                onRevealBlank={(i) => controller.revealBlank(i)}
-                choices={current.choices}
-                choiceId={current.choiceId}
-                grade={current.grade}
-                onChoose={(id) => controller.choose(id)}
-              />
-            )}
-
-            {phase === 'answer' && current.grade ? (
-              <p className="rv-mcq-result" data-testid={TID.mcqResult} role="status">
-                {current.grade.correct
-                  ? '✓ Correct. Good is suggested.'
-                  : '✕ Not quite. Again is suggested.'}
-              </p>
-            ) : null}
-            {phase === 'answer' && current.card.cardType === 'mcq' && current.card.explanation ? (
-              <div className="rv-explanation" data-testid={TID.mcqExplanation}>
-                <p className="sv-label">Why</p>
-                <p className="rv-face--small">{current.card.explanation}</p>
-              </div>
-            ) : null}
-
-            {phase === 'question' && !editing ? (
-              <div className="sv-row">
-                <Button
-                  variant="primary"
-                  data-testid={TID.reveal}
-                  onClick={() => controller.reveal()}
-                >
-                  {current.card.cardType === 'mcq'
-                    ? 'Show the answer without choosing'
-                    : 'Show answer'}{' '}
-                  <Kbd shortcut="Space" />
-                </Button>
-                {current.card.cardType === 'mcq' ? (
-                  <span className="sv-small sv-muted">
-                    or press 1 to {current.choices.length} to pick an option
+                <span className="rv-chip">{TYPE_LABEL[current.card.cardType]}</span>
+                {/* Only "New" says something to the learner; learning/review states are scheduler terms. */}
+                {current.card.fsrs.state === 'new' ? (
+                  <span className="rv-chip rv-chip--info">New</span>
+                ) : null}
+                {current.card.createdBy === 'ai' ? (
+                  <span className="rv-chip rv-chip--warning">AI-made</span>
+                ) : null}
+                {current.card.needsHumanVerification ? (
+                  <span className="rv-chip rv-chip--warning" data-testid={TID.unverified}>
+                    Needs your check
                   </span>
                 ) : null}
               </div>
-            ) : null}
+              {current.card.needsHumanVerification ? (
+                <div className="rv-unverified">
+                  <span className="sv-small">Not checked by you yet</span>
+                  <InfoTip label="About unchecked cards" align="start">
+                    The answer key and wording of this card have not been checked by you. Compare it
+                    with the source before you rely on it.
+                  </InfoTip>
+                  <Button
+                    data-testid={TID.verify}
+                    busy={state.busy}
+                    onClick={() => void controller.verify()}
+                  >
+                    I checked it
+                  </Button>
+                </div>
+              ) : null}
+
+              <div
+                key={phase}
+                className={`rv-card__face${flips && phase === 'answer' && !editing ? ' rv-flipin' : ''}`}
+              >
+                {editing ? (
+                  <CardEditForm
+                    key={current.card.id}
+                    card={current.card}
+                    busy={state.busy}
+                    error={state.error}
+                    onCancel={() => setEditing(false)}
+                    onSave={async (patch) => {
+                      const ok = await controller.edit(patch);
+                      if (ok) setEditing(false);
+                      return ok;
+                    }}
+                  />
+                ) : (
+                  <CardFace
+                    card={current.card}
+                    reveal={phase === 'answer'}
+                    revealedBlanks={current.revealedBlanks}
+                    onRevealBlank={(i) => controller.revealBlank(i)}
+                    choices={current.choices}
+                    choiceId={current.choiceId}
+                    grade={current.grade}
+                    onChoose={(id) => controller.choose(id)}
+                  />
+                )}
+              </div>
+
+              {phase === 'answer' && current.grade ? (
+                <p
+                  className={`rv-mcq-result rv-mcq-result--${current.grade.correct ? 'ok' : 'no'}`}
+                  data-testid={TID.mcqResult}
+                  role="status"
+                >
+                  {current.grade.correct ? (
+                    <CircleCheck aria-hidden="true" strokeWidth={2.6} />
+                  ) : (
+                    <CircleX aria-hidden="true" strokeWidth={2.6} />
+                  )}
+                  {current.grade.correct
+                    ? 'Correct. Good is suggested.'
+                    : 'Not quite. Again is suggested.'}
+                </p>
+              ) : null}
+              {phase === 'answer' && mcq && current.card.explanation ? (
+                <div className="rv-explanation" data-testid={TID.mcqExplanation}>
+                  <p className="sv-label">Why</p>
+                  <p className="rv-prewrap">{current.card.explanation}</p>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="rv-controls">
+              {phase === 'question' && !editing ? (
+                <div className="rv-show">
+                  <ChunkyButton
+                    variant="primary"
+                    size="lg"
+                    className="rv-show__btn"
+                    data-testid={TID.reveal}
+                    aria-keyshortcuts={keysOn ? 'Space' : undefined}
+                    onClick={() => controller.reveal()}
+                  >
+                    Show answer
+                  </ChunkyButton>
+                  {keysOn ? (
+                    <span className="rv-hint">
+                      or <kbd className="sv-kbd">Space</kbd>
+                      {mcq ? (
+                        <>
+                          {' '}
+                          · pick <kbd className="sv-kbd">1</kbd>–
+                          <kbd className="sv-kbd">{current.choices.length}</kbd>
+                        </>
+                      ) : null}
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {phase === 'answer' ? (
+                <div
+                  className="rv-ratings"
+                  role="group"
+                  aria-label="How well did you remember?"
+                  data-testid={TID.ratings}
+                >
+                  {RATINGS.map((r) => {
+                    const p = current.previews[r];
+                    const Icon = RATING_ICON[r];
+                    const suggested =
+                      current.grade !== null && r === (current.grade.correct ? 3 : 1);
+                    return (
+                      <button
+                        key={r}
+                        type="button"
+                        className={`rv-rating rv-rating--${r}`}
+                        data-testid={ratingId(r)}
+                        aria-disabled={state.busy || undefined}
+                        aria-keyshortcuts={keysOn ? String(r) : undefined}
+                        aria-label={`${RATING_LABELS[r]}, next review in ${p.label}. Key ${r}.`}
+                        onClick={() => {
+                          if (!state.busy) void controller.rate(r);
+                        }}
+                      >
+                        <span className="rv-rating__main">
+                          <Icon aria-hidden="true" strokeWidth={2.6} />
+                          {RATING_LABELS[r]}
+                        </span>
+                        <span className="rv-rating__sub">
+                          <span className="rv-rating__interval">{p.label}</span>
+                          {keysOn ? <kbd className="rv-rating__key">{r}</kbd> : null}
+                        </span>
+                        {suggested ? <span className="rv-rating__suggest">Suggested</span> : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
           </article>
 
-          {phase === 'answer' ? (
-            <section aria-label="How well did you remember?">
-              <div className="rv-ratings" data-testid={TID.ratings}>
-                {RATINGS.map((r) => {
-                  const p = current.previews[r];
-                  const suggested = current.grade !== null && r === (current.grade.correct ? 3 : 1);
-                  return (
-                    <button
-                      key={r}
-                      type="button"
-                      className={`rv-rating rv-rating--${r}`}
-                      data-testid={ratingId(r)}
-                      aria-disabled={state.busy || undefined}
-                      aria-label={`${RATING_LABELS[r]}, next review in ${p.label}. Key ${r}.`}
-                      onClick={() => {
-                        if (!state.busy) void controller.rate(r);
-                      }}
-                    >
-                      <span className="rv-rating__label">{RATING_LABELS[r]}</span>
-                      <span className="rv-rating__interval">{p.label}</span>
-                      <span className="rv-rating__hint">
-                        {RATING_HINT[r]} <kbd className="sv-kbd">{r}</kbd>
-                      </span>
-                      {suggested ? <span className="rv-rating__suggest">Suggested</span> : null}
-                    </button>
-                  );
-                })}
-              </div>
-            </section>
-          ) : null}
-
-          <div className="rv-tools sv-row" role="group" aria-label="Card actions">
-            <Button
+          <div className="rv-tools" role="group" aria-label="Card actions">
+            <ChunkyButton
+              size="sm"
+              variant="ghost"
+              icon={Undo2}
               data-testid={TID.undo}
-              busy={state.busy}
+              aria-busy={state.busy || undefined}
+              aria-keyshortcuts={keysOn ? 'Z' : undefined}
               disabledReason={state.lastAnswer ? undefined : 'Nothing to undo yet.'}
               onClick={() => void controller.undo()}
             >
-              Undo <Kbd shortcut="Z" />
-            </Button>
-            <Button data-testid={TID.edit} onClick={() => setEditing((v) => !v)}>
-              {editing ? 'Close editor' : 'Edit'} <Kbd shortcut="E" />
-            </Button>
-            <Button
+              Undo
+            </ChunkyButton>
+            <ChunkyButton
+              size="sm"
+              variant="ghost"
+              icon={Pencil}
+              data-testid={TID.edit}
+              aria-pressed={editing}
+              aria-keyshortcuts={keysOn ? 'E' : undefined}
+              onClick={() => setEditing((v) => !v)}
+            >
+              Edit
+            </ChunkyButton>
+            <ChunkyButton
+              size="sm"
+              variant="ghost"
+              icon={Pause}
               data-testid={TID.suspend}
-              busy={state.busy}
+              aria-busy={state.busy || undefined}
+              aria-keyshortcuts={keysOn ? 'S' : undefined}
               onClick={() => void controller.suspend()}
             >
-              Suspend <Kbd shortcut="S" />
-            </Button>
-            <Button data-testid={TID.bury} busy={state.busy} onClick={() => void controller.bury()}>
-              Bury until tomorrow <Kbd shortcut="B" />
-            </Button>
-            <Button
+              Suspend
+            </ChunkyButton>
+            <ChunkyButton
+              size="sm"
+              variant="ghost"
+              icon={Sunrise}
+              data-testid={TID.bury}
+              aria-busy={state.busy || undefined}
+              aria-keyshortcuts={keysOn ? 'B' : undefined}
+              onClick={() => void controller.bury()}
+            >
+              Bury
+            </ChunkyButton>
+            <ChunkyButton
+              size="sm"
+              variant="ghost"
+              icon={LocateFixed}
               data-testid={TID.source}
-              busy={openSourceAction.busy}
+              aria-busy={openSourceAction.busy || undefined}
+              aria-keyshortcuts={keysOn ? 'J' : undefined}
               disabledReason={
                 current.card.highlightId
                   ? undefined
@@ -459,23 +586,45 @@ export function Session({
               }
               onClick={() => void openSourceAction.run()}
             >
-              Jump to source <Kbd shortcut="J" />
-            </Button>
-            <Button
+              Source
+            </ChunkyButton>
+            <ChunkyButton
+              size="sm"
+              variant="ghost"
+              icon={Lightbulb}
               data-testid={TID.explain}
+              aria-pressed={phase === 'answer' ? explaining : undefined}
+              aria-keyshortcuts={keysOn ? 'X' : undefined}
               disabledReason={
                 phase === 'answer' ? undefined : 'Show the answer first to see the explanation.'
               }
               onClick={() => setExplaining((v) => !v)}
             >
-              {explaining ? 'Hide explanation' : 'Explain answer'} <Kbd shortcut="X" />
-            </Button>
+              Explain
+            </ChunkyButton>
+            <span className="rv-tools__keys">
+              <label className="sv-check">
+                <input
+                  type="checkbox"
+                  role="switch"
+                  className="sv-switch"
+                  data-testid={TID.keysToggle}
+                  checked={keysOn}
+                  onChange={(e) => setKeys(e.target.checked)}
+                />
+                <span>Key shortcuts</span>
+              </label>
+              <InfoTip label="Keyboard shortcuts" align="end" side="top">
+                Space shows the answer and 1 to 4 grade it. Z undo, E edit, S suspend, B bury, J
+                source, X explain. Keys act only while this page has focus.
+              </InfoTip>
+            </span>
           </div>
 
           {state.lastAnswer ? (
-            <p className="sv-small sv-muted">
-              Last answer: {RATING_LABELS[state.lastAnswer.rating]} on &ldquo;
-              {truncate(state.lastAnswer.front, 60)}&rdquo;.
+            <p className="rv-last">
+              Last: {RATING_LABELS[state.lastAnswer.rating]} on &ldquo;
+              {truncate(state.lastAnswer.front, 60)}&rdquo;
             </p>
           ) : null}
           {openSourceAction.error ? (
@@ -496,24 +645,6 @@ export function Session({
           ) : null}
 
           {explaining && phase === 'answer' ? <ExplainSection card={current.card} /> : null}
-
-          {keysOn ? (
-            <p className="sv-small sv-muted rv-keys" aria-label="Keyboard shortcuts">
-              Keys: <Kbd shortcut="Space" /> show answer, <kbd className="sv-kbd">1</kbd>{' '}
-              <kbd className="sv-kbd">2</kbd> <kbd className="sv-kbd">3</kbd>{' '}
-              <kbd className="sv-kbd">4</kbd> grade, <Kbd shortcut="Z" /> undo, <Kbd shortcut="E" />{' '}
-              edit, <Kbd shortcut="X" /> explain, <Kbd shortcut="J" /> source.
-            </p>
-          ) : (
-            <p className="sv-small sv-muted">
-              Single-key shortcuts are off. Every action above is a button.
-            </p>
-          )}
-          <div>
-            <Button variant="ghost" data-testid={TID.keysToggle} onClick={() => setKeys(!keysOn)}>
-              {keysOn ? 'Turn single-key shortcuts off' : 'Turn single-key shortcuts on'}
-            </Button>
-          </div>
         </>
       ) : null}
 

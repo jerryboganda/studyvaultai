@@ -1,118 +1,829 @@
-/* Side panel: fluid width (works from ~160px at 200% zoom up), single scrolling column. */
+/*
+ * Side panel (UX_DESIGN 7.2): header and icon tab bar stay put, the tab panel scrolls. Fluid from
+ * 360 px down to 160 CSS px (320 px at 200% zoom). Tokens only; the shared Sunny components come
+ * from @ui (components.css). Classes: panel__* (shell), sp-* (panel parts), hl-* (highlight
+ * card), rt-* (the review tab, @ui/review ReviewTab, which only the panel hosts).
+ */
 html,
-body {
+body,
+#root {
   height: 100%;
+}
+body {
+  overflow: hidden; /* the tab panel is the scroller */
+}
+
+/* Shell ---------------------------------------------------------------------------------------- */
+.panel {
+  --sp-gutter: 16px;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--sv-canvas);
+  container-type: inline-size;
+}
+.panel__head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 8px 8px 12px;
+  border-bottom: 2px solid var(--sv-border);
+  background: var(--sv-surface);
+}
+.panel__actions {
+  display: inline-flex;
+  flex: none;
+  gap: 4px;
+  margin-inline-start: auto;
+}
+.panel__game {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.panel__ringNum {
+  font-size: 0.8125rem;
+  font-weight: 900;
+}
+.panel__counting {
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+}
+.panel__tabs {
+  flex: 1;
+  min-height: 0;
+}
+/*
+ * One row of tabs from 360 px down to 160 CSS px: widths follow the labels ("This page" is the
+ * longest) instead of five equal columns, and the selected tab keeps a gutter from the panel edge.
+ */
+.panel__tabs .sv-tabbar__list {
+  display: flex;
+  padding: 8px var(--sp-gutter) 6px;
+}
+.panel__tabs .sv-tabbar__tab {
+  flex: 1 1 auto;
+}
+@container (min-width: 300px) {
+  .panel__tabs .sv-tabbar__label {
+    white-space: nowrap;
+  }
+}
+@container (max-width: 260px) {
+  .panel__tabs .sv-tabbar__list {
+    gap: 2px;
+    padding: 6px 4px;
+  }
+  .panel__tabs .sv-tabbar__tab {
+    padding-inline: 0;
+  }
+  /* Icon-only tabs are ~29 px wide: the count badge stays over its own tab, not the next icon. */
+  .panel__tabs .sv-tabbar__count {
+    right: -4px;
+  }
 }
 /*
  * The toast stack is fixed to the bottom edge. A focused control that scrolls into view must come to
  * rest above it (WCAG 2.4.11 Focus Not Obscured), and the last card must be able to scroll clear of it.
  */
-html {
+.panel__tabs .sv-tabbar__panel {
+  position: relative; /* contains visually hidden (absolute) text, so it cannot stretch the page */
   scroll-padding-bottom: 9rem;
 }
-.panel {
+.panel__body {
   display: flex;
   flex-direction: column;
-  min-height: 100%;
-}
-.panel__head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--sv-space-2);
-  padding: var(--sv-space-2) var(--sv-space-3);
-  border-bottom: 1px solid var(--sv-border);
-}
-.panel__main {
-  flex: 1 1 auto;
+  gap: 12px;
   min-width: 0;
+  padding: 12px var(--sp-gutter) 6rem;
 }
-.panel__reminder {
-  /* The daily review notice sits above the tabs; empty (and then not even a gap) when not raised. */
-  padding: var(--sv-space-3) var(--sv-space-3) 0;
+.panel > .panel__body {
+  position: relative;
+  flex: 1;
+  overflow: auto;
+}
+.panel > .sv-notice {
+  margin: 8px var(--sp-gutter) 0;
 }
 .panel__reminder:empty {
   display: none;
 }
-.panel__body {
-  /* Bottom room so the last card can scroll clear of the fixed toast stack. */
-  padding: var(--sv-space-3) var(--sv-space-3) 6rem;
-  min-width: 0;
-}
-.panel__title {
-  font-size: var(--sv-text-lg);
+.panel__wait {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  color: var(--sv-ink-2);
   font-weight: 700;
-  line-height: 1.3;
-}
-.hl-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sv-space-3);
-}
-.hl-card {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sv-space-2);
-  padding: var(--sv-space-3);
-  border: 1px solid var(--sv-border);
-  border-radius: var(--sv-radius-md);
-  background: var(--sv-surface-raised);
-  min-width: 0;
-}
-.hl-fields {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-  gap: var(--sv-space-2);
 }
 .panel__error {
-  color: var(--sv-danger);
-  font-weight: 600;
-}
-.bank-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sv-space-2);
-}
-.bank-item {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--sv-space-2);
-  padding: var(--sv-space-2) var(--sv-space-3);
-  border: 1px solid var(--sv-border);
-  border-radius: var(--sv-radius-md);
-  background: var(--sv-surface-raised);
-  min-width: 0;
+  margin: 0;
+  color: var(--sv-danger-ink);
+  font-size: var(--sv-text-sm);
+  font-weight: 700;
 }
 
-/* Header: title and actions on one wrapping row, then the page context. ------------------------ */
-.panel__head {
-  flex-direction: column;
-  align-items: stretch;
+@container (max-width: 340px) {
+  .panel {
+    --sp-gutter: 12px;
+  }
 }
-.panel__bar {
+/* 320 px at 200% zoom: no mascot, the header wraps, 8 px gutters (tabs go icon-only themselves). */
+@container (max-width: 260px) {
+  .panel {
+    --sp-gutter: 8px;
+  }
+  .panel__buddy {
+    display: none;
+  }
+  .panel__head {
+    flex-wrap: wrap;
+    gap: 4px;
+    padding-left: 8px;
+  }
+  .sp-site__icon {
+    display: none;
+  }
+  /* Bank rows: the due badge drops under the name instead of pushing the row past the edge. */
+  .sp-bank,
+  .sp-bankhead {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .rt-hero {
+    padding: 12px 8px;
+  }
+  .rt-hero .sv-chunky {
+    white-space: normal;
+  }
+}
+
+/* Colour of a highlight / bank: --sw is the solid swatch, --sw-soft the tint. ------------------ */
+.sp-sw--amber {
+  --sw: var(--sv-solid-amber);
+  --sw-soft: var(--sv-hl-amber);
+}
+.sp-sw--blue {
+  --sw: var(--sv-solid-blue);
+  --sw-soft: var(--sv-hl-blue);
+}
+.sp-sw--red {
+  --sw: var(--sv-solid-red);
+  --sw-soft: var(--sv-hl-red);
+}
+.sp-sw--purple {
+  --sw: var(--sv-solid-purple);
+  --sw-soft: var(--sv-hl-purple);
+}
+.sp-sw--orange {
+  --sw: var(--sv-solid-orange);
+  --sw-soft: var(--sv-hl-orange);
+}
+.sp-sw--green {
+  --sw: var(--sv-solid-green);
+  --sw-soft: var(--sv-hl-green);
+}
+.sp-sw--teal {
+  --sw: var(--sv-solid-teal);
+  --sw-soft: var(--sv-hl-teal);
+}
+.sp-sw--none {
+  --sw: var(--sv-sunk);
+  --sw-soft: var(--sv-sunk);
+}
+
+/* Shared bits ---------------------------------------------------------------------------------- */
+.sp-h {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 900;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+.sp-h svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+}
+.sp-h--warn {
+  color: var(--sv-warning-ink);
+}
+.sp-count {
+  padding: 0 8px;
+  border-radius: var(--sv-radius-pill);
+  background: var(--sv-sunk);
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+  line-height: 1.6;
+}
+.sp-titlerow {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: var(--sv-space-1) var(--sv-space-2);
+  gap: 8px;
+}
+.sp-titlerow--start {
+  justify-content: flex-start;
+  gap: 4px;
+}
+.sp-list,
+.hl-list {
+  display: grid;
+  /* minmax(0, …): a card never makes the column wider than the panel (200% zoom reflow). */
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.sp-link {
+  min-height: 24px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  color: var(--sv-primary-soft-ink);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 800;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.sp-btnicon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.sp-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 32px;
+  margin: 0;
+  padding: 3px 12px;
+  border: 2px solid var(--sv-line-strong);
+  border-radius: var(--sv-radius-pill);
+  background: var(--sv-surface);
+  color: var(--sv-ink);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+.sp-pill svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.sp-pill:hover {
+  border-color: var(--sv-primary);
+}
+.sp-pill[aria-expanded='true'],
+.sp-pill--on {
+  border-color: var(--sv-primary);
+  background: var(--sv-primary-soft);
+  color: var(--sv-primary-soft-ink);
+}
+.sp-pill--on {
+  cursor: default;
+}
+.sp-scope {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 4px 6px 4px 12px;
+  border: 2px solid var(--sv-primary);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-primary-soft);
+  color: var(--sv-primary-soft-ink);
+  font-size: 0.875rem;
+  font-weight: 800;
+}
+.sp-scope > svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+.sp-scope > span {
+  flex: 1;
   min-width: 0;
 }
-.panel__context {
-  min-width: 0;
+.sp-scope__x {
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
 }
-
-/* Tabs: five labels cannot share one row at 160 CSS px (320 px at 200% zoom), so they wrap. ----- */
-.panel .sv-tablist {
+.sp-scope__x:hover {
+  background: var(--sv-surface);
+}
+.sp-scope__x svg {
+  width: 14px;
+  height: 14px;
+}
+.sp-iact[aria-disabled='true'] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.sp-iact[aria-disabled='true']:hover {
+  background: transparent;
+  color: var(--sv-ink-2);
+}
+.sp-iact[aria-busy='true'] {
+  cursor: progress;
+}
+.sp-iact.is-open {
+  background: var(--sv-primary-soft);
+  color: var(--sv-primary-soft-ink);
+}
+:is(.sp-link, .sp-pill, .sp-scope__x, .sp-bank, .folder-name, .folder-twist):focus-visible {
+  outline: var(--sv-focus-width) solid var(--sv-focus);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 2px var(--sv-focus-halo);
+}
+.sp-why {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin: -8px 0 0;
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-sm);
+  font-weight: 700;
+}
+.sp-empty {
+  display: grid;
+  justify-items: center;
+}
+.sp-keys {
+  display: flex;
   flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: -12px 0 0;
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-sm);
 }
-.panel .sv-tab {
-  flex: 1 1 auto;
-  min-width: 3.5rem;
+.sp-keys .sv-kbd {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.sp-dialog__nav {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
-/* Highlight card additions -------------------------------------------------------------------- */
+/* This page: site card and the not-running callout --------------------------------------------- */
+.sp-site {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+.sp-site__icon {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  margin-top: 2px;
+  color: var(--sv-ink-2);
+}
+.sp-site__text {
+  flex: 1 1 7rem;
+  min-width: 0;
+}
+.sp-site__title {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 800;
+  line-height: 1.3;
+}
+.sp-site__host {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--sv-ink-2);
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+.sp-badge {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 9px;
+  border-radius: var(--sv-radius-pill);
+  background: var(--sv-sunk);
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+  line-height: 1.5;
+}
+.sp-badge svg {
+  width: 14px;
+  height: 14px;
+}
+.sp-badge--on {
+  background: var(--sv-success-soft);
+  color: var(--sv-success-ink);
+}
+.sp-badge--warn {
+  background: var(--sv-warning-soft);
+  color: var(--sv-warning-ink);
+}
+.sp-callout {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-lg);
+  background: var(--sv-surface);
+  box-shadow: 0 3px 0 var(--sv-border);
+}
+.sp-callout__icon {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  padding: 8px;
+  border-radius: 12px;
+  background: var(--sv-primary-soft);
+  color: var(--sv-primary-soft-ink);
+}
+.sp-callout__body {
+  display: grid;
+  flex: 1;
+  justify-items: start;
+  gap: 8px;
+  min-width: 0;
+}
+.sp-callout__title {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 800;
+  line-height: 1.3;
+}
+
+/* Highlight card (UX_DESIGN 6.18) -------------------------------------------------------------- */
+.hl-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px 10px 6px 20px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-lg);
+  background: var(--sv-surface);
+  /* The colour strip is an inset shadow, so it follows the rounded corner without clipping tips. */
+  box-shadow:
+    inset 7px 0 0 var(--sw),
+    0 3px 0 var(--sv-border);
+}
+.hl-card__top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+/* The status badge and its (i) wrap as one, so the (i) never sits alone beside the kind chip. */
+.hl-card__state {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.hl-card__quote {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  overflow-wrap: anywhere;
+  color: var(--sv-ink);
+  font-size: 0.9375rem;
+  font-weight: 700;
+  line-height: 1.45;
+}
+.hl-card__meta {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--sv-ink-2);
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+.hl-card__meta > svg {
+  width: 14px;
+  height: 14px;
+  margin-right: 4px;
+  vertical-align: -2px;
+}
+.hl-card__meta a {
+  color: var(--sv-primary-soft-ink);
+  font-weight: 800;
+}
+.hl-card__actions {
+  display: flex;
+  flex-wrap: wrap; /* 320 px at 200% zoom leaves ~115 px here */
+  align-items: center;
+  gap: 2px;
+  margin: 0 -4px;
+}
+.hl-card__spacer {
+  flex: 1;
+}
+
+/* The quick note: always on the card (the page overlay's hand-over target). */
+.hl-note {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: 2px 6px;
+}
+.hl-note__label {
+  display: grid;
+  padding-top: 7px;
+  color: var(--sv-sun-edge);
+}
+.hl-note__label svg {
+  width: 16px;
+  height: 16px;
+}
+.hl-note__input {
+  width: 100%;
+  min-height: 32px;
+  max-height: 12rem;
+  padding: 4px 8px;
+  /* At rest the note reads as a line of the card (icon + text); the field shows on hover and focus. */
+  border: 2px dashed transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--sv-ink-2);
+  font: inherit;
+  font-size: var(--sv-text-sm);
+  font-weight: 700;
+  line-height: 1.4;
+  resize: none; /* grows with its text instead */
+  field-sizing: content;
+}
+.hl-note__input:hover {
+  border-color: var(--sv-line-strong);
+}
+.hl-note__input::placeholder {
+  color: var(--sv-ink-2);
+  font-weight: 600;
+  opacity: 1;
+}
+.hl-note__input:focus {
+  border-color: var(--sv-primary);
+  border-style: solid;
+  background: var(--sv-surface-2);
+  color: var(--sv-ink);
+}
+.hl-note__input:focus-visible {
+  outline: var(--sv-focus-width) solid var(--sv-focus);
+  outline-offset: 2px;
+}
+.hl-note__status {
+  grid-column: 2;
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+}
+.hl-note__status:empty {
+  display: none;
+}
+.hl-note__error {
+  color: var(--sv-danger-ink);
+}
+
+/* Bank and tag chips. */
+.hl-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.hl-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 2px 9px 2px 7px;
+  border-radius: var(--sv-radius-pill);
+  background: var(--sv-sunk);
+  overflow-wrap: anywhere;
+  color: var(--sv-ink);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+  line-height: 1.5;
+}
+.hl-chip svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+.hl-chip__dot {
+  width: 10px;
+  height: 10px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--sw);
+}
+.hl-chip--none {
+  color: var(--sv-ink-2);
+}
+.hl-tag {
+  overflow-wrap: anywhere;
+  color: var(--sv-primary-soft-ink);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+}
+
+/* A filing rule's offer (docs/adr/017-filing-rules.md). */
+.hl-suggest {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 2px solid var(--sv-primary);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-primary-soft);
+}
+.hl-suggest__what {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--sv-ink);
+  font-size: var(--sv-text-sm);
+  font-weight: 700;
+}
+.hl-suggest__what > svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: var(--sv-primary-soft-ink);
+}
+.hl-suggest__rule {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+}
+
+/* "More actions": the editors. */
+.hl-drawer {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 12px 0 6px;
+  border-top: 2px dashed var(--sv-border);
+}
+.hl-drawer__foot {
+  display: flex;
+  justify-content: flex-end;
+}
+.hl-pick {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.hl-pick__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+  padding: 0;
+  font-size: var(--sv-text-sm);
+  font-weight: 800;
+}
+.hl-pick__value {
+  color: var(--sv-ink-2);
+  font-weight: 700;
+}
+.hl-pick__input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.hl-kinds {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.hl-kind {
+  position: relative;
+  display: inline-grid;
+}
+.hl-kind__dot {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--sw);
+  box-shadow: 0 0 0 2px var(--sv-ink-2);
+  /* The glyph sits on the swatch, the same in both themes (UX_DESIGN 2.2: 3.76 to 7.41:1). */
+  color: #18213b;
+  font-size: 0.9375rem;
+  font-weight: 900;
+  line-height: 1;
+}
+.hl-pick__input:checked + .hl-kind__dot {
+  box-shadow:
+    0 0 0 2px var(--sv-surface),
+    0 0 0 5px var(--sv-primary);
+}
+.hl-pick__input:focus-visible + .hl-kind__dot,
+.hl-pick__input:focus-visible + span {
+  outline: var(--sv-focus-width) solid var(--sv-focus);
+  outline-offset: 5px;
+}
+.hl-seg {
+  display: flex;
+  flex-wrap: wrap; /* five 28 px options do not fit a 160 px panel on one row */
+  gap: 6px;
+}
+.hl-seg__opt {
+  position: relative;
+  flex: 1 1 28px;
+  min-width: 28px;
+}
+.hl-seg__opt > span[aria-hidden] {
+  display: grid;
+  place-items: center;
+  height: 36px;
+  border: 2px solid var(--sv-line-strong);
+  border-radius: 10px;
+  background: var(--sv-surface-2);
+  font-weight: 900;
+}
+.hl-pick__input:checked + span[aria-hidden]:not(.hl-kind__dot) {
+  border-color: var(--sv-primary);
+  background: var(--sv-primary-soft);
+  box-shadow: 0 3px 0 var(--sv-primary-edge);
+  color: var(--sv-primary-soft-ink);
+}
+.hl-ai-off {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--sv-ink-2);
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+.hl-ai-off > svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--sv-violet-ink);
+}
+.hl-ai-off a {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--sv-primary-soft-ink);
+  font-weight: 800;
+}
+.hl-ai-off a svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* Tags and study notes inside the drawer. */
 .sp-tags {
   display: flex;
   flex-wrap: wrap;
@@ -147,11 +858,11 @@ html {
   width: auto;
 }
 .sp-note {
-  padding: var(--sv-space-2);
-  border: 1px solid var(--sv-border);
-  border-radius: var(--sv-radius-sm);
-  background: var(--sv-surface);
   min-width: 0;
+  padding: var(--sv-space-2);
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface-2);
 }
 .sp-note .sv-md table {
   display: block;
@@ -162,104 +873,572 @@ html {
   max-width: 100%;
 }
 
-/* Bank and folder map -------------------------------------------------------------------------- */
-.bank-name {
-  justify-content: flex-start;
-  text-align: start;
+/* Banks ---------------------------------------------------------------------------------------- */
+.sp-bank,
+.sp-bankhead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
   min-width: 0;
+  padding: 10px 12px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-lg);
+  background: var(--sv-surface);
+  box-shadow: 0 3px 0 var(--sv-border);
+  color: var(--sv-ink);
+  text-align: start;
+}
+.sp-bank {
+  font: inherit;
+  cursor: pointer;
+  transition:
+    transform var(--sv-motion) var(--sv-ease-spring),
+    box-shadow var(--sv-motion),
+    border-color var(--sv-motion);
+}
+.sp-bank:hover {
+  border-color: var(--sv-primary);
+}
+.sp-bank:active {
+  transform: translateY(3px);
+  box-shadow: 0 0 0 var(--sv-border);
+}
+.sp-bank__text {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+}
+.sp-bank__text strong {
+  font-size: 1rem;
+  font-weight: 800;
+}
+.sp-bank__text > span {
+  color: var(--sv-ink-2);
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+.sp-tile {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  background: var(--sw-soft);
+  color: var(--sv-ink);
+  font-size: 1.25rem;
+  font-weight: 900;
+  line-height: 1;
+}
+.sp-tile svg {
+  width: 22px;
+  height: 22px;
+}
+.sp-due {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 52px;
+  padding: 3px 8px;
+  border-radius: var(--sv-radius-pill);
+  font-size: var(--sv-text-xs);
+  font-weight: 900;
+  line-height: 1.4;
+}
+.sp-due svg {
+  width: 14px;
+  height: 14px;
+}
+.sp-due--on {
+  background: var(--sv-sun-soft);
+  color: var(--sv-sun-soft-ink);
+}
+.sp-due--off {
+  background: var(--sv-success-soft);
+  color: var(--sv-success-ink);
+}
+.sp-bankbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
 }
 .folder-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sv-space-1);
-  margin-block-start: var(--sv-space-1);
-  padding-inline-start: var(--sv-space-3);
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.folder-list .folder-list {
+  margin-block-start: 4px;
+  padding-inline-start: 12px;
   border-inline-start: 2px solid var(--sv-border);
-  min-width: 0;
+}
+.folder-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 .folder-twist {
-  padding-inline: var(--sv-space-1);
+  display: inline-grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--sv-ink-2);
+  cursor: pointer;
 }
-
-/* Search ---------------------------------------------------------------------------------------- */
-.sp-results {
-  display: flex;
-  flex-direction: column;
-  gap: var(--sv-space-3);
+.folder-twist svg,
+.folder-name svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
 }
-.sp-card {
+.folder-name {
   display: flex;
-  flex-direction: column;
-  gap: var(--sv-space-2);
-  padding: var(--sv-space-3);
-  border: 1px solid var(--sv-border);
-  border-radius: var(--sv-radius-md);
-  background: var(--sv-surface-raised);
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 36px;
+  padding: 4px 10px;
+  border: 2px solid var(--sv-border);
+  border-radius: 12px;
+  background: var(--sv-surface);
+  color: var(--sv-ink);
+  font: inherit;
+  font-size: var(--sv-text-sm);
+  font-weight: 700;
+  text-align: start;
+  cursor: pointer;
+}
+/* A folder without children has no twist button: keep its name in line with its siblings'. */
+.folder-row > .folder-name:first-child {
+  margin-inline-start: 32px;
+}
+.folder-name:hover {
+  border-color: var(--sv-primary);
+}
+.folder-name[aria-pressed='true'] {
+  border-color: var(--sv-primary);
+  background: var(--sv-primary-soft);
+  color: var(--sv-primary-soft-ink);
+}
+.folder-name > span:first-of-type {
+  flex: 1;
   min-width: 0;
 }
-.sp-quote {
-  font-family: var(--sv-serif);
+.folder-count {
+  padding: 0 7px;
+  border-radius: var(--sv-radius-pill);
+  background: var(--sv-sunk);
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
 }
-.sp-mark {
-  padding: 0 1px;
-  border-radius: 2px;
-  background: var(--sv-warning-bg);
-  color: var(--sv-text);
+
+/* New bank wizard: icon grid, colour swatches, done screen. */
+/* Short steps: the error sits right under the name field, not below a fixed-height body. */
+.sv-wiz--dialog.sp-newbank .sv-wiz__body {
+  min-height: 0;
+}
+.sp-emojis {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.sp-emoji {
+  position: relative;
+  display: grid;
+}
+.sp-emoji > span[aria-hidden] {
+  display: grid;
+  place-items: center;
+  height: 52px;
+  border: 2px solid var(--sv-border);
+  border-radius: 14px;
+  background: var(--sv-surface);
+  box-shadow: 0 3px 0 var(--sv-border);
+  font-size: 1.5rem;
+}
+/* Checked: a check badge as well as the blue tile (colour is never the only cue). */
+.sp-emoji > .hl-pick__input:checked + span::after {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--sv-primary);
+  color: var(--sv-on-primary);
+  content: '✓' / '';
+  font-size: 0.75rem;
+  font-weight: 900;
+}
+.sp-colours {
+  grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+}
+.sp-colours .sp-emoji {
+  gap: 4px;
+}
+.sp-colour__name {
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+  text-align: center;
+}
+.sp-swatch {
+  display: block;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--sw);
+  box-shadow: 0 0 0 2px var(--sv-ink-2);
+}
+.sp-done {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  text-align: center;
+}
+.sp-done .sp-bankhead {
+  text-align: start;
+}
+
+/* Search --------------------------------------------------------------------------------------- */
+.sp-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.sp-search__icon {
+  position: absolute;
+  left: 14px;
+  width: 20px;
+  height: 20px;
+  color: var(--sv-ink-2);
+  pointer-events: none;
+}
+.sp-search__input {
+  width: 100%;
+  min-width: 0;
+  min-height: 48px;
+  padding: 10px 44px;
+  border: 2px solid var(--sv-line-strong);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface-2);
+  color: var(--sv-ink);
+  font: inherit;
+  font-size: 1rem;
   font-weight: 700;
-  text-decoration: underline;
-  text-decoration-thickness: 1px;
+}
+.sp-search__input::placeholder {
+  color: var(--sv-ink-2);
+  opacity: 1;
+}
+.sp-search__input::-webkit-search-cancel-button {
+  appearance: none;
+}
+.sp-search__input:focus {
+  border-color: var(--sv-primary);
+}
+.sp-search__input:focus-visible {
+  outline: var(--sv-focus-width) solid var(--sv-focus);
+  outline-offset: 2px;
+}
+.sp-search__clear {
+  position: absolute;
+  right: 6px;
+  display: inline-flex;
+}
+.sp-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.sp-hint {
+  margin: 0;
+  color: var(--sv-ink-2);
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+.sp-help,
+.sp-facets {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-lg);
+  background: var(--sv-surface);
+}
+.sp-help__list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.sp-help__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 8px;
+}
+.sp-help__row > .sv-small {
+  grid-column: 1;
+  grid-row: 2;
+}
+.sp-help__row > .sv-btn {
+  grid-column: 2;
+  grid-row: 1 / span 2;
 }
 .sp-help .sv-kbd {
+  justify-self: start;
   max-width: 100%;
   white-space: normal;
   overflow-wrap: anywhere;
 }
-.sp-help {
-  padding: var(--sv-space-2);
-  border: 1px solid var(--sv-border);
-  border-radius: var(--sv-radius-sm);
-  background: var(--sv-surface);
+.sp-facets__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.sp-facets__label {
+  width: 100%;
+  color: var(--sv-ink-2);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 .sp-chip {
   max-width: 100%;
-  min-height: 24px;
-  padding: 2px var(--sv-space-2);
-  border: 1px solid var(--sv-border-strong);
-  border-radius: 999px;
-  background: var(--sv-surface-raised);
-  color: var(--sv-text);
-  font: inherit;
-  font-size: var(--sv-text-xs);
+  min-height: 32px;
+  padding: 3px 10px;
+  border: 2px solid var(--sv-line-strong);
+  border-radius: var(--sv-radius-pill);
+  background: var(--sv-surface);
   overflow-wrap: anywhere;
+  color: var(--sv-ink);
+  font: inherit;
+  font-size: 0.8125rem;
+  font-weight: 700;
   cursor: pointer;
 }
 .sp-chip[aria-pressed='true'] {
-  border-color: var(--sv-accent);
-  background: var(--sv-info-bg);
-  font-weight: 700;
+  border-color: var(--sv-primary);
+  background: var(--sv-primary-soft);
+  color: var(--sv-primary-soft-ink);
+  font-weight: 800;
+}
+.sp-chip[aria-pressed='true']::before {
+  content: '✓ ' / '';
+}
+.sp-chip__n {
+  color: var(--sv-ink-2);
+  font-weight: 800;
+}
+.sp-chip:focus-visible {
+  outline: var(--sv-focus-width) solid var(--sv-focus);
+  outline-offset: 2px;
+}
+.sp-mark {
+  padding: 0 2px;
+  border-radius: 4px;
+  background: var(--sv-sun-soft);
+  color: var(--sv-sun-soft-ink);
+  font-weight: 900;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
 }
 .sp-progress {
   width: 100%;
 }
 .sp-warnings {
-  padding-inline-start: var(--sv-space-4);
-  list-style: disc;
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
+.sp-warnings li {
+  display: flex;
+  gap: 6px;
+}
+.sp-warnings svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--sv-warning-ink);
+}
+.sp-noresult {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+}
+
+/* Review tab (@ui/review ReviewTab) ------------------------------------------------------------ */
+.rt-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
+  gap: 10px;
+  padding: 16px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-lg);
+  background: var(--sv-surface);
+  box-shadow: 0 4px 0 var(--sv-border);
+  text-align: center;
+}
+.rt-hero--quiet {
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
+}
+.rt-num {
+  margin: 0;
+  font-size: 2.75rem;
+  font-weight: 900;
+  line-height: 1;
+}
+.rt-num__unit {
+  color: var(--sv-ink-2);
+  font-size: 1.125rem;
+  font-weight: 800;
+}
+.rt-mix {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.rt-chip {
+  padding: 2px 10px;
+  border-radius: var(--sv-radius-pill);
+  font-size: var(--sv-text-xs);
+  font-weight: 800;
+  line-height: 1.5;
+}
+.rt-chip--new {
+  background: var(--sv-primary-soft);
+  color: var(--sv-primary-soft-ink);
+}
+.rt-chip--learn {
+  background: var(--sv-warning-soft);
+  color: var(--sv-warning-ink);
+}
+.rt-chip--review {
+  background: var(--sv-success-soft);
+  color: var(--sv-success-ink);
+}
+.rt-deferred {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin: 0;
+  color: var(--sv-ink-2);
+  font-size: 0.8125rem;
+  font-weight: 700;
+}
+.rt-title {
+  margin: 0;
+  font-size: var(--sv-text-lg);
+  font-weight: 900;
+}
+.rt-line {
+  margin: 0;
+  color: var(--sv-ink-2);
+  font-size: 0.9375rem;
+}
+.rt-h {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 900;
+}
+.rt-banks {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.rt-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border: 2px solid var(--sv-border);
+  border-radius: var(--sv-radius-md);
+  background: var(--sv-surface);
+}
+.rt-tile {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  background: var(--sw-soft, var(--sv-sunk));
+  color: var(--sv-ink);
+  font-size: 0.9375rem;
+  font-weight: 900;
+}
+.rt-row__name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 800;
+}
+.rt-row__n {
+  min-width: 32px;
+  padding: 0 8px;
+  border-radius: var(--sv-radius-pill);
+  background: var(--sv-sun-soft);
+  color: var(--sv-sun-soft-ink);
+  font-size: var(--sv-text-xs);
+  font-weight: 900;
+  line-height: 1.6;
+  text-align: center;
+}
+
+/* Forced colours: shadows vanish, so nothing may depend on them (UX_DESIGN 2.3). -------------- */
 @media (forced-colors: active) {
+  .hl-card {
+    border-left-width: 6px;
+  }
   .sp-mark {
     forced-color-adjust: none;
     background: Highlight;
     color: HighlightText;
   }
-  .sp-chip[aria-pressed='true'] {
+  .hl-pick__input:checked + span,
+  .sp-chip[aria-pressed='true'],
+  .sp-pill[aria-expanded='true'],
+  .folder-name[aria-pressed='true'],
+  .sp-iact.is-open {
     outline: 2px solid Highlight;
   }
-}
-
-/* A filing rule's pending suggestion on a card (docs/adr/017-filing-rules.md). */
-.hl-suggest {
-  padding: var(--sv-space-2);
-  border: 1px solid var(--sv-border-strong);
-  border-radius: var(--sv-radius-sm);
-  background: var(--sv-surface);
+  .hl-kind__dot {
+    border: 2px solid CanvasText;
+  }
 }

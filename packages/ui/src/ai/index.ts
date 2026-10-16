@@ -19,6 +19,7 @@ export {
   sendBlocker,
   testAiConnection,
   type AiConfig,
+  type AiOverrides,
   type AiConnectionTest,
   type AiEnv,
   type AiRunArgs,
@@ -29,10 +30,20 @@ export { buildAccept, initialDraft, toMarkdown, type AiDraft } from './accept';
 export {
   CHAT_MAX_CHARS,
   CHAT_TOP_K,
+  AI_NOTE_PREFIX,
+  ENGINE_INPUT_TOKENS,
+  estimateRequestTokens,
+  fitSelection,
+  highlightIdsInScope,
+  partialAnswer,
   retrieveForChat,
+  retrieveStudyItems,
   type AiChatInput,
   type AiChatPassage,
   type AiChatTurn,
   type ChatRetrieval,
 } from './chat';
-export { routeFor, type AiProfileConfig, type AiRoute } from './runtime';
+export { VENDORS, contextWindowTokens, effortsFor } from './vendors';
+export { loadEmbedder, semanticPassages, type SemanticArgs } from './semantic';
+export { routeFor, configSecrets, type AiProfileConfig, type AiRoute } from './runtime';
+export { requestEndpointAccess } from './permission';

@@ -87,9 +87,11 @@ describe('a pending suggestion', () => {
     await open();
     await screen.findByText('Ribosomes build proteins.');
     const chip = await within(cardOf('Ribosomes')).findByTestId('card-suggestion');
-    expect(chip.textContent).toContain('Rule “Biology sites” suggests filing this in');
-    expect(chip.textContent).toContain('Biology / Week 1');
-    expect(chip.textContent).toContain('adding 1 tag');
+    expect(chip.textContent).toContain('File in Biology / Week 1?');
+    expect(chip.textContent).toContain('Rule: Biology sites');
+    expect(chip.textContent).toContain('+1 tag');
+    // The button names the bank it files into.
+    expect(within(chip).getByRole('button', { name: 'File in Biology' })).toBeTruthy();
     expect(within(cardOf('Mitochondria')).queryByTestId('card-suggestion')).toBeNull();
   });
 

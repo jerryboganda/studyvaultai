@@ -377,6 +377,36 @@ describe('real round trip through the Dexie target', () => {
     expect(await hasStagingDb()).toBe(false);
   }, 180_000);
 
+  it('a replace preview counts only the items people recognise, not the game ledger', async () => {
+    await seed({ highlights: 20 });
+    const out = await exportBackup(await createSnapshotSource(), baseOptions);
+    await getDb().banks.put({
+      id: 'bank-local-only',
+      ...meta(999),
+      name: 'Local only',
+      color: 'blue',
+      position: 99,
+      isInbox: false,
+    } as never);
+    await getDb().gameEvents.put({
+      id: 'hs_hl-local-only-1',
+      schemaVersion: 1,
+      kind: 'save',
+      at: new Date().toISOString(),
+      ref: 'hl-local-only-1',
+      value: null,
+    } as never);
+
+    const { report } = await restoreBackup(out.bytes, {
+      target: createBackupTarget(),
+      mode: 'replace',
+      dryRun: true,
+      migrations: BACKUP_MIGRATIONS,
+    });
+    expect(report.tables.gameEvents?.liveOnly).toBeGreaterThanOrEqual(1);
+    expect(report.replaceImpact.removedLiveOnlyRows).toBe(1); // the bank, not the ledger row
+  });
+
   it('a merge of the same archive into the same vault changes nothing', async () => {
     await seed({ highlights: 200 });
     const before = await state();

@@ -31,18 +31,27 @@ const BG = '--sv-bg';
 const SURFACE = '--sv-surface';
 const RAISED = '--sv-surface-raised';
 const SURFACES = [BG, SURFACE, RAISED];
+// The hover tint of every transparent button, and the quote and chip fill.
+const HOVER = '--sv-primary-soft';
+const SUNK = '--sv-sunk';
 
 /** Text (>= 4.5:1): which token is painted as text on which surfaces. */
 const TEXT: Array<[fg: string, on: string[]]> = [
-  ['--sv-text', SURFACES],
-  // Quote, labels, hints, status and icon buttons.
-  ['--sv-text-muted', SURFACES],
-  // Text buttons and links, also on their hover fill (--sv-surface).
-  ['--sv-accent', SURFACES],
-  ['--sv-accent-text', ['--sv-accent', '--sv-accent-hover']],
+  // Body text, the quote and the bank chip (on the sunk fill), any button on its hover tint.
+  ['--sv-text', [...SURFACES, SUNK, HOVER]],
+  // Labels, hints, status and icon buttons.
+  ['--sv-text-muted', [...SURFACES, HOVER]],
+  // Text buttons and links, also on their hover tint.
+  ['--sv-accent', [...SURFACES, HOVER]],
+  // The filled (3D) buttons: Save and Delete.
+  ['--sv-on-primary', ['--sv-primary', '--sv-danger-fill']],
   ['--sv-danger', SURFACES],
   // Toast tick; the toast sits on the raised surface.
   ['--sv-success', SURFACES],
+  // The caption row is an ink tooltip (UX_DESIGN 6.3).
+  ['--sv-surface-raised', ['--sv-ink']],
+  // "+2 XP" on its sunshine chip.
+  ['--sv-on-sun', ['--sv-sun']],
 ];
 
 /** Non-text (>= 3:1): control edges, state bars, focus indicator, swatch edge. */
@@ -52,13 +61,20 @@ const UI: Array<[fg: string, on: string[]]> = [
   // Invalid field edge, danger button edge, error toast bar.
   ['--sv-danger', [BG, RAISED]],
   ['--sv-success', [RAISED]],
-  // Quote bar (on --sv-surface) and toast bar.
-  ['--sv-accent', [SURFACE, RAISED]],
+  // Quote bar (on the sunk fill) and toast bar.
+  ['--sv-accent', [SUNK, RAISED]],
   // The ring sits on the surface or, at the edge of a surface, on the page: against the halo it
   // always has 3:1, which is what keeps it visible on any page.
   ['--sv-focus', [...SURFACES, '--sv-focus-halo']],
-  // The halo touches the control: the primary button is the one with a fill of its own.
-  ['--sv-focus-halo', ['--sv-accent', '--sv-accent-hover']],
+  // The halo touches the control: the filled buttons are the ones with a fill of their own.
+  ['--sv-focus-halo', ['--sv-primary', '--sv-danger-fill']],
+  // Toast tone icons on their tinted discs (the shape tells the tone; the tint repeats it).
+  ['--sv-success', ['--sv-success-bg']],
+  ['--sv-danger', ['--sv-danger-bg']],
+  ['--sv-info', ['--sv-info-bg']],
+  // The ring of a kind dot and of the checked dot.
+  ['--sv-text-muted', [RAISED]],
+  ['--sv-text', [RAISED]],
 ];
 
 describe('overlay colours reach WCAG AA in every theme', () => {
@@ -115,11 +131,20 @@ describe('overlay colours reach WCAG AA in every theme', () => {
 
   it('every colour token styles.css paints with is part of this audit', () => {
     const light = computeTokens(tokenRules, { system: 'light', attr: 'light', contrast: false });
-    const isColor = (name: string): boolean => /^(#|currentcolor)/i.test(light.get(name) ?? '');
+    // Aliases (--sv-text: var(--sv-ink)) count: a token is a colour if it resolves to one.
+    const isColor = (name: string): boolean => {
+      try {
+        colorOf(light, name);
+        return true;
+      } catch {
+        return false;
+      }
+    };
     const audited = new Set([...TEXT, ...UI].flatMap(([fg, on]) => [fg, ...on]));
-    // --sv-border is only the hairline around floating surfaces (the shadow and the surface
-    // difference separate them); fields use --sv-border-strong. The highlight palette is user data.
-    const exempt = new Set(['--sv-border', '--sv-shadow']);
+    // --sv-border is only the outline around floating surfaces (the shadow and the surface
+    // difference separate them); fields use --sv-border-strong. The 3D edges under the filled
+    // buttons are decoration (UX_DESIGN 2.7): the label and the fill identify the button.
+    const exempt = new Set(['--sv-border', '--sv-shadow', '--sv-primary-edge', '--sv-danger-edge']);
     const used = new Set<string>();
     for (const rule of styles) {
       for (const value of rule.decls.values()) {
@@ -131,6 +156,16 @@ describe('overlay colours reach WCAG AA in every theme', () => {
     expect(used.size).toBeGreaterThan(8);
     const unaudited = [...used].filter((t) => !audited.has(t) && !exempt.has(t));
     expect(unaudited, 'add the new colour token to TEXT or UI above').toEqual([]);
+  });
+
+  it('the kind glyph sits on the audited surface; the palette colour is only its rim', () => {
+    // The glyph is the non-colour cue of a kind dot (1.4.1); e2e audits every overlay text at 4.5:1
+    // (--sv-text on --sv-surface-raised is in TEXT above). A tint of the palette colour would not
+    // reach it for every colour in both themes.
+    const dot = declsFor(styles, '.sv-swatch');
+    expect(dot.get('color')).toBe('var(--sv-text)');
+    expect(dot.get('background')).toBe('var(--sv-surface-raised)');
+    expect(dot.get('border')).toBe('5px solid var(--dot)');
   });
 
   it('styles.css has no raw colour values that would bypass the audit', () => {
@@ -180,10 +215,12 @@ describe('focus indicator', () => {
     }
   });
 
-  it('keeps the drop shadow of a dialog while it is focused', () => {
+  it('keeps the elevation of a dialog while it is focused', () => {
     for (const d of DIALOGS) {
+      const own = declsFor(styles, d).get('box-shadow');
+      expect(own, d).toBe('var(--sv-raise)');
       for (const sel of [`${d}:focus`, `${d}:focus-visible`]) {
-        expect(declsFor(styles, sel).get('box-shadow'), sel).toBe('var(--sv-shadow)');
+        expect(declsFor(styles, sel).get('box-shadow'), sel).toBe(own);
       }
     }
   });
@@ -232,6 +269,12 @@ describe('reflow', () => {
     expect(declsFor(styles, '.sv-panel').get('max-width')).toBe('100%');
   });
 
+  it('scrolls rather than squashing a child: the clipped quote kept collapsing to half a line', () => {
+    for (const sel of ['.sv-panel > *', '.sv-popover > *']) {
+      expect(declsFor(styles, sel).get('flex-shrink'), sel).toBe('0');
+    }
+  });
+
   it('keeps the action row pinned to the bottom of the scrolling surface', () => {
     const actions = declsFor(styles, '.sv-actions');
     expect(actions.get('position')).toBe('sticky');
@@ -262,6 +305,10 @@ describe('reflow', () => {
     expect(declsFor(styles, '.sv-toasts').get('max-width')).toBe('calc(100vw - 32px)');
     expect(declsFor(styles, '.sv-toast').get('max-width')).toBe('100%');
     expect(declsFor(styles, '.sv-toast-text').get('overflow-wrap')).toBe('anywhere');
+    // The buttons wrap as one right-aligned group, so the dismiss button never strands alone.
+    const actions = declsFor(styles, '.sv-toast-actions');
+    expect(actions.get('margin-left')).toBe('auto');
+    expect(actions.get('flex-wrap')).toBe('wrap');
   });
 });
 
@@ -273,11 +320,14 @@ describe('reflow', () => {
 describe('toolbar is click-through while it animates in', () => {
   const css = stripComments(readCss(STYLES_CSS));
   const unit = declsFor(styles, '.sv-unit');
+  const bar = declsFor(styles, '.sv-unit .sv-toolbar');
 
   it('holds pointer-events: none for exactly the duration of the enter animation', () => {
-    const names = (unit.get('animation') ?? '').split(',').map((a) => a.trim());
+    const names = [unit, bar].flatMap((d) =>
+      (d.get('animation') ?? '').split(',').map((a) => a.trim()),
+    );
     const enter = names.find((a) => a.startsWith('sv-in '));
-    const arm = names.find((a) => a.startsWith('sv-arm '));
+    const arm = (bar.get('animation') ?? '').trim();
     expect(enter, 'enter animation').toBeDefined();
     expect(arm, 'click-through animation').toBeDefined();
     // Same duration token: the toolbar is interactive the moment it has finished appearing.
@@ -292,10 +342,19 @@ describe('toolbar is click-through while it animates in', () => {
     expect(block?.[1]?.replace(/\s+/g, ' ').trim()).toBe('from, to { pointer-events: none; }');
   });
 
-  it('is interactive afterwards: the unit itself never sets pointer-events', () => {
-    expect(unit.has('pointer-events')).toBe(false);
+  it('is interactive afterwards: the bar and its popups take clicks once armed', () => {
+    for (const sel of ['.sv-unit .sv-toolbar', '.sv-unit .sv-menu', '.sv-unit .sv-panel']) {
+      expect(declsFor(styles, sel).get('pointer-events'), sel).toBe('auto');
+    }
+    expect(bar.get('animation')).toMatch(/^sv-arm /);
+  });
+
+  // The unit is taller than the bar (the always-laid-out caption row and the gaps) and as wide as
+  // its widest child. Those empty boxes sat over page text and swallowed clicks on page links.
+  it('the empty parts of the unit (caption row, gaps) never take a click', () => {
+    expect(unit.get('pointer-events')).toBe('none');
     for (const rule of styles.filter((r) =>
-      r.selectors.some((s) => /(^|\s)\.sv-(unit|toolbar|panel)\b/.test(s)),
+      r.selectors.some((s) => /\.sv-(bar-group|caption)(?![\w-])/.test(s)),
     )) {
       expect(rule.decls.get('pointer-events'), rule.selectors.join(', ')).toBeUndefined();
     }
@@ -306,7 +365,7 @@ describe('toolbar is click-through while it animates in', () => {
     expect(off.get('animation')).toBe('none !important');
     // And the duration token is zero there, for the animations that read it.
     const tokens = computeTokens(tokenRules, { system: 'light', attr: 'light', contrast: false });
-    expect(tokens.get('--sv-motion')).toBe('120ms');
+    expect(tokens.get('--sv-motion')).toBe('140ms');
     const reduced = tokenRules.filter(
       (r) => r.media === '(prefers-reduced-motion: reduce)' && r.decls.has('--sv-motion'),
     );
@@ -337,7 +396,7 @@ describe('theme and density are applied inside the shadow root', () => {
   it('the theme attribute is read from .sv-root, and its colour scheme follows it', () => {
     expect(declsFor(styles, ".sv-root[data-theme='light']").get('color-scheme')).toBe('light');
     expect(declsFor(styles, ".sv-root[data-theme='dark']").get('color-scheme')).toBe('dark');
-    const darkTokens = declsFor(tokenRules, ".sv-root[data-theme='dark']");
+    const darkTokens = declsFor(tokenRules, "[data-theme='dark']");
     expect(darkTokens.get('--sv-surface-raised')).toBeDefined();
     const system = declsFor(
       tokenRules,
@@ -365,11 +424,12 @@ describe('caption row', () => {
     expect(caption.has('position')).toBe(false);
   });
 
-  it('paints on the audited raised surface and sits on the side away from the selection', () => {
+  it('is an ink tooltip (audited pair) and sits on the side away from the selection', () => {
     const surface = styles.find(
       (r) => r.media === '' && r.selectors.includes('.sv-caption') && r.decls.has('background'),
     );
-    expect(surface?.decls.get('background')).toBe('var(--sv-surface-raised)');
+    expect(surface?.decls.get('background')).toBe('var(--sv-ink)');
+    expect(surface?.decls.get('color')).toBe('var(--sv-surface-raised)');
     expect(
       declsFor(styles, ".sv-unit[data-placement='above'] > .sv-bar-group").get('flex-direction'),
     ).toBe('column-reverse');
@@ -381,5 +441,14 @@ describe('caption row', () => {
       (r) => r.media === '(forced-colors: active)' && r.selectors.includes('.sv-caption'),
     );
     expect(forced?.decls.get('border')).toBe('1px solid CanvasText');
+  });
+});
+
+describe('forced colours', () => {
+  it("paints the quote's transparent spacing border in the canvas colour, not as black bars", () => {
+    expect(declsFor(styles, '.sv-quote').get('border-block')).toBe('8px solid transparent');
+    expect(declsFor(styles, '.sv-quote', '(forced-colors: active)').get('border-block-color')).toBe(
+      'Canvas',
+    );
   });
 });

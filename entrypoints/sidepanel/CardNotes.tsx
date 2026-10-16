@@ -3,6 +3,7 @@ import { MAX_NOTE_BODY_CHARS, type Note } from '@shared';
 import { Button, truncate, useAction, useToast } from '@ui';
 import { Markdown } from '@ui/vault';
 import { validateNoteBody } from './model';
+import { useCardMemory } from './useCardMemory';
 
 /** The Markdown notes of one highlight (the `notes` table), rendered safely and edited in place. */
 
@@ -27,17 +28,27 @@ export function CardNotes({
 }) {
   const uid = useId();
   const { announce } = useToast();
-  const [editing, setEditing] = useState<Editing>(null);
-  const [draft, setDraft] = useState('');
+  const [editing, setEditing] = useCardMemory<Editing>(`${highlightId}:note`, null);
+  const [draft, setDraft] = useCardMemory(`${highlightId}:noteDraft`, '');
   const [problem, setProblem] = useState<string | null>(null);
   const addWrap = useRef<HTMLDivElement>(null);
   const restoreFocus = useRef(false);
+  const editor = useRef<HTMLTextAreaElement>(null);
+  // Only a click on Add/Edit moves the cursor into the editor. An editor restored from CardMemory
+  // (the card remounted, e.g. in Search's Recent list) must not take focus from what the user is in.
+  const focusEditor = useRef(false);
 
   // The editor's textarea is gone: keep the keyboard on this card instead of dropping it on <body>.
   useEffect(() => {
     if (editing !== null || !restoreFocus.current) return;
     restoreFocus.current = false;
     addWrap.current?.querySelector('button')?.focus();
+  }, [editing]);
+
+  useEffect(() => {
+    if (editing === null || !focusEditor.current) return;
+    focusEditor.current = false;
+    editor.current?.focus();
   }, [editing]);
 
   const save = useAction(async (noteId: string | null, body: string) => {
@@ -49,6 +60,7 @@ export function CardNotes({
   });
 
   const open = (next: Editing, body: string) => {
+    focusEditor.current = true;
     setEditing(next);
     setDraft(body);
     setProblem(null);
@@ -103,7 +115,7 @@ export function CardNotes({
             id={`${uid}-body`}
             className="sv-control"
             data-testid="note-editor"
-            autoFocus
+            ref={editor}
             rows={4}
             maxLength={MAX_NOTE_BODY_CHARS}
             dir="auto"

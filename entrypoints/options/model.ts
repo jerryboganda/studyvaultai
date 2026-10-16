@@ -1,8 +1,95 @@
+import { denyEntriesFor, isRegistrablePattern, originPattern, parseHttpUrl } from '@shared';
 import { tableLabel } from '@ui/backup/format';
 import { isAllSitesPattern, normalizeDenyInput, patternHost } from '@ui/hosts';
-import { SETTINGS_SECTIONS, type SettingsSectionId } from '@ui/shell/paths';
 
 /** Pure helpers for the options page. */
+
+// ---------------------------------------------------------------------------------------------
+// Sections (each one is its own view: `options.html#<id>`; no hash is the settings home)
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Every section, in nav and home-tile order. The ids are `#hash` deep links: the ones in
+ * `SETTINGS_SECTIONS` (`@ui/shell/paths`) are a public contract and all stay here; `game`,
+ * `reminders` and `about` are new and only this page knows them so far.
+ */
+export const OPTION_SECTIONS = [
+  { id: 'game', label: 'Game', group: 'Everyday', line: 'Daily goal, XP and streak.' },
+  { id: 'site-access', label: 'Site access', group: 'Everyday', line: 'Where StudyVault may run.' },
+  { id: 'capture', label: 'Capture', group: 'Everyday', line: 'How you save from pages.' },
+  { id: 'appearance', label: 'Appearance', group: 'Everyday', line: 'Theme, density and colours.' },
+  { id: 'shortcuts', label: 'Shortcuts', group: 'Everyday', line: 'Keys that work in any tab.' },
+  { id: 'review', label: 'Review', group: 'Study', line: 'Flashcards and your study day.' },
+  { id: 'reminders', label: 'Reminders', group: 'Study', line: 'A nudge when cards are due.' },
+  { id: 'backup', label: 'Backup', group: 'Your data', line: 'Copies of your vault.' },
+  { id: 'storage', label: 'Storage', group: 'Your data', line: 'What takes space here.' },
+  { id: 'privacy', label: 'Privacy', group: 'Your data', line: 'What stays here, what can leave.' },
+  {
+    id: 'data',
+    label: 'Your data',
+    group: 'Your data',
+    line: 'Where it lives, and a fresh start.',
+  },
+  { id: 'ai', label: 'AI', group: 'Extras', line: 'Optional. Off until you set it up.' },
+  { id: 'sync', label: 'Sync', group: 'Extras', line: 'Optional. Uses your own server.' },
+  { id: 'about', label: 'About', group: 'Extras', line: 'Version and the welcome tour.' },
+] as const;
+
+export type OptionSectionId = (typeof OPTION_SECTIONS)[number]['id'];
+export type OptionSection = (typeof OPTION_SECTIONS)[number];
+
+export const sectionById = (id: OptionSectionId): OptionSection =>
+  OPTION_SECTIONS.find((s) => s.id === id)!;
+
+/** The sections grouped for the home tiles, groups in first-seen order. */
+export function sectionGroups(): Array<{ group: string; sections: OptionSection[] }> {
+  const out: Array<{ group: string; sections: OptionSection[] }> = [];
+  for (const s of OPTION_SECTIONS) {
+    const last = out.at(-1);
+    if (last?.group === s.group) last.sections.push(s);
+    else out.push({ group: s.group, sections: [s] });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Site access
+// ---------------------------------------------------------------------------------------------
+
+export type SitePick = { ok: true; pattern: string; host: string } | { ok: false; error: string };
+
+/**
+ * What someone typed to switch StudyVault on for one site ("example.com", "https://Example.com/a")
+ * as the origin pattern the popup would store for it. A bare name means https; an address keeps
+ * its own scheme and port. Refused: anything that is not one site, a site on the deny list (it
+ * would stay off anyway) and a site already on.
+ */
+export function sitePatternFromInput(
+  input: string,
+  o: { denyList: readonly string[]; taken: readonly string[] },
+): SitePick {
+  const text = input.trim();
+  if (text === '') return { ok: false, error: 'Type a site, such as example.com.' };
+  let pattern: string | null;
+  if (text.includes('://')) {
+    const url = parseHttpUrl(text);
+    pattern = url ? originPattern(url.href) : null;
+    if (!pattern)
+      return { ok: false, error: 'Use an address that starts with http:// or https://.' };
+  } else {
+    const parsed = normalizeDenyInput(text);
+    if ('error' in parsed) return { ok: false, error: parsed.error };
+    pattern = `https://${parsed.host}/*`;
+  }
+  const host = patternHost(pattern) ?? pattern;
+  if (!isRegistrablePattern(pattern)) {
+    return { ok: false, error: `${host} cannot be kept on. Use the popup on that page instead.` };
+  }
+  const [denied] = denyEntriesFor(host.replace(/:\d+$/, ''), o.denyList);
+  if (denied) return { ok: false, error: `${host} is on your deny list (${denied}).` };
+  if (o.taken.includes(pattern)) return { ok: false, error: `${host} is already on.` };
+  return { ok: true, pattern, host };
+}
 
 export interface SiteEntry {
   pattern: string;
@@ -113,11 +200,25 @@ export const PERMISSION_PURPOSES: Record<string, string> = {
 // Section navigation
 // ---------------------------------------------------------------------------------------------
 
-/** The section a `#hash` names, or null (an unknown hash is ignored, never trusted). */
-export function sectionFromHash(hash: string): SettingsSectionId | null {
+/** The section a `#hash` names, or null: the home (an unknown hash is ignored, never trusted). */
+export function sectionFromHash(hash: string): OptionSectionId | null {
   const id = hash.replace(/^#/, '');
-  return SETTINGS_SECTIONS.find((s) => s.id === id)?.id ?? null;
+  return OPTION_SECTIONS.find((s) => s.id === id)?.id ?? null;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Small display helpers
+// ---------------------------------------------------------------------------------------------
+
+/** "Alt+Shift+]" -> ["Alt", "Shift", "]"]; a key that is itself "+" survives ("Ctrl++"). */
+export const keyParts = (shortcut: string): string[] => shortcut.split(/\+(?!$)/);
+
+/** The daily goals with their names (UX_DESIGN 11: Casual, Regular, Serious, Intense). */
+export const GOAL_NAMES = { 10: 'Casual', 30: 'Regular', 50: 'Serious', 100: 'Intense' } as const;
+
+/** The word that confirms "Delete all data" (any case, spaces around it ignored). */
+export const DELETE_WORD = 'delete';
+export const isDeleteWord = (text: string): boolean => text.trim().toLowerCase() === DELETE_WORD;
 
 /**
  * Roving focus in the section list: where an arrow key moves from `index`. Up/Down and Left/Right
@@ -152,6 +253,8 @@ const BOOKKEEPING_LABELS: Record<string, string> = {
   syncEntityMeta: 'Sync: bookkeeping',
   syncConflicts: 'Sync: conflicts',
   syncQuarantine: 'Sync: changes set aside',
+  gameEvents: 'Game: XP records',
+  gameFacts: 'Game: goal and mode history',
 };
 
 export const storageLabel = (table: string): string =>

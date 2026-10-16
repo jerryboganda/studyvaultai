@@ -156,7 +156,10 @@ async function attempt(
   );
   try {
     return await Promise.race([
-      provider.complete({ messages, maxOutputTokens, json: true }, { signal: call.signal }),
+      provider.complete(
+        { messages, maxOutputTokens, json: true },
+        { signal: call.signal, ...(deps.onDelta ? { onDelta: deps.onDelta } : {}) },
+      ),
       deadline,
     ]);
   } catch (e) {

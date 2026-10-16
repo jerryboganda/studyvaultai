@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { defaultSettings } from '@shared';
 import { siteStatus } from '@ui/testing/fakes';
-import { derivePopupState, studyView, type DueInput } from './model';
+import type { GameState } from '@ui/game';
+import { derivePopupState, pdfName, studyView, todayView, type DueInput } from './model';
 
 const base = { denyList: defaultSettings().denyList };
 
@@ -157,6 +158,7 @@ describe('studyView', () => {
       resumable: null,
     })!;
     expect(view.badge).toBe('12 cards due');
+    expect(view.count).toBe(12);
     expect(view.detail).toBe('3 new · 2 learning · 7 review');
     expect(view.action).toEqual({
       label: 'Start review',
@@ -168,8 +170,12 @@ describe('studyView', () => {
 
   it('a saved session is continued, with what is left', () => {
     const view = studyView(due({ count: 0, resumable: { remaining: 5, answered: 2 } }))!;
-    expect(view.action.label).toBe('Continue review (5 left)');
+    expect(view.action.label).toBe('Continue review');
+    expect(view.detail).toMatch(/^5 left/);
     expect(view.badge).toBe('Session in progress');
+    expect(view.count).toBeNull();
+    const withDue = studyView(due({ count: 4, resumable: { remaining: 5, answered: 2 } }))!;
+    expect(withDue).toMatchObject({ badge: '4 cards due', count: 4 });
   });
 
   it('nothing due: says so and no longer promises to start something', () => {
@@ -179,6 +185,8 @@ describe('studyView', () => {
       resumable: null,
     })!;
     expect(none.badge).toBe('No flashcards yet');
+    expect(none.count).toBeNull(); // never a zero
+    expect(none.detail).toMatch(/Make a card from a saved highlight/);
     expect(none.action).toMatchObject({ label: 'Open review', primary: false });
 
     const beyond = studyView({
@@ -200,5 +208,76 @@ describe('studyView', () => {
     })!;
     expect(later.badge).toBe('Nothing due now');
     expect(later.detail).toMatch(/learning step comes back later today/);
+  });
+});
+
+describe('pdfName', () => {
+  it('is the file name, decoded; else the host; else "PDF"', () => {
+    expect(pdfName('https://example.com/papers/cell%20bio.pdf#page=2')).toBe('cell bio.pdf');
+    expect(pdfName('https://example.com/')).toBe('example.com');
+    expect(pdfName('https://example.com/a/%E0%A4%A.pdf')).toBe('%E0%A4%A.pdf'); // bad escape kept
+    expect(pdfName('file:///C:/study/notes.pdf')).toBe('notes.pdf');
+    expect(pdfName(undefined)).toBe('PDF');
+  });
+});
+
+describe('todayView', () => {
+  const backfill = { status: 'done' as const, done: 10, total: 10, error: null };
+  const ready = (over: { mode?: boolean; xp?: number; met?: boolean } = {}) =>
+    ({
+      ready: true,
+      mode: over.mode ?? true,
+      backfill,
+      goal: { value: 30, chosen: true },
+      today: {
+        dayKey: '2026-10-14',
+        xp: over.xp ?? 18,
+        met: over.met ?? false,
+        reviews: 8,
+        saves: 3,
+        cards: 0,
+        sessions: 1,
+      },
+      totalXp: 400,
+      level: { level: 3, floorXp: 150, nextXp: 300 },
+      streak: { current: 12, longest: 20, todayCounts: false, freezes: 1 },
+      badges: [],
+      days: [],
+      pending: [],
+    }) as unknown as GameState;
+
+  it('is loading without an answer, and shows only real progress while counting', () => {
+    expect(todayView(undefined)).toEqual({ kind: 'loading' });
+    expect(
+      todayView({
+        ready: false,
+        mode: true,
+        backfill: { ...backfill, status: 'running', done: 4 },
+      }),
+    ).toEqual({ kind: 'counting', done: 4, total: 10 });
+    expect(
+      todayView({
+        ready: false,
+        mode: true,
+        backfill: { ...backfill, status: 'failed', error: 'Disk full' },
+      }),
+    ).toEqual({ kind: 'count-failed', message: 'Disk full' });
+  });
+
+  it('Game mode on: XP to goal, streak and level; past the goal it says met', () => {
+    expect(todayView(ready())).toEqual({
+      kind: 'game',
+      xp: 18,
+      goal: 30,
+      toGo: 12,
+      met: false,
+      streak: 12,
+      level: 3,
+    });
+    expect(todayView(ready({ xp: 41, met: true }))).toMatchObject({ toGo: 0, met: true });
+  });
+
+  it('Game mode off: plain counts, no XP', () => {
+    expect(todayView(ready({ mode: false }))).toEqual({ kind: 'plain', reviews: 8, saves: 3 });
   });
 });

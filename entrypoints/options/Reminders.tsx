@@ -1,10 +1,12 @@
 import { useEffect, useId, useMemo, useState } from 'react';
 import { browser } from 'wxt/browser';
+import { AlarmClock, Bell, Clock, Trash2 } from 'lucide-react';
 import type { Settings } from '@shared';
 import { TIME_OF_DAY, nextReminderAt } from '@study';
-import { Button, InlineNotice, useAction, useToast } from '@ui';
+import { Button, InfoTip, InlineNotice, useAction, useToast } from '@ui';
 import { formatWhen, useNow, useStudySettings } from '@ui/review';
 import type { Update } from './Preferences';
+import { Act, Card, SettingRow } from './ui';
 
 /**
  * Opt-in study reminders (docs/adr/019-reminders.md). Off by default. Turning the count on needs no
@@ -41,15 +43,13 @@ export function Reminders({ settings, update }: { settings: Settings; update: Up
   const { settings: study } = useStudySettings();
   const alarms = useAlarmsPermission();
   const { on, dailyAt } = settings.reminders;
+  const reviewOn = settings.features.review;
   const timeZone = study?.timeZone ?? null;
 
-  // What the person sees while a write is in flight: their choice, not the old value.
-  const [pending, setPending] = useState<boolean | null>(null);
   const toggle = useAction(async (next: boolean) => {
     await update((s) => ({ ...s, reminders: { ...s.reminders, on: next } }));
     announce(next ? 'Toolbar count is on.' : 'Toolbar count is off.');
   });
-  const shown = pending ?? on;
 
   const [draft, setDraft] = useState(dailyAt ?? '');
   const [declined, setDeclined] = useState(false);
@@ -108,141 +108,125 @@ export function Reminders({ settings, update }: { settings: Settings; update: Up
       : undefined;
   const failure = toggle.error ?? saveTime.error ?? removeTime.error ?? allow.error;
 
+  const badgeState = on ? (reviewOn ? 'On' : 'Paused (review off)') : 'Off';
+  // Short: the notice below the cards says why a saved time is not active.
+  const dailyState =
+    dailyAt === null
+      ? 'None'
+      : timerActive
+        ? `${dailyAt}${timeZone ? ` (${timeZone})` : ''}${next ? `, next ${next}` : ''}`
+        : on
+          ? `${dailyAt} saved, not active`
+          : `${dailyAt} saved, starts with the badge`;
+
   return (
-    <section className="sv-stack" aria-labelledby={`${uid}-h`} data-testid="reminders-section">
-      <h2 id={`${uid}-h`}>Study reminders (optional, off by default)</h2>
-      <p>
-        A reminder is a number on the StudyVault toolbar icon and a notice in the popup and side
-        panel. Nothing is sent, nothing is shown outside the browser, and no system notification is
-        used. It all stays on this device.
-      </p>
+    <div className="opt-stack" data-testid="reminders-section">
+      <dl className="opt-status" data-testid="reminders-status">
+        <div className={`opt-status__item${on ? ' is-on' : ''}`}>
+          <dt>
+            <Bell aria-hidden="true" strokeWidth={2.4} />
+            Badge
+          </dt>
+          <dd>{badgeState}</dd>
+        </div>
+        <div className={`opt-status__item${timerActive ? ' is-on' : ''}`}>
+          <dt>
+            <AlarmClock aria-hidden="true" strokeWidth={2.4} />
+            Daily time
+          </dt>
+          <dd>{dailyState}</dd>
+        </div>
+      </dl>
 
-      <div className="sv-check">
-        <input
-          id={`${uid}-on`}
-          type="checkbox"
-          role="switch"
-          data-testid="reminders-toggle"
-          checked={shown}
-          aria-busy={toggle.busy || undefined}
-          aria-describedby={`${uid}-on-hint`}
-          onChange={(e) => {
-            if (toggle.busy) return;
-            const next = e.target.checked;
-            setPending(next);
-            void toggle.run(next).then(() => setPending(null));
-          }}
+      <div className="opt-card opt-card--single">
+        <SettingRow
+          icon={Bell}
+          tone="sun"
+          label="Badge on icon"
+          hint="Due cards as a number on the toolbar icon."
+          info="The same number the popup shows, recounted when StudyVault starts, when cards change and at your daily time. Chrome has to be running. The icon's tooltip says it in words."
+          checked={on}
+          testId="reminders-toggle"
+          onChange={(next) => toggle.run(next)}
         />
-        <div>
-          <label htmlFor={`${uid}-on`}>Show how many cards are due on the toolbar icon</label>
-          <p id={`${uid}-on-hint`} className="sv-muted sv-small">
-            The number is the one the popup shows. Chrome has to be running: nothing happens while
-            it is closed. The icon is recounted when StudyVault starts, when your cards or study
-            settings change, and at your daily time, so it can be behind while StudyVault has not
-            run. To read it without sight, the icon&apos;s tooltip says the same thing in words.
-          </p>
-        </div>
       </div>
 
-      <fieldset className="opt-fieldset" disabled={!on}>
-        <legend>Daily reminder</legend>
-        <div className="sv-field opt-narrow">
-          <label className="sv-label" htmlFor={`${uid}-time`}>
-            Remind me at
-          </label>
-          <input
-            id={`${uid}-time`}
-            className="sv-control"
-            type="time"
-            data-testid="reminders-time"
-            value={draft}
-            aria-describedby={`${uid}-time-hint`}
-            aria-invalid={draft !== '' && !valid ? true : undefined}
-            onChange={(e) => setDraft(e.target.value)}
-          />
-          <p id={`${uid}-time-hint`} className="sv-muted sv-small">
-            Local time{timeZone ? ` in your study time zone (${timeZone})` : ''}, set under Review
-            and study day below. At that time the icon shows &ldquo;!&rdquo; and the popup and side
-            panel say how many cards are due, until they are done, you dismiss it or the study day
-            ends.
-          </p>
-        </div>
-        <div className="sv-row">
-          <Button
-            variant="primary"
-            busy={saveTime.busy}
-            data-testid="reminders-save"
-            {...(saveBlocker ? { disabledReason: saveBlocker } : {})}
-            onClick={() => void saveTime.run()}
-          >
-            Set daily reminder
-          </Button>
-          {dailyAt !== null ? (
-            <Button
-              busy={removeTime.busy}
-              data-testid="reminders-remove"
-              onClick={() => void removeTime.run()}
+      <Card
+        title="Daily reminder"
+        icon={AlarmClock}
+        tone="sun"
+        info="At this time the icon shows “!” and the popup and side panel say how many cards are due, until they are done, you dismiss it or the study day ends."
+      >
+        <fieldset className="opt-fieldset" disabled={!on}>
+          <legend className="sv-vh">Daily reminder</legend>
+          <div className="opt-timerow">
+            <div className="sv-textfield opt-time">
+              <label htmlFor={`${uid}-time`}>Remind me at</label>
+              <input
+                id={`${uid}-time`}
+                type="time"
+                data-testid="reminders-time"
+                value={draft}
+                aria-describedby={`${uid}-zone`}
+                aria-invalid={draft !== '' && !valid ? true : undefined}
+                onChange={(e) => setDraft(e.target.value)}
+              />
+            </div>
+            <Act
+              variant="primary"
+              icon={Clock}
+              busy={saveTime.busy}
+              data-testid="reminders-save"
+              {...(saveBlocker ? { disabledReason: saveBlocker } : {})}
+              onClick={() => void saveTime.run()}
             >
-              Remove daily reminder
-            </Button>
-          ) : null}
-        </div>
-        {on ? null : (
-          <p className="sv-muted sv-small">
-            The daily reminder has no effect while the toolbar count is off.
+              Set time
+            </Act>
+            {dailyAt !== null ? (
+              <Act
+                icon={Trash2}
+                busy={removeTime.busy}
+                data-testid="reminders-remove"
+                onClick={() => void removeTime.run()}
+              >
+                Remove
+              </Act>
+            ) : null}
+          </div>
+          <p id={`${uid}-zone`} className="sv-muted sv-small">
+            {on
+              ? `Your study time zone${timeZone ? ` (${timeZone})` : ''}, set in Review.`
+              : 'Turn on the badge first.'}
           </p>
-        )}
-      </fieldset>
-
-      <div className="sv-stack sv-stack--tight" data-testid="reminders-status">
-        <p>
-          <strong>Toolbar count:</strong>{' '}
-          {on
-            ? settings.features.review
-              ? 'on.'
-              : 'on, paused while review is turned off.'
-            : 'off. Nothing is counted and nothing is scheduled.'}
-        </p>
-        <p>
-          <strong>Daily reminder:</strong>{' '}
-          {dailyAt === null
-            ? 'none.'
-            : timerActive
-              ? `${dailyAt}${timeZone ? ` (${timeZone})` : ''}${next ? `, next ${next}` : ''}.`
-              : on
-                ? `${dailyAt} is saved but not active: Chrome has not given StudyVault the timer permission.`
-                : `${dailyAt} is saved and starts once the toolbar count is on.`}
-        </p>
-      </div>
+        </fieldset>
+      </Card>
 
       {dailyAt !== null && on && alarms === false ? (
         <InlineNotice
           tone="warning"
-          title="The daily time needs the timer permission"
+          title="Needs the timer permission"
           action={
             <Button
               busy={allow.busy}
               data-testid="reminders-allow"
               onClick={() => void allow.run()}
             >
-              Allow the timer permission
+              Allow timer
             </Button>
           }
         >
-          <p data-testid="reminders-permission-note">
-            {declined ? 'Chrome did not give it, so nothing was changed. ' : ''}
-            Chrome only lets an extension run at a set time with its &ldquo;alarms&rdquo;
-            permission, and StudyVault does not have it until you allow it. Without it the count on
-            the icon still works; only the daily notice cannot come. The permission is used for
-            reminders (and for sync, if you turn that on), and you can take it back on the
-            extension&apos;s details page or with Delete all data.
+          <p data-testid="reminders-permission-note" className="opt-line">
+            {declined ? 'Chrome did not give it. ' : ''}The count on the icon still works.
+            <InfoTip label="About the timer permission" align="end">
+              Chrome only lets an extension run at a set time with its &ldquo;alarms&rdquo;
+              permission. Without it only the daily notice cannot come.
+            </InfoTip>
           </p>
         </InlineNotice>
       ) : null}
 
-      <p className="sv-muted sv-small">
-        Reminders are only shown while Chrome is running. If it is closed at your daily time there
-        is no reminder afterwards, and StudyVault never sends system notifications or email.
+      <p className="sv-muted sv-small opt-footnote">
+        Only while Chrome is running. Never system notifications or email.
       </p>
 
       {failure ? (
@@ -250,6 +234,6 @@ export function Reminders({ settings, update }: { settings: Settings; update: Up
           {failure}
         </InlineNotice>
       ) : null}
-    </section>
+    </div>
   );
 }

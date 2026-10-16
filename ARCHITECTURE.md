@@ -44,6 +44,15 @@
 - Versioned schema migrations with rollback/checksum backup and integration tests; all writes idempotent where possible.
 - Data deletion: soft delete plus purge, orphan cleanup and export-delete verification.
 
+## Game layer data flow (ADR-022)
+- **Record.** Every XP-earning write (review, review undo, card creation, AI accept, web and PDF save, a delete within 10 minutes, a finished review session, a purge) adds its ledger row in its own Dexie transaction: `gameEvents` for rows derivable from a source row, `gameFacts` for the rest. A failed ledger write aborts the action; nothing is recorded separately or later.
+- **Derive.** The upgrade to Dexie v5 moves only the schema marker. `runGameBackfill` then derives the ledger from existing history in resumable pages under a Web Lock. The worker starts it on `runtime.onInstalled` (every reason) and `runtime.onStartup`; a page that finds it not done starts or resumes it and shows its real progress. Until it is done, no game number is shown.
+- **Read.** Extension pages call `getGameState({ boundary })` from `@storage` (no RPC). It replays both tables with the study-day boundary from `studySettings`, using a per-day cache of closed days in `meta`. `@ui/game` `useGame()` keeps it live (re-read on any context's data-change signal and at the study-day rollover) and persists the cache; `useCelebrations()` claims today's milestones once per device, only while the page is visible and at a point to celebrate (the review page: the done screen).
+- **Worker.** `capture.save` returns `xp: 2` for a created highlight while Game mode is on (one indexed read; a failed read only drops the number). The worker never claims celebrations.
+- **Sync.** Only `gameFacts` syncs (append-only, when sync is on); each device derives its own `gameEvents`, including for rows the sync applier writes. After an extension update the worker retries what an older build quarantined (`SyncService.onUpdated`, skipped while the key is locked; the unlock retries).
+- **Backup.** Both tables are in every backup. A replace restore resets the device-local game rows in `meta` so the ledger is derived again from the archive; a merge restore derives nothing.
+- **Game mode off** is display only: recording continues, `pending` celebrations are empty, and the worker leaves `xp` out.
+
 ## Optional backend (not required for P0)
 - API: TypeScript on Fastify or Hono, authenticated OAuth/OIDC session with PKCE; provider choice at implementation time.
 - Database: PostgreSQL with relational bank/source/annotation/card/review data and optional pgvector when semantic search is enabled.

@@ -64,9 +64,10 @@ describe('More options panel', () => {
     expect(bank.value).toBe(BIOLOGY.id);
 
     fireEvent.change(bank, { target: { value: INBOX.id } });
-    fireEvent.change(d.getByRole('combobox', { name: 'Type' }), { target: { value: 'formula' } });
-    fireEvent.change(d.getByRole('combobox', { name: 'Priority' }), { target: { value: '5' } });
-    await userEvent.setup().click(d.getByRole('button', { name: 'Save' }));
+    const user = userEvent.setup();
+    await user.click(d.getByRole('radio', { name: 'Formula' }));
+    await user.click(d.getByRole('radio', { name: '5 (highest)' }));
+    await user.click(d.getByRole('button', { name: 'Save' }));
 
     expect(m.host.save).toHaveBeenCalledWith({
       kind: 'formula',
@@ -129,12 +130,12 @@ describe('More options panel', () => {
       new StudyVaultError('storage_unavailable', 'Storage is asleep.'),
     );
     const { d } = await openAdvanced(m);
-    fireEvent.change(d.getByRole('combobox', { name: 'Priority' }), { target: { value: '4' } });
     const user = userEvent.setup();
+    await user.click(d.getByRole('radio', { name: '4' }));
     await user.click(d.getByRole('button', { name: 'Save' }));
 
     expect(await m.q.findByText('Storage is asleep.')).toBeTruthy();
-    expect((d.getByRole('combobox', { name: 'Priority' }) as HTMLSelectElement).value).toBe('4');
+    expect(d.getByRole('radio', { name: '4' }).getAttribute('aria-checked')).toBe('true');
     expect(m.q.getByRole('toolbar')).toBeTruthy();
 
     await user.click(d.getByRole('button', { name: 'Save' }));
@@ -232,11 +233,18 @@ describe('New bank...', () => {
     expect(m.q.queryByText(/Could not load your banks/)).toBeNull();
   });
 
-  it('stops listening for focus once the panel is closed', async () => {
+  it('keeps the list fresh while the toolbar shows (its bank chip uses it) and stops once it is gone', async () => {
     const m = mountUi();
     await openAdvanced(m);
     await userEvent.setup().click(m.q.getByRole('button', { name: 'More options' }));
     expect(m.q.queryByRole('dialog')).toBeNull();
+    m.host.listBanks.mockClear();
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(m.host.listBanks).toHaveBeenCalledTimes(1);
+
+    act(() => m.ui.hideToolbar());
     m.host.listBanks.mockClear();
     await act(async () => {
       window.dispatchEvent(new Event('focus'));
@@ -255,12 +263,28 @@ describe('the page-side overlay has no free-text input', () => {
       .map((el) => el.labels?.[0]?.textContent ?? '(unlabelled)')
       .sort();
 
-  it('toolbar with the More panel open: only the bank, type and priority selects', async () => {
+  const groupNames = (m: Mounted): string[] =>
+    m.q.getAllByRole('radiogroup').map((g) => {
+      const label = g.getAttribute('aria-labelledby');
+      return (label && m.shadow.getElementById(label)?.childNodes[0]?.textContent) ?? '';
+    });
+
+  it('toolbar with the More panel open: the bank select and the kind and priority pickers', async () => {
     const m = mountUi();
     await openAdvanced(m);
     expect(m.container.querySelectorAll(FREE_TEXT)).toHaveLength(0);
     expect(m.q.queryByRole('textbox')).toBeNull();
-    expect(selectNames(m.container)).toEqual(['Bank', 'Priority', 'Type']);
+    expect(selectNames(m.container)).toEqual(['Bank']);
+    expect(groupNames(m)).toEqual(['Kind', 'Priority']);
+  });
+
+  it('toolbar with the bank menu open: buttons only', async () => {
+    const m = mountUi();
+    show(m.ui);
+    await userEvent.setup().click(m.q.getByRole('button', { name: /^Bank/ }));
+    await m.q.findByRole('menuitemradio', { name: 'Biology' });
+    expect(m.container.querySelectorAll(FREE_TEXT)).toHaveLength(0);
+    expect(m.container.querySelectorAll('select')).toHaveLength(0);
   });
 
   it('toolbar alone and after a Note save', async () => {
@@ -273,11 +297,12 @@ describe('the page-side overlay has no free-text input', () => {
     expect(m.container.querySelectorAll(FREE_TEXT)).toHaveLength(0);
   });
 
-  it('highlight popover, with and without a note: only the type and priority selects', () => {
+  it('highlight popover, with and without a note: only the kind and priority pickers', () => {
     const m = mountUi();
     act(() => m.ui.showHighlightPopover(makeHighlight({ userComment: 'my note' }), rect()));
     expect(m.container.querySelectorAll(FREE_TEXT)).toHaveLength(0);
-    expect(selectNames(m.container)).toEqual(['Priority', 'Type']);
+    expect(selectNames(m.container)).toEqual([]);
+    expect(groupNames(m)).toEqual(['Kind', 'Priority']);
     act(() => m.ui.showHighlightPopover(makeHighlight({ userComment: '' }), rect()));
     expect(m.container.querySelectorAll(FREE_TEXT)).toHaveLength(0);
   });
@@ -332,16 +357,24 @@ describe('closing', () => {
     expect(m.q.getByRole('toolbar')).toBeTruthy();
   });
 
-  it('lists the panel controls in reading order, with no tabindex to reorder them', async () => {
+  it('lists the panel controls in reading order; only the radio groups rove their tab stop', async () => {
     const m = mountUi();
     const { dialog } = await openAdvanced(m);
-    const tabbable = Array.from(dialog.querySelectorAll<HTMLElement>('select, button, [tabindex]'));
-    expect(tabbable.filter((el) => el !== dialog && el.hasAttribute('tabindex'))).toEqual([]);
+    const controls = Array.from(dialog.querySelectorAll<HTMLElement>('select, button, [tabindex]'));
+    // A positive tabindex would reorder; the radios use 0 (checked) and -1 (the others).
+    expect(
+      controls.filter(
+        (el) => el !== dialog && el.hasAttribute('tabindex') && el.getAttribute('role') !== 'radio',
+      ),
+    ).toEqual([]);
+    const tabbable = controls.filter((el) => el !== dialog && el.tabIndex === 0);
     expect(
       tabbable.map((el) =>
-        el instanceof HTMLSelectElement ? (el.labels?.[0]?.textContent ?? '') : el.textContent,
+        el instanceof HTMLSelectElement
+          ? (el.labels?.[0]?.textContent ?? '')
+          : (el.getAttribute('aria-label') ?? el.textContent),
       ),
-    ).toEqual(['Bank', 'New bank...', 'Type', 'Priority', 'Save', 'Cancel']);
+    ).toEqual(['Bank', 'New bank...', 'Essential fact', '3', 'Save', 'Cancel']);
   });
 
   it('Cancel closes the panel and leaves the toolbar for another choice', async () => {

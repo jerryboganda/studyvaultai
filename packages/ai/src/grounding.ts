@@ -19,7 +19,7 @@ export const pairKey = (a: string, b: string) => (a < b ? `${a}|${b}` : `${b}|${
 
 export interface ChunkText {
   id: string;
-  kind: 'highlight' | 'note';
+  kind: 'highlight' | 'note' | 'card' | 'knowledge_point';
   /** The text as sent to the provider (sanitised, truncated, redacted). */
   sent: string;
 }
@@ -69,10 +69,15 @@ export function citationsFrom(
     const key = `${chunk.id}\u0001${matchForm(c.quote)}`;
     if (seen.has(key)) return;
     seen.add(key);
+    const quote = c.quote;
     out.push(
       chunk.kind === 'highlight'
-        ? { highlightId: chunk.id, quote: c.quote }
-        : { noteId: chunk.id, quote: c.quote },
+        ? { highlightId: chunk.id, quote }
+        : chunk.kind === 'card'
+          ? { cardId: chunk.id, quote }
+          : chunk.kind === 'knowledge_point'
+            ? { knowledgePointId: chunk.id, quote }
+            : { noteId: chunk.id, quote },
     );
   });
   return out;

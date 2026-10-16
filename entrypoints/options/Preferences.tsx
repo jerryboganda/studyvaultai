@@ -1,40 +1,101 @@
 import { useId, useState } from 'react';
 import {
+  BellRing,
+  BookOpen,
+  Check,
+  Contrast,
+  EyeOff,
+  Highlighter,
+  Minus,
+  Monitor,
+  Moon,
+  Paintbrush,
+  Rows2,
+  Rows4,
+  Sun,
+  Underline,
+  Workflow,
+} from 'lucide-react';
+import {
   COLOR_IDS,
   COLOR_SWATCH,
   HIGHLIGHT_KINDS,
   KIND_LABELS,
   type ColorId,
-  type HighlightKind,
   type Settings,
 } from '@shared';
 import { KIND_DECORATION } from '@highlights';
-import { AsyncSwitch, Button, InlineNotice, readKeepToasts, useAction, writeKeepToasts } from '@ui';
+import { Button, ChoiceCards, InlineNotice, readKeepToasts, useAction, writeKeepToasts } from '@ui';
 import { openDashboard } from '@ui/vault/dashboardLink';
+import { Act, Card, More, SettingRow } from './ui';
 
 /** Persists one settings change (`useSettings().update`); rejects with the real reason. */
 export type Update = (mutate: (s: Settings) => Settings) => Promise<unknown>;
 
 const THEMES = [
-  { id: 'system', label: 'Match my system', hint: 'Follows your operating system setting.' },
-  { id: 'light', label: 'Light', hint: 'Always light.' },
-  { id: 'dark', label: 'Dark', hint: 'Always dark.' },
-] as const;
+  {
+    value: 'system' as const,
+    label: 'System',
+    hint: 'Match device',
+    icon: Monitor,
+    tone: 'neutral' as const,
+  },
+  {
+    value: 'light' as const,
+    label: 'Light',
+    hint: 'Always light',
+    icon: Sun,
+    tone: 'sun' as const,
+  },
+  {
+    value: 'dark' as const,
+    label: 'Dark',
+    hint: 'Always dark',
+    icon: Moon,
+    tone: 'violet' as const,
+  },
+];
 
 const DENSITIES = [
-  { id: 'comfortable', label: 'Comfortable', hint: 'More space around rows and buttons.' },
-  { id: 'compact', label: 'Compact', hint: 'Fits more on screen.' },
-] as const;
+  {
+    value: 'comfortable' as const,
+    label: 'Comfortable',
+    hint: 'More space',
+    icon: Rows2,
+    tone: 'primary' as const,
+  },
+  {
+    value: 'compact' as const,
+    label: 'Compact',
+    hint: 'Fits more',
+    icon: Rows4,
+    tone: 'primary' as const,
+  },
+];
 
 const STYLES = [
   {
-    id: 'auto',
+    value: 'auto' as const,
     label: 'Automatic',
-    hint: 'Normal, and strong while your system asks for more contrast.',
+    hint: 'Follows contrast',
+    icon: Contrast,
+    tone: 'neutral' as const,
   },
-  { id: 'normal', label: 'Normal', hint: 'A light fill and a thin underline.' },
-  { id: 'strong', label: 'Strong', hint: 'A heavier fill and a thicker underline.' },
-] as const;
+  {
+    value: 'normal' as const,
+    label: 'Normal',
+    hint: 'Light fill',
+    icon: Minus,
+    tone: 'primary' as const,
+  },
+  {
+    value: 'strong' as const,
+    label: 'Strong',
+    hint: 'Heavier line',
+    icon: Underline,
+    tone: 'violet' as const,
+  },
+];
 
 const COLOR_NAMES: Record<ColorId, string> = {
   amber: 'Amber',
@@ -47,7 +108,7 @@ const COLOR_NAMES: Record<ColorId, string> = {
 };
 
 /**
- * One settings write with its own error, shown in the section that owns the control: an error far
+ * One settings write with its own error, shown in the card that owns the control: an error far
  * from the control that caused it is easy to miss and impossible to connect to it.
  */
 export function useWriter(update: Update) {
@@ -73,218 +134,193 @@ export function useWriter(update: Update) {
   return { write: (mutate: (s: Settings) => Settings) => save.run(mutate), error };
 }
 
-/**
- * Checkbox whose explanation is its accessible description, not part of its name. A returned
- * promise makes it a pending switch (`AsyncSwitch`): shown as chosen, busy and "Saving…" until the
- * write settles, rolled back by the stored value if it failed.
- */
-export function Toggle({
-  label,
-  hint,
-  checked,
-  onChange,
+/** The default kind as a row of radio chips: glyph, name and the kind's colour (never colour alone). */
+function KindPicker({
+  settings,
+  write,
 }: {
-  label: string;
-  hint: string;
-  checked: boolean;
-  onChange(next: boolean): Promise<unknown> | void;
+  settings: Settings;
+  write: ReturnType<typeof useWriter>['write'];
 }) {
-  return <AsyncSwitch label={label} hint={hint} checked={checked} onChange={onChange} />;
+  const uid = useId();
+  return (
+    <fieldset className="opt-fieldset">
+      <legend className="opt-legend">Default kind</legend>
+      <div className="opt-kinds">
+        {HIGHLIGHT_KINDS.map((k) => (
+          <label key={k} className="opt-kind">
+            <input
+              type="radio"
+              className="sv-vh"
+              name={`${uid}-kind`}
+              value={k}
+              checked={settings.defaultKind === k}
+              onChange={() => write((s) => ({ ...s, defaultKind: k }))}
+            />
+            <span
+              className="opt-kind__dot"
+              aria-hidden="true"
+              style={{ background: COLOR_SWATCH[settings.palette[k]].solid }}
+            >
+              {KIND_LABELS[k].glyph}
+            </span>
+            <span className="opt-kind__label">{KIND_LABELS[k].label}</span>
+            <Check aria-hidden="true" strokeWidth={3} className="opt-kind__check" />
+          </label>
+        ))}
+      </div>
+      <p className="sv-muted sv-small">Used for one-click and shortcut saves.</p>
+    </fieldset>
+  );
+}
+
+/**
+ * Each kind's colour as swatches, with a sample drawn the way pages draw it: the colour fill and
+ * the kind's own underline (so nothing depends on colour alone).
+ */
+function KindLooks({
+  settings,
+  write,
+}: {
+  settings: Settings;
+  write: ReturnType<typeof useWriter>['write'];
+}) {
+  const uid = useId();
+  const strong = settings.highlightStyle === 'strong';
+  return (
+    <ul className="opt-looks" aria-label="Underline for each highlight kind">
+      {HIGHLIGHT_KINDS.map((kind) => {
+        const color = settings.palette[kind];
+        const deco = KIND_DECORATION[kind];
+        const px = deco.thickness + (strong ? 1 : 0);
+        return (
+          <li key={kind} className="opt-look">
+            <fieldset className="opt-fieldset opt-look__set">
+              <legend className="opt-look__kind">
+                <span aria-hidden="true">{KIND_LABELS[kind].glyph}</span> {KIND_LABELS[kind].label}
+              </legend>
+              <div className="opt-swatches">
+                {COLOR_IDS.map((c) => (
+                  <label key={c} className="opt-swatch" title={COLOR_NAMES[c]}>
+                    <input
+                      type="radio"
+                      className="sv-vh"
+                      name={`${uid}-${kind}`}
+                      value={c}
+                      checked={color === c}
+                      onChange={() =>
+                        write((s) => ({ ...s, palette: { ...s.palette, [kind]: c } }))
+                      }
+                    />
+                    <span
+                      className="opt-swatch__dot"
+                      aria-hidden="true"
+                      style={{ background: COLOR_SWATCH[c].solid }}
+                    >
+                      <Check strokeWidth={3.5} />
+                    </span>
+                    <span className="sv-vh">{COLOR_NAMES[c]}</span>
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+            <span
+              className="opt-underline"
+              style={{
+                background: COLOR_SWATCH[color].bg,
+                textDecorationLine: 'underline',
+                textDecorationStyle: deco.style,
+                textDecorationThickness: `${px}px`,
+              }}
+            >
+              Sample text
+            </span>
+            <span className="sv-muted sv-small opt-look__deco">{deco.label}</span>
+          </li>
+        );
+      })}
+    </ul>
+  );
 }
 
 export function Appearance({ settings, update }: { settings: Settings; update: Update }) {
-  const uid = useId();
-  const { write, error } = useWriter(update);
-  const strong = settings.highlightStyle === 'strong';
+  const theme = useWriter(update);
+  const density = useWriter(update);
+  const marks = useWriter(update);
   const painted = settings.paintHighlights;
+  const styleId = useId();
   // Per viewer, in this browser profile: not a StudyVault setting, so it is not written through `update`.
   const [keepToasts, setKeepToasts] = useState(readKeepToasts);
   return (
-    <section className="sv-stack" aria-labelledby={`${uid}-h`}>
-      <h2 id={`${uid}-h`}>Appearance</h2>
-
-      <fieldset className="opt-fieldset">
-        <legend>Theme</legend>
-        <div className="sv-stack sv-stack--tight">
-          {THEMES.map((t) => (
-            <label key={t.id} className="sv-check">
-              <input
-                type="radio"
-                name={`${uid}-theme`}
-                value={t.id}
-                checked={settings.theme === t.id}
-                onChange={() => write((s) => ({ ...s, theme: t.id }))}
-              />
-              <span>
-                {t.label} <span className="sv-muted sv-small">{t.hint}</span>
-              </span>
-            </label>
-          ))}
-        </div>
-      </fieldset>
-
-      <fieldset className="opt-fieldset">
-        <legend>Density</legend>
-        <div className="sv-stack sv-stack--tight">
-          {DENSITIES.map((d) => (
-            <label key={d.id} className="sv-check">
-              <input
-                type="radio"
-                name={`${uid}-density`}
-                value={d.id}
-                checked={settings.density === d.id}
-                onChange={() => write((s) => ({ ...s, density: d.id }))}
-              />
-              <span>
-                {d.label} <span className="sv-muted sv-small">{d.hint}</span>
-              </span>
-            </label>
-          ))}
-        </div>
-        <p className="sv-muted sv-small">Applies to the dashboard and to the toolbar on pages.</p>
-      </fieldset>
-
-      <div className="sv-field opt-narrow">
-        <label className="sv-label" htmlFor={`${uid}-kind`}>
-          Default highlight kind
-        </label>
-        <select
-          id={`${uid}-kind`}
-          className="sv-control"
-          value={settings.defaultKind}
-          onChange={(e) => {
-            const defaultKind = e.target.value as HighlightKind;
-            write((s) => ({ ...s, defaultKind }));
-          }}
-        >
-          {HIGHLIGHT_KINDS.map((k) => (
-            <option key={k} value={k}>
-              {`${KIND_LABELS[k].glyph} ${KIND_LABELS[k].label}`}
-            </option>
-          ))}
-        </select>
-        <p className="sv-muted sv-small">
-          Used when you save with one click or the keyboard shortcut.
-        </p>
-      </div>
-
-      <fieldset className="opt-fieldset">
-        <legend>Highlight colours</legend>
-        <p className="sv-muted sv-small">
-          Each kind of highlight has its own colour. The kind is always written out next to the
-          colour, and on the page each kind has its own underline, so nothing depends on colour
-          alone.
-        </p>
-        <ul className="opt-list">
-          {HIGHLIGHT_KINDS.map((kind) => {
-            const color = settings.palette[kind];
-            const id = `${uid}-${kind}`;
-            return (
-              <li key={kind} className="opt-item opt-palette">
-                <label htmlFor={id} className="opt-palette__kind">
-                  <span aria-hidden="true">{KIND_LABELS[kind].glyph}</span>{' '}
-                  {KIND_LABELS[kind].label}
-                </label>
-                <select
-                  id={id}
-                  className="sv-control opt-palette__select"
-                  value={color}
-                  onChange={(e) => {
-                    const next = e.target.value as ColorId;
-                    write((s) => ({ ...s, palette: { ...s.palette, [kind]: next } }));
-                  }}
-                >
-                  {COLOR_IDS.map((c) => (
-                    <option key={c} value={c}>
-                      {COLOR_NAMES[c]}
-                    </option>
-                  ))}
-                </select>
-                <mark
-                  className="opt-sample"
-                  style={{ background: COLOR_SWATCH[color].bg, color: 'inherit' }}
-                >
-                  Sample text
-                </mark>
-              </li>
-            );
-          })}
-        </ul>
-      </fieldset>
-
-      <div className="sv-stack">
-        <h3>Highlights on web pages</h3>
-        <Toggle
-          label="Show highlights on pages"
-          hint="Turn this off to keep saving and reviewing highlights without marking them on web pages. Painted highlights live in the page's shared highlight list, so scripts that a site itself runs can read which passages you marked, and their colour and kind. On sites you do not trust, keep this off or add them to the deny list."
-          checked={painted}
-          onChange={(paintHighlights) => write((s) => ({ ...s, paintHighlights }))}
+    <div className="opt-stack">
+      <Card title="Theme" icon={Sun} tone="sun">
+        <ChoiceCards
+          label="Theme"
+          options={THEMES}
+          value={settings.theme}
+          columns={3}
+          onChange={(t) => void theme.write((s) => ({ ...s, theme: t }))}
         />
+        {theme.error}
+      </Card>
+
+      <Card
+        title="Density"
+        icon={Rows2}
+        info="Applies to the dashboard and to the toolbar on pages."
+      >
+        <ChoiceCards
+          label="Density"
+          options={DENSITIES}
+          value={settings.density}
+          columns={2}
+          onChange={(d) => void density.write((s) => ({ ...s, density: d }))}
+        />
+        {density.error}
+      </Card>
+
+      <Card title="Highlights" icon={Highlighter} tone="warning">
+        <KindPicker settings={settings} write={marks.write} />
+        <SettingRow
+          icon={Paintbrush}
+          tone="warning"
+          label="Show on pages"
+          hint="Sites can see which passages are painted."
+          info="Painted highlights live in the page's shared highlight list, so scripts that a site itself runs can read which passages you marked, and their colour and kind. On sites you do not trust, keep this off or add them to the deny list."
+          checked={painted}
+          onChange={(paintHighlights) => marks.write((s) => ({ ...s, paintHighlights }))}
+        />
+        {/* One group name, not two: the cards are named by this line, the fieldset only disables. */}
         <fieldset className="opt-fieldset" disabled={!painted}>
-          <legend>Highlight style</legend>
-          <div className="sv-stack sv-stack--tight">
-            {STYLES.map((o) => (
-              <label key={o.id} className="sv-check">
-                <input
-                  type="radio"
-                  name={`${uid}-style`}
-                  value={o.id}
-                  checked={settings.highlightStyle === o.id}
-                  onChange={() => write((s) => ({ ...s, highlightStyle: o.id }))}
-                />
-                <span>
-                  {o.label} <span className="sv-muted sv-small">{o.hint}</span>
-                </span>
-              </label>
-            ))}
-          </div>
+          <p id={`${styleId}-h`} className="opt-legend">
+            Highlight style
+          </p>
+          <ChoiceCards
+            labelledBy={`${styleId}-h`}
+            options={STYLES}
+            value={settings.highlightStyle}
+            columns={3}
+            onChange={(o) => void marks.write((s) => ({ ...s, highlightStyle: o }))}
+          />
           {painted ? null : (
-            <p className="sv-muted sv-small">
-              Highlight style has no effect while highlights are not shown on pages.
-            </p>
+            <p className="sv-muted sv-small">No effect while highlights are not shown on pages.</p>
           )}
         </fieldset>
-
-        <div className="sv-stack sv-stack--tight">
-          <h4>What each kind looks like on a page</h4>
-          <ul className="opt-list" aria-label="Underline for each highlight kind">
-            {HIGHLIGHT_KINDS.map((kind) => {
-              const deco = KIND_DECORATION[kind];
-              const px = deco.thickness + (strong ? 1 : 0);
-              return (
-                <li key={kind} className="opt-item opt-legend">
-                  <span className="opt-legend__kind">
-                    <span aria-hidden="true">{KIND_LABELS[kind].glyph}</span>{' '}
-                    {KIND_LABELS[kind].label}
-                  </span>
-                  <span
-                    className="opt-underline"
-                    style={{
-                      background: COLOR_SWATCH[settings.palette[kind]].bg,
-                      textDecorationLine: 'underline',
-                      textDecorationStyle: deco.style,
-                      textDecorationThickness: `${px}px`,
-                    }}
-                  >
-                    Sample text
-                  </span>
-                  <span className="sv-muted sv-small">{deco.label}</span>
-                </li>
-              );
-            })}
-          </ul>
+        <More label="Colours and underlines">
+          <KindLooks settings={settings} write={marks.write} />
           <p className="sv-muted sv-small">
-            Samples show the strong thickness when Strong is chosen; Automatic is drawn as Normal.
-            On pages with a forced-colours theme the browser's own colours replace these.
+            Strong draws a thicker line. Forced-colour themes use the browser&apos;s colours.
           </p>
-        </div>
-      </div>
+        </More>
+        {marks.error}
+      </Card>
 
-      <div className="sv-stack">
-        <h3>Notifications</h3>
-        <Toggle
-          label="Keep notifications on screen until I close them"
-          hint="Messages such as “Highlight deleted” with an Undo close by themselves after a few seconds, and wait while the pointer is over them or focus is inside them. Turn this on to keep every one until you press Dismiss, or Escape while it has focus or the pointer. Error messages always stay until you close them. Saved in this browser only."
+      <div className="opt-card opt-card--single">
+        <SettingRow
+          icon={BellRing}
+          label="Keep notifications"
+          hint="Stay on screen until you close them."
+          info="Messages on StudyVault pages, such as “Highlight deleted”, close by themselves after a few seconds; this keeps each one until you press Dismiss. Errors always stay. Saved in this browser only, and not used by the toolbar on web pages."
           checked={keepToasts}
           onChange={(next) => {
             writeKeepToasts(next);
@@ -292,56 +328,73 @@ export function Appearance({ settings, update }: { settings: Settings; update: U
           }}
         />
       </div>
-      {error}
-    </section>
+    </div>
   );
 }
 
 export function Capture({ settings, update }: { settings: Settings; update: Update }) {
-  const uid = useId();
   const { write, error } = useWriter(update);
   const openRules = useAction(() => openDashboard({ view: 'rules' }));
   return (
-    <section className="sv-stack" aria-labelledby={`${uid}-h`}>
-      <h2 id={`${uid}-h`}>Capture</h2>
-      <Toggle
-        label="Show the floating toolbar when I select text"
-        hint="Turn this off if you prefer the keyboard shortcut or the right-click menu. Those keep working either way."
-        checked={settings.toolbarEnabled}
-        onChange={(toolbarEnabled) => write((s) => ({ ...s, toolbarEnabled }))}
-      />
-      <Toggle
-        label="Save from private windows"
-        hint="Off by default. When on, you can save highlights from private (incognito) windows. They are stored in your normal Chrome profile and stay after you close the window, so the private window leaves a trace. Chrome also only runs StudyVault in private windows if you allow it there on the extension's details page."
-        checked={settings.allowIncognitoCapture}
-        onChange={(allowIncognitoCapture) => write((s) => ({ ...s, allowIncognitoCapture }))}
-      />
-      <Toggle
-        label="Use the StudyVault PDF reader"
-        hint="Chrome's built-in PDF viewer cannot be marked up by any extension, so StudyVault has its own reader for PDFs (choose Open in StudyVault reader in the popup, or right-click a PDF link). Turn this off and the reader will not open a PDF and the popup does not offer it. PDFs you already highlighted keep their highlights."
-        checked={settings.features.pdfReader}
-        onChange={(pdfReader) => write((s) => ({ ...s, features: { ...s.features, pdfReader } }))}
-      />
-      <Toggle
-        label="Use filing rules"
-        hint="When a new highlight matches one of your filing rules, StudyVault suggests filing it in the bank the rule names, or files it for you if the rule says so, with Undo. Turn this off to keep your rules without applying them. A bank you pick yourself in the toolbar is never overridden, and imports and restores are never filed."
-        checked={settings.useFilingRules}
-        onChange={(useFilingRules) => write((s) => ({ ...s, useFilingRules }))}
-      />
-      <div className="sv-row">
-        <Button busy={openRules.busy} onClick={() => void openRules.run()}>
-          Manage filing rules
-        </Button>
-        <span className="sv-muted sv-small">
-          Opens the dashboard on the rules and a test panel.
-        </span>
+    <div className="opt-stack">
+      <div className="opt-card">
+        <div className="opt-settings">
+          <SettingRow
+            icon={Highlighter}
+            tone="warning"
+            label="Floating toolbar"
+            hint="Shows when you select text."
+            info="Turn this off if you prefer the keyboard shortcut or the right-click menu. Those keep working either way."
+            checked={settings.toolbarEnabled}
+            onChange={(toolbarEnabled) => write((s) => ({ ...s, toolbarEnabled }))}
+          />
+          <SettingRow
+            icon={EyeOff}
+            tone="neutral"
+            label="Private windows"
+            hint="Saves stay in your normal profile."
+            info="Off by default. Highlights saved from private (incognito) windows are stored in your normal Chrome profile and stay after the window closes. Chrome also has to allow StudyVault in private windows on the extension's details page."
+            checked={settings.allowIncognitoCapture}
+            onChange={(allowIncognitoCapture) => write((s) => ({ ...s, allowIncognitoCapture }))}
+          />
+          <SettingRow
+            icon={BookOpen}
+            tone="primary"
+            label="PDF reader"
+            hint="Open PDFs in StudyVault to mark them."
+            info="Chrome's own PDF viewer cannot be marked up by any extension, so StudyVault has its own reader. Off: the reader does not open PDFs and the popup does not offer it. Highlights you already made stay."
+            checked={settings.features.pdfReader}
+            onChange={(pdfReader) =>
+              write((s) => ({ ...s, features: { ...s.features, pdfReader } }))
+            }
+          />
+          <SettingRow
+            icon={Workflow}
+            tone="violet"
+            label="Filing rules"
+            hint="Suggest a bank for new saves."
+            info="A new highlight that matches a rule is suggested for, or filed into, the rule's bank, with Undo. A bank you pick yourself is never overridden; imports and restores are never filed."
+            checked={settings.useFilingRules}
+            onChange={(useFilingRules) => write((s) => ({ ...s, useFilingRules }))}
+          >
+            <Act
+              size="sm"
+              icon={Workflow}
+              busy={openRules.busy}
+              className="opt-setting__extra"
+              onClick={() => void openRules.run()}
+            >
+              Manage rules
+            </Act>
+          </SettingRow>
+        </div>
+        {openRules.error ? (
+          <InlineNotice tone="error" title="Could not open the dashboard">
+            {openRules.error}
+          </InlineNotice>
+        ) : null}
+        {error}
       </div>
-      {openRules.error ? (
-        <InlineNotice tone="error" title="Could not open the dashboard">
-          {openRules.error}
-        </InlineNotice>
-      ) : null}
-      {error}
-    </section>
+    </div>
   );
 }

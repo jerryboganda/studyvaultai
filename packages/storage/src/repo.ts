@@ -21,6 +21,7 @@ import {
   type CaptureResult,
   type HighlightView,
 } from '@shared';
+import { saveEvent } from '@study/game';
 import {
   addMembership,
   allTables,
@@ -47,6 +48,7 @@ import {
 } from './core';
 import { clearRestoreStaging, deletePreMigrationSnapshot } from './backupTarget';
 import { WipePendingError, deleteDatabase, withDb, withWritableDb } from './db';
+import { addMissing, revokeQuickSave } from './game';
 import { normalizeQuote, quoteHash } from './normalize';
 import type { BankWithCount, HighlightListItem, RepoApi } from './types';
 
@@ -78,7 +80,8 @@ export async function saveCapture(input: CaptureInput): Promise<CaptureResult> {
   const hash = await quoteHash(normalized);
 
   const { result, changed } = await withWritableDb((db) =>
-    db.transaction('rw', allTables(db), async () => {
+    // `allTables` itself stays as it is: update and delete use it too.
+    db.transaction('rw', [...allTables(db), db.gameEvents], async () => {
       // Stamp once this transaction holds its lock (a request resolves only then): a capture that
       // waited behind a restore must not carry a time from before the wait, or the search catch-up,
       // which looks for rows changed since a moment it has already passed, would never see it.
@@ -167,6 +170,8 @@ export async function saveCapture(input: CaptureInput): Promise<CaptureResult> {
           capturedTitle: capture.page.title,
         };
         await db.highlights.put(highlight);
+        const event = saveEvent(highlight);
+        if (event) await addMissing(db.gameEvents, [event]);
         await db.highlightBanks.put({
           highlightId: highlight.id,
           bankId: bank.id,
@@ -231,12 +236,13 @@ export async function updateHighlight(id: string, patch: HighlightPatch): Promis
 export async function softDeleteHighlight(id: string): Promise<void> {
   requireId(id);
   const changed = await withWritableDb((db) =>
-    db.transaction('rw', db.highlights, async () => {
+    db.transaction('rw', [db.highlights, db.gameFacts], async () => {
       const row = await db.highlights.get(id);
       if (!row) throw new StudyVaultError('not_found', 'Highlight not found');
       if (isDeleted(row)) return false;
       const ts = now();
       await db.highlights.update(id, { deletedAt: ts, updatedAt: ts });
+      await revokeQuickSave(db, row, ts); // the save toast's undo takes its XP back
       return true;
     }),
   );
