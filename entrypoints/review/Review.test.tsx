@@ -103,6 +103,14 @@ describe('review page: deck picker', () => {
 });
 
 describe('review page: the session', () => {
+  // Pin the clock to midday: these expect a Good's 10-minute step to stay in today's session. Near
+  // the rollover it lands in tomorrow's study day and rightly leaves (see queue.test.ts).
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
+    vi.setSystemTime(new Date('2026-10-15T12:00:00Z'));
+  });
+  afterEach(() => vi.useRealTimers());
+
   it('shows real intervals, grades with the keyboard, and undoes with Z', async () => {
     const user = userEvent.setup();
     const { deck, cards } = await seed(2);
