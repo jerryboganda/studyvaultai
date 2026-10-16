@@ -195,6 +195,34 @@ export const VENDORS: Record<AiVendorId, VendorSpec> = {
 export const providerNeedsKey = (provider: AiProviderId, loopback: boolean): boolean =>
   provider === 'anthropic' || provider === 'codex_responses' || !loopback;
 
+/**
+ * Rough context window, in tokens, of a model (what the whole request may hold). Unknown models get
+ * a cautious default; it only decides how much is trimmed before sending, never what is allowed.
+ */
+export function contextWindowTokens(vendor: AiVendorId, model: string): number {
+  const m = model.toLowerCase();
+  if (vendor === 'ubag') return 16_000; // a web chat, whatever the target
+  if (/claude/.test(m)) return 200_000;
+  if (/gpt-5|gpt-4\.1|gpt-4o|o\d|codex/.test(m)) return 128_000;
+  if (/gemini/.test(m)) return 128_000;
+  if (/llama-3\.[1-3]|qwen|deepseek|gpt-oss|nemotron|mistral|kimi|glm/.test(m)) return 32_000;
+  return 8_000;
+}
+
+/** What the credential field is called and what it holds, which for UBAG depends on how it is reached. */
+export function keyWording(
+  vendor: AiVendorId,
+  authScheme: AiAuthScheme,
+): { label: string; help: string } {
+  if (vendor === 'ubag' && authScheme === 'bearer') {
+    return {
+      label: 'Access token',
+      help: 'A personal access token issued by the gateway operator, sent as a Bearer token.',
+    };
+  }
+  return { label: VENDORS[vendor].keyLabel, help: VENDORS[vendor].keyHelp };
+}
+
 export const VENDOR_IDS = Object.keys(VENDORS) as AiVendorId[];
 
 /** The preset a stored provider belongs to: its recorded vendor, else the address it points at. */

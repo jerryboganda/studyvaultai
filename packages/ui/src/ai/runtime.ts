@@ -407,6 +407,9 @@ export function sendBlocker(
   const named = (text: string) => (p.id === PRIMARY_PROFILE_ID ? text : `${p.label}: ${text}`);
   if (p.problem) return named(p.problem);
   if (p.key.state === 'missing') {
+    if (p.settings.provider === 'codex_responses') {
+      return 'Sign in with ChatGPT in the AI settings first (your sign-in is missing or has expired).';
+    }
     return p.id === PRIMARY_PROFILE_ID
       ? 'Add your API key in the AI settings first.'
       : `Add the API key of "${p.label}" in the AI settings first.`;

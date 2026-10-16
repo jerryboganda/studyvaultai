@@ -36,6 +36,13 @@ import type { AddressInfo } from 'node:net';
  *   errors { type: 'error', error: { type, message }, request_id } with 401 authentication_error,
  *          429 rate_limit_error, 529 overloaded_error ... (`anthropicFailure`)
  *
+ * UBAG MODE (`startFakeProvider({ api: 'ubag', apiKey: 'user:password' })`): the OpenAI-compatible
+ * facade of the UBAG gateway under /v1/openai, as the shipped UBAG preset talks to it: HTTP Basic
+ * (`Authorization: Basic base64(user:password)`, a Bearer is refused like the nginx realm refuses it),
+ * `GET /v1/openai/models` listing target and `target|setting` ids, and the chat route answering
+ * synchronously. A queued 504 `wait_timeout` answers "still running"; the product sends the very
+ * same body again, which is what lets the real gateway join the running job.
+ *
  * `baseUrl` is then the origin itself (the adapter appends /v1/messages). `Seen.chat` is the request
  * normalised to the chat shape (the `system` text first) so `dataBlocks`, `taskOf` and the canned
  * answers work unchanged; `Seen.anthropic` is the validated body as it came. In this mode the `ok`
@@ -291,7 +298,7 @@ export function cannedAnswer(chat: ChatRequest): string {
 
 export interface FakeProvider {
   /** Which wire format this server speaks. */
-  readonly api: 'openai' | 'anthropic';
+  readonly api: 'openai' | 'anthropic' | 'ubag';
   /** http://127.0.0.1:PORT */
   readonly origin: string;
   /**
@@ -312,6 +319,8 @@ export interface FakeProvider {
   setKey(key: string | undefined): void;
   /** Replies for the next completions, in order, before the default answer applies again. */
   queue(...replies: ReplyFor[]): void;
+  /** The ids `GET .../models` lists (UBAG and OpenAI modes). */
+  setModels(ids: readonly string[]): void;
   /** What answers when the queue is empty (default: `cannedAnswer`). */
   setDefault(fn: (chat: ChatRequest) => Reply): void;
   close(): Promise<void>;
@@ -397,10 +406,29 @@ function validAnthropic(
 }
 
 export async function startFakeProvider(
-  opts: { apiKey?: string; api?: 'openai' | 'anthropic' } = {},
+  opts: {
+    apiKey?: string;
+    api?: 'openai' | 'anthropic' | 'ubag';
+    /** UBAG mode: `basic` (default, a shared operator login) or `bearer` (a personal access token). */
+    ubagAuth?: 'basic' | 'bearer';
+  } = {},
 ): Promise<FakeProvider> {
   let key = opts.apiKey;
   const api = opts.api ?? 'openai';
+  const prefix = api === 'ubag' ? '/v1/openai' : '/v1';
+  let models: readonly string[] = [
+    'mock',
+    'chatgpt_web|GPT-6',
+    'chatgpt_web|Medium',
+    'deepseek_web',
+  ];
+  const authorised = (header: string | undefined): boolean => {
+    if (key === undefined) return true;
+    if (api === 'ubag' && (opts.ubagAuth ?? 'basic') === 'basic') {
+      return header === `Basic ${Buffer.from(key, 'utf8').toString('base64')}`;
+    }
+    return header === `Bearer ${key}`;
+  };
   const seen: Seen[] = [];
   const queue: ReplyFor[] = [];
   let fallback: (chat: ChatRequest) => Reply = (chat) => ok(cannedAnswer(chat));
@@ -496,13 +524,25 @@ export async function startFakeProvider(
 
       if (api === 'anthropic') return answerAnthropic(entry, send);
 
-      if (entry.path !== '/v1/chat/completions') {
+      if (entry.method === 'GET' && entry.path === `${prefix}/models`) {
+        if (!authorised(req.headers.authorization)) {
+          return send(
+            401,
+            error('Incorrect API key provided.', 'invalid_request_error', 'invalid_api_key'),
+          );
+        }
+        return send(200, {
+          object: 'list',
+          data: models.map((id) => ({ id, object: 'model', owned_by: 'e2e' })),
+        });
+      }
+      if (entry.path !== `${prefix}/chat/completions`) {
         return send(404, error(`Unknown URL ${entry.path}`, 'invalid_request_error', 'not_found'));
       }
       if (entry.method !== 'POST') {
         return send(405, error('Method not allowed', 'invalid_request_error', 'bad_method'));
       }
-      if (key !== undefined && req.headers.authorization !== `Bearer ${key}`) {
+      if (!authorised(req.headers.authorization)) {
         return send(
           401,
           error('Incorrect API key provided.', 'invalid_request_error', 'invalid_api_key'),
@@ -552,11 +592,11 @@ export async function startFakeProvider(
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address() as AddressInfo;
   const origin = `http://127.0.0.1:${port}`;
-  const completionPath = api === 'anthropic' ? '/v1/messages' : '/v1/chat/completions';
+  const completionPath = api === 'anthropic' ? '/v1/messages' : `${prefix}/chat/completions`;
   return {
     api,
     origin,
-    baseUrl: api === 'anthropic' ? origin : `${origin}/v1`,
+    baseUrl: api === 'anthropic' ? origin : `${origin}${prefix}`,
     host: `127.0.0.1:${port}`,
     seen,
     completions: () => seen.filter((s) => s.method === 'POST' && s.path === completionPath),
@@ -565,6 +605,9 @@ export async function startFakeProvider(
     },
     queue: (...replies) => {
       queue.push(...replies);
+    },
+    setModels: (ids) => {
+      models = ids;
     },
     setDefault: (fn) => {
       fallback = fn;

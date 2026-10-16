@@ -35,6 +35,7 @@ import {
   effortsFor,
   fetchModelList,
   isUbagThinkingId,
+  keyWording,
   ubagThinkingOptions,
   type ModelEntry,
 } from './vendors';
@@ -147,8 +148,8 @@ export function ModelPicker(props: {
     <>
       {spec.liveModels && props.needsKey && !props.keySaved && props.vendor !== 'chatgpt_codex' ? (
         <Field
-          label={spec.keyLabel}
-          hint={`${spec.keyHelp} Only used to list models and sent to ${origin || 'the provider'}.`}
+          label={keyWording(props.vendor, props.authScheme).label}
+          hint={`${keyWording(props.vendor, props.authScheme).help} Only used to list models and sent to ${origin || 'the provider'}.`}
         >
           {(id, hintId) => (
             <input

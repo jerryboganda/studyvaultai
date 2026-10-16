@@ -258,7 +258,14 @@ export const setupStep = (options: Page, name: string | RegExp): Locator =>
  */
 export async function configureProvider(
   options: Page,
-  cfg: { baseUrl: string; model?: string; key?: string; preset?: 'custom' | 'anthropic' },
+  cfg: {
+    baseUrl: string;
+    model?: string;
+    key?: string;
+    preset?: 'custom' | 'anthropic' | 'ubag';
+    /** Runs on the address step, after the address and model are typed (a vendor-specific choice). */
+    before?: () => Promise<void>;
+  },
 ): Promise<void> {
   const status = options.getByTestId('ai-status');
   const setup = options.getByTestId('ai-setup');
@@ -272,6 +279,7 @@ export async function configureProvider(
   await expect(setupStep(options, 'Address and model')).toBeVisible();
   await options.getByTestId('ai-base-url').fill(cfg.baseUrl);
   await options.getByTestId('ai-model').fill(cfg.model ?? MODEL);
+  await cfg.before?.();
   await next.click();
   await expect(setupStep(options, /^(API key|Daily limit)$/)).toBeVisible();
   if (await setupStep(options, 'API key').isVisible()) {

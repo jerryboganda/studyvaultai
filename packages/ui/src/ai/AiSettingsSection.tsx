@@ -66,7 +66,7 @@ import { hasEndpointAccess, requestEndpointAccess, revokeEndpointAccess } from '
 import { configSecrets, loadAiConfig, sendBlocker, testAiConnection } from './runtime';
 import { UsageLedger } from './UsageLedger';
 import { CodexSignIn, ModelPicker, VendorUsage } from './VendorExtras';
-import { VENDORS, providerNeedsKey, vendorOf } from './vendors';
+import { VENDORS, keyWording, providerNeedsKey, vendorOf } from './vendors';
 
 // Fallback providers and per-task routing: only loaded once the feature is on and this section shows.
 const AiRoutingSection = lazy(() =>
@@ -769,6 +769,26 @@ export function AiSettingsSection() {
                   )}
                 </Field>
               ) : null}
+              {form.vendor === 'ubag' ? (
+                <Field
+                  label="How you sign in to the gateway"
+                  hint="Operators who share one login use a username and password; a personal access token is for your own account."
+                >
+                  {(id, hintId) => (
+                    <select
+                      id={id}
+                      className="sv-control ai-narrow"
+                      data-testid="ai-auth-scheme"
+                      aria-describedby={hintId}
+                      value={form.authScheme}
+                      onChange={(e) => edit({ authScheme: e.target.value as Form['authScheme'] })}
+                    >
+                      <option value="basic">Username and password</option>
+                      <option value="bearer">Personal access token</option>
+                    </select>
+                  )}
+                </Field>
+              ) : null}
               {isCodex ? null : (
                 <Field
                   label="Provider address"
@@ -858,7 +878,7 @@ export function AiSettingsSection() {
           ? [
               {
                 id: 'key',
-                title: VENDORS[form.vendor].keyLabel,
+                title: keyWording(form.vendor, form.authScheme).label,
                 inlineError: true,
                 pending: keyPending,
                 validate: () =>
@@ -885,8 +905,12 @@ export function AiSettingsSection() {
                       <p className="sd-line">{keyPending}</p>
                     ) : null}
                     <Field
-                      label={keySaved ? 'New key (optional)' : VENDORS[form.vendor].keyLabel}
-                      hint={VENDORS[form.vendor].keyHelp}
+                      label={
+                        keySaved
+                          ? 'New key (optional)'
+                          : keyWording(form.vendor, form.authScheme).label
+                      }
+                      hint={keyWording(form.vendor, form.authScheme).help}
                     >
                       {(id) => (
                         <input

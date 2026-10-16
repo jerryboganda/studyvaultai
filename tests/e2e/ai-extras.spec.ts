@@ -443,6 +443,34 @@ test.describe('chat', () => {
     expect(requestsOf(provider)[0]?.body).toContain(pearl.exactQuote);
   });
 
+  test('"Match by meaning" finds a note that shares no word with the question, on this device; switched off, it does not', async ({
+    env,
+    provider,
+  }) => {
+    const options = await openExt(env, 'options');
+    await setUpAi(options, provider);
+    const { page } = await saveHighlight(env, options, '#p-pearl');
+    const rows = await highlightsOf(options, page.url());
+    const pearl = rows.find((r) => r.exactQuote.startsWith('The sinoatrial node sets'));
+    if (!pearl) throw new Error('the highlight should be stored');
+    const chat = await openChat(env);
+    const question = 'What anatomical structure initiates each heartbeat?';
+
+    await expect(chat.getByTestId('chat-smart')).toBeChecked();
+    await sendChat(chat, question);
+    const turn = chat.getByTestId('chat-turn').first();
+    await expect(turn.getByTestId('chat-used')).toContainText('1 of your notes');
+    expect(requestsOf(provider)[0]?.body).toContain(pearl.exactQuote);
+
+    // A new chat with the switch off: the same question matches no word, so no note goes out.
+    await chat.getByTestId('chat-new').click();
+    await chat.getByTestId('chat-smart').uncheck();
+    await sendChat(chat, question);
+    await expect(chat.getByTestId('chat-turn')).toHaveCount(1);
+    const fresh = chat.getByTestId('chat-turn').first();
+    await expect(fresh.getByTestId('chat-used')).toContainText('No notes were sent');
+  });
+
   test('a citation that is not in the notes is flagged and cannot be saved as it is', async ({
     env,
     provider,

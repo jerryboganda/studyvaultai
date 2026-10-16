@@ -1,5 +1,17 @@
 # Manual QA: AI providers and Chat
 
+## Run record (2026-10-16, build from commit on `feat/ui-redesign`)
+| Check | How | Result |
+| --- | --- | --- |
+| UBAG gateway lists models and answers (Basic) | `scripts/smoke-ubag.mjs` against the live gateway | pass: models 200 in 0.8 s, chat 200 in 10.6 s, reply `OK` |
+| UBAG personal access token on `/v1/openai/*` | curl against the live gateway after the nginx change | pass: models 200, chat 200 in 13 s; `/v1/jobs` with the token stays 401 at the edge; bogus token gets the gateway's JSON 401 |
+| Shared Basic login still works, old password rejected after rotation | curl | pass |
+| Wizard, Basic/Bearer, model list, thinking level, 504 rejoin, add provider, provider switch consent | Playwright, real Chromium, loaded extension, local fake gateway (`tests/e2e/ai-ubag.spec.ts`) | pass locally (4 of 4); CI run recorded in the commit |
+| Match by meaning finds a paraphrase, off = no note | Playwright (`ai-extras.spec.ts`) | pass |
+| ChatGPT sign-in, refresh, refusal, sign-out | component and runtime tests with fakes | pass; **not run against a real ChatGPT account** |
+| Everything below | manual, by the owner | not run by the assistant |
+
+
 Run after loading the built extension (`chrome://extensions`, Developer mode, Load unpacked). CI
 covers the same flows against fakes; this list is for a real Chrome and real providers. Record the
 result of each line (pass / fail / not run) and the build id.

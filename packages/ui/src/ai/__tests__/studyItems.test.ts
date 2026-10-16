@@ -82,3 +82,55 @@ describe('scope', () => {
     expect(scoped.map((f) => f.id)).toEqual(['card-1']);
   });
 });
+
+describe('fitSelection', () => {
+  const passage = (id: string, chars: number) => ({
+    id,
+    kind: 'highlight' as const,
+    text: 'x'.repeat(chars),
+  });
+  const turn = (role: 'user' | 'assistant', chars: number) => ({ role, text: 'y'.repeat(chars) });
+
+  it('keeps everything that fits and says nothing was left out', async () => {
+    const { fitSelection } = await import('../chat');
+    const r = fitSelection({ chunks: [passage('a', 500)], question: 'q' }, 128_000);
+    expect(r.droppedPassages).toBe(0);
+    expect(r.droppedTurns).toBe(0);
+    expect(r.selection.chunks).toHaveLength(1);
+    expect(r.budgetTokens).toBe(10_000);
+  });
+
+  it('drops the lowest-ranked passages first, then the oldest turns, never the question or memory', async () => {
+    const { fitSelection, estimateRequestTokens } = await import('../chat');
+    const sel = {
+      chunks: [passage('best', 6000), passage('mid', 6000), passage('worst', 6000)],
+      question: 'what?',
+      memory: 'summary',
+      history: [
+        turn('user', 3000),
+        turn('assistant', 3000),
+        turn('user', 3000),
+        turn('assistant', 3000),
+      ],
+    };
+    const r = fitSelection(sel, 128_000);
+    expect(estimateRequestTokens(r.selection)).toBeLessThanOrEqual(r.budgetTokens);
+    expect(r.selection.chunks.map((c) => c.id)[0]).toBe('best');
+    expect(r.droppedPassages).toBeGreaterThan(0);
+    expect(r.selection.question).toBe('what?');
+    expect(r.selection.memory).toBe('summary');
+    // Passages go before any turn does.
+    if (r.droppedTurns > 0) expect(r.selection.chunks).toHaveLength(0);
+  });
+
+  it('uses a smaller budget for a small model', async () => {
+    const { fitSelection } = await import('../chat');
+    const { contextWindowTokens } = await import('../vendors');
+    expect(contextWindowTokens('ubag', 'deepseek_web')).toBe(16_000);
+    expect(contextWindowTokens('openai', 'gpt-5')).toBe(128_000);
+    expect(contextWindowTokens('custom', 'mystery')).toBe(8_000);
+    const r = fitSelection({ chunks: [passage('a', 14000)], question: 'q' }, 8_000);
+    expect(r.budgetTokens).toBe(4_800);
+    expect(r.selection.chunks).toHaveLength(0);
+  });
+});

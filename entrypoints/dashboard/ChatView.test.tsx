@@ -359,4 +359,62 @@ describe('the chat view', () => {
 
     expect(screen.getByTestId('chat-memory').textContent).toContain('nothing summarised yet');
   });
+
+  it('can let the AI suggest search words first, and keeps only the real answer as a turn', async () => {
+    const user = userEvent.setup();
+    const h1 = await save(Q1);
+    await turnAi(true);
+    await configure();
+    const { env, provider } = envFor([
+      reply('general', [], 'metformin, diabetes'),
+      reply('notes', [{ id: h1.id, quote: Q1 }], 'Metformin is first-line.'),
+    ]);
+    const index = fakeIndex([h1.id]);
+    renderChat(env, index);
+    await user.click(await screen.findByTestId('chat-expand'));
+    await say(user, 'Which tablet do we begin with for high sugar?');
+    await consentOnce(user);
+    await screen.findByTestId('chat-turn');
+    // One request for the words (message only, no notes), one for the answer.
+    expect(provider.calls).toHaveLength(2);
+    expect(provider.calls[0]!.messages.map((m) => m.content).join('\n')).not.toContain(Q1);
+    // The suggested words reached the local search.
+    expect(index.queries[0]).toContain('metformin');
+    expect(await listAiResults({ kind: 'chat' })).toHaveLength(1);
+  });
+
+  it('refreshes the memory on request and announces the answer without streaming tokens aloud', async () => {
+    const user = userEvent.setup();
+    await turnAi(true);
+    await configure();
+    const steps = [
+      ...Array.from({ length: 4 }, (_, i) => reply('general', [], `Answer ${i + 1}.`)),
+      reply('general', [], 'We talked about four things.'),
+    ];
+    const { env, provider } = envFor(steps);
+    renderChat(env, fakeIndex([]));
+    for (let i = 1; i <= 4; i++) {
+      await say(user, `Question number ${i}`);
+      if (i === 1) await consentOnce(user);
+      await waitFor(() => expect(screen.getAllByTestId('chat-turn')).toHaveLength(i));
+      await waitFor(() =>
+        expect(
+          (screen.getByTestId('chat-ask') as HTMLElement).getAttribute('aria-busy'),
+        ).toBeNull(),
+      );
+    }
+    expect(screen.getByTestId('chat-announce').textContent).toContain('The answer has arrived');
+    await user.click(screen.getByText(/^Memory/));
+    const refresh = await screen.findByTestId('chat-memory-refresh');
+    await waitFor(() => expect(refresh.getAttribute('aria-disabled')).toBeNull());
+    await user.click(refresh);
+    await waitFor(() => expect(provider.calls).toHaveLength(5));
+    await waitFor(() =>
+      expect((screen.getByTestId('chat-memory-text') as HTMLTextAreaElement).value).toContain(
+        'We talked about four things.',
+      ),
+    );
+    // The summary is memory, not a message of the conversation.
+    expect(screen.getAllByTestId('chat-turn')).toHaveLength(4);
+  });
 });

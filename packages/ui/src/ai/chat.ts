@@ -253,3 +253,67 @@ export async function highlightIdsInScope(scope: {
   }
   return ids;
 }
+
+/** The engine refuses a request above this many estimated tokens (DEFAULT_LIMITS.maxInputTokens). */
+export const ENGINE_INPUT_TOKENS = 10_000;
+/** What the prompt wrapper (instructions, shape, markers) adds on top of the data, in characters. */
+const PROMPT_OVERHEAD_CHARS = 2_600;
+const CHARS_PER_TOKEN_ESTIMATE = 3;
+
+interface FitInput {
+  chunks: readonly { id: string; text: string }[];
+  question?: string | undefined;
+  history?: readonly { role: 'user' | 'assistant'; text: string }[] | undefined;
+  memory?: string | undefined;
+}
+
+export interface FitResult<T extends FitInput> {
+  selection: T;
+  usedTokens: number;
+  budgetTokens: number;
+  /** What was left out to fit, so the person is told rather than surprised. */
+  droppedPassages: number;
+  droppedTurns: number;
+}
+
+export const estimateRequestTokens = (s: FitInput): number => {
+  const chars =
+    PROMPT_OVERHEAD_CHARS +
+    (s.question?.length ?? 0) +
+    (s.memory?.length ?? 0) +
+    s.chunks.reduce((n, c) => n + c.text.length, 0) +
+    (s.history ?? []).reduce((n, h) => n + h.text.length, 0);
+  return Math.ceil(chars / CHARS_PER_TOKEN_ESTIMATE);
+};
+
+/**
+ * Trims a chat request to a token budget, in this order: the lowest-ranked passages (the list is
+ * best first), then the oldest earlier turns (two messages at a time). The question and the memory
+ * summary are never cut. The budget is the smaller of the engine's limit and 60 % of the model's
+ * window, so there is room left for the answer.
+ */
+export function fitSelection<T extends FitInput>(selection: T, windowTokens: number): FitResult<T> {
+  const budgetTokens = Math.min(ENGINE_INPUT_TOKENS, Math.floor(windowTokens * 0.6));
+  let chunks = [...selection.chunks];
+  let history = [...(selection.history ?? [])];
+  let droppedPassages = 0;
+  let droppedTurns = 0;
+  const current = (): T => ({ ...selection, chunks, ...(history.length > 0 ? { history } : {}) });
+  while (estimateRequestTokens(current()) > budgetTokens && chunks.length > 0) {
+    chunks = chunks.slice(0, -1);
+    droppedPassages += 1;
+  }
+  while (estimateRequestTokens(current()) > budgetTokens && history.length > 0) {
+    history = history.slice(2);
+    droppedTurns += 1;
+  }
+  const fitted = current();
+  if (history.length === 0) delete (fitted as { history?: unknown }).history;
+  return {
+    selection: fitted,
+    usedTokens: estimateRequestTokens(fitted),
+    budgetTokens,
+    droppedPassages,
+    droppedTurns,
+  };
+}

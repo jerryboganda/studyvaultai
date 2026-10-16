@@ -31,6 +31,9 @@ export {
   CHAT_MAX_CHARS,
   CHAT_TOP_K,
   AI_NOTE_PREFIX,
+  ENGINE_INPUT_TOKENS,
+  estimateRequestTokens,
+  fitSelection,
   highlightIdsInScope,
   partialAnswer,
   retrieveForChat,
@@ -40,7 +43,7 @@ export {
   type AiChatTurn,
   type ChatRetrieval,
 } from './chat';
-export { VENDORS, effortsFor } from './vendors';
+export { VENDORS, contextWindowTokens, effortsFor } from './vendors';
 export { loadEmbedder, semanticPassages, type SemanticArgs } from './semantic';
 export { routeFor, configSecrets, type AiProfileConfig, type AiRoute } from './runtime';
 export { requestEndpointAccess } from './permission';

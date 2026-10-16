@@ -710,7 +710,11 @@ export async function listAiResults(query: AiResultQuery = {}): Promise<StoredAi
   const limit = Math.min(Math.max(Math.floor(query.limit ?? 100), 1), 1000);
   const wanted = query.highlightIds ? new Set(query.highlightIds) : null;
   return withDb(async (db) => {
-    const rows = await db.aiResults.toArray();
+    // The `kind` index keeps a chat (thousands of turns) from reading every other AI result too.
+    const rows =
+      query.kind !== undefined
+        ? await db.aiResults.where('kind').equals(query.kind).toArray()
+        : await db.aiResults.toArray();
     return rows
       .map((r) => parseRow(StoredAiResultSchema, r, 'aiResult'))
       .filter(notNull)

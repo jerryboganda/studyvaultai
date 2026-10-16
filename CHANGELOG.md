@@ -12,6 +12,10 @@ copy it when a version is tagged.
 - Chat is a conversation: works with no study material, saved conversations that resume after a
   reload, a rolling summary as memory, and automatic retrieval from your highlights and notes with
   verbatim citations (ADR-024). Replaces the find-tick-send flow for chat.
+- Chat: requests are trimmed to the model's context budget and the header shows requests left today and
+  context used; optional "suggest search words"; "Refresh memory"; paged long conversations; the streamed
+  answer no longer chatters in the live region. UBAG preset gains a personal-access-token mode; the
+  project's gateway accepts per-user tokens on `/v1/openai/*` (ADR-026).
 - Chat "Match by meaning": an 8 MB on-device static embedding (potion-base-8M, MIT) finds notes,
   flashcards and knowledge points that mean the same as the question without sharing its words;
   nothing is sent (ADR-025). Flashcards and knowledge points now respect the chosen bank, folder and

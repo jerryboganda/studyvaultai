@@ -2,6 +2,7 @@ import './chat.css';
 import { useEffect, useId, useRef, useState } from 'react';
 import {
   Check,
+  Gauge,
   MessagesSquare,
   NotebookText,
   Plus,
@@ -30,8 +31,10 @@ import {
   AiResultCard,
   configSecrets,
   VENDORS,
+  contextWindowTokens,
   describeAiError,
   effortsFor,
+  fitSelection,
   AI_NOTE_PREFIX,
   highlightIdsInScope,
   loadAiConfig,
@@ -70,8 +73,14 @@ const MAX_MESSAGE = 4000;
 const SUMMARISE_ABOVE = 6;
 /** Turns kept word for word after a summary. */
 const KEEP_RECENT = 3;
+/** Earlier turns longer than this (characters) are summarised even before there are many of them. */
+const SUMMARISE_CHARS = 9000;
+/** Turns shown at first in a long conversation. */
+const PAGE_TURNS = 30;
 /** Earlier turns sent with a message (the schema allows 12 messages = 6 turns). */
 const SEND_TURNS = 6;
+const EXPAND_ASK =
+  'List up to 8 single search words, separated by commas, that would find study notes relevant to the message below. Put only the words in the answer field and leave evidence empty.';
 const SUMMARY_ASK =
   'Summarise our conversation so far in under 150 words. Keep names, facts, decisions and open questions so that we can continue it later.';
 
@@ -145,6 +154,14 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
   } | null>(null);
   // The answer as it arrives (streaming providers) and how long the wait has been.
   const [partial, setPartial] = useState('');
+  // Older messages stay folded away in a long conversation until asked for.
+  const [showAll, setShowAll] = useState(false);
+  // Optional: let the model suggest extra search words before the notes are searched.
+  const [expand, setExpand] = useState(false);
+  // One short polite announcement when an answer has arrived (the text itself streams silently).
+  const [announce, setAnnounce] = useState('');
+  // How full the last request was, and what had to be left out to fit the model.
+  const [ctx, setCtx] = useState<{ used: number; budget: number } | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [memoryDraft, setMemoryDraft] = useState<{ id: string; text: string } | null>(null);
   const abort = useRef<AbortController | null>(null);
@@ -193,6 +210,9 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
     return () => clearInterval(id);
   }, [phase]);
 
+  const left = cfg.data
+    ? Math.max(0, cfg.data.settings.limits.maxRequestsPerDay - cfg.data.budget.requests)
+    : null;
   const blocker = ((): string | null => {
     if (!flag.known || !cfg.data) return 'Reading the AI settings…';
     const config = sendBlocker(cfg.data, env, 'chat', choice.profileId);
@@ -200,6 +220,9 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
     if (message.trim() === '') return 'Type a message first.';
     if (message.trim().length > MAX_MESSAGE)
       return `The message is longer than ${MAX_MESSAGE} characters.`;
+    if (left !== null && left <= 0) {
+      return `The daily limit of ${cfg.data.settings.limits.maxRequestsPerDay} AI requests is used up. Raise it in the AI settings, or wait for tomorrow (UTC).`;
+    }
     return null;
   })();
 
@@ -214,6 +237,7 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
   ) => {
     setPhase('waiting');
     setPartial('');
+    setAnnounce('');
     setElapsed(0);
     abort.current = new AbortController();
     const signal = abort.current.signal;
@@ -233,6 +257,7 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
       await (locks ? locks.request(`sv-chat-${threadId}`, { signal }, send) : send());
       setMessage((m) => (m.trim() === text ? '' : m));
       setNote(null);
+      setAnnounce('The answer has arrived.');
       const all = await getChatTurns(threadId);
       const saved = (await listChatThreads()).find((t) => t.id === threadId) ?? null;
       threadsQ.refresh();
@@ -261,10 +286,18 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
     all: readonly ChatTurn[],
     thread: ChatThread | null,
     prefer: string | null,
+    force = false,
   ) => {
     const recent = recentTurns(all, thread);
-    if (recent.length <= SUMMARISE_ABOVE) return;
-    const old = recent.slice(0, recent.length - KEEP_RECENT);
+    // Fold sooner when the earlier turns are long: they would crowd the notes out of the request.
+    const heavy =
+      recent.reduce(
+        (n, t) => n + (t.question?.length ?? 0) + (t.kind === 'chat' ? t.output.answer.length : 0),
+        0,
+      ) > SUMMARISE_CHARS && recent.length > KEEP_RECENT + 1;
+    if (!force && recent.length <= SUMMARISE_ABOVE && !heavy) return;
+    const old = recent.slice(0, Math.max(0, recent.length - KEEP_RECENT));
+    if (old.length === 0) return;
     const selection: AiSelection = {
       chunks: [],
       question: SUMMARY_ASK,
@@ -288,6 +321,44 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
       // Memory is a convenience: the next message simply carries more recent turns.
     }
   };
+
+  /**
+   * Optional "smart search": the model suggests a few more search words for the message. Only the
+   * message goes out (no notes, no earlier turns), through the same pipeline, consent and budget; the
+   * words are used locally to search and the helper result is not kept as a turn.
+   */
+  const suggestTerms = async (
+    config: AiConfig,
+    text: string,
+    prefer: string | null,
+  ): Promise<string> => {
+    const selection: AiSelection = {
+      chunks: [],
+      question: `${EXPAND_ASK}\n\nMessage: ${text}`.slice(0, 4000),
+    };
+    try {
+      const preview = await previewAiTask(config, env, 'chat', selection, undefined, prefer);
+      const done = await runAiTask(config, env, { kind: 'chat', selection, preview, prefer });
+      const words = done.saved.kind === 'chat' ? done.saved.output.answer : '';
+      await deleteAiResult(done.saved.id).catch(() => undefined);
+      return words.replace(/[^\p{L}\p{N}, -]+/gu, ' ').slice(0, 200);
+    } catch {
+      return ''; // a convenience: matching simply uses the message itself
+    }
+  };
+
+  /** Rebuilds the summary now from every turn except the newest few. */
+  const refreshMemory = useAction(async () => {
+    if (!active || !cfg.data || busy) return;
+    const config = (await configFor()) ?? cfg.data;
+    const all = await getChatTurns(active.id);
+    setPhase('waiting');
+    try {
+      await foldIntoSummary(config, active.id, all, active, choice.profileId, true);
+    } finally {
+      setPhase('idle');
+    }
+  });
 
   const submit = useAction(async () => {
     const text = message.trim();
@@ -329,8 +400,10 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
         );
         // A follow-up like "and its side effects?" borrows the words of the message before it.
         const before = earlier.at(-1)?.question ?? '';
+        const extra = expand ? await suggestTerms(config, text, prefer) : '';
+        const asked = `${before} ${text} ${extra}`.trim();
         const found = await retrieveForChat(index, {
-          question: `${before} ${text}`.trim(),
+          question: asked,
           scope: scopeQuery,
           topK: 10,
         });
@@ -341,13 +414,13 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
           folderId: scope.folderId,
           tagIds: tag ? [tag.id] : [],
         });
-        const study = await retrieveStudyItems(`${before} ${text}`.trim(), 4, undefined, inScope);
+        const study = await retrieveStudyItems(asked, 4, undefined, inScope);
         const seen = new Set(passages.map((p) => p.id));
         passages = [...passages, ...study.filter((p) => !seen.has(p.id))];
         if (smart) {
           // Passages that mean what the question means without sharing its words (on-device model).
           const near = await semanticPassages({
-            question: `${before} ${text}`.trim(),
+            question: asked,
             bankName: names.bank,
             folderName: names.folder,
             tagName: tag?.name ?? null,
@@ -357,12 +430,25 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
           passages = [...passages, ...near].slice(0, 14);
         }
       }
-      const selection: AiSelection = {
+      const wanted: AiSelection = {
         chunks: passages.map((p) => ({ id: p.id, kind: p.kind, text: p.text })),
         question: text,
         ...(earlier.length > 0 ? { history: historyOf(earlier) } : {}),
         ...(thread.summary ? { memory: thread.summary } : {}),
       };
+      const chosen = routeFor(config, 'chat', prefer).first;
+      const fit = fitSelection(
+        wanted,
+        contextWindowTokens(chosen.settings.vendor, chosen.settings.model),
+      );
+      const selection: AiSelection = fit.selection;
+      setCtx({ used: fit.usedTokens, budget: fit.budgetTokens });
+      if (fit.droppedPassages > 0 || fit.droppedTurns > 0) {
+        setNote({
+          tone: 'info',
+          text: `To fit this model, ${fit.droppedPassages > 0 ? `${fit.droppedPassages} lower-ranked passage${fit.droppedPassages === 1 ? '' : 's'}` : ''}${fit.droppedPassages > 0 && fit.droppedTurns > 0 ? ' and ' : ''}${fit.droppedTurns > 0 ? `${fit.droppedTurns} older message pair${fit.droppedTurns === 1 ? '' : 's'}` : ''} were left out of this request.`,
+        });
+      }
       const preview = await previewAiTask(config, env, 'chat', selection, undefined, prefer);
       // The agreement covers these recipients; another provider or model asks once more.
       const key = (await env.clock.sha256(JSON.stringify(preview.recipients))).slice(0, 32);
@@ -552,6 +638,18 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
             <Chip icon={Sparkles} tone="violet">
               <span data-testid="chat-provider">{providerText || 'AI provider'}</span>
             </Chip>
+            {left !== null ? (
+              <Chip icon={Gauge} tone={left <= 3 ? 'warning' : 'neutral'}>
+                <span data-testid="chat-quota">{left} AI requests left today</span>
+              </Chip>
+            ) : null}
+            {ctx ? (
+              <Chip tone={ctx.used / ctx.budget > 0.9 ? 'warning' : 'neutral'}>
+                <span data-testid="chat-context">
+                  Last request used {Math.round((ctx.used / ctx.budget) * 100)}% of its context
+                </span>
+              </Chip>
+            ) : null}
             {cfg.data && cfg.data.profiles.length > 1 ? (
               <label className="chat-scope__tag">
                 <span className="mv-label">Provider</span>
@@ -630,6 +728,17 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
               </label>
             ) : null}
             {useNotes ? (
+              <label className="chat-scope__notes">
+                <input
+                  type="checkbox"
+                  data-testid="chat-expand"
+                  checked={expand}
+                  onChange={(e) => setExpand(e.target.checked)}
+                />
+                <span>Let the AI suggest search words (1 extra request)</span>
+              </label>
+            ) : null}
+            {useNotes ? (
               <label className="chat-scope__tag">
                 <span className="mv-label">Tag</span>
                 <select
@@ -700,6 +809,20 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
                 <div className="chat-compose__bar">
                   <Action
                     variant="ghost"
+                    data-testid="chat-memory-refresh"
+                    disabledReason={
+                      turns.length <= KEEP_RECENT
+                        ? 'Not enough messages to summarise yet.'
+                        : busy
+                          ? 'Wait for the current answer.'
+                          : undefined
+                    }
+                    onClick={() => void refreshMemory.run()}
+                  >
+                    Refresh memory
+                  </Action>
+                  <Action
+                    variant="ghost"
                     data-testid="chat-memory-clear"
                     disabledReason={active.summary ? undefined : 'There is no summary to clear.'}
                     onClick={() => void saveMemory.run('')}
@@ -749,7 +872,19 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
             </div>
           ) : (
             <ol className="chat-turns" aria-label="Conversation" data-testid="chat-turns">
-              {turns.map((t) => (
+              {turns.length > PAGE_TURNS && !showAll ? (
+                <li className="chat-more">
+                  <button
+                    type="button"
+                    className="chat-suggest__btn"
+                    data-testid="chat-show-earlier"
+                    onClick={() => setShowAll(true)}
+                  >
+                    Show {turns.length - PAGE_TURNS} earlier messages
+                  </button>
+                </li>
+              ) : null}
+              {(showAll ? turns : turns.slice(-PAGE_TURNS)).map((t) => (
                 <li key={t.id} className="chat-turn" data-testid="chat-turn">
                   <p className="chat-bubble chat-bubble--you">
                     <span className="sv-vh">You: </span>
@@ -850,18 +985,22 @@ export function ChatView({ index, scope, names, tags }: ChatViewProps) {
                 ) : null}
               </p>
             ) : null}
-            {partial ? (
-              <p className="chat-bubble chat-partial" data-testid="chat-partial">
-                <span className="sv-vh">Answer so far: </span>
-                <span className="ai-pre">{partial}</span>
-              </p>
-            ) : null}
             {note ? (
               <InlineNotice tone={note.tone === 'error' ? 'error' : note.tone}>
                 <span data-testid="chat-note">{note.text}</span>
               </InlineNotice>
             ) : null}
           </div>
+          {partial ? (
+            // Outside the live region: tokens must not be read out one by one.
+            <p className="chat-bubble chat-partial" data-testid="chat-partial">
+              <span className="sv-vh">Answer so far: </span>
+              <span className="ai-pre">{partial}</span>
+            </p>
+          ) : null}
+          <p className="sv-vh" role="status" aria-live="polite" data-testid="chat-announce">
+            {announce}
+          </p>
           {submit.error || accept.error ? (
             <InlineNotice tone="error" title="Could not send the message">
               {submit.error ?? accept.error}
