@@ -115,7 +115,9 @@ export const VENDORS: Record<AiVendorId, VendorSpec> = {
     reasoningStyle: 'none',
     efforts: [],
     noEffortReason: 'UBAG picks the thinking level through the model list.',
-    curatedModels: ['mock'],
+    // A bare target uses the gateway operator's defaults (ChatGPT: GPT-6 at Medium power, Gemini: 4 Argon at Low
+    // thinking); `target|setting` ids from the live list pick a model or a level explicitly.
+    curatedModels: ['chatgpt_web', 'gemini_web', 'deepseek_web'],
     keyLabel: 'Username and password',
     keyHelp: 'Enter as username:password (the gateway operator login).',
     liveModels: true,
